@@ -581,18 +581,29 @@ class TilemapBarMixin:
             if not self._can_supply_tiles(entry, bound):
                 # Gated on the same rule the binding itself uses, so the line
                 # cannot claim a resolution that did not happen. Names the broken
-                # link rather than repeating "no source": the binding here is
-                # fine, it is the source's own that has to move.
+                # link rather than repeating "no source": the binding here may be
+                # fine, and it is a binding further down that has to move.
                 return (
-                    f"{bound.name} draws through a tilemap itself - not resolved."
-                    if self._draws_through_tilemap(bound)
+                    f"{bound.name}'s chain loops back on itself - not resolved."
+                    if self._chain_loops(entry, bound)
                     else f"{bound.name} cannot supply tiles - not resolved."
                 )
             # A chained map takes its source's tiles *and* its attributes, so
             # there is no pixel format of its own to report - the source's is the
             # one that matters, and it is on that entry's own bar. What is worth
             # saying instead is which edit lands where: a cell here restamps, and
-            # the stamp itself is edited on the entry named.
+            # the stamp itself is edited on the entry named - or, down a longer
+            # chain, on whichever of the maps named holds the part to change.
+            further = [
+                hop.name
+                for hop in self._chain_entries(entry)[1:]
+                if hop.content_kind is ContentKind.TILEMAP
+            ]
+            if further:
+                return (
+                    f"Stamped from {bound.name} via {', '.join(further)}"
+                    " - edit them to change the stamps."
+                )
             return f"Stamped from {bound.name} - edit it there to change the stamps."
         preset = bound.session.pixel_preset_id if bound.session is not None else ""
         try:
@@ -816,7 +827,7 @@ class TilemapBarMixin:
         bound = self._workspace.find_file(path)
         if bound is None or not self._can_supply_tiles(entry, bound):
             # Nothing this map can draw through: not a graphics file, or a tilemap
-            # that draws through a tilemap itself and so has no tiles to lend. It
+            # whose chain loops back and so has no tiles to lend. It
             # stays open, since the user asked for it, but the binding is left
             # alone rather than pointed somewhere useless.
             self._activate_entry(entry)
@@ -1170,6 +1181,10 @@ class TilemapBarMixin:
         if not self._reread_tilemap(entry):
             return False
         self._doc = entry.doc
+        # A map drawing through this one snapshotted the document just replaced
+        # — its cells, its own chain and its art — so a rebind or a codec switch
+        # here is one there too, at every depth above.
+        self._reresolve_bound_art(self._chain_dependents(entry))
         # A re-read is where a binding takes effect, so it is where pixel mode can
         # stop being available without the view having moved: unbind a map that is
         # being painted on and the mode would otherwise stay armed with both

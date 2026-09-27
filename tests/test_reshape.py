@@ -7,6 +7,7 @@ import pytest
 from celpix.core.context import (
     KEY_COMPRESSED_SIZE,
     KEY_DECOMPRESS_COMPLETE,
+    KEY_TILEMAP_COLUMNS,
     PipelineContext,
 )
 from celpix.core.errors import PipelineError, Stage
@@ -22,18 +23,17 @@ from celpix.plugins.bitswap import (
 from celpix.plugins.builtins.byte_swap import ByteSwapReshape
 from celpix.plugins.builtins.konami_rle import KonamiNesRle
 from celpix.plugins.builtins.m7_vram import M7VramReshape
-from celpix.plugins.builtins.split_planes import (
-    PART_COUNTS,
-    WORD_PART_COUNTS,
-    SplitPartsReshape,
-    split_part_plugins,
-)
 from celpix.plugins.data_lut import (
     DATA_LUT_ENGINE,
     MAX_SELECTOR_BIT,
     data_lut_from_spec,
 )
 from celpix.plugins.registry import default_registry
+from celpix.plugins.split_parts import (
+    SPLIT_PARTS_ENGINE,
+    SplitPartsReshape,
+    split_parts_from_spec,
+)
 from celpix.project.workspace import backfill_slice_length, new_slice
 
 # -- SNES Mode 7 VRAM split -------------------------------------------------
@@ -66,7 +66,7 @@ def test_split_planes_join_interleaves_parts_in_order() -> None:
     assert SplitPartsReshape(2).unshape(joined, PipelineContext()) == parts
 
 
-@pytest.mark.parametrize("parts", PART_COUNTS)
+@pytest.mark.parametrize("parts", (2, 3, 4, 5, 6, 8))
 def test_split_planes_round_trips_including_ragged_tail(parts: int) -> None:
     """Both directions are exact for every part count, and a length that isn't a
     whole number of parts keeps its tail rather than shearing the image."""
@@ -133,7 +133,7 @@ def test_word_interleave_four_chips_fills_the_lanes_in_order() -> None:
     assert SplitPartsReshape(4, unit=2).unshape(joined, PipelineContext()) == chips
 
 
-@pytest.mark.parametrize("parts", WORD_PART_COUNTS)
+@pytest.mark.parametrize("parts", (2, 4))
 def test_word_interleave_round_trips_including_ragged_tail(parts: int) -> None:
     plugin = SplitPartsReshape(parts, unit=2)
     ctx = PipelineContext()
@@ -572,8 +572,6 @@ def test_a_grouped_join_states_the_width_it_lays_the_table_out_at() -> None:
     half from the wrong row and draws every other 8-pixel row from the wrong
     place. Stated, the binding cannot be knocked over by the Cols spin.
     """
-    from celpix.core.context import KEY_TILEMAP_COLUMNS
-
     ctx = PipelineContext()
     table = bytes(8 * 5)  # four word arrays of five stamps
     SplitPartsReshape(2, unit=2, groups=2).reshape(table, ctx)
@@ -591,8 +589,78 @@ def test_a_grouped_join_states_the_width_it_lays_the_table_out_at() -> None:
     assert ragged.get(KEY_TILEMAP_COLUMNS) is None
 
 
-def test_clockwise_and_raster_group_joins_register_apart() -> None:
-    """Both orders ship, under ids that say which is which: a table read through
-    the wrong one is a silent half-mirror rather than an error."""
-    ids = {plugin.info.id for plugin in split_part_plugins()}
-    assert {"reshape.split-words-2x2", "reshape.split-words-2x2-clockwise"} <= ids
+def test_shipped_split_presets_build_the_joins_their_ids_name() -> None:
+    """The shipped joins are TOML presets on the engine, and their ids are stored
+    in project files. Each has to come back as the join its id says: a preset
+    edited to the wrong numbers still loads and silently misreads every region.
+    Both corner orders ship, apart: a table read through the wrong one is a
+    silent half-mirror rather than an error."""
+    reg = default_registry()
+    shapes = {
+        f"reshape.split-planes-{n}": (n, 1, 1, False) for n in (2, 3, 4, 5, 6, 8)
+    } | {
+        "reshape.split-words-2": (2, 2, 1, False),
+        "reshape.split-words-4": (4, 2, 1, False),
+        "reshape.split-words-2x2": (2, 2, 2, False),
+        "reshape.split-words-2x2-clockwise": (2, 2, 2, True),
+    }
+    for plugin_id, shape in shapes.items():
+        plugin = reg.plugin(Stage.RESHAPE, plugin_id)
+        assert isinstance(plugin, SplitPartsReshape), plugin_id
+        got = (plugin.parts, plugin.unit, plugin.groups, plugin.clockwise)
+        assert got == shape, plugin_id
+        # The word tables lock Cols to their row, the chip splits say nothing.
+        assert plugin.lock_columns == (shape[2] > 1), plugin_id
+
+
+def _split_spec(**params) -> dict:
+    return {
+        "id": "reshape.test-split",
+        "name": "Test split",
+        "engine_id": SPLIT_PARTS_ENGINE,
+        "params": params,
+    }
+
+
+def test_split_preset_joins_tables_stored_end_to_end() -> None:
+    """Several tables back to back, each four byte arrays (Final Fantasy II's
+    field metatiles): every group joins on its own into packed records. A join
+    over the whole region would pair one table's top-left array with the next
+    one's top-right. The groups are tables, not stamp rows, so with the lock off
+    the join states no width and Cols stays the user's."""
+    records = 2  # per table
+    tables = [
+        b"".join(bytes(0x10 * t + 4 * c + r for r in range(records)) for c in range(4))
+        for t in range(3)
+    ]  # table t, corner c, record r -> 0x10t + 4c + r
+    region = b"".join(tables)
+    plugin = split_parts_from_spec(_split_spec(parts=4, groups=3, lock_columns=False))
+    ctx = PipelineContext()
+    joined = plugin.reshape(region, ctx)
+    assert joined == bytes(
+        0x10 * t + 4 * c + r for t in range(3) for r in range(records) for c in range(4)
+    )
+    assert ctx.get(KEY_TILEMAP_COLUMNS) is None
+    assert plugin.unshape(joined, ctx) == region
+
+    # Left at its default, a grouped join locks: the stamp-row tables need it.
+    locked = PipelineContext()
+    split_parts_from_spec(_split_spec(parts=4, groups=3)).reshape(region, locked)
+    assert locked.get(KEY_TILEMAP_COLUMNS) == len(region) // 3
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {},  # no part count
+        {"parts": 1},  # nothing to join
+        {"parts": True},  # a typo, not a 1
+        {"parts": 4, "unit": 0},
+        {"parts": 4, "groups": 3, "clockwise": True},  # "around" needs two rows
+        {"parts": 4, "lock_columns": True},  # one group has no rows to lock
+        {"parts": 4, "clockwise": "yes"},
+    ],
+)
+def test_split_preset_rejects_numbers_it_cannot_mean(params: dict) -> None:
+    with pytest.raises(ValueError):
+        split_parts_from_spec(_split_spec(**params))

@@ -1,0 +1,61 @@
+# Example preset: `codec.tilemap.sprite-table` — a sprite mapping table.
+#
+# To use: copy, remove the leading "_", edit, press F5. See _packed.toml for
+# what a preset is.
+#
+# ENGINE
+#   A table of 2-byte offsets, one per frame, each counted from the table's
+#   first byte. The entry is the table: a save writes back only the offsets.
+#   The frames are read out of the entry's Frames input, a region starting at
+#   the table and long enough to hold every frame it names, because tables
+#   often share frames and store no length. Sprite maps open read-only in the
+#   app.
+#
+#   A frame is a header holding its part count, then the parts. Frames and
+#   parts take every parameter of _sprite-record.toml (record, frame_header,
+#   arrays, column_major, subsprite_tiles, legend, endian); frame_header is
+#   required here. `endian` also orders the offsets.
+#
+#   Each distinct offset is one frame, in table order. A count of 0 is an empty
+#   frame. A frame past the Frames region draws empty, with a notice.
+#
+# SHIPPED PRESETS ON THIS ENGINE
+#   sega-mappings-5    count byte; y.b size.b attr.w x.b  (Sonic 1, Sonic CD, PS2)
+#   sonic2-mappings    count word; y.b size.b attr.w attr_2p.w x.w
+#   sonic3k-mappings   count word; y.b size.b attr.w x.w
+
+id = "preset.tilemap.example-sprite-table"
+name = "Example sprite mapping table"
+engine_id = "codec.tilemap.sprite-table"
+
+[params]
+
+# Required on this engine: cells are frames of sprite parts, and each part
+# states its own size, so the toolbar offers no size pair.
+layout = "sprite"
+subsprite_size = "stated"
+column_major = true
+
+# Required. The part record, as in _sprite-record.toml.
+record = [
+  { name = "y",    type = "s8" },
+  { name = "size", type = "u8",  bits = "....ccrr" },
+  { name = "attr", type = "u16", bits = "oppv hiii iiii iiii" },
+  { name = "x",    type = "s8" },
+]
+
+# Required. Each frame's header and where its part count sits in it.
+frame_header = { bytes = 1, count_at = 0, count_type = "u8" }
+
+# A second frame kind: where the count byte is 0 or has bit 7 set, the frame is
+# a block of Mega Drive nametable words instead of parts:
+#
+#   x.w  y.w  columns-1.b  rows-1.b  then columns x rows words (0 = empty)
+#
+# drawn as 8x8 tiles on a grid at x, y. Needs frame_header's count to be a u8
+# at count_at = 0. Default false: with it on, an ordinary empty frame (count 0)
+# is read as a grid.
+# grid_frames = true
+
+# Palette row that a part's row 0 means. Default 0.
+# palette_row_base = 0

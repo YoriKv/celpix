@@ -797,7 +797,7 @@ def test_slice_carved_from_a_reshaped_view_reads_what_was_on_screen(
     to plausible-looking garbage (docs/design/reshape-stage.md §3).
     """
     from celpix.core.context import PipelineContext
-    from celpix.plugins.builtins.split_planes import SplitPartsReshape
+    from celpix.plugins.split_parts import SplitPartsReshape
     from celpix.ui.slice_dialog import SliceDialog, SliceParams
 
     data = bytes((i * 13 + 1) & 0xFF for i in range(1024))
@@ -855,7 +855,7 @@ def test_slice_of_a_reshaped_two_chip_region_writes_back_through_its_parent(
     """
     from celpix.core.context import PipelineContext
     from celpix.plugins.base import RAW_CONTAINER
-    from celpix.plugins.builtins.split_planes import SplitPartsReshape
+    from celpix.plugins.split_parts import SplitPartsReshape
     from celpix.ui.container_dialog import ContainerEdit
 
     first, second = tmp_path / "a.4bpp.sfc", tmp_path / "b.bin"
@@ -1052,13 +1052,13 @@ def test_container_notices_land_in_the_row_tooltip(qtbot, tmp_path) -> None:
     """
     from PySide6.QtCore import Qt
 
-    # A CHR-RAM cart declares zero CHR banks: the read succeeds, but what it
-    # hands back is program code rather than tiles.
+    # A header declaring no CHR banks over a file that runs a bank past its PRG:
+    # the read succeeds, but the header looks wrong.
     chr_ram = tmp_path / "chrram.nes"
     chr_ram.write_bytes(
         bytes([*b"NES\x1a", 2, 0, 0, 0])
         + bytes(8)
-        + bytes((i * 7) & 0xFF for i in range(0x8000))
+        + bytes((i * 7) & 0xFF for i in range(0xA000))
     )
     clean = tmp_path / "clean.bin"
     clean.write_bytes(bytes((i * 13) & 0xFF for i in range(4096)))
@@ -1070,7 +1070,7 @@ def test_container_notices_land_in_the_row_tooltip(qtbot, tmp_path) -> None:
     row = _entry_rows(window._files_panel)[0]
     assert row.background(0).style() != Qt.BrushStyle.NoBrush  # amber
     tip = row.toolTip(0)
-    assert "CHR-RAM cart: no tile data in this file" in tip  # the summary...
+    assert "Header declares no CHR ROM, but the file runs on" in tip  # summary...
     assert "0 CHR banks" in tip  # ...and the explanation under it
     assert row.toolTip(1) == tip  # the glyph answers too, not just the name
 
@@ -1083,7 +1083,7 @@ def test_container_notices_land_in_the_row_tooltip(qtbot, tmp_path) -> None:
     assert plain.toolTip(0) == str(clean)
     # Switching back restores it, since it is derived rather than one-shot.
     window._activate_entry(window._workspace.entries[0])
-    assert "CHR-RAM" in _entry_rows(window._files_panel)[0].toolTip(0)
+    assert "no CHR ROM" in _entry_rows(window._files_panel)[0].toolTip(0)
 
 
 def test_switching_entries_does_not_dirty_the_project(qtbot, tmp_path) -> None:

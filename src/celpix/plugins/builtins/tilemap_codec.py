@@ -79,11 +79,6 @@ from typing import Any
 from celpix.core.context import (
     KEY_TILEMAP_COLUMNS,
     KEY_TILEMAP_PAGE_ROWS,
-    KEY_TILEMAP_RECORD_COLUMN_MAJOR,
-    KEY_TILEMAP_RECORD_SHAPE,
-    KEY_TILEMAP_STAMP_CELLS,
-    KEY_TILEMAP_STAMP_COLUMN_MAJOR,
-    KEY_TILEMAP_STAMP_STRIDE,
     PipelineContext,
 )
 from celpix.core.errors import Stage
@@ -255,88 +250,6 @@ def _publish_pages(cells: int, params: dict[str, Any], ctx: PipelineContext) -> 
     ctx.set(KEY_TILEMAP_PAGE_ROWS, rows)
 
 
-def _publish_stamp(params: dict[str, Any], ctx: PipelineContext) -> None:
-    """State the stamp a *source* table is indexed in, where its preset says.
-
-    A metatile table read through this engine is ordinary cells — the file at
-    the end of a chain — and what makes it a stamp source is two numbers no
-    cell carries: how many of its cells one coordinate names (``stamp_cells``)
-    and how far apart a stamp's rows sit in its cell list (``stamp_stride``).
-    Records packed end to end, four cells to a 2x2 metatile, stamp at stride
-    2 whatever width the table is displayed at; stating the stride here is what
-    lets such a table be viewed sixteen metatiles across and still stamp.
-    ``stamp_order = "column"`` is the same record stored down each column
-    (upper-left, lower-left, upper-right, lower-right): the stride is then the
-    step between the stamp's columns, and its rows are adjacent cells.
-
-    Both are read by the map bound to this one (``session._chain_stamp_cells``,
-    ``_chain_source_columns``), never by this map, so a referrer's own preset
-    carrying ``stamp_cells`` publishes them to no effect.
-    """
-    cells = params.get("stamp_cells")
-    if isinstance(cells, (list, tuple)) and len(cells) == 2:
-        try:
-            ctx.set(
-                KEY_TILEMAP_STAMP_CELLS, (max(1, int(cells[0])), max(1, int(cells[1])))
-            )
-        except (TypeError, ValueError):
-            pass
-    stride = params.get("stamp_stride")
-    if stride is not None:
-        try:
-            ctx.set(KEY_TILEMAP_STAMP_STRIDE, max(1, int(stride)))
-        except (TypeError, ValueError):
-            pass
-    order = params.get("stamp_order", "row")
-    if order not in ("row", "column"):
-        raise ValueError(f"stamp_order must be 'row' or 'column', got {order!r}")
-    if order == "column":
-        # Required rather than defaulted: the fallback stride is the width the
-        # table is viewed at, which is a row step and means nothing down a column.
-        if stride is None:
-            raise ValueError('stamp_order = "column" needs a stamp_stride')
-        ctx.set(KEY_TILEMAP_STAMP_COLUMN_MAJOR, True)
-
-
-def _publish_records(cells: int, params: dict[str, Any], ctx: PipelineContext) -> None:
-    """State the record a table's cells come in, so each draws as a rectangle.
-
-    Stated outright by ``record_shape = [across, down]`` (with ``record_order``,
-    ``"row"`` or ``"column"``) for a table nothing stamps from — a sprite frame
-    kept as its tile numbers. Otherwise it follows from a stamp source's own
-    declarations wherever those describe **contiguous** records: a stamp whose
-    rows (or, stored down each column, whose columns) sit exactly one stamp
-    apart is a run of consecutive cells. A stride wider than that means the
-    stamps are windows on a real map, and a map is drawn as the map it is.
-
-    Not claimed on a paged file, whose assembly is already the layout, nor where
-    the cell count is not a whole number of records — the same honesty a page
-    count keeps: a table read under the wrong cell size is left looking wrong.
-    """
-    shape = params.get("record_shape")
-    order = params.get("record_order", "row")
-    if shape is None:
-        stamp = params.get("stamp_cells")
-        stride = params.get("stamp_stride")
-        if not isinstance(stamp, (list, tuple)) or len(stamp) != 2 or stride is None:
-            return
-        order = params.get("stamp_order", "row")
-        across, down = int(stamp[0]), int(stamp[1])
-        if int(stride) != (down if order == "column" else across):
-            return
-        shape = (across, down)
-    if not isinstance(shape, (list, tuple)) or len(shape) != 2:
-        raise ValueError(f"record_shape must be [across, down], got {shape!r}")
-    if order not in ("row", "column"):
-        raise ValueError(f"record_order must be 'row' or 'column', got {order!r}")
-    across, down = max(1, int(shape[0])), max(1, int(shape[1]))
-    size = across * down
-    if size == 1 or not cells or cells % size or ctx.get(KEY_TILEMAP_PAGE_ROWS):
-        return
-    ctx.set(KEY_TILEMAP_RECORD_SHAPE, (across, down))
-    ctx.set(KEY_TILEMAP_RECORD_COLUMN_MAJOR, order == "column")
-
-
 def _get(word: int, field: _Field | None) -> int:
     return gather(word, *field) if field else 0
 
@@ -392,8 +305,9 @@ class TilemapCodec:
                 )
             )
         _publish_pages(len(cells), params, ctx)
-        _publish_stamp(params, ctx)
-        _publish_records(len(cells), params, ctx)
+        # The stamp and records a table offers the maps drawn through it are
+        # read off the preset by the host, for every engine alike
+        # (:mod:`celpix.pipeline.table_layout`).
         return cells
 
     def encode(

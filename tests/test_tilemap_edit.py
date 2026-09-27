@@ -642,40 +642,315 @@ def test_editing_the_panel_restamps_the_layout_drawing_through_it(
     assert layout.doc.drawn_cells[0] == Cell(index=1)
 
 
-def test_a_chain_two_tilemaps_deep_is_refused_and_says_so(qtbot, tmp_path) -> None:
-    """A coordinate into a coordinate has no defined meaning, so the second hop
-    is not taken. Judged from the binding rather than a loaded document, which is
-    what keeps two maps pointed at each other from recursing."""
-    from celpix.core.tilemap import Cell
+# Four 2x2 stamps of the 8-tile bank, each stored down its columns (UL LL UR
+# LR), and two 2x2 stamps of those, row by row, each cell naming an inner
+# stamp's first cell (4k). Bit 7 is a horizontal flip at both levels.
+_INNER = bytes([0, 1, 2, 3, 4, 5, 6, 7, 7, 6, 5, 4, 3, 2, 1, 0])
+_OUTER = bytes([0, 4, 8, 12, 12, 8, 4, 0])
+
+
+def _two_hop_chain(window, tmp_path, field=b"\x00\x01", *, inner=_INNER, outer=_OUTER):
+    """bank <- inner <- outer <- field: a map of 32x32 stamps, each a 2x2 of
+    16x16 stamps, each a 2x2 of tiles — every hop a dense 2x2, as a real
+    three-level hierarchy is. Returns the four entries, the field map on screen
+    at two entries across."""
+    from celpix.core.capabilities import ContentKind
+    from celpix.core.errors import Stage
+    from celpix.plugins.base import Preset
+    from celpix.project.workspace import TileMode, TileSource
+
+    for preset_id, params in (
+        (
+            "preset.tilemap.test-inner",
+            {"stamp_cells": [2, 2], "stamp_stride": 2, "stamp_order": "column"},
+        ),
+        (
+            "preset.tilemap.test-outer",
+            {
+                "indirect": True,
+                "stamp_cells": [2, 2],
+                "stamp_stride": 2,
+                "stamp_dense": True,
+            },
+        ),
+    ):
+        window._registry.register_preset(
+            Preset(
+                id=preset_id,
+                name=preset_id,
+                stage=Stage.INTERPRET_TILEMAP,
+                engine_id="codec.tilemap.packed",
+                params={"bytes": 1, "fields": "hiii iiii", **params},
+            )
+        )
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    bank = window._workspace.current
+    entries = [bank]
+    for name, data, preset in (
+        ("inner.bin", inner, "preset.tilemap.test-inner"),
+        ("outer.bin", outer, "preset.tilemap.test-outer"),
+        ("field.bin", field, "preset.tilemap.metatile-index"),
+    ):
+        path = tmp_path / name
+        path.write_bytes(data)
+        window._load_pixel(str(path), content_kind=ContentKind.TILEMAP)
+        entry = window._workspace.current
+        entry.tilemap_preset_id = preset
+        entry.tile_source = TileSource(mode=TileMode.ENTRY, entry=entries[-1])
+        window._reload_tilemap(entry)
+        entries.append(entry)
+    window._columns.setValue(8)
+    return entries
+
+
+def _nested(field, outer=_OUTER, inner=_INNER, across=2):
+    """What ``field`` draws, worked out from the tables by hand: tile and flip per
+    position, in drawn order at ``across`` entries wide."""
+    out = {}
+    for at, byte in enumerate(field):
+        ex, ey = at % across, at // across
+        for my in range(2):
+            for mx in range(2):
+                corner = outer[4 * byte + my * 2 + mx]
+                for ty in range(2):
+                    for tx in range(2):
+                        cell = inner[(corner & 0x7F) + tx * 2 + ty]
+                        flip = bool(corner & 0x80) != bool(cell & 0x80)
+                        out[
+                            (ey * 4 + my * 2 + ty) * across * 4 + ex * 4 + mx * 2 + tx
+                        ] = (
+                            cell & 0x7F,
+                            flip,
+                        )
+    return [out[at] for at in sorted(out)]
+
+
+def _drawn(doc):
+    return [(cell.index, cell.flip_h) for cell in doc.drawn_cells]
+
+
+def test_a_chain_of_any_depth_resolves_and_only_a_loop_is_refused(
+    qtbot, tmp_path
+) -> None:
+    """A field map draws through a table of 32x32 stamps that draws through a
+    table of 16x16 ones: two hops of coordinates before a tile, each entry a
+    4x4 of tiles on screen. Depth stops nothing; a chain that comes back round
+    on itself is the one refusal — judged from the bindings, which is what keeps
+    it from recursing — and the bar says which it is."""
+    from celpix.core.errors import Stage
+    from celpix.plugins.base import Preset
     from celpix.project.workspace import TileMode, TileSource
 
     window = MainWindow()
     qtbot.addWidget(window)
-    window._load_pixel(str(_make_snes_file(tmp_path)))  # 0: the art
-    window._load_pixel(str(_pnl_file(tmp_path, [Cell(index=3)])))  # 1
-    window._load_pixel(str(_map_file(tmp_path, [Cell(index=0)])))  # 2
-
-    # 1 -> 0 is fine, so 2 -> 1 resolves...
-    panel = window._workspace.entries[1]
-    panel.tile_source = TileSource(
-        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    bank, inner, outer, field = _two_hop_chain(window, tmp_path)
+    doc = window._doc
+    assert doc.is_indirect and doc.chain.through is not None
+    assert doc.stamp_cells == (4, 4) and doc.drawn_columns == 8
+    assert _drawn(doc) == _nested(b"\x00\x01")
+    assert doc.pixel_data == bank.doc.pixel_data  # the art at the far end
+    assert window._tile_base_label.text() == "Base cell "
+    assert window._tile_binding_note.text() == (
+        "Stamped from outer.bin via inner.bin - edit them to change the stamps."
     )
-    layout = window._workspace.entries[2]
-    layout.tile_source = TileSource(
-        mode=TileMode.ENTRY, entry=window._workspace.entries[1]
-    )
-    window._reload_tilemap(layout)
-    assert window._doc.is_indirect
 
-    # ...but pointing the panel at a tilemap too makes the chain one hop deeper,
-    # and the layout stops resolving rather than reaching past it.
-    panel.tile_source = TileSource(
-        mode=TileMode.ENTRY, entry=window._workspace.entries[2]
-    )
-    window._reload_tilemap(layout)
-
+    # Point the inner table back at the field map and the chain loops.
+    inner.tile_source = TileSource(mode=TileMode.ENTRY, entry=field)
+    window._reload_tilemap(field)
     assert not window._doc.is_indirect
-    assert "draws through a tilemap itself" in window._tile_binding_note.text()
+    assert "outer.bin's chain loops back on itself" in (
+        window._tile_binding_note.text()
+    )
+
+    # Unlooped over a table whose cells are 16x16 metatiles, the stamps cannot be
+    # laid out at any depth, and the load says so rather than drawing 1x1.
+    window._registry.register_preset(
+        Preset(
+            id="preset.tilemap.test-inner-16",
+            name="inner, 16x16 cells",
+            stage=Stage.INTERPRET_TILEMAP,
+            engine_id="codec.tilemap.packed",
+            params={"bytes": 1, "fields": "iiii iiii", "cell_tiles": [2, 2]},
+        )
+    )
+    inner.tile_source = TileSource(mode=TileMode.ENTRY, entry=bank)
+    inner.tilemap_preset_id = "preset.tilemap.test-inner-16"
+    window._reload_tilemap(inner)
+    window._reload_tilemap(field)
+    assert window._doc.is_indirect and window._doc.stamp_cells == (1, 1)
+    assert window.statusBar().currentMessage() == (
+        "4x4 stamps not resolved - the last table's cells are metatiles; "
+        "drawing one cell per entry."
+    )
+
+
+def test_editing_either_table_restamps_the_map_two_hops_up(qtbot, tmp_path) -> None:
+    """Each table replaces its cell list on an edit, and the field map holds a
+    snapshot of both — the outer table's cells and, through it, the inner
+    table's. So an edit to either re-points the chain at every depth above it,
+    and so does its undo, landed from the field map's own view."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    _bank, inner, outer, field = _two_hop_chain(window, tmp_path)
+
+    window._activate_entry(outer)
+    window._set_linear_selection(0, 0)
+    window._set_cell_index(12)  # outer stamp 0's first inner one: 0 -> 3
+    edited = bytes([12, *_OUTER[1:]])
+    assert _drawn(field.doc) == _nested(b"\x00\x01", outer=edited)
+    window._activate_entry(field)
+    window._undo_stack.undo()
+    assert _drawn(window._doc) == _nested(b"\x00\x01")
+
+    window._activate_entry(inner)
+    window._set_linear_selection(0, 0)
+    window._set_cell_index(5)  # inner stamp 0's top-left tile: 0 -> 5
+    edited = bytes([5, *_INNER[1:]])
+    assert _drawn(field.doc) == _nested(b"\x00\x01", inner=edited)
+    assert outer.doc.chain.source == inner.doc.cells  # the middle re-pointed too
+    window._activate_entry(field)
+    window._undo_stack.undo()
+    assert _drawn(window._doc) == _nested(b"\x00\x01")
+
+
+def test_painting_a_map_two_hops_up_lands_in_the_bank_and_every_view(
+    qtbot, tmp_path
+) -> None:
+    """The art is three bindings away and belongs to none of the maps, so the
+    deposit walks the whole chain to it, un-mirrors the stroke by the flips of
+    every hop — a flipped tile inside a flipped stamp faces its own way —
+    and lands in every view of the bank. Where the chain stops reaching art the
+    brush has nowhere to go and is not offered."""
+    from celpix.project.workspace import TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    # Outer stamp 0's first cell flipped, and the top-left tile of the inner
+    # stamp it names flipped as well: position 0 draws tile 0 facing its own
+    # way, position 1 tile 2 mirrored once.
+    inner = bytes([0x80, *_INNER[1:]])
+    outer = bytes([0x80, *_OUTER[1:]])
+    bank, inner_table, outer_table, field = _two_hop_chain(
+        window, tmp_path, inner=inner, outer=outer
+    )
+    assert _drawn(field.doc)[:2] == [(0, False), (2, True)]
+    window._activate_entry(bank)
+    window._activate_entry(field)
+    _painting_on(window)
+
+    _paint(window, 0, 0, 9)  # twice flipped: stored where it was drawn
+    _paint(window, 8, 0, 10)  # once flipped: stored at the far edge
+    assert _bank_tile(window, bank, 0).get(0, 0) == 9
+    assert _bank_tile(window, bank, 2).get(7, 0) == 10
+    assert bank.pixel_dirty
+    assert not any(e.pixel_dirty for e in (inner_table, outer_table, field))
+    for view in (inner_table, outer_table, field):
+        assert view.doc.pixel_data == bank.doc.pixel_data
+
+    window._undo_stack.undo()
+    window._undo_stack.undo()
+    assert _bank_tile(window, bank, 0).get(0, 0) != 9
+    assert not bank.pixel_dirty
+    assert field.doc.pixel_data == bank.doc.pixel_data
+
+    # Unbind the inner table: every map above it is re-read, and the field
+    # map now reaches no art.
+    window._activate_entry(inner_table)
+    inner_table.tile_source = TileSource()
+    window._reload_tilemap(inner_table)
+    window._activate_entry(field)
+    assert not window._pixel_edit_available()
+    assert window._tile_bank_owner(field) is None
+
+
+def test_closing_or_rebinding_a_middle_table_leaves_no_stale_chain(
+    qtbot, tmp_path
+) -> None:
+    """The field map holds the outer table's document by snapshot, so anything
+    that replaces that document — closing it, putting it back, rebinding it,
+    undoing the rebind — has to re-read the field map after it, never before."""
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    bank, _inner, outer, field = _two_hop_chain(window, tmp_path)
+    at = window._workspace.entries.index(outer)
+
+    window._apply_close_entry(outer)
+    assert field.doc.chain is None  # its source is gone, so nothing stamps
+    window._apply_restore_entries([(at, outer)], None)
+    assert field.doc.chain is not None and field.doc.chain.through is not None
+    assert _drawn(field.doc) == _nested(b"\x00\x01")
+
+    # Rebind the outer table straight to the art: one hop shorter, and the
+    # field map follows at once, not on its next load.
+    window._activate_entry(outer)
+    window._rebind_tiles(outer, TileSource(mode=TileMode.ENTRY, entry=bank))
+    assert field.doc.chain.through is None
+    assert field.doc.chain.source is outer.doc.cells
+    window._undo_stack.undo()
+    assert field.doc.chain.through is not None
+    assert field.doc.chain.source is outer.doc.cells
+    assert _drawn(field.doc) == _nested(b"\x00\x01")
+
+
+def test_restamping_a_map_two_hops_up_goes_by_the_whole_stamp(qtbot, tmp_path) -> None:
+    """Everything that places or picks on the field map moves in what one of its
+    bytes draws — a 4x4 of tiles — and names what the byte names: one outer
+    stamp. The sheet offers one ID per outer stamp and previews it whole, a
+    right-drag inside one picks it, a paste lays one, and the file gets back the
+    record number its own format stores."""
+    from pathlib import Path
+
+    from PySide6.QtCore import Qt
+
+    from celpix.pipeline import pipeline
+    from celpix.ui.main_window.selection import SelectionShape
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    _bank, _quads, _blocks, field = _two_hop_chain(window, tmp_path)
+    doc, reg = window._doc, window._registry
+
+    assert list(pipeline.tile_source_span(doc, window._cell_index_limit())) == list(
+        range(8)
+    )
+    assert list(pipeline.tile_source_ids(doc)) == [0, 4]  # one per outer stamp
+    # The sheet's two stamps are the map's two entries, pixel for pixel.
+    sheet = pipeline.tile_source_image(doc, reg, 2).grid
+    picture = pipeline.tilemap_image(doc, reg, 8).grid
+    assert (sheet.width, sheet.height) == (picture.width, picture.height) == (64, 32)
+    assert sheet == picture
+    # The readout resolves every hop: outer 1's corner is inner 3's, tile 3.
+    assert window._tile_source_line(4) == (
+        "Stamp $4 - 4x4 cells, tile $3, row 0 - used by 1 stamp."
+    )
+
+    # A right-drag inside entry 0 picks what it names; a press anywhere in
+    # entry 1 lays it there.
+    window._set_stamping(True)
+    window._on_stamp_area_picked(1 * 8 + 1, 2 * 8 + 2)
+    brush = window._stamp_brush
+    assert (brush.width, brush.height) == (1, 1) and brush.get(0, 0).index == 0
+    window._on_stamp_pressed(3 * 8 + 6, Qt.MouseButton.LeftButton)
+    window._on_stamp_finished()
+    assert [cell.index for cell in doc.cells] == [0, 0]
+    window._set_stamping(False)
+    window._undo_stack.undo()
+
+    # Copy entry 1 from an unaligned rectangle inside it, paste over entry 0.
+    select_combo_data(window._selection_shape, SelectionShape.RECT)
+    window._on_slots_selected(1 * 8 + 5, 2 * 8 + 6)
+    assert window._copy_selection()
+    copied = window._cell_clipboard
+    assert (copied.width, copied.height) == (1, 1) and copied.get(0, 0).index == 4
+    window._on_slots_selected(3 * 8 + 3, 3 * 8 + 3)
+    window._paste()
+    assert [cell.index for cell in doc.cells] == [4, 4]
+    assert _drawn(doc) == _nested(b"\x01\x01")
+
+    window._write_current()
+    assert Path(field.path).read_bytes() == b"\x01\x01"
 
 
 def test_editing_a_stamp_layout_is_refused(qtbot, tmp_path) -> None:

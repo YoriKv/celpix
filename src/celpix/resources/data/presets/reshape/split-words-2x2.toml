@@ -1,0 +1,14 @@
+# A table of 2x2 stamps kept as four 16-bit word arrays: every stamp's top-left
+# cell, then every top-right, bottom-left, bottom-right. Two groups of two
+# parts: the join lays TL TR out over BL BR, a table two rows tall whose width
+# Cols locks to, which is what a map bound to it strides its stamps by
+# (docs/design/tilemap-entry.md §3.1).
+id = "reshape.split-words-2x2"
+name = "Split word tables (2 groups of 2, 16-bit words, join each group)"
+engine_id = "reshape.split-parts"
+category = "Generic"
+
+[params]
+parts = 2
+unit = 2
+groups = 2

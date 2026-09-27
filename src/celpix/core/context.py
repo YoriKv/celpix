@@ -134,7 +134,11 @@ KEY_TILEMAP_PALETTE_ROW_BASE = "tilemap.palette-row-base"
 # own format has not declared a ``stamp_cells`` of its own — the two sides of
 # one answer: a panel's header divides it for whoever calls, while a metatile
 # table's format fixes it for whatever it calls into
-# (``ui/main_window/session.py``, ``_chain_stamp_cells``).
+# (``project/documents.py``, ``chain_stamp_cells``). The file's own statement
+# comes first — a container reading a header, a code format working it out —
+# and the host fills it from the table's preset otherwise, for any engine
+# (``offered_stamp_cells``, else ``stamp_cells``;
+# :mod:`celpix.pipeline.table_layout`).
 KEY_TILEMAP_STAMP_CELLS = "tilemap.stamp-cells"
 # int: the stride, in cells of the **source**, between one row of a stamp and
 # the next — published by a source whose records are packed end to end rather
@@ -142,14 +146,15 @@ KEY_TILEMAP_STAMP_CELLS = "tilemap.stamp-cells"
 # is stamped at stride 2, whatever width the table is *displayed* at; without
 # this the stride falls back to the source's stated or viewed width, which
 # forces such a table to be shown two cells wide to stamp correctly
-# (``ui/main_window/session.py``, ``_chain_source_columns``).
+# (``project/documents.py``, ``chain_source_columns``). Filled from a preset's
+# ``stamp_stride`` by the host, like the stamp above.
 KEY_TILEMAP_STAMP_STRIDE = "tilemap.stamp-stride"
 # bool: the source stores a stamp's cells **down each column** — upper-left,
 # lower-left, upper-right, lower-right for a 2x2 — so the stride above is the
 # step between the stamp's *columns* and its rows are adjacent cells. Super Mario
-# World's Map16 tables are this shape. Published beside the stride by the packed
-# engine from a ``stamp_order = "column"`` preset parameter and read by the map
-# bound to the table (``ui/main_window/session.py``, ``_chain_column_major``).
+# World's Map16 tables are this shape. Published beside the stride by the host
+# from a ``stamp_order = "column"`` preset parameter and read by the map bound to
+# the table (``project/documents.py``, ``chain_stamp_column_major``).
 KEY_TILEMAP_STAMP_COLUMN_MAJOR = "tilemap.stamp-column-major"
 # int: how many cell *rows* one **page** holds, for a format whose file is several
 # independent maps end to end rather than one — a screen file is four 32x32
@@ -182,10 +187,11 @@ KEY_TILEMAP_PAGE_ROWS = "tilemap.page-rows"
 KEY_TILEMAP_PAGES_ACROSS = "tilemap.pages-across"
 # tuple[int, int]: the **record** a table's cells come in — ``(across, down)``
 # cells that belong together, stored consecutively: a 2x2 metatile's four tile
-# numbers, a 2x4 sprite frame's eight. Published by the packed engine from a
-# preset's ``record_shape``, or from a stamp source whose stamps are contiguous
-# records. What it buys is the picture: each record is drawn as its own
-# rectangle, as many across as fit the view's Cols, instead of the table's cells
+# numbers, a 2x4 sprite frame's eight. Published by the host from a preset's
+# ``record_shape``, or from a stamp source whose stamps are contiguous records
+# (:mod:`celpix.pipeline.table_layout`), where a code format has not said. What
+# it buys is the picture: each record is drawn as its own rectangle, as many
+# across as fit the view's Cols, instead of the table's cells
 # running on as one ribbon (``docs/design/tilemap-entry.md`` §6). Unlike a page
 # it states no width and no count, so the last row of records may be short.
 KEY_TILEMAP_RECORD_SHAPE = "tilemap.record-shape"

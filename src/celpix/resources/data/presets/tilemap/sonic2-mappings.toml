@@ -1,0 +1,28 @@
+# A Sonic 2 mapping table: word offsets from the table's first byte, each naming
+# a frame of a count word and that many eight-byte pieces.
+#
+#   piece  = y.b  size.b  attribute.w  attribute_2p.w  x.w
+#
+# As `sega-mappings-5` (Sonic 1's layout), with X widened to a signed word and a second attribute
+# word between: the tile the piece takes in the two-player mode's interlaced
+# screen, where tiles are 8x16. It is carried through a save and not drawn.
+#
+# The entry is the table; bind its Frames input to the bytes from the table's
+# first byte onward, far enough to hold every frame it names.
+id = "preset.tilemap.sonic2-mappings"
+name = "Sonic 2 mapping table (count word, 8-byte pieces)"
+category = "Sega"
+engine_id = "codec.tilemap.sprite-table"
+
+[params]
+layout = "sprite"
+subsprite_size = "stated"
+column_major = true
+record = [
+  { name = "y",       type = "s8" },
+  { name = "size",    type = "u8",  bits = "....ccrr" },
+  { name = "attr",    type = "u16", bits = "oppv hiii iiii iiii" },
+  { name = "attr_2p", type = "u16" },
+  { name = "x",       type = "s16" },
+]
+frame_header = { bytes = 2, count_at = 0, count_type = "u16" }

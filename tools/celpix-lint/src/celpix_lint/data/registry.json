@@ -83,7 +83,18 @@
     "container": {},
     "interpret-palette": {},
     "interpret-pixel": {},
-    "interpret-tilemap": {},
+    "interpret-tilemap": {
+      "codec.tilemap.sprite-table": [
+        {
+          "key": "frames",
+          "kind": "region",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "required": true,
+          "stride": 1
+        }
+      ]
+    },
     "reshape": {}
   },
   "plugins": {
@@ -252,6 +263,10 @@
         "pixels",
         "tilemap"
       ],
+      "compression.sega-mask32": [
+        "pixels",
+        "tilemap"
+      ],
       "compression.slz16": [
         "pixels",
         "tilemap"
@@ -410,6 +425,10 @@
         "tilemap"
       ],
       "codec.tilemap.sprite-record": [
+        "pixels",
+        "tilemap"
+      ],
+      "codec.tilemap.sprite-table": [
         "pixels",
         "tilemap"
       ],
@@ -637,12 +656,15 @@
       "preset.tilemap.scgcad-map",
       "preset.tilemap.scgcad-panel",
       "preset.tilemap.scgcad-std",
+      "preset.tilemap.sega-mappings-5",
       "preset.tilemap.sms-bg",
       "preset.tilemap.snes-bg",
       "preset.tilemap.snes-bg-16x16",
       "preset.tilemap.snes-bg-swapped",
       "preset.tilemap.snes-mode7",
       "preset.tilemap.snes-stamp-table-column",
+      "preset.tilemap.sonic2-mappings",
+      "preset.tilemap.sonic3k-mappings",
       "preset.tilemap.stamp-table-8bit-column",
       "preset.tilemap.text-16bit",
       "preset.tilemap.text-16bit-be",

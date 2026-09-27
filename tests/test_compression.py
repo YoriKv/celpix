@@ -48,6 +48,7 @@ from celpix.plugins.builtins import (
     prs,
     rnc,
     saxman,
+    sega_mask32,
     slz,
     snes_rle,
     sonic2_tiles,
@@ -746,6 +747,41 @@ def test_capcom_mask8_rejects_a_partial_block() -> None:
     for bad in (b"", b"\x00" * 7, b"\x00" * 9):
         with pytest.raises(ValueError, match="whole 8-byte blocks"):
             capcom_mask8.compress(bad)
+
+
+def test_sega_mask32_decode_known_vector_and_packer_rule() -> None:
+    # Hand-assembled. Tile 1: $11 fills bytes 0-5 and $00 bytes 6-25, so both get
+    # a group - in the order each value first appears, which is Sega's packer's
+    # and what makes a re-encode byte-exact - and the six left are literals, in
+    # order. Mask bit 31 is byte 0. Tile 2 has $AA five times, one short of the
+    # six at which a group saves a byte, so it is 32 literals under n = 0.
+    tile1 = b"\x11" * 6 + b"\x00" * 20 + bytes.fromhex("22 33 44 55 66 77")
+    tile2 = b"\xaa" * 5 + bytes(range(27))
+    stream = (
+        bytes.fromhex("02 11 fc000000 00 03ffffc0 22 33 44 55 66 77")
+        + b"\x00" + tile2 + b"\xff"
+    )  # fmt: skip
+    out, consumed, complete = sega_mask32.decompress(stream)
+    assert (out, consumed, complete) == (tile1 + tile2, len(stream), True)
+    assert sega_mask32.compress(out) == stream
+    # Cut inside tile 2, a partial read keeps the whole tile before it and stops
+    # the count at that tile's end, the only place a structure could resume.
+    assert sega_mask32.decompress(stream[:40], partial=True) == (tile1, 17, False)
+    with pytest.raises(ValueError, match="whole 32-byte tiles"):
+        sega_mask32.compress(tile1[:31])
+
+
+def test_sega_mask32_round_trip() -> None:
+    rng = random.Random(32)
+    payloads = [
+        b"",
+        b"\x00" * 32,  # one group covering every byte: no literals follow
+        bytes(rng.choice(b"\x00\x11\x12\x21") for _ in range(32 * 64)),
+        bytes(rng.randrange(256) for _ in range(32 * 16)),
+    ]
+    for data in payloads:
+        packed = sega_mask32.compress(data)
+        assert sega_mask32.decompress(packed) == (data, len(packed), True)
 
 
 def test_capcom_mask8_truncated_stream_decodes_prefix() -> None:

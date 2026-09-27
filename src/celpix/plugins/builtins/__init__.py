@@ -94,13 +94,14 @@ from .scgcad import (
     ScrContainer,
     StdContainer,
 )
+from .sega_mask32 import SegaMask32Compression
 from .slz import Slz16Compression, Slz24Compression
 from .sms_rom import SmsRomContainer
 from .snes_rle import Rle1Compression, Rle2Compression
 from .snes_rom import SnesRomContainer
 from .sonic2_tiles import Sonic2TilesCompression
-from .split_planes import split_part_plugins
 from .sprite_record import SpriteRecordCodec
+from .sprite_table import SpriteTableCodec
 from .tilemap_codec import TilemapCodec
 from .tim import TimClutContainer, TimContainer
 from .tpl_palette import TplPaletteContainer
@@ -140,7 +141,6 @@ def register_builtins(reg: Registry) -> None:
         M7VramReshape(),
         ByteSwapReshape(),
         RunningSumReshape(),
-        *split_part_plugins(),
         PassthroughCompression(),
         KonamiNesRle(),
         KonamiFdsRle(),
@@ -185,6 +185,7 @@ def register_builtins(reg: Registry) -> None:
         PackBitsCompression(),
         PhantasyStarRleCompression(),
         CapcomMask8Compression(),
+        SegaMask32Compression(),
         Sonic2TilesCompression(),
         PlanarCodec(),
         PackedCodec(),
@@ -199,6 +200,7 @@ def register_builtins(reg: Registry) -> None:
         TilemapCodec(),
         MdSpriteCodec(),
         SpriteRecordCodec(),
+        SpriteTableCodec(),
         IndirectRecordCodec(),
     ):
         reg.register(plugin)

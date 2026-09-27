@@ -21,7 +21,7 @@ A third knob widens the family past one byte per group of pixels:
   first supplying its high ``bpp / 2`` bits and the byte ``nibble_stride`` further
   on the low ones. The halves are two streams interleaved in runs of
   ``nibble_stride`` bytes, so ``1`` alternates them byte by byte — what a two-part
-  region join (:mod:`celpix.plugins.builtins.split_planes`) leaves behind when a
+  region join (:mod:`celpix.plugins.split_parts`) leaves behind when a
   board wires each half-index to its own ROM — while a stride of half the tile puts
   every high-half byte before every low-half one. ``0``, the default, is off.
 

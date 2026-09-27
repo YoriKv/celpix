@@ -1,0 +1,13 @@
+# A region cut into 2 equal parts, part k holding every tile's k-th byte in
+# turn, joined byte by byte into one stream so the ordinary presets read it.
+# Two ROMs, one per bitplane pair or byte lane: the Atari System 2 family's
+# plane-pair split (two planes a part), and MAME's ROM_LOAD16_BYTE chip pairing.
+# The split is a fraction of the region, so apply it to exactly the graphics
+# region (docs/design/reshape-stage.md §7).
+id = "reshape.split-planes-2"
+name = "Split bitplanes (2 ROMs, join)"
+engine_id = "reshape.split-parts"
+category = "Arcade"
+
+[params]
+parts = 2

@@ -22,6 +22,8 @@ PRG banks, and any tail the read dropped for being less than a whole block.
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 from celpix.core.address import format_hex
 from celpix.core.context import KEY_SOURCE_OFFSET, PipelineContext
 from celpix.core.errors import Stage
@@ -48,31 +50,84 @@ _INES_MAGIC = b"NES\x1a"
 KEY_INES_SOURCE = "ines.source"
 
 
+class INesLayout(NamedTuple):
+    """Where an iNES image's parts sit, as its header declares them."""
+
+    header_end: int  # past the 16-byte header and any 512-byte trainer
+    prg_size: int  # bytes of program ROM
+    chr_size: int  # bytes of CHR ROM; 0 = a CHR-RAM cart
+    nes2: bool
+    # The header accounts for bytes after the CHR ROM: NES 2.0 miscellaneous ROM,
+    # or a PlayChoice-10 INST-ROM. Neither has a declared size - each is simply
+    # whatever follows - so a trailer is only suspicious without one of these.
+    has_trailer: bool
+
+    @property
+    def prg_end(self) -> int:
+        return self.header_end + self.prg_size
+
+
+def _nes2_size(lsb: int, msb: int, unit: int) -> int:
+    """A NES 2.0 ROM size: ``msb:lsb`` units, or ``2**E * (2*MM + 1)`` bytes when
+    the MSB nibble is ``$F`` and ``lsb`` is ``EEEEEEMM`` - the form for sizes that
+    are not a whole number of banks."""
+    if msb == 0xF:
+        return (1 << (lsb >> 2)) * ((lsb & 3) * 2 + 1)
+    return ((msb << 8) | lsb) * unit
+
+
+def ines_layout(raw: bytes) -> INesLayout:
+    """The layout an iNES or NES 2.0 header (``raw[:16]``) declares.
+
+    NES 2.0 (flags 7 bits 2-3 = ``10``) widens both bank counts with the nibbles
+    of byte 9. Reading only bytes 4 and 5 would take a cart with exactly 256 CHR
+    banks for a CHR-RAM one, and put the CHR of a 4 MiB program in the wrong place.
+    Byte 9 is read only under that marker: older dumps carry junk in bytes 7-15.
+    """
+    nes2 = raw[7] & 0x0C == 0x08
+    header_end = 16 + (512 if raw[6] & 0x04 else 0)
+    if nes2:
+        prg_size = _nes2_size(raw[4], raw[9] & 0x0F, 16384)
+        chr_size = _nes2_size(raw[5], raw[9] >> 4, 8192)
+    else:
+        prg_size, chr_size = raw[4] * 16384, raw[5] * 8192
+    has_trailer = bool(raw[7] & 0x02) or (nes2 and bool(raw[14] & 0x03))
+    return INesLayout(header_end, prg_size, chr_size, nes2, has_trailer)
+
+
 def ines_chr_span(raw: bytes) -> tuple[int, int | None]:
     """``(start, length)`` of the CHR ROM in an iNES image; length None = to end.
 
-    The 16-byte header (plus a 512-byte trainer when flagged) is followed by the
-    PRG banks and then the CHR ROM. A cart with **CHR-RAM** declares zero CHR
-    banks and has no CHR ROM at all, so the bytes past the header are handed over
-    instead — the best a graphics editor can offer for one.
+    The header (plus a 512-byte trainer when flagged) is followed by the PRG ROM
+    and then the CHR ROM. A cart with **CHR-RAM** declares no CHR ROM: its program
+    copies tiles out of PRG ROM into CHR-RAM at runtime, so the graphics are
+    somewhere in the program banks and everything past the header is handed over.
 
     Shared by both directions so they cannot disagree about where the graphics
     live; a drift there would splice edited tiles over the program.
     """
-    header_end = 16 + (512 if raw[6] & 0x04 else 0)
-    prg_banks, chr_banks = raw[4], raw[5]
-    if chr_banks == 0:
-        return header_end, None
-    return header_end + prg_banks * 16384, chr_banks * 8192
+    layout = ines_layout(raw)
+    if layout.chr_size == 0:
+        return layout.header_end, None
+    return layout.prg_end, layout.chr_size
+
+
+def _banks(size: int, unit: int) -> str:
+    """A ROM size as ``"<banks> (<size>)"``, or just the size when NES 2.0's
+    exponent form made it something other than a whole number of banks."""
+    if size % unit:
+        return format_size(size)
+    return f"{size // unit} ({format_size(size)})"
 
 
 class INesContainer:
     """A ``.nes`` file, read past the iNES header to the CHR ROM and back.
 
     If bytes 0–3 are ``NES\\x1a``, the 16-byte header (plus a 512-byte trainer when
-    present) is skipped and the CHR ROM starts after the PRG banks. A CHR-RAM cart
-    declares 0 CHR banks and has none, so the bytes after the header are returned
-    instead. A file without the magic is read like a plain binary.
+    present) is skipped and the CHR ROM starts after the PRG banks, NES 2.0's wider
+    bank counts included (:func:`ines_layout`). A CHR-RAM cart declares 0 CHR banks
+    and keeps its art in the program banks, so the bytes after the header are
+    returned instead. A file without the magic is read like a plain binary.
 
     ``write`` recomputes the CHR start from the destination's own header
     (:func:`ines_chr_span`) rather than trusting ``dest``: the read started past
@@ -125,15 +180,24 @@ class INesContainer:
                     self.info.id,
                 )
             elif length is None:
-                warn(
-                    ctx,
-                    "CHR-RAM cart: no tile data in this file",
-                    "The header declares 0 CHR banks, so the cartridge\n"
-                    "generates its tiles at runtime and the ROM holds none.\n"
-                    "Showing the bytes after the header, which are program\n"
-                    "code rather than graphics.",
-                    self.info.id,
-                )
+                # 0 CHR banks is how a header says CHR-RAM, and for such a cart
+                # the program banks are exactly where the art is - nothing to
+                # warn about. What is suspicious is a file that runs on past its
+                # PRG: a CHR-RAM cart ends there, so whole banks after it look
+                # like CHR ROM the header forgot to declare.
+                layout = ines_layout(raw)
+                extra = len(raw) - layout.prg_end
+                if extra >= 8192 and not layout.has_trailer:
+                    warn(
+                        ctx,
+                        "Header declares no CHR ROM, but the file runs on",
+                        "The header declares 0 CHR banks (CHR-RAM), yet\n"
+                        f"{format_size(extra)} follow the program banks, from\n"
+                        f"{format_hex(layout.prg_end)}. A CHR-RAM cart ends at its\n"
+                        "PRG, so this may be CHR ROM the header fails to declare.\n"
+                        "Everything after the header is shown, those bytes last.",
+                        self.info.id,
+                    )
             return raw[start:] if length is None else raw[start : start + length]
         # Not an iNES file — behave like the raw container.
         warn(
@@ -181,12 +245,12 @@ class INesContainer:
                 ),
             )
         trainer = bool(raw[6] & 0x04)
-        prg, chr_banks = raw[4], raw[5]
+        layout = ines_layout(raw)
         start, length = ines_chr_span(raw)
         fields = [
             ContainerField(
                 "Header",
-                "iNES, 16 bytes",
+                "NES 2.0, 16 bytes" if layout.nes2 else "iNES, 16 bytes",
                 "Bytes 0-15, holding the bank counts and flags below.\n"
                 "Skipped on read and preserved on write, so a save\n"
                 "leaves the cartridge's own metadata alone.",
@@ -203,20 +267,20 @@ class INesContainer:
             ),
             ContainerField(
                 "PRG banks",
-                f"{prg} ({format_size(prg * 16384)})",
+                _banks(layout.prg_size, 16384),
                 "Program ROM, 16 KiB each. Not graphics, but their\n"
                 "total is what the CHR ROM starts after - this is the\n"
                 "arithmetic that finds the tiles.",
             ),
             ContainerField(
                 "CHR banks",
-                f"{chr_banks} ({format_size(chr_banks * 8192)})"
-                if chr_banks
+                _banks(layout.chr_size, 8192)
+                if layout.chr_size
                 else "0 - CHR-RAM cartridge",
                 "Tile ROM, 8 KiB each: the payload this container is\n"
-                "after. Zero means the cartridge generates its tiles at\n"
-                "runtime and holds none, so what is shown instead is the\n"
-                "program code after the header.",
+                "after. Zero means CHR-RAM: the program copies its tiles\n"
+                "out of PRG ROM at runtime, so everything after the\n"
+                "header is shown and the art is among the program banks.",
             ),
         ]
         end = "end of file" if length is None else format_hex(start + length)

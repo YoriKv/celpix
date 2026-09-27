@@ -22,6 +22,7 @@ from celpix.core.errors import PipelineError, Stage
 from celpix.core.tilemap import Cell, CellGrid
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.pipeline.pipeline import encode_cells, load_tilemap_data
+from celpix.pipeline.table_layout import publish_table_layout
 from celpix.plugins.base import FileRef, ReadSource, WriteTarget
 from celpix.plugins.builtins.scgcad import (
     MAP_SIZE,
@@ -2320,34 +2321,36 @@ def _chain_doc(cells, chain, columns: int = 0, cell_tiles=(1, 1)):
     )
 
 
-def _field_chain(**top):
-    """map -> block table -> metatile table -> tiles, every hop a dense 2x2 over a
-    packed record: four metatiles of four tiles (100 + 4k ..), and two blocks —
-    metatiles 0 1 / 2 3, and the same reversed. Coordinates name a record's first
-    cell, so they step by 4."""
+def _two_hop_chain(**top):
+    """map -> outer table -> inner table -> tiles, every hop a dense 2x2 over a
+    packed record: four inner stamps of four tiles (100 + 4k ..), and two outer
+    ones — inner stamps 0 1 / 2 3, and the same reversed. Coordinates name a
+    record's first cell, so they step by 4."""
     from celpix.core.document import CellChain
 
     tiles = [Cell(index=100 + at) for at in range(16)]
-    blocks = [Cell(index=4 * k) for k in (0, 1, 2, 3, 3, 2, 1, 0)]
-    quads = CellChain(tiles, False, stamp=(2, 2), source_columns=2, dense=True)
+    outer = [Cell(index=4 * k) for k in (0, 1, 2, 3, 3, 2, 1, 0)]
+    inner = CellChain(tiles, False, stamp=(2, 2), source_columns=2, dense=True)
     return CellChain(
-        blocks,
+        outer,
         top.pop("carry_rows", False),
         stamp=(2, 2),
         source_columns=2,
         dense=True,
-        through=quads,
+        through=inner,
         **top,
     )
 
 
 def test_a_chain_two_hops_deep_resolves_every_hop_and_snaps_back_through_both() -> None:
-    """A map of blocks of metatiles: one entry draws a 4x4 of tiles, which is
+    """A map of stamps of stamps: one entry draws a 4x4 of tiles, which is
     the unit everything that places or picks moves in, and a click anywhere in
     those sixteen positions edits the one entry they came from. A coordinate
     that names nothing — past the table, or the padding of a short last row —
     draws nothing at every depth, not the next table's cell 0."""
-    doc = _chain_doc([Cell(index=0), Cell(index=4), Cell(index=99)], _field_chain(), 2)
+    doc = _chain_doc(
+        [Cell(index=0), Cell(index=4), Cell(index=99)], _two_hop_chain(), 2
+    )
     assert doc.stamp_cells == (4, 4)
     assert doc.drawn_columns == 8
     assert doc.columns_locked
@@ -2358,7 +2361,7 @@ def test_a_chain_two_hops_deep_resolves_every_hop_and_snaps_back_through_both() 
         108, 109, 112, 113, 104, 105, 100, 101,
         110, 111, 114, 115, 106, 107, 102, 103,
     ]  # fmt: skip
-    # Entry 2 names no block, and the rest of its row is padding.
+    # Entry 2 names no outer stamp, and the rest of its row is padding.
     assert len(drawn) == 64
     assert all(cell == Cell() for cell in doc.drawn_cells[32:])
     for y in range(4):
@@ -2370,7 +2373,7 @@ def test_a_chain_two_hops_deep_resolves_every_hop_and_snaps_back_through_both() 
 
     # With no stated width, Cols counts final positions: 9 floors to two
     # entries of four.
-    free = _chain_doc([Cell(index=0), Cell(index=4)], _field_chain())
+    free = _chain_doc([Cell(index=0), Cell(index=4)], _two_hop_chain())
     free.view.columns = 9
     assert (free.stamp_columns, free.drawn_columns) == (2, 8)
     assert not free.columns_locked
@@ -2385,10 +2388,10 @@ def test_attributes_compose_across_every_hop() -> None:
     from celpix.core.document import CellChain, resolve_chain
 
     tiles = [Cell(index=100 + at, palette_row=1, flip_h=True) for at in range(16)]
-    blocks = [Cell(index=4 * k, flip_h=True) for k in (0, 1, 2, 3, 3, 2, 1, 0)]
-    quads = CellChain(tiles, False, stamp=(2, 2), source_columns=2, dense=True)
+    outer = [Cell(index=4 * k, flip_h=True) for k in (0, 1, 2, 3, 3, 2, 1, 0)]
+    inner = CellChain(tiles, False, stamp=(2, 2), source_columns=2, dense=True)
     chain = CellChain(
-        blocks, True, stamp=(2, 2), source_columns=2, dense=True, through=quads
+        outer, True, stamp=(2, 2), source_columns=2, dense=True, through=inner
     )
     entry = Cell(index=0, palette_row=5, flip_h=True)
     out = resolve_chain([entry], chain, 1)
@@ -2398,11 +2401,11 @@ def test_attributes_compose_across_every_hop() -> None:
     bare = resolve_chain([entry], replace(chain, carry_rows=False), 1)
     assert {cell.palette_row for cell in bare} == {1}
 
-    # A base at each hop: block 1 through a base of 4 cells, and the metatile
-    # table read from record 1 on - so block 1's first metatile (1) reads as 2.
-    based = replace(chain, base=4, through=replace(quads, base=4))
+    # A base at each hop, signed: entry 0 reads outer stamp 1 (3 2 / 1 0)
+    # through a base of 4 cells, and each inner one it names a record earlier.
+    based = replace(chain, base=4, through=replace(inner, base=-4))
     assert [cell.index for cell in resolve_chain([Cell(index=0)], based, 1)][:4] == [
-        112, 113, 108, 109,
+        108, 109, 104, 105,
     ]  # fmt: skip
 
 
@@ -2412,7 +2415,7 @@ def test_a_single_entry_preview_is_the_maps_own_resolution_of_it() -> None:
     is exactly the 4x4 the map draws for that entry."""
     from celpix.core.document import resolve_chain
 
-    doc = _chain_doc([Cell(index=0), Cell(index=4)], _field_chain(), 2)
+    doc = _chain_doc([Cell(index=0), Cell(index=4)], _two_hop_chain(), 2)
     unit = resolve_chain([Cell(index=4)], doc.chain, 1, dense=True)
     drawn = doc.drawn_cells
     assert unit == [drawn[y * 8 + 4 + x] for y in range(4) for x in range(4)]
@@ -2814,8 +2817,9 @@ def test_a_table_of_records_draws_each_record_whole_with_a_short_last_row() -> N
              "stamp_stride": 2, "stamp_order": "column"}  # fmt: skip
     ctx = PipelineContext()
     cells = TilemapCodec().decode(bytes(range(12)), table, ctx)
+    publish_table_layout(len(cells), table, ctx)
     wide = PipelineContext()
-    TilemapCodec().decode(bytes(range(12)), {**table, "stamp_stride": 8}, wide)
+    publish_table_layout(len(cells), {**table, "stamp_stride": 8}, wide)
     assert not wide.get("tilemap.record-shape")
 
     doc = Document(
@@ -4136,30 +4140,41 @@ def test_a_column_major_map_reads_down_each_column_and_edits_back_in_place() -> 
     assert [cell.index for cell in down.cells] == [0, 2, 8, 10]
 
 
-def test_the_packed_engine_publishes_a_source_tables_stamp_and_stride() -> None:
-    """A metatile table read through the packed engine is ordinary cells; what
-    makes it a stamp source is two numbers its preset states and no cell holds.
-    The stride is the record's width, not the table's displayed width, so a
-    table of packed 2x2 records can be shown sixteen across and still stamp."""
+def test_a_table_offers_its_preset_stamp_whatever_its_engine() -> None:
+    """What a table offers the map drawn through it is two numbers its preset
+    states and no cell holds, read by the host for every engine. The stride is
+    the record's width, not the displayed width, so packed 2x2 records can be
+    shown sixteen across and still stamp. A table in the middle of a chain is an
+    indirect-record map that is also a source; one whose offer differs from what
+    it draws says so under its own name. A value the file itself stated — a
+    panel's header, a code format's decode — is kept over the preset's."""
     from celpix.core.context import KEY_TILEMAP_STAMP_CELLS, KEY_TILEMAP_STAMP_STRIDE
-    from celpix.plugins.builtins.tilemap_codec import TilemapCodec
 
-    params = {
-        "bytes": 2, "endian": "little", "fields": "...o pvhi iiii iiii",
-        "stamp_cells": [2, 2], "stamp_stride": 2,
-    }  # fmt: skip
-    ctx = PipelineContext()
-    cells = TilemapCodec().decode(bytes(range(16)), params, ctx)
-    assert len(cells) == 8
-    assert ctx.get(KEY_TILEMAP_STAMP_CELLS) == (2, 2)
-    assert ctx.get(KEY_TILEMAP_STAMP_STRIDE) == 2
+    def offer(params: dict, ctx: PipelineContext | None = None) -> tuple:
+        ctx = ctx or PipelineContext()
+        publish_table_layout(8, params, ctx)
+        return ctx.get(KEY_TILEMAP_STAMP_CELLS), ctx.get(KEY_TILEMAP_STAMP_STRIDE)
 
-    # and a preset saying neither publishes neither, so an ordinary map is
-    # still stamped at the width it is viewed
-    plain = PipelineContext()
-    TilemapCodec().decode(bytes(range(16)), {"fields": "iiii iiii iiii iiii"}, plain)
-    assert plain.get(KEY_TILEMAP_STAMP_CELLS) is None
-    assert plain.get(KEY_TILEMAP_STAMP_STRIDE) is None
+    packed = {"fields": "iiii iiii", "stamp_cells": [2, 2], "stamp_stride": 2}
+    assert offer(packed) == ((2, 2), 2)
+    # a middle table: bytes are record numbers, and it offers 2x2 above
+    middle = {"record_cells": 4, "indirect": True, "stamp_cells": [2, 2],
+              "stamp_dense": True, "stamp_stride": 2}  # fmt: skip
+    assert offer(middle) == ((2, 2), 2)
+    # a chunk of 8x8 blocks drawing 2x2 of the table below: the offer is its own
+    assert offer({**middle, "offered_stamp_cells": [8, 8], "stamp_stride": 8}) == (
+        (8, 8),
+        8,
+    )
+    # the file's own statement stands
+    stated = PipelineContext()
+    stated.set(KEY_TILEMAP_STAMP_CELLS, (4, 2))
+    assert offer(packed, stated) == ((4, 2), 2)
+    # and a preset saying neither offers nothing, so an ordinary map is still
+    # stamped at the width it is viewed
+    assert offer({"fields": "iiii iiii"}) == (None, None)
+    with pytest.raises(ValueError, match="offered_stamp_cells"):
+        offer({"offered_stamp_cells": 2})
 
 
 def test_a_table_stored_down_each_column_stamps_its_records_upright() -> None:
@@ -4183,6 +4198,7 @@ def test_a_table_stored_down_each_column_stamps_its_records_upright() -> None:
     table = TilemapCodec().decode(
         b"".join(w.to_bytes(2, "little") for w in words), preset.params, ctx
     )
+    publish_table_layout(len(table), preset.params, ctx)
     stride = ctx.get(KEY_TILEMAP_STAMP_STRIDE)
     column_major = bool(ctx.get(KEY_TILEMAP_STAMP_COLUMN_MAJOR))
 
@@ -4195,9 +4211,7 @@ def test_a_table_stored_down_each_column_stamps_its_records_upright() -> None:
 
     # the order means nothing without a stride saying how far a column steps
     with pytest.raises(ValueError, match="stamp_stride"):
-        TilemapCodec().decode(
-            b"\0\0", {"fields": "iiii iiii iiii iiii", "stamp_order": "column"}, ctx
-        )
+        publish_table_layout(1, {"stamp_order": "column"}, PipelineContext())
 
 
 def test_the_host_settles_a_deriving_codec_through_the_document(tmp_path) -> None:

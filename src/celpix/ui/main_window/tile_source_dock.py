@@ -34,7 +34,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from celpix.core.tilemap import Cell, CellGrid, resolve_cell
+from celpix.core.document import resolve_chain
+from celpix.core.tilemap import Cell, CellGrid
 from celpix.pipeline import pipeline
 from celpix.project.workspace import TileSource
 from celpix.ui import render_bridge
@@ -759,10 +760,17 @@ class TileSourceDockMixin:
             return f"Tile ${tile_id:X} - {where} - used by {used}."
         # A bare coordinate with no rows carried: the line describes the stamp
         # as the source authored it, and no real entry stands behind this ID —
-        # a bare cell's row 0 let through would misreport the source's.
-        stamp = resolve_cell(
-            Cell(index=tile_id), chain.source, carry_rows=False, base=chain.base
-        )
+        # a bare cell's row 0 let through would misreport the source's. Resolved
+        # through every hop by the map's own walk, so the corner described is
+        # the tile that draws there, not a coordinate into the next table.
+        stamp = resolve_chain(
+            [Cell(index=tile_id)],
+            chain,
+            1,
+            stamped=doc.stamp_cells != (1, 1),
+            carry_rows=False,
+            dense=True,
+        )[0]
         # The corner cell's own attributes, which is what a stamp's other cells
         # each have their own of - so the size is stated and the rest is left to
         # the picture rather than listed cell by cell.

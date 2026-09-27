@@ -43,12 +43,28 @@ arrays**, and it is the same join applied one level down:
   (``docs/design/tilemap-entry.md`` §3.1) reads. A plain four-part join would
   weave all four into one row instead, and the two-part join over the whole
   region pairs TL with BL — the same four cells, transposed.
+
+  The groups can instead be **tables end to end**, each its own set of arrays.
+  Final Fantasy II (Famicom) keeps three 64-record metatile tables of four byte
+  arrays each, back to back: G=3, N=4, unit 1, and the join turns every group's
+  ``TL‖TR‖BL‖BR`` into records packed four bytes each, which a stamp table
+  preset at stride 2 reads directly. A join over the whole region at N=4 would
+  pair the first table's top-left array with the second's top-right one.
 - **Clockwise** (``clockwise=True``) is the same table with its arrays stored
-  around the stamp — ``TL‖TR‖BR‖BL`` — rather than across it. The last group's two
+  around the stamp — ``TL‖TR‖BR‖BL`` — rather than across it. The last group's
   arrays are reversed back into reading order around the join, so the result is
   again ``TL TR`` over ``BL BR``. The two orders are indistinguishable in the
   bytes and mirror each stamp's bottom half if confused, which reads as a picture
-  whose lower halves are plausible but wrong rather than as noise.
+  whose lower halves are plausible but wrong rather than as noise. "Around" is
+  only defined for a stamp two rows tall, so it takes exactly two groups.
+
+**The numbers are a preset's.** The transform is identical for every combination
+and only the part count, unit, group count and order differ, so it is one engine,
+``reshape.split-parts``, and each join a TOML preset naming it — the shipped chip
+splits and word tables (``data/presets/reshape/split-*.toml``) as much as a
+project's own. Like the bitswap and data-LUT presets it is adapted into an
+ordinary reshape plugin at load (:func:`split_parts_from_spec`), since the Reshape
+stage resolves plain plugin ids everywhere.
 
 Which a board wants is **not visible in the shapes**. For a two-chip pair the
 byte-wise and word-wise joins differ only by a swap of bitplanes 1 and 2, so both
@@ -69,28 +85,19 @@ from __future__ import annotations
 
 from celpix.core.context import KEY_TILEMAP_COLUMNS, PipelineContext
 from celpix.core.errors import Stage
-from celpix.plugins.base import PluginInfo
+from celpix.plugins._params import flag
+from celpix.plugins.base import PluginInfo, check_declared_stage
 
-# The byte-wise part counts that occur in hardware. Two through six are the plane
-# splits — one chip per plane, plus the plane-*pair* split of the Atari System 2
-# family (two parts, two planes each) — pairing with the shipped ``snes-2bpp``…
-# ``6bpp-planar`` presets. Eight is not a plane split but MAME's
-# ``ROM_LOAD64_BYTE``: eight chips feeding one byte lane each of a 64-bit bus, the
-# same interleave with a larger N. Seven is absent because no driver splits a
-# region into sevenths.
-PART_COUNTS = (2, 3, 4, 5, 6, 8)
+SPLIT_PARTS_ENGINE = "reshape.split-parts"
 
-# The word-wise counts follow bus width: a 32-bit graphics bus takes two chips
-# (``ROM_LOAD32_WORD``), a 64-bit one four (``ROM_LOAD64_WORD``). Buses come in
-# powers of two, so this set is closed rather than merely what has been needed.
-WORD_PART_COUNTS = (2, 4)
-
-# ``(parts, groups, clockwise)`` for the grouped word joins. Unlike the bus widths
-# above this is a list of what has been needed, not a closed set: 2x2 is a table of
-# 2x2 stamps stored as four corner arrays, in raster order and in clockwise order
-# (both Sesame Street: Counting Cafe, Mega Drive — the stamp tables are clockwise
-# and the survey read them raster-order first).
-GROUPED_WORD_PARTS = ((2, 2, False), (2, 2, True))
+# Bounds on a preset's numbers that catch a typo, not limits of the transform,
+# which is length-preserving at any size. The widest real join is eight byte
+# lanes of a 64-bit bus (MAME's ``ROM_LOAD64_BYTE``) and the widest unit a
+# 64-bit word; a table split into more than a few hundred groups is a region
+# that has been sliced wrong.
+MAX_PARTS = 64
+MAX_UNIT = 8
+MAX_GROUPS = 1024
 
 
 def _join(data: bytes, parts: int, unit: int) -> bytes:
@@ -156,49 +163,39 @@ class SplitPartsReshape:
 
     The part count, unit size and group count are constructor arguments rather
     than subclasses: the transform is identical for every combination and only the
-    numbers differ, so the shipped variants are instances of this one class.
+    numbers differ, so every join, shipped or a project's, is an instance of this
+    one class built from a preset (:func:`split_parts_from_spec`).
+
+    ``lock_columns`` says whether the join states the width its table is laid out
+    at (:meth:`_state_layout`). ``None`` is the default a preset gets: on for a
+    grouped join, off for a chip split.
     """
 
     parts: int
     unit: int
     groups: int
     clockwise: bool
+    lock_columns: bool
 
     def __init__(
-        self, parts: int, unit: int = 1, groups: int = 1, clockwise: bool = False
+        self,
+        parts: int,
+        unit: int = 1,
+        groups: int = 1,
+        clockwise: bool = False,
+        *,
+        lock_columns: bool | None = None,
+        plugin_id: str = SPLIT_PARTS_ENGINE,
+        name: str = "Split parts (join)",
+        category: str = "",
     ) -> None:
         self.parts = parts
         self.unit = unit
         self.groups = groups
         self.clockwise = clockwise
-        if groups > 1:
-            # Named for what is on disk — tables side by side — since no chip
-            # wiring is involved, and filed apart from the arcade joins.
-            plugin_id = f"reshape.split-words-{parts}x{groups}"
-            name = (
-                f"Split word tables ({groups} groups of {parts}, "
-                f"{unit * 8}-bit words, join each group)"
-            )
-            if clockwise:
-                plugin_id += "-clockwise"
-                name = (
-                    f"Split word tables ({groups} groups of {parts}, "
-                    f"{unit * 8}-bit words, corner arrays clockwise)"
-                )
-            self.info = PluginInfo(
-                id=plugin_id, name=name, stage=Stage.RESHAPE, category="Generic"
-            )
-            return
-        if unit == 1:
-            plugin_id = f"reshape.split-planes-{parts}"
-            name = f"Split bitplanes ({parts} ROMs, join)"
-        else:
-            # "chips" rather than "pair", the same transform serving the two-chip
-            # 32-bit bus and the four-chip 64-bit one.
-            plugin_id = f"reshape.split-words-{parts}"
-            name = f"Split ROM chips ({parts} chips, {unit * 8}-bit words, join)"
+        self.lock_columns = groups > 1 if lock_columns is None else lock_columns
         self.info = PluginInfo(
-            id=plugin_id, name=name, stage=Stage.RESHAPE, category="Arcade"
+            id=plugin_id, name=name, stage=Stage.RESHAPE, category=category
         )
 
     def reshape(self, data: bytes, ctx: PipelineContext) -> bytes:
@@ -206,23 +203,26 @@ class SplitPartsReshape:
         return _grouped(data, self.groups, self.parts, self.unit, _join, self.clockwise)
 
     def _state_layout(self, data: bytes, ctx: PipelineContext) -> None:
-        """Publish the width a **grouped** join lays its table out at.
+        """Publish the width a grouped join lays its table out at, where it locks.
 
-        The layout is the whole point of the transform — G groups joined, read as
-        G rows — so the width is not a preference the user could helpfully move:
-        a map bound to the table strides its stamp's lower half by the source's
-        width (``docs/design/tilemap-entry.md`` §3.1), and any other number
-        resolves that half from the wrong row. Stated here, Cols mirrors it and
-        locks, which is the difference between a binding that cannot be knocked
-        over and one that silently draws every other row from the wrong place.
+        For a table of stamps stored as corner arrays the layout is the whole
+        point of the transform — G groups joined, read as G rows — so the width
+        is not a preference the user could helpfully move: a map bound to the
+        table strides its stamp's lower half by the source's width
+        (``docs/design/tilemap-entry.md`` §3.1), and any other number resolves
+        that half from the wrong row. Stated here, Cols mirrors it and locks,
+        which is the difference between a binding that cannot be knocked over and
+        one that silently draws every other row from the wrong place.
 
-        Only the grouped joins say anything: a chip split is a region of *pixels*,
-        which have no cells to be laid out in. A region with a tail says nothing
-        either — the claim is exact or absent. On the pixel pathway the key is
-        simply never read.
+        Groups that are **tables end to end** join into packed records instead,
+        whose rows mean nothing, and a lock there would pin the view to one
+        table's width. Their preset turns ``lock_columns`` off. A chip split is a
+        region of *pixels*, which have no cells to be laid out in, and a region
+        with a tail says nothing either — the claim is exact or absent. On the
+        pixel pathway the key is simply never read.
         """
         span = self.groups * self.parts * self.unit
-        if self.groups == 1 or not data or len(data) % span:
+        if not self.lock_columns or not data or len(data) % span:
             return
         ctx.set(KEY_TILEMAP_COLUMNS, len(data) // (self.groups * self.unit))
 
@@ -232,14 +232,51 @@ class SplitPartsReshape:
         )
 
 
-def split_part_plugins() -> list[SplitPartsReshape]:
-    """Every shipped variant, in registration order: the byte-wise splits, the
-    word-wise chip interleaves (``ROM_LOAD32_WORD`` / ``ROM_LOAD64_WORD``), then
-    the grouped word-table joins."""
-    plugins = [SplitPartsReshape(parts) for parts in PART_COUNTS]
-    plugins += [SplitPartsReshape(parts, unit=2) for parts in WORD_PART_COUNTS]
-    plugins += [
-        SplitPartsReshape(parts, unit=2, groups=groups, clockwise=clockwise)
-        for parts, groups, clockwise in GROUPED_WORD_PARTS
-    ]
-    return plugins
+def _count(params: dict, key: str, default: int, low: int, high: int) -> int:
+    """The integer parameter ``key``, within ``low..high``."""
+    value = params.get(key, default)
+    # bool is an int to Python and `parts = true` is a typo, not a 1.
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"params.{key} must be an integer, got {value!r}")
+    if not low <= value <= high:
+        raise ValueError(f"params.{key} must be {low}..{high}, got {value}")
+    return value
+
+
+def split_parts_from_spec(spec: dict) -> SplitPartsReshape:
+    """Build the plugin a parsed ``reshape.split-parts`` preset spec describes."""
+    engine = spec.get("engine_id")
+    if engine != SPLIT_PARTS_ENGINE:
+        raise ValueError(
+            f"engine_id {engine!r} is not this reshape engine "
+            f"(expected {SPLIT_PARTS_ENGINE!r})"
+        )
+    check_declared_stage(spec, Stage.RESHAPE)
+    params = spec.get("params", {})
+    if not isinstance(params, dict):
+        raise ValueError("params must be a table")
+    if "parts" not in params:
+        raise ValueError("params.parts is required: how many parts to join")
+    parts = _count(params, "parts", 0, 2, MAX_PARTS)
+    unit = _count(params, "unit", 1, 1, MAX_UNIT)
+    groups = _count(params, "groups", 1, 1, MAX_GROUPS)
+    clockwise = flag(params, "clockwise")
+    if clockwise and groups != 2:
+        # Around a stamp is across its top row and back along its bottom one; a
+        # stamp of any other height has no single "around" to undo.
+        raise ValueError("params.clockwise needs groups = 2, the stamp's two rows")
+    lock = params.get("lock_columns")
+    if lock is not None:
+        lock = flag(params, "lock_columns")
+        if lock and groups == 1:
+            raise ValueError("params.lock_columns needs groups above 1")
+    return SplitPartsReshape(
+        parts,
+        unit,
+        groups,
+        clockwise,
+        lock_columns=lock,
+        plugin_id=spec["id"],
+        name=spec["name"],
+        category=spec.get("category", ""),
+    )

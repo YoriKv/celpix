@@ -43,9 +43,11 @@ engine; each lists every parameter and the shipped presets built on the engine.
 | `tilemap/_packed.toml` | a grid of packed cell words (nearly every hardware map) |
 | `tilemap/_sprite-record.toml` | sprite parts as fixed records, in any field order |
 | `tilemap/_md-sprite.toml` | the Mega Drive VDP sprite record |
+| `tilemap/_sprite-table.toml` | an offset table naming frames of sprite parts |
 | `tilemap/_indirect-record.toml` | one byte per metatile, naming a definition record |
 | `reshape/_bitswap.toml` | an address-line permutation |
 | `reshape/_data-lut.toml` | a byte-value substitution |
+| `reshape/_split-parts.toml` | equal parts joined: ROM chips, tables stored as parallel arrays |
 | `compression/_compress-reshape.toml` | a compression scheme followed by a reshape |
 
 **File ▸ New Compress & Reshape Plugin…** writes a compress-and-reshape preset

@@ -38,11 +38,11 @@ from celpix.core.arrangement import (
     scatter_2d,
 )
 from celpix.core.context import PipelineContext
-from celpix.core.document import Document
+from celpix.core.document import Document, resolve_chain
 from celpix.core.errors import Pathway, PipelineError, Stage
 from celpix.core.index_grid import IndexGrid
 from celpix.core.sprite import Frame, Subsprite, frame_bounds
-from celpix.core.tilemap import Cell, expand_stamp
+from celpix.core.tilemap import Cell
 from celpix.pipeline._stage import _run, tile_params
 from celpix.pipeline.metrics import palette_row_size
 from celpix.plugins.base import PixelCodecPlugin
@@ -800,8 +800,13 @@ def tile_source_ids(doc: Document, limit: int | None = None) -> Sequence[int]:
         # thing it names is bigger than it, and a block number never does.
         return span
     if chain is not None:
-        # Aligned in the source's numbering, as a bank's IDs are below.
-        unit, stride, offset = doc.stamp_cells, chain.source_columns, chain.base
+        # Aligned in the source's numbering, as a bank's IDs are below — and in
+        # the **first hop's** stamp, since these are the immediate source's
+        # positions: a field map's ID names a 2x2 of the next table's cells
+        # however many tiles the hops below grow each of them into. A degraded
+        # chain has no stamp.
+        unit = chain.stamp if doc.stamp_cells != (1, 1) else (1, 1)
+        stride, offset = chain.source_columns, chain.base
     else:
         unit = doc.cell_tiles
         # The walk runs in the bank's numbering, where the neighbours are: the
@@ -811,7 +816,13 @@ def tile_source_ids(doc: Document, limit: int | None = None) -> Sequence[int]:
     across, down = max(1, unit[0]), max(1, unit[1])
     if across == 1 and down == 1:
         return span
-    if chain is not None and chain.stamp_column_major:
+    if chain is None and doc.cell_column_stride > 1:
+        # A cell filled down each column: its column stride is the step the
+        # swapped test below needs, exactly as a column-major stamp's is.
+        column_major, stride = True, doc.cell_column_stride
+    else:
+        column_major = chain is not None and chain.stamp_column_major
+    if column_major:
         # The same test with the axes swapped: a column's cells are adjacent and
         # the stride steps between columns (`stamp_offset`).
         stride = max(down, stride)
@@ -858,12 +869,14 @@ def tile_source_image(
     panel — what is on offer has to be what will land.
 
     A **chained** map's ID is a position in the map it stamps from, so the cell
-    is that source cell **resolved** (:func:`~celpix.core.tilemap.resolve_cell`)
+    is that source cell **resolved** (:func:`~celpix.core.document.resolve_chain`)
     rather than a bare index: a stamp is its tile *plus* its attributes, and
     previewing it without them would show a picture the stamp does not make.
     Where the source states a **stamp size**, an ID names a whole stamp of its
     cells and the preview is that stamp — a quarter of one is not what will land,
-    and the tile source panel's promise is that what is on offer is.
+    and the tile source panel's promise is that what is on offer is. Down a
+    longer chain it is every hop resolved: a field map's ID previews the whole
+    4x4 of tiles its stamp of stamps draws.
 
     ``columns`` is in units, as everywhere else here, and a unit is one cell — a
     2x2 metatile where the cell format says so — or a whole stamp of cells. The
@@ -881,25 +894,25 @@ def tile_source_image(
     if chain is None:
         cells = [Cell(index=at, palette_row=palette_row) for at in ids]
     else:
-        # The stamp a coordinate names, walked by the resolution's own helper
-        # (:func:`~celpix.core.tilemap.expand_stamp`) — one cell per ID wherever
-        # nothing is stamped, the walk collapsing to a single pass. The referrer
-        # here is synthetic — the sheet enumerates what *could* be stamped, and
-        # no real entry stands behind the coordinate — so no rows are carried:
-        # the sheet shows the stamp as the source authored it, and a real
-        # entry's row lands only on the map, where the resolution composes the
-        # actual cell (:func:`~celpix.core.tilemap.expand_stamps`).
+        # The stamp a coordinate names, walked by the resolution's own walk
+        # (:func:`~celpix.core.document.resolve_chain`) through every hop, one
+        # entry at a time — one cell per ID wherever nothing is stamped. The
+        # referrer here is synthetic — the sheet enumerates what *could* be
+        # stamped, and no real entry stands behind the coordinate — so it
+        # carries no row: the sheet shows the stamp as the sources authored it,
+        # and a real entry's row lands only on the map, where the resolution
+        # composes the actual cell.
+        stamped = doc.stamp_cells != (1, 1)
         cells = [
             resolved
             for at in ids
-            for resolved in expand_stamp(
-                Cell(index=at),
-                chain.source,
-                doc.stamp_cells,
-                chain.source_columns,
+            for resolved in resolve_chain(
+                [Cell(index=at)],
+                chain,
+                1,
+                stamped=stamped,
                 carry_rows=False,
-                column_major=chain.stamp_column_major,
-                base=chain.base,
+                dense=True,
             )
         ]
     tiles, layout = expand_cells(doc, reg, cells, columns, doc.stamp_tiles)

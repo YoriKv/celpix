@@ -100,7 +100,7 @@ _LEGEND = {
 _HEADER_SHIFT = 8 * 64
 
 
-class _Layout:
+class RecordLayout:
     """A preset's ``record`` resolved once: offsets, widths, placements."""
 
     def __init__(self, params: dict[str, Any]) -> None:
@@ -238,7 +238,7 @@ class _Layout:
         return bytes(out)
 
 
-def _cell(layout: _Layout, record: bytes, header: bytes | None) -> Cell:
+def _cell(layout: RecordLayout, record: bytes, header: bytes | None) -> Cell:
     flags = int.from_bytes(record, "big")
     if header is not None:
         flags |= (1 | int.from_bytes(header, "big") << 1) << _HEADER_SHIFT
@@ -252,7 +252,7 @@ def _cell(layout: _Layout, record: bytes, header: bytes | None) -> Cell:
     )
 
 
-def _record(layout: _Layout, cell: Cell) -> bytes:
+def _record(layout: RecordLayout, cell: Cell) -> bytes:
     """The cell's record: its carried bytes with the Cell's own fields laid back in."""
     stored = (cell.flags & ((1 << _HEADER_SHIFT) - 1)).to_bytes(layout.size, "big")
     parts = {
@@ -266,7 +266,25 @@ def _record(layout: _Layout, cell: Cell) -> bytes:
     return layout.with_parts(stored, {p: v for p, v in parts.items() if p in placed})
 
 
-def _piece(layout: _Layout, data: bytes, first: int, count: int, i: int) -> bytes:
+def subsprite(layout: RecordLayout, record: bytes) -> Subsprite:
+    """The piece one record draws."""
+    return Subsprite(
+        x=layout.value(record, "x") or 0,
+        y=layout.value(record, "y") or 0,
+        index=layout.part(record, "index"),
+        palette_row=layout.part(record, "palette"),
+        priority=layout.part(record, "priority"),
+        flip_h=bool(layout.part(record, "flip_h")),
+        flip_v=bool(layout.part(record, "flip_v")),
+        across=layout.part(record, "columns", layout.tiles[0] - 1) + 1,
+        down=layout.part(record, "rows", layout.tiles[1] - 1) + 1,
+        column_major=layout.column_major,
+    )
+
+
+def piece_bytes(
+    layout: RecordLayout, data: bytes, first: int, count: int, i: int
+) -> bytes:
     """Piece ``i`` of the frame whose pieces start at ``first``: a record back to
     back, or its slice of every parallel array joined back into one."""
     if layout.arrays is None:
@@ -302,7 +320,7 @@ class SpriteRecordCodec:
     def decode(
         self, data: bytes, params: dict[str, Any], ctx: PipelineContext
     ) -> list[Cell]:
-        layout = _Layout(params)
+        layout = RecordLayout(params)
         cells: list[Cell] = []
         at, size = 0, layout.size
         if layout.header is None:
@@ -326,7 +344,7 @@ class SpriteRecordCodec:
                 cells.append(
                     _cell(
                         layout,
-                        _piece(layout, data, at + length, count, i),
+                        piece_bytes(layout, data, at + length, count, i),
                         header if i == 0 else None,
                     )
                 )
@@ -341,7 +359,7 @@ class SpriteRecordCodec:
     def encode(
         self, cells: list[Cell], params: dict[str, Any], ctx: PipelineContext
     ) -> bytes:
-        layout = _Layout(params)
+        layout = RecordLayout(params)
         out = bytearray()
         for frame in _group(cells, layout.header is not None):
             if layout.header is not None:
@@ -361,7 +379,7 @@ class SpriteRecordCodec:
         return bytes(out)
 
     def bytes_per_cell(self, params: dict[str, Any]) -> int:
-        return _Layout(params).size
+        return RecordLayout(params).size
 
     def cell_tiles(self, params: dict[str, Any]) -> tuple[int, int]:
         # A piece may be any rectangle, so there is no one answer; the frame
@@ -371,45 +389,30 @@ class SpriteRecordCodec:
     def frames(
         self, cells: list[Cell], params: dict[str, Any], ctx: PipelineContext
     ) -> list[Frame]:
-        layout = _Layout(params)
-        out = []
-        for frame in _group(cells, layout.header is not None):
-            pieces = []
-            for cell in frame:
-                record = _record(layout, cell)
-                pieces.append(
-                    Subsprite(
-                        x=layout.value(record, "x") or 0,
-                        y=layout.value(record, "y") or 0,
-                        index=cell.index,
-                        palette_row=cell.palette_row,
-                        priority=cell.priority,
-                        flip_h=cell.flip_h,
-                        flip_v=cell.flip_v,
-                        across=layout.part(record, "columns", layout.tiles[0] - 1) + 1,
-                        down=layout.part(record, "rows", layout.tiles[1] - 1) + 1,
-                        column_major=layout.column_major,
-                    )
-                )
-            out.append(tuple(pieces))
-        return out
+        layout = RecordLayout(params)
+        # _record lays the cell's own fields back into its bytes, so the piece
+        # read from them is the cell's, edits included
+        return [
+            tuple(subsprite(layout, _record(layout, cell)) for cell in frame)
+            for frame in _group(cells, layout.header is not None)
+        ]
 
     def has_palette_rows(self, params: dict[str, Any]) -> bool:
-        return _Layout(params).has_rows
+        return RecordLayout(params).has_rows
 
     def index_limit(self, params: dict[str, Any]) -> int | None:
-        bits = _Layout(params).index_bits
+        bits = RecordLayout(params).index_bits
         return (1 << bits) - 1 if bits else None
 
     def palette_row_limit(self, params: dict[str, Any]) -> int:
-        bits = _Layout(params).row_bits
+        bits = RecordLayout(params).row_bits
         return (1 << bits) - 1 if bits else 0
 
     def transform_cell(
         self, cell: Cell, op: CellOp, params: dict[str, Any]
     ) -> Cell | None:
         """Both mirrors where the record has the bits, and no turn."""
-        layout = _Layout(params)
+        layout = RecordLayout(params)
         placed = {p for _n, _a, _w, _s, pl in layout.fields for p in pl}
         if op is CellOp.FLIP_H and "flip_h" in placed:
             return cell.flipped_h()

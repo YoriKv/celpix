@@ -47,6 +47,13 @@ tables ahead of banks), ``stamp_cells`` or the source's published stamp,
 ``stamp_dense`` (one entry per stamp, so the picture is the stamp's size times
 the file), and ``column_major`` where the file runs down each column.
 
+**A map read here can also be a table another map draws through** — the middle
+of a chain, a block table whose bytes name metatile records and whose records
+are what a town map stamps. What it offers that map above is not this engine's
+business either: ``stamp_stride`` (and ``offered_stamp_cells`` where the offer
+is not ``stamp_cells``) ride on the preset and the host reads them for every
+engine alike (:mod:`celpix.pipeline.table_layout`).
+
 **An edit snaps.** ``encode`` divides a coordinate back to the record containing
 it, so a reference set to a cell that is not a record's corner writes the record
 it falls inside — the same rule ``Document.cell_at`` applies to a click anywhere

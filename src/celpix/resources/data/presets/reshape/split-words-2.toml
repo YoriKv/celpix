@@ -1,0 +1,13 @@
+# 2 chips alternating at 16-bit-word granularity, one per lane of a 32-bit
+# graphics bus: MAME's ROM_LOAD32_WORD. Buses come in powers of two, so the two-
+# and four-chip presets are the whole family. For a two-chip pair this and
+# split-planes-2 differ only by a swap of bitplanes 1 and 2, so the wrong one
+# looks like a palette problem (docs/design/reshape-stage.md §7).
+id = "reshape.split-words-2"
+name = "Split ROM chips (2 chips, 16-bit words, join)"
+engine_id = "reshape.split-parts"
+category = "Arcade"
+
+[params]
+parts = 2
+unit = 2

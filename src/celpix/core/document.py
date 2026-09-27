@@ -298,8 +298,8 @@ class CellChain:
     like the tile base, and a coordinate it pushes out of the source draws blank.
 
     ``through`` is the **source's own** chain, where the source is itself a map
-    drawing through a map — a field map of blocks, each block a 2x2 of metatiles,
-    each metatile a 2x2 of tiles. Snapshotted with ``source`` and re-pointed with
+    drawing through a map — a field map whose byte names a 2x2 of 16x16 stamps,
+    each of those a 2x2 of tiles. Snapshotted with ``source`` and re-pointed with
     it, so a chain is a list of hops (:attr:`hops`) held entirely on the
     referrer, and resolving it (:func:`resolve_chain`) needs no document but this
     one. None for the ordinary chain, whose source's cells are tile numbers.
@@ -340,6 +340,18 @@ class CellChain:
             hop = hop.through
         return across, down
 
+    @property
+    def drawn_stamp(self) -> tuple[int, int]:
+        """How many drawn positions one entry covers once every hop is resolved.
+
+        This hop's stamp grown by the later ones (:attr:`growth`) — a field-map
+        byte naming a 2x2 of stamps, each a 2x2 of tiles, is a 4x4 on screen.
+        What the chain *states*; whether it can be laid out is the document's
+        question (:attr:`Document.stamp_cells`).
+        """
+        (across, down), (grow_across, grow_down) = self.stamp, self.growth
+        return max(1, across) * grow_across, max(1, down) * grow_down
+
 
 def resolve_chain(
     cells: list[Cell],
@@ -378,12 +390,13 @@ def resolve_chain(
     with the bottom table's — so a hop carries rows if it or any hop before it
     does.
     """
+    if carry_rows is not None:
+        chain = replace(chain, carry_rows=carry_rows)
+    if dense is not None:
+        chain = replace(chain, dense=dense)
     carry = False
-    for depth, hop in enumerate(chain.hops):
-        first = depth == 0
-        carry = carry or (
-            carry_rows if first and carry_rows is not None else hop.carry_rows
-        )
+    for hop in chain.hops:
+        carry = carry or hop.carry_rows
         stamp = hop.stamp if stamped else (1, 1)
         if stamp == (1, 1):
             cells = [
@@ -391,7 +404,6 @@ def resolve_chain(
                 for cell in cells
             ]
             continue
-        hop_dense = dense if first and dense is not None else hop.dense
         cells = expand_stamps(
             cells,
             hop.source,
@@ -399,11 +411,11 @@ def resolve_chain(
             stamp,
             hop.source_columns,
             carry_rows=carry,
-            dense=hop_dense,
+            dense=hop.dense,
             column_major=hop.stamp_column_major,
             base=hop.base,
         )
-        if hop_dense:
+        if hop.dense:
             columns = max(1, columns) * max(1, stamp[0])
     return cells
 
@@ -506,6 +518,11 @@ class Document:
     # (``docs/graphics-formats-reference/snes-hardware-notes.md`` §5).
     cell_tiles: tuple[int, int] = (1, 1)
     cell_row_stride: int = 0  # 0 = the cell's own width, i.e. consecutive tiles
+    # The index step between a cell's tile *columns*: 0 is 1, the next tile to the
+    # right. A routine that fills a 16x16 object down each column takes N, N+1 on
+    # the left and N+2, N+3 on the right — a row stride of 1 and a column stride
+    # of 2 — and only the pair together says which way the run goes.
+    cell_column_stride: int = 0
     # Set instead of the stride above where the tiles a cell draws are a **block
     # of the source's own arrangement** rather than a run at a fixed step: the
     # general case the stride is the fixed-offset special case of. A **font**
@@ -946,8 +963,9 @@ class Document:
     def _chain_stamp(self) -> tuple[int, int]:
         """The stamp this chain *can* resolve — ``(1, 1)`` where it cannot.
 
-        The one place the metatile-stamp refusal lives. The source's own cells
-        must be single tiles: a stamp is placed as one layout block — a
+        The one place the metatile-stamp refusal lives. The cells at the end of
+        the chain — :attr:`cell_tiles` is theirs, at any depth — must be single
+        tiles: a stamp is placed as one layout block — a
         rectangle of consecutive tiles — and a stamp of *metatile* cells
         interleaves two rectangles no single block can express. No format in
         hand does: the only one that stamps is a PNL panel, whose word is one
@@ -964,12 +982,10 @@ class Document:
         chain = self.chain
         if chain is None or self.cell_tiles != (1, 1):
             return (1, 1)
-        # **Composed** across the hops: the first hop's stamp, grown by every
-        # dense hop after it — a field-map byte naming a 2x2 of blocks, each a
-        # 2x2 of tiles, is one 4x4 unit on screen, and that is the unit a click,
-        # a pick and a paste have to move in.
-        (across, down), (grow_across, grow_down) = chain.stamp, chain.growth
-        return max(1, across) * grow_across, max(1, down) * grow_down
+        # **Composed** across the hops: the 4x4 a map of stamps of stamps draws
+        # per entry is the unit a click, a pick and a paste have to move in,
+        # whatever depth it came from.
+        return chain.drawn_stamp
 
     @property
     def _chain_growth(self) -> tuple[int, int]:
@@ -1730,8 +1746,8 @@ class Document:
 
         This document's geometry applied to :func:`~celpix.core.tilemap.tile_run`
         — the cell's tile counts, its :attr:`cell_row_stride` (defaulting to the
-        cell's own width, i.e. consecutive tiles), and the base index the bound
-        source starts at.
+        cell's own width, i.e. consecutive tiles) and :attr:`cell_column_stride`
+        (defaulting to 1), and the base index the bound source starts at.
 
         The walk runs in the *format's* index space and :attr:`tile_base_index` is
         added after it, so :attr:`index_mask` wraps the neighbours inside the
@@ -1764,6 +1780,7 @@ class Document:
             across,
             down,
             self.cell_row_stride or across,
+            column_stride=self.cell_column_stride or 1,
             flip_h=cell.flip_h,
             flip_v=cell.flip_v,
         )

@@ -1,0 +1,27 @@
+# A Sonic 3 & Knuckles mapping table: word offsets from the table's first byte,
+# each naming a frame of a count word and that many six-byte pieces.
+#
+#   piece  = y.b  size.b  attribute.w  x.w
+#
+# The Sonic 2 layout without its two-player tile word. A Sonic 1 hack may use
+# it rather than Sonic 1's own: it is a common target when a hack's mappings
+# are rebuilt.
+#
+# The entry is the table; bind its Frames input to the bytes from the table's
+# first byte onward, far enough to hold every frame it names.
+id = "preset.tilemap.sonic3k-mappings"
+name = "Sonic 3 & Knuckles mapping table (count word, 6-byte pieces)"
+category = "Sega"
+engine_id = "codec.tilemap.sprite-table"
+
+[params]
+layout = "sprite"
+subsprite_size = "stated"
+column_major = true
+record = [
+  { name = "y",    type = "s8" },
+  { name = "size", type = "u8",  bits = "....ccrr" },
+  { name = "attr", type = "u16", bits = "oppv hiii iiii iiii" },
+  { name = "x",    type = "s16" },
+]
+frame_header = { bytes = 2, count_at = 0, count_type = "u16" }

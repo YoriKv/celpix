@@ -1,0 +1,35 @@
+# A Sega mapping table: word offsets from the table's first byte, each naming a
+# frame of a count byte and that many five-byte pieces.
+#
+#   piece  = y.b  size.b  attribute.w  x.b
+#
+# y and x are signed offsets from the object's origin; size is the VDP's own
+# (w - 1) << 2 | (h - 1), and the tiles run down each column. The attribute word
+# is the nametable word: priority, palette row, flips, an 11-bit tile. A count of
+# 0 is an empty frame.
+#
+# Sonic 1 and Sonic CD use it, and so do Phantasy Star II's piece frames (its
+# grid frames are the engine's `grid_frames`). PS2 shipped two years before
+# Sonic 1, so this is Sega's layout rather than Sonic's; Sonic 2 and Sonic 3 &
+# Knuckles each widened it their own way (`sonic2-mappings`,
+# `sonic3k-mappings`).
+#
+# The entry is the table; bind its Frames input to the bytes from the table's
+# first byte onward, far enough to hold every frame it names — frames are often
+# shared between tables, so they cannot be part of the table's slice.
+id = "preset.tilemap.sega-mappings-5"
+name = "Sega mapping table (count byte, 5-byte pieces) — Sonic 1, Sonic CD, Phantasy Star II"
+category = "Sega"
+engine_id = "codec.tilemap.sprite-table"
+
+[params]
+layout = "sprite"
+subsprite_size = "stated"
+column_major = true
+record = [
+  { name = "y",    type = "s8" },
+  { name = "size", type = "u8",  bits = "....ccrr" },
+  { name = "attr", type = "u16", bits = "oppv hiii iiii iiii" },
+  { name = "x",    type = "s8" },
+]
+frame_header = { bytes = 1, count_at = 0, count_type = "u8" }

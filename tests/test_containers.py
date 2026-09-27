@@ -74,6 +74,23 @@ def test_ines_skips_header_to_chr() -> None:
     assert ctx.get(KEY_SOURCE_OFFSET) == 16 + 16384  # header + PRG
 
 
+def test_ines_reads_nes2_bank_counts() -> None:
+    # NES 2.0 widens the counts with byte 9: CHR MSB 1 is 256 banks, not the
+    # CHR-RAM that byte 5 = 0 alone would say, and a PRG MSB of $F is the
+    # exponent form - 2**12 * 3 = 12 KiB, not a whole number of banks.
+    header = bytes([*b"NES\x1a", 12 << 2 | 1, 0, 0, 0x08, 0, 0x1F]) + bytes(6)
+    chr_rom = bytes((i * 5) & 0xFF for i in range(256 * 8192))
+    rom = header + bytes(3 * 4096) + chr_rom
+    ctx = PipelineContext()
+    assert INesContainer().read(ReadSource(rom), ctx) == chr_rom
+    assert ctx.get(KEY_SOURCE_OFFSET) == 16 + 3 * 4096
+
+    # Without the NES 2.0 marker byte 9 is junk some dumps carry, and ignored.
+    old = bytes([*b"NES\x1a", 1, 1, 0, 0, 0, 0x1F]) + bytes(6)
+    tiles = bytes(range(256)) * 32
+    assert INesContainer().read(ReadSource(old + bytes(16384) + tiles), ctx) == tiles
+
+
 def test_ines_non_ines_reads_whole_file() -> None:
     plain = b"\x01\x02\x03\x04not-a-nes"
     assert INesContainer().read(ReadSource(plain), PipelineContext()) == plain
@@ -752,12 +769,13 @@ def test_containers_report_what_they_had_to_assume() -> None:
         reader.read(ReadSource(content), ctx)
         return notices(ctx)
 
-    # CHR-RAM: the header declares no CHR banks, so there is no tile data at all.
-    chr_ram = read_notices(
-        INesContainer(), bytes([*b"NES\x1a", 2, 0, 0, 0]) + bytes(8) + bytes(0x8000)
-    )
-    assert [n.level for n in chr_ram] == [NoticeLevel.WARNING]
-    assert "CHR-RAM" in chr_ram[0].summary
+    # CHR-RAM is a legitimate cart, its art in the PRG banks: nothing to report.
+    # A whole bank past the PRG, though, is CHR the header may fail to declare.
+    chr_ram = bytes([*b"NES\x1a", 2, 0, 0, 0]) + bytes(8) + bytes(0x8000)
+    assert read_notices(INesContainer(), chr_ram) == ()
+    runs_on = read_notices(INesContainer(), chr_ram + bytes(8192))
+    assert [n.level for n in runs_on] == [NoticeLevel.WARNING]
+    assert "no CHR ROM" in runs_on[0].summary
 
     # A file the iNES reader cannot claim is read raw rather than failing.
     assert read_notices(INesContainer(), b"not-an-ines-file")[0].is_warning

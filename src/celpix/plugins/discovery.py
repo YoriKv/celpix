@@ -10,8 +10,8 @@ editing package internals. The folder a file sits in *determines* its type:
   (:mod:`celpix.plugins.formats`) is a self-contained decode/encode registered
   via ``registry.register_format(...)`` and listed in the picker like any preset.
 - ``containers/`` takes ``*.py`` plugins.
-- ``reshape/`` takes ``*.py`` plugins plus ``*.toml`` presets for the bitswap and
-  data-LUT engines, adapted into ordinary reshape plugins at load
+- ``reshape/`` takes ``*.py`` plugins plus ``*.toml`` presets for the bitswap,
+  data-LUT and split-parts engines, adapted into ordinary reshape plugins at load
   (:data:`RESHAPE_ENGINES`).
 - ``compression/`` takes ``*.py`` plugins plus ``*.toml`` presets pairing a
   compression scheme with a reshape of its output, adapted the same way
@@ -70,6 +70,7 @@ from celpix.plugins.compress_reshape import (
 )
 from celpix.plugins.data_lut import DATA_LUT_ENGINE, data_lut_from_spec
 from celpix.plugins.formats import adapt_format, format_behind
+from celpix.plugins.split_parts import SPLIT_PARTS_ENGINE, split_parts_from_spec
 from celpix.plugins.trust import (
     ConfirmCallback,
     PendingCodePlugin,
@@ -638,11 +639,13 @@ def _load_preset(
 # The reshape preset engines, keyed by the `engine_id` a preset declares. Unlike
 # a pixel or palette preset's, a reshape preset's engine_id is a *discriminator*:
 # it picks which adapter turns the spec into a plugin rather than naming one to
-# resolve at decode time. Address permutations and value substitutions are
-# unrelated transforms sharing only a file format, so this is where they part.
+# resolve at decode time. Address permutations, value substitutions and part
+# joins are unrelated transforms sharing only a file format, so this is where
+# they part.
 RESHAPE_ENGINES = {
     BITSWAP_ENGINE: bitswap_from_spec,
     DATA_LUT_ENGINE: data_lut_from_spec,
+    SPLIT_PARTS_ENGINE: split_parts_from_spec,
 }
 
 

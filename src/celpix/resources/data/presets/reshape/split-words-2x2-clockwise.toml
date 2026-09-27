@@ -1,0 +1,14 @@
+# The split-words-2x2 table with its arrays stored around the stamp, TL TR BR
+# BL, rather than across it (Sesame Street: Counting Cafe, Mega Drive). Read
+# through the raster preset instead, every stamp's bottom half comes out
+# mirrored: a plausible picture rather than noise, so check the corners.
+id = "reshape.split-words-2x2-clockwise"
+name = "Split word tables (2 groups of 2, 16-bit words, corner arrays clockwise)"
+engine_id = "reshape.split-parts"
+category = "Generic"
+
+[params]
+parts = 2
+unit = 2
+groups = 2
+clockwise = true

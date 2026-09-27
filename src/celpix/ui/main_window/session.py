@@ -345,8 +345,7 @@ class SessionMixin:
         if through is not None:
             # Bound to another tilemap rather than to art: these cells index that
             # map's *cells*, and the tiles come from whatever it is itself bound
-            # to. Two hops, and the second is an ordinary binding — which is as
-            # far as it goes (:meth:`_bound_tilemap`).
+            # to — art, or another map, to any depth (:meth:`_bound_tilemap`).
             entry.doc = documents.chained_document(
                 self._registry, entry, loaded, cfg, through
             )
@@ -356,17 +355,21 @@ class SessionMixin:
             if (
                 not quiet
                 and doc.chain is not None
-                and doc.chain.stamp != (1, 1)
+                and doc.chain.drawn_stamp != (1, 1)
                 and doc.stamp_cells == (1, 1)
             ):
                 # A stamp was stated and the resolution cannot lay it out, so
                 # the map degrades to one cell per entry everywhere at once
                 # (:attr:`~celpix.core.document.Document.stamp_cells`). Said
                 # here rather than nowhere: the picture that comes up is not
-                # the stamped one, and silence would leave that a puzzle.
-                across, down = doc.chain.stamp
+                # the stamped one, and silence would leave that a puzzle. The
+                # size is what one entry would have drawn, every hop composed.
+                across, down = doc.chain.drawn_stamp
+                # The cell size is the *last* source's, so down a longer chain
+                # the source this map is bound to is not the one to blame.
+                last = "source's" if doc.chain.through is None else "last table's"
                 why = (
-                    "the source's cells are metatiles"
+                    f"the {last} cells are metatiles"
                     if doc.cell_tiles != (1, 1)
                     else "this format states no width to resolve them at"
                 )
@@ -598,23 +601,53 @@ class SessionMixin:
         binding combo and the "From file..." check, so they cannot disagree."""
         return documents.can_supply_tiles(self._workspace, entry, candidate)
 
+    def _chain_loops(self, entry: Entry, candidate: Entry) -> bool:
+        """:func:`~celpix.project.documents.chain_loops`."""
+        return documents.chain_loops(self._workspace, entry, candidate)
+
+    def _chain_entries(self, entry: Entry) -> list[Entry]:
+        """Every entry ``entry``'s tiles pass through, in order, ending at the art.
+
+        Empty for a map bound to nothing; ending at a tilemap for a chain that
+        draws blank at its far end. Every hop is **gated**
+        (:meth:`_can_supply_tiles`), not just the first: a source can gain a
+        binding of its own after this one was made — bind `a` to `b`, then `b`
+        back to `a` — and a walk that did not re-ask would follow a chain the
+        resolution refuses (:meth:`_bound_tilemap` stops at the same gate).
+        Re-asking per hop is what keeps this answer, the load and the bar's note
+        saying one thing.
+        """
+        hops: list[Entry] = []
+        at = entry
+        while at.content_kind is ContentKind.TILEMAP:
+            source = at.tile_source
+            target = self._binding_target(source) if source is not None else None
+            if target is None:
+                break
+            if not self._can_supply_tiles(at, target) or target is entry:
+                break
+            if any(hop is target for hop in hops):
+                break
+            hops.append(target)
+            at = target
+        return hops
+
     def _bound_tilemap(self, entry: Entry) -> Document | None:
         """The tilemap ``entry`` draws through, loaded — or None if it draws art.
 
-        Any tilemap may take its cells from another tilemap's; what stops the
-        chain is **depth, not format** (``docs/design/tilemap-entry.md`` §3.1).
-        One hop is resolved, and the map at the end of it must reach a graphics
-        file itself, because a coordinate into a coordinate has no defined
-        meaning — an index would be resolved against cells that are not tiles.
+        Any tilemap may take its cells from another tilemap's, and that one from
+        another, to any depth; what stops a chain is a **loop**
+        (``docs/design/tilemap-entry.md`` §3.1).
 
-        The gate is :meth:`_draws_through_tilemap`, checked on the binding before
-        the source is loaded. That ordering is what keeps this from recursing: two
+        The gate is :meth:`_can_supply_tiles`, checked on the binding before the
+        source is loaded. That ordering is what keeps this from recursing: two
         maps bound to each other both fail the gate rather than each loading the
-        other, and the ``is_indirect`` check the loaded document would offer is
-        then redundant — a source that passed the gate cannot come back resolved.
+        other.
 
         Loading the source is the ordinary entry load, so it settles its *own*
-        binding first and the second hop is an ordinary one.
+        chain first and comes back holding it — which is what
+        :func:`~celpix.project.documents.chained_document` carries on as the
+        next hop.
         """
         source = entry.tile_source
         candidate = self._binding_target(source) if source is not None else None
@@ -642,38 +675,20 @@ class SessionMixin:
         (``docs/design/slices-and-parents.md``); the owner here is reached through
         the binding instead of through the file list.
 
-        Walks the binding to the art: one hop for an ordinary map, two for a
-        chained one, whose tiles belong to the map at the end of the chain rather
-        than to the stamps in between.
-
-        **Every hop is gated, not just the first.** The depth rule is checked
-        where a binding is *made* (:meth:`_can_supply_tiles`), and a source can
-        gain a binding of its own afterwards — bind `a` to `b` while `b` is
-        unbound, then bind `b` to `c`, and `a` is suddenly three deep with nothing
-        having re-asked. Walking ungated then found art at the end of a chain the
-        resolution refuses (:meth:`_bound_tilemap` stops at the same gate), so the
-        map drew a coordinate file as pixels and a pen stroke deposited into a
-        real art file the user was not looking at. Re-asking per hop is what keeps
-        this answer, the load, and the bar's note saying one thing.
-
-        None when the binding names nothing, names something that is not art, or
-        reaches it only through a chain too deep to resolve: an edit with no owner
-        is refused rather than deposited into a guess.
+        Walks the binding to the art (:meth:`_chain_entries`): one hop for an
+        ordinary map, and one more per map a chained one draws through, whose
+        tiles belong to the art at the end of the chain rather than to the
+        stamps in between. None when the binding names nothing, names something
+        that is not art, or reaches it only through a chain that loops: an edit
+        with no owner is refused rather than deposited into a guess.
         """
-        seen: set[int] = set()
-        at: Entry | None = entry
-        while at is not None and id(at) not in seen:
-            seen.add(id(at))
-            if at.content_kind is ContentKind.PIXELS:
-                return at
-            if at.content_kind is not ContentKind.TILEMAP:
-                return None
-            source = at.tile_source
-            target = self._binding_target(source) if source is not None else None
-            if target is None or not self._can_supply_tiles(at, target):
-                return None
-            at = target
-        return None
+        if entry.content_kind is ContentKind.PIXELS:
+            return entry
+        hops = self._chain_entries(entry)
+        last = hops[-1] if hops else None
+        if last is None or last.content_kind is not ContentKind.PIXELS:
+            return None
+        return last
 
     def _composites_using(self, owner: Entry) -> list[Entry]:
         """Every open composite with ``owner`` among its pieces, in list order.
@@ -806,16 +821,57 @@ class SessionMixin:
 
         Resolved through :meth:`_tile_bank_owner`, so a chained map counts as
         drawing from the bank at the end of its chain — which is where its own
-        ``pixel_data`` came from.
+        ``pixel_data`` came from. **Shallowest first**, so a caller re-reading
+        them re-reads a map's source before the map snapshots it
+        (:meth:`_by_chain_depth`).
         """
-        return [
-            other
-            for other in self._workspace.entries
-            if other is not owner
-            and other.doc is not None
-            and other.doc.is_tilemap
-            and self._tile_bank_owner(other) is owner
-        ]
+        return self._by_chain_depth(
+            [
+                other
+                for other in self._workspace.entries
+                if other is not owner
+                and other.doc is not None
+                and other.doc.is_tilemap
+                and self._tile_bank_owner(other) is owner
+            ]
+        )
+
+    def _by_chain_depth(self, maps: list[Entry]) -> list[Entry]:
+        """``maps`` with every source before the maps drawing through it.
+
+        A chained map snapshots its source's document when it is read
+        (:func:`~celpix.project.documents.chained_document`), so re-reading a
+        map before the stamp table under it would carry the table's old
+        chain and art straight into the new document. Depth is the number of
+        hops to the end of the chain (:meth:`_chain_entries`), taken once, before
+        anything is re-read; the sort is stable, so equal depths keep list order.
+        """
+        depth = {id(entry): len(self._chain_entries(entry)) for entry in maps}
+        return sorted(maps, key=lambda entry: depth[id(entry)])
+
+    def _chain_dependents(self, entry: Entry) -> list[Entry]:
+        """Every open, loaded map drawing through ``entry`` at any depth.
+
+        Shallowest first — the maps bound to ``entry``, then the maps bound to
+        those — which is the order they have to be re-read in.
+        """
+        found: list[Entry] = []
+        frontier = [entry]
+        while frontier:
+            at = frontier.pop(0)
+            for other in self._workspace.entries:
+                source = other.tile_source
+                if (
+                    other.doc is None
+                    or other is entry
+                    or source is None
+                    or source.entry is not at
+                    or any(seen is other for seen in found)
+                ):
+                    continue
+                found.append(other)
+                frontier.append(other)
+        return found
 
     def _maps_drawing_from(self, owners: list[Entry]) -> list[Entry]:
         """Every open map whose art comes from one of ``owners``.
@@ -835,6 +891,16 @@ class SessionMixin:
             for other in self._entries_bound_to(owner):
                 if not any(other is seen for seen in found):
                     found.append(other)
+        # And the maps drawing *through* an owner that is itself a map — a stamp
+        # table closed out from under a map leaves it holding the table's
+        # cells exactly as a closed bank leaves a map holding its art.
+        for other in self._workspace.entries:
+            if other.doc is None or any(other is seen for seen in found):
+                continue
+            if any(
+                hop is owner for hop in self._chain_entries(other) for owner in owners
+            ):
+                found.append(other)
         return found
 
     def _reassemble_composites(
@@ -958,8 +1024,14 @@ class SessionMixin:
         is on screen, which is the same signal :meth:`_rechain_dependents` gives
         its caller.
         """
+        # Whatever draws through one of them is as stale as it is, and has to be
+        # read after it (:meth:`_by_chain_depth`).
+        for entry in list(maps):
+            for other in self._chain_dependents(entry):
+                if not any(other is seen for seen in maps):
+                    maps = [*maps, other]
         repaint = False
-        for entry in maps:
+        for entry in self._by_chain_depth(maps):
             if not any(open_ is entry for open_ in self._workspace.entries):
                 continue
             if not self._reread_tilemap(entry, quiet=True):
@@ -1012,6 +1084,17 @@ class SessionMixin:
         moved (a codec or preset switch re-reading its header) would otherwise
         leave every dependent stamping at the old one until reloaded.
         """
+        return self._rechain_through(entry, {id(entry)})
+
+    def _rechain_through(self, entry: Entry, seen: set[int]) -> bool:
+        """:meth:`_rechain_dependents`, one hop at a time.
+
+        A dependent's own chain is part of what a map drawing through *it*
+        snapshots (:attr:`~celpix.core.document.CellChain.through`), so each one
+        re-pointed here re-points the maps above it in turn — an edit to a
+        bottom table restamps the table over it and the map over that. The
+        seen-set is belt and braces: the gate already refuses a chain that loops.
+        """
         through = entry.doc
         cells = through.cells if through is not None else None
         if through is None or cells is None:
@@ -1022,8 +1105,9 @@ class SessionMixin:
             source = other.tile_source
             if other is entry or doc is None or doc.chain is None:
                 continue
-            if source is None or source.entry is not entry:
+            if source is None or source.entry is not entry or id(other) in seen:
                 continue
+            seen.add(id(other))
             block = documents.cell_block(self._registry, other, doc.tilemap_ctx)
             doc.chain = replace(
                 doc.chain,
@@ -1031,9 +1115,11 @@ class SessionMixin:
                 stamp=self._chain_stamp_cells(other, through, block),
                 source_columns=self._chain_source_columns(through, block),
                 stamp_column_major=self._chain_column_major(through),
+                through=through.chain,
             )
             doc.resolve()
             current = current or other is self._workspace.current
+            current = self._rechain_through(other, seen) or current
         return current
 
     def _load_bound_tiles(self, entry: Entry) -> BoundTiles:

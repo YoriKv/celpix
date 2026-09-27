@@ -52,3 +52,13 @@ column_major = false
 # group_bits = 2
 # group_starts = [0, 39, 85, 95]
 # group_rows = true
+
+# ---- As a table another map draws through ----
+#
+# A map read here can itself be the table a map above stamps from: a block
+# table whose bytes name metatile records, drawn by a town map one block per
+# byte. Say what it offers that map with the table parameters of _packed.toml,
+# which celPix reads for any engine: `stamp_stride`, `stamp_order`,
+# `offered_stamp_cells` (default: stamp_cells above). Final Fantasy II's block
+# tables: four cells per block, packed end to end.
+# stamp_stride = 2

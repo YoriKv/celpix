@@ -121,6 +121,7 @@ from celpix.pipeline.render import (
     tilemap_tiles,
     tiles_per_stripe,
 )
+from celpix.pipeline.table_layout import publish_table_layout
 from celpix.plugins._params import flag, one_of
 from celpix.plugins.base import (
     NO_COMPRESSION,
@@ -621,6 +622,15 @@ def load_tilemap_data(
         Stage.INTERPRET_TILEMAP,
         Pathway.TILEMAP,
         lambda: engine.decode(data, preset.params, ctx),
+        plugin=preset.id,
+    )
+    # What the table offers a map drawn through it — its stamp, its records — is
+    # the preset's statement, not the engine's, so it is read here for every
+    # engine alike, after the decode so a code format's own answer stands.
+    _run(
+        Stage.INTERPRET_TILEMAP,
+        Pathway.TILEMAP,
+        lambda: publish_table_layout(len(cells), preset.params, ctx),
         plugin=preset.id,
     )
     cell_bytes = _run(

@@ -1,0 +1,68 @@
+# Example preset: `reshape.split-parts` — equal parts joined into one stream.
+#
+# To use: copy, remove the leading "_", edit, press F5. "_" files are ignored and
+# rewritten at startup. Presets are data: nothing executes and no confirmation
+# is asked. `engine_id` selects the reshape engine; this folder has one example
+# for each (see _bitswap.toml, _data-lut.toml). For a reordering none of them
+# expresses, _example.py.
+#
+# ENGINE
+#   The region is cut into `parts` equal parts, and part k holds every item's
+#   k-th unit in turn. The join takes one unit from each part in order, so each
+#   item's units end up next to each other. Save splits them back apart.
+#
+#   Two shapes use it:
+#     - ROM chips, one bitplane or byte lane per chip (arcade boards).
+#     - Tables stored as parallel arrays: every record's first field, then
+#       every record's second field, and so on. A 2x2 stamp table kept as four
+#       corner arrays is four parts.
+#
+#   The parts are fractions of the region, so apply it to exactly the region
+#   the game splits. A tail past a whole number of parts passes through.
+#
+# SHIPPED PRESETS ON THIS ENGINE
+#   split-planes-2               2 ROMs, byte-wise: bitplane pairs, byte lanes
+#   split-planes-3               3 ROMs, one bitplane each
+#   split-planes-4               4 ROMs, one bitplane or byte lane each
+#   split-planes-5               5 ROMs, one bitplane each
+#   split-planes-6               6 ROMs, one bitplane each
+#   split-planes-8               8 ROMs, one byte lane each of a 64-bit bus
+#   split-words-2                2 chips of 16-bit words, a 32-bit bus
+#   split-words-4                4 chips of 16-bit words, a 64-bit bus
+#   split-words-2x2              2x2 stamp table as four word arrays
+#   split-words-2x2-clockwise    the same, arrays stored around the stamp
+#
+# This example is a real one: Final Fantasy II (Famicom) keeps its field
+# metatiles as three 64-record tables back to back (bank 0 $8400, $8500,
+# $8600), each four byte arrays of top-left, top-right, bottom-left and
+# bottom-right tile numbers. Joined, every record is four consecutive bytes,
+# TL TR BL BR, which a one-byte stamp table at stride 2 reads directly.
+
+id = "reshape.ff2-field-tables"
+name = "FF2 field tables (3 tables of 4 byte arrays)"
+engine_id = "reshape.split-parts"
+
+[params]
+
+# Required. How many equal parts each group is cut into, 2 to 64.
+parts = 4
+
+# Bytes per unit, 1 to 8. Default 1. 1 joins byte by byte (bitplanes, byte
+# arrays); 2 joins 16-bit words (word arrays, chips on a 32-bit bus).
+unit = 1
+
+# Equal groups the region is cut into first, 1 to 1024. Default 1. Each group
+# is joined on its own. Use it for several tables stored end to end, or for a
+# stamp table whose arrays are grouped by stamp row.
+groups = 3
+
+# Arrays stored around the stamp, TL TR BR BL, instead of across it. The last
+# group's arrays are put back in reading order. Default false. Needs
+# groups = 2: a stamp two rows tall.
+# clockwise = true
+
+# Lay each group out as one row of the table and lock Cols to that width.
+# Default: true when groups is above 1, false otherwise. Keep it on for a stamp
+# table grouped by stamp row: a map bound to the table strides by its width.
+# Turn it off when the groups are separate tables, whose rows mean nothing.
+lock_columns = false

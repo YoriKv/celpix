@@ -1,0 +1,12 @@
+# A region cut into 5 equal parts, part k holding every tile's k-th byte in
+# turn, joined byte by byte into one stream so the ordinary presets read it.
+# Five ROMs, one bitplane each, for 5bpp-planar.
+# The split is a fraction of the region, so apply it to exactly the graphics
+# region (docs/design/reshape-stage.md §7).
+id = "reshape.split-planes-5"
+name = "Split bitplanes (5 ROMs, join)"
+engine_id = "reshape.split-parts"
+category = "Arcade"
+
+[params]
+parts = 5

@@ -19,7 +19,7 @@ the same shape recurs on Atari's other raster boards.
 tile's two plane pairs come from opposite halves of the graphics region rather
 than from adjacent bytes, so a 4bpp preset expects a buffer
 ``reshape.split-planes-2`` has already interleaved
-(:mod:`celpix.plugins.builtins.split_planes`). After that a group's bytes *are*
+(:mod:`celpix.plugins.split_parts`). After that a group's bytes *are*
 adjacent and this codec stays buffer-relative, keeping windowed decoding of a
 large file working. 2bpp formats carry both planes in one byte and need no such
 step.

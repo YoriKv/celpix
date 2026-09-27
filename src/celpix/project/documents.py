@@ -208,6 +208,21 @@ def declared_cell_row_stride(registry, entry: Entry) -> int:  # noqa: ANN001
     return stride if stride > 0 else VRAM_ROW_STRIDE
 
 
+def declared_cell_column_stride(registry, entry: Entry) -> int:  # noqa: ANN001
+    """The stride between a metatile cell's tile columns, in tiles of the bank.
+
+    ``cell_column_stride`` in the preset params, for a format that fills a cell
+    down each column: 16x16 objects drawn as four consecutive tiles, the left
+    column first, are ``cell_row_stride = 1`` and ``cell_column_stride = 2``. The
+    default is 1, the next tile to the right, which is every row-major cell.
+    """
+    try:
+        stride = int(tilemap_declares(registry, entry, "cell_column_stride"))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 1
+    return stride if stride > 0 else 1
+
+
 def flag_break(registry, entry: Entry) -> bool:  # noqa: ANN001
     """Whether ``entry``'s format ends a line on a bit rather than a code.
 
@@ -502,7 +517,8 @@ def draws_through_tilemap(workspace: Workspace, entry: Entry) -> bool:
 
 def can_supply_tiles(workspace: Workspace, entry: Entry, candidate: Entry) -> bool:
     """Whether ``candidate`` is a source ``entry`` could draw through: art always,
-    and a tilemap only while it reaches art itself. Never the entry itself and
+    and a tilemap at any depth, so long as its chain does not come back round to
+    ``entry`` or loop on itself (:func:`chain_loops`). Never the entry itself and
     never a bookmark."""
     if candidate is entry or candidate.kind is EntryKind.BOOKMARK:
         return False
@@ -510,7 +526,29 @@ def can_supply_tiles(workspace: Workspace, entry: Entry, candidate: Entry) -> bo
         return True
     if candidate.content_kind is not ContentKind.TILEMAP:
         return False
-    return not draws_through_tilemap(workspace, candidate)
+    return not chain_loops(workspace, entry, candidate)
+
+
+def chain_loops(workspace: Workspace, entry: Entry, candidate: Entry) -> bool:
+    """Whether following the bindings from ``candidate`` ever revisits a map —
+    ``entry`` itself, or one already passed.
+
+    The one thing that stops a chain, whatever its depth: every other chain
+    ends, at art or at a map that draws blank (unbound, or bound to something
+    closed), and resolves as far as it goes (``docs/design/tilemap-entry.md``
+    §3.1). Walked on the **bindings**, not on loaded documents, which is what
+    keeps two maps bound to each other from recursing during a load — both
+    fail here before either loads the other.
+    """
+    seen = {id(entry)}
+    at: Entry | None = candidate
+    while at is not None and at.content_kind is ContentKind.TILEMAP:
+        if id(at) in seen:
+            return True
+        seen.add(id(at))
+        source = at.tile_source
+        at = binding_target(workspace, source) if source is not None else None
+    return False
 
 
 def font_alphabet_for(registry, workspace: Workspace, entry: Entry, cell_bytes: int):  # noqa: ANN001, ANN201
@@ -565,17 +603,18 @@ def tile_source_config(
 
     Resolved through the bound entry's own config, so the tiles are read exactly
     as that entry reads them — its container, reshape and codec. Refused where
-    the bound entry draws through a tilemap itself: a source can gain a binding
-    of its own after this one was made, and reading its *coordinates* through a
-    pixel codec would draw them as art. Read, but **never written**: the tiles
-    belong to the bound entry (``docs/design/tilemap-entry.md`` §3).
+    the bound entry cannot supply tiles — a tilemap whose chain loops: a source
+    can gain a binding of its own after this one was made, and reading
+    *coordinates* through a pixel codec would draw them as art. Read, but
+    **never written**: the tiles belong to the bound entry
+    (``docs/design/tilemap-entry.md`` §3).
     """
     bound = binding_target(workspace, source)
     if bound is None:
         name = source.entry.name if source.entry is not None else "nothing"
         raise KeyError(f"the tiles are bound to {name}, which is not open")
     if not can_supply_tiles(workspace, entry, bound):
-        raise KeyError(f"{bound.name} draws through a tilemap itself")
+        raise KeyError(f"{bound.name}'s chain loops back on itself")
     preset = (
         bound.session.pixel_preset_id if bound.session is not None else fallback_preset
     )
@@ -668,11 +707,14 @@ def chained_document(
 ) -> Document:  # noqa: ANN001
     """A map whose cells are coordinates into ``through``'s cells.
 
-    Two hops, and the second is an ordinary binding — which is as far as it goes
-    (:func:`bound_tilemap`). The drawing geometry is the source map's, because
-    what is drawn is its cells; this entry's own record size is what the hex dump
-    shows. The pixel config stays read-only: the art belongs to the map at the end
-    of the chain, and a restamp must never reach it.
+    ``through`` may be chained itself, to any depth: its own chain rides along
+    (:attr:`~celpix.core.document.CellChain.through`), and everything else taken
+    from it — the art, the cell size, the tile base — is already the end of the
+    chain's, since ``through`` took it from its own source the same way. The
+    drawing geometry is the source map's, because what is drawn is its cells;
+    this entry's own record size is what the hex dump shows. The pixel config
+    stays read-only: the art belongs to the entry at the end of the chain, and
+    a restamp must never reach it.
 
     This entry's **own** cell size is not a geometry for the art — its cells are
     coordinates, and what they draw is the source's cells — so a block it states
@@ -704,6 +746,7 @@ def chained_document(
             dense=is_dense(registry, entry) or block is not None,
             stamp_column_major=chain_stamp_column_major(through),
             base=entry.tile_source.base_index if entry.tile_source else 0,
+            through=through.chain,
         ),
         tilemap_config=cfg,
         tilemap_ctx=loaded.ctx,
@@ -712,6 +755,7 @@ def chained_document(
         cell_bytes=loaded.cell_bytes,
         cell_tiles=through.cell_tiles,
         cell_row_stride=through.cell_row_stride,
+        cell_column_stride=through.cell_column_stride,
         tile_base_index=through.tile_base_index,
         index_mask=through.index_mask,
         # The source map's rows are what get drawn, so its base applies — unless
@@ -786,6 +830,11 @@ def tilemap_document(
             0
             if glyph_layout is not None or cell_tiles == (1, 1)
             else declared_cell_row_stride(registry, entry)
+        ),
+        cell_column_stride=(
+            0
+            if glyph_layout is not None or cell_tiles == (1, 1)
+            else declared_cell_column_stride(registry, entry)
         ),
         glyph_layout=glyph_layout,
         index_mask=loaded.index_mask,
@@ -1268,10 +1317,12 @@ def bound_tilemap(
 ) -> Document | None:  # noqa: ANN001
     """The tilemap ``entry`` draws through, loaded — or None if it draws art.
 
-    What stops a chain is **depth, not format**: one hop is resolved, and the map
-    at the end of it must reach art itself (``docs/design/tilemap-entry.md``
-    §3.1). The gate is on the binding, checked before the source is loaded, which
-    is what keeps two maps bound to each other from recursing.
+    A chain resolves at any depth; what stops one is a **loop**
+    (:func:`chain_loops`, ``docs/design/tilemap-entry.md`` §3.1). The gate is on
+    the binding, checked before the source is loaded, which is what keeps two
+    maps bound to each other from recursing. Loading the source is the ordinary
+    load, so a chained source settles its own chain first and comes back with
+    it for :func:`chained_document` to carry.
     """
     source = entry.tile_source
     candidate = binding_target(workspace, source) if source is not None else None

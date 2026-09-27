@@ -8,6 +8,15 @@
 - Fixed a tilemap drawn through another tilemap ignoring its own `cell_tiles`:
   a 2x2 cell now draws a 2x2 block of the source map's cells
 - Added base tile offset option to a tilemap using another tilemap as a source
+- A tilemap can draw through a chain of tilemaps of any depth instead of being limited
+  to two
+- A tilemap format can declare `cell_column_stride` to support col major order
+- Fixed a CHR-RAM NES cart warning
+- NES 2.0 headers' extended PRG/CHR sizes are read, so large carts find their CHR
+- Added Sega 32-byte tile mask compression (Mega Drive: Phantasy Star II, Super League)
+- Split-part joins are now a reshape preset engine, so different split-parts join
+  presets can be a single `.toml` file
+- Better support for stamp based tilemaps
 
 ## v1.1.5 - 2026-09-24
 

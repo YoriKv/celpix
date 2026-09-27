@@ -16,6 +16,7 @@
 #   Other tilemap engines:
 #     _sprite-record.toml    sprite parts at pixel offsets, any byte-aligned record
 #     _md-sprite.toml        the Mega Drive VDP sprite record
+#     _sprite-table.toml     an offset table naming frames of sprite parts
 #     _indirect-record.toml  one byte per metatile, naming a definition record
 #   Anything else is a code format: _example.py.
 #
@@ -69,12 +70,25 @@ endian = "little"
 
 # Tiles one cell draws, [across, down]. Default [1, 1]. [2, 2] is a cell that
 # is a 16x16 metatile. A map storing a metatile as four adjacent cells is [1, 1].
+# Bound to another map instead of a tile bank, a cell draws a stamp of that
+# map's cells: one entry per stamp, its index the stamp's top-left cell. An index
+# that is a record number rather than a cell position: _indirect-record.toml.
 # cell_tiles = [1, 1]
 
 # Tile-row stride inside a metatile cell (cell_tiles above [1, 1]): the distance
 # in the tile bank from a cell's upper tiles to its lower ones. Default 16, a
 # console VRAM row. A table of consecutive tiles n, n+1, n+2, n+3 uses 2.
+# Bound to another map, it counts that map's cells and overrides the source's
+# own stamp_stride; left unset there, the source's stride or width applies.
 # cell_row_stride = 2
+
+# Tile-column stride inside a metatile cell: the distance in the tile bank from
+# a cell's left tiles to its right ones. Default 1, the next tile across. A cell
+# filled down each column -- consecutive tiles n, n+1 on the left, n+2, n+3 on
+# the right, the order some sprite writers place a 16x16 object in -- is
+# cell_row_stride = 1 with cell_column_stride = 2. Over a tile bank only; a
+# column-ordered stamp over another map is that map's stamp_order.
+# cell_column_stride = 2
 
 # Page geometry fixed by the hardware. Applied only when all three are set and
 # the cell count is a whole number of pages listed in page_counts; otherwise the
@@ -99,27 +113,36 @@ endian = "little"
 # ---- Maps that reference another map (tilemap-entry.md sec 3.1) ----
 
 # Cells are coordinates into another map, not tile numbers. A hint: it changes
-# the bind prompt and hides the tile-base control; binding map to map works
-# without it. Default false.
+# the bind prompt and labels the base control "Base cell" before anything is
+# bound; binding map to map works without it. Default false.
 # indirect = true
 
 # With `indirect`: what the bind dialog calls the source. Default "Tilemap".
 # source_hint = "PNL panel"
 
-# Source cells one coordinate names (the stamp), [across, down]. Default: the
-# size the source publishes, else [1, 1].
+# Source cells one coordinate names (the stamp), [across, down]. Default:
+# cell_tiles where it is above [1, 1], else the size the source publishes, else
+# [1, 1].
 # stamp_cells = [2, 2]
 
 # The file holds one entry per stamp rather than one per drawn position.
-# Default false. Matters only where the stamp is larger than 1x1; a wrong value
-# draws the map at four times or a quarter of its size.
+# Default false; always true where cell_tiles sets the stamp. Matters only where
+# the stamp is larger than 1x1; a wrong value draws the map at four times or a
+# quarter of its size.
 # stamp_dense = true
 
 # ---- Tables other maps stamp from ----
-
-# On the source table, `stamp_cells` (above) publishes its stamp size to the
-# maps bound to it.
 #
+# Read by celPix from the preset, whatever its engine, so a table in the middle
+# of a chain (an _indirect-record.toml map another map draws through) takes
+# the same parameters.
+
+# Cells of this table one coordinate of a map bound to it names, [across,
+# down]. Default: stamp_cells (above). State it only when the table offers a
+# different stamp than it draws: a chunk of 8x8 blocks that draws 2x2 of the
+# table below it offers [8, 8].
+# offered_stamp_cells = [2, 2]
+
 # Distance in this table's cells between a stamp's rows, for records stored end
 # to end: a 2x2 stamp stored as four consecutive cells uses 2. Default: the
 # width the table is shown at.
@@ -130,7 +153,7 @@ endian = "little"
 # stamp_order = "row"
 
 # Draw the table as fixed records, [across, down], instead of one continuous
-# grid. Default: stamp_cells, when stamp_stride equals the stamp's side. Not
+# grid. Default: the offered stamp, when stamp_stride equals its side. Not
 # applied to a paged, column-major or chained map, or when the cell count is not
 # a whole number of records. record_order: "row" (default) or "column".
 # record_shape = [2, 4]

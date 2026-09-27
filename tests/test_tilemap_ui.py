@@ -1050,10 +1050,15 @@ def test_an_unresolvable_stamp_degrades_loudly_to_plain_cells(qtbot, tmp_path) -
     assert "stamps not resolved" in window.statusBar().currentMessage()
 
 
-def test_a_metatile_format_can_declare_its_own_row_stride(qtbot, tmp_path) -> None:
+def test_a_metatile_format_can_declare_its_own_strides(qtbot, tmp_path) -> None:
     """A metatile's lower tiles sit a VRAM row below its upper ones on a console
-    sheet, but a table of consecutive tiles strides by its own width — so the
-    stride is the format's to declare, with the VRAM row only the default."""
+    sheet, but a table of consecutive tiles strides by its own size — so both
+    strides are the format's to declare, with the VRAM row only the default.
+
+    Declared here as a cell filled **down each column** (N, N+1 on the left,
+    N+2, N+3 on the right), the order some NES sprite writers place a 16x16
+    object in: only the pair of strides says which way the run goes, and a flip
+    has to swap the columns, not the rows."""
     from celpix.core.capabilities import ContentKind
     from celpix.core.errors import Stage
     from celpix.core.tilemap import Cell
@@ -1065,7 +1070,7 @@ def test_a_metatile_format_can_declare_its_own_row_stride(qtbot, tmp_path) -> No
         info = FormatInfo(
             id="format.tilemap.consecutive-metatiles",
             name="2x2 metatiles of consecutive tiles",
-            declares={"cell_row_stride": 2},
+            declares={"cell_row_stride": 1, "cell_column_stride": 2},
         )
 
         def decode(self, data, ctx):
@@ -1096,8 +1101,12 @@ def test_a_metatile_format_can_declare_its_own_row_stride(qtbot, tmp_path) -> No
     )
     window._reload_tilemap(entry)
 
-    assert window._doc.cell_tiles == (2, 2)
-    assert window._doc.cell_row_stride == 2
+    doc = window._doc
+    assert doc.cell_tiles == (2, 2)
+    assert (doc.cell_row_stride, doc.cell_column_stride) == (1, 2)
+    # screen order, top-left first: the right column is two tiles on
+    assert doc.cell_tile_indices(Cell(index=4)) == [4, 6, 5, 7]
+    assert doc.cell_tile_indices(Cell(index=4, flip_h=True)) == [6, 4, 7, 5]
 
 
 def test_a_chained_map_keeps_its_own_row_grouping(qtbot, tmp_path) -> None:
@@ -2821,35 +2830,37 @@ def test_the_scan_never_overrides_a_base_the_user_set(
     assert tilemap.tile_source.base_index == -0x80
 
 
-def test_a_chain_grown_too_deep_after_binding_owns_no_art(qtbot, tmp_path) -> None:
-    """The depth rule is checked where a binding is *made*, and a source can gain
-    a binding of its own afterwards: bind a to b while b is unbound, then bind b
-    to c, and a is three deep with nothing having re-asked.
+def test_a_chain_that_loops_after_binding_owns_no_art(qtbot, tmp_path) -> None:
+    """The loop rule is checked where a binding is *made*, and a source can gain
+    a binding of its own afterwards: bind a to b, b to c and c to the bank, and
+    a is three deep and draws; then bind c back to a, and the chain goes round
+    with nothing having asked a.
 
-    Every consumer has to re-ask per hop, because the ungated walk found art at
-    the end of a chain the resolution refuses - so the map read a file of
-    coordinates through a pixel codec, drew it as art, and a pen stroke deposited
-    into a real art file the user was not looking at. One click cost a tile.
+    Every consumer has to re-ask per hop, because an ungated walk would follow
+    the chain wherever it leads — the resolution recursing, or the owner walk
+    finding art the resolution refuses, so a pen stroke deposited into a real
+    art file the user was not looking at.
     """
     from celpix.core.tilemap import Cell
     from celpix.project.workspace import TileMode, TileSource
 
     window, bank, a = _bound_screen(qtbot, tmp_path, [Cell(index=1)])
-    b = window._workspace.find_file(str(_scr_file(tmp_path, [Cell(index=2)], "b.SCR")))
-    if b is None:
-        window._load_pixel(str(_scr_file(tmp_path, [Cell(index=2)], "b.SCR")))
-        b = window._workspace.find_file(str(tmp_path / "b.SCR"))
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=2)], "b.SCR")))
+    b = window._workspace.find_file(str(tmp_path / "b.SCR"))
     c = _scr_file(tmp_path, [Cell(index=3)], "c.SCR")
     window._load_pixel(str(c))
     c_entry = window._workspace.find_file(str(c))
 
-    # a -> b is allowed while b is unbound; c -> bank is an ordinary binding.
     window._rebind_tiles(a, TileSource(mode=TileMode.ENTRY, entry=b))
     window._rebind_tiles(c_entry, TileSource(mode=TileMode.ENTRY, entry=bank))
-    # ...and now b -> c, which puts a three deep without a ever being consulted.
     window._rebind_tiles(b, TileSource(mode=TileMode.ENTRY, entry=c_entry))
+    # Three deep and reaching art: the walk, the resolution and the brush agree.
+    assert window._tile_bank_owner(a) is bank
+    assert window._bound_tilemap(a) is b.doc
+    assert a.doc.chain is not None and a.doc.chain.through is not None
 
-    # The owner walk and the resolution agree, and neither reaches the art.
+    # ...and now c -> a, which closes the loop without a ever being consulted.
+    window._rebind_tiles(c_entry, TileSource(mode=TileMode.ENTRY, entry=a))
     assert window._tile_bank_owner(a) is None
     assert window._bound_tilemap(a) is None
     window._activate_entry(a)

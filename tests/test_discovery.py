@@ -20,6 +20,7 @@ from celpix.plugins.base import InputKind, ReadSource, WriteTarget
 from celpix.plugins.bitswap import BitswapReshape
 from celpix.plugins.data_lut import DataLutReshape
 from celpix.plugins.registry import default_registry
+from celpix.plugins.split_parts import SplitPartsReshape
 from celpix.plugins.trust import TrustStore
 from modelhelpers import decoded_at_probe_length
 
@@ -501,11 +502,13 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
         "reshape/_bitswap.toml",
         "reshape/_data-lut.toml",
         "reshape/_example.py",
+        "reshape/_split-parts.toml",
         "tilemap/_example.py",
         "tilemap/_indirect-record.toml",
         "tilemap/_md-sprite.toml",
         "tilemap/_packed.toml",
         "tilemap/_sprite-record.toml",
+        "tilemap/_sprite-table.toml",
     ]
 
     # A stale reference file is replaced rather than left behind, so the examples
@@ -758,12 +761,16 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
     assert swap.reshape(b"aabb", ctx) == b"bbaa"
 
     # reshape/ carries one TOML example per engine too — engine_id there is a
-    # discriminator picking the adapter, so the two produce different classes.
+    # discriminator picking the adapter, so each produces a different class.
     # Asserted per example rather than by counting instances: the shipped
-    # bit-order tables are data-LUTs as well (builtins.register_builtins).
-    assert len(discovery.RESHAPE_ENGINES) == 2
+    # bit-order tables are data-LUTs and the chip splits split-parts presets as
+    # well (builtins.register_builtins).
+    assert len(discovery.RESHAPE_ENGINES) == 3
     assert isinstance(reg.plugin(Stage.RESHAPE, "reshape.gaelco-16x16"), BitswapReshape)
     assert isinstance(reg.plugin(Stage.RESHAPE, "reshape.nmk-bg"), DataLutReshape)
+    assert isinstance(
+        reg.plugin(Stage.RESHAPE, "reshape.ff2-field-tables"), SplitPartsReshape
+    )
 
     # Bitswap preset example: the TOML registers as an ordinary reshape plugin.
     # It carries a real table — Gaelco's Modular System 16x16 tile scramble,
@@ -860,7 +867,12 @@ def test_example_presets_name_shipped_presets_that_exist(tmp_path) -> None:
     there, which is worse than naming nothing.
     """
     discovery.seed_examples(str(tmp_path))
-    known = {preset.id.rsplit(".", 1)[-1] for preset in default_registry().presets()}
+    registry = default_registry()
+    # A reshape preset registers as a plugin (discovery.RESHAPE_ENGINES), so the
+    # names a reshape example lists are plugin ids.
+    known = {preset.id.rsplit(".", 1)[-1] for preset in registry.presets()} | {
+        plugin.info.id.rsplit(".", 1)[-1] for plugin in registry.plugins(Stage.RESHAPE)
+    }
 
     named: dict[str, set[str]] = {}
     for path in sorted(tmp_path.rglob("_*.toml")):
@@ -889,14 +901,14 @@ def test_example_presets_name_shipped_presets_that_exist(tmp_path) -> None:
     # Every example in the three format folders has to carry a parsed block, or
     # one that quietly stops writing the list opts out of this check instead of
     # being caught by it — which is also what guards the parse itself against the
-    # day the comment format changes. `reshape/` is the one preset folder out,
-    # because its block is prose rather than a list: it ships no preset built on
-    # either engine, the shipped tables being plugins in their own right.
+    # day the comment format changes. Of `reshape/` only the split-parts example
+    # lists presets; the bitswap and data-LUT tables are each one board's, so
+    # their blocks are prose.
     expected = {
         path.relative_to(tmp_path).as_posix()
         for folder in ("palette", "pixel", "tilemap")
         for path in (tmp_path / folder).glob("_*.toml")
-    }
+    } | {"reshape/_split-parts.toml"}
     assert set(named) == expected
 
     missing = {

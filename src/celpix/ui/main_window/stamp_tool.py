@@ -57,8 +57,9 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QImage, QKeySequence
 
 from celpix.core.capabilities import Capability
+from celpix.core.document import resolve_chain
 from celpix.core.errors import PipelineError
-from celpix.core.tilemap import BLANK, Cell, CellGrid, expand_stamp
+from celpix.core.tilemap import BLANK, Cell, CellGrid
 from celpix.pipeline import pipeline
 from celpix.ui import render_bridge
 from celpix.ui.tools import EditMode
@@ -825,9 +826,9 @@ class StampToolMixin:
 
         ``cell`` itself for every ordinary map. On a **chained** map a held ID
         is a position in the map being drawn through, so the unit is that
-        stamp's source cells resolved — through the resolution's own helper
-        (:func:`~celpix.core.tilemap.expand_stamp`), so the ghost and the map
-        cannot resolve one coordinate two different ways. The **whole** record
+        stamp's source cells resolved, through every hop — by the resolution's
+        own walk (:func:`~celpix.core.document.resolve_chain`), so the ghost and
+        the map cannot resolve one coordinate two different ways. The **whole** record
         goes in, not just its index: the landing composes the laid entry's
         flips, row and visibility over the source (§3.1), and a ghost built
         from a bare coordinate would preview a stamp facing a different way
@@ -837,14 +838,8 @@ class StampToolMixin:
         chain = doc.chain if doc is not None else None
         if doc is None or chain is None:
             return [cell]
-        return expand_stamp(
-            cell,
-            chain.source,
-            doc.stamp_cells,
-            chain.source_columns,
-            carry_rows=chain.carry_rows,
-            column_major=chain.stamp_column_major,
-            base=chain.base,
+        return resolve_chain(
+            [cell], chain, 1, stamped=doc.stamp_cells != (1, 1), dense=True
         )
 
     def _refuse_stamp(self) -> None:
