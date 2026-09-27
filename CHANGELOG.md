@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.1.6 - unreleased
+## v1.1.6 - 2026-09-27
 
 - Fixed Kosinski and Kosinski+ compress stage to be more efficient
 - Added a shared core for some LZ based compression algorithms
