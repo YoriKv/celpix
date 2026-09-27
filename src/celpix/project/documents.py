@@ -225,18 +225,72 @@ def flag_break(registry, entry: Entry) -> bool:  # noqa: ANN001
     return bool(ask is not None and ask(preset.params))
 
 
-def chain_stamp_cells(registry, entry: Entry, through: Document) -> tuple[int, int]:  # noqa: ANN001
+class CellBlock(NamedTuple):
+    """A referring map's own cell size, read as a stamp over a tilemap source.
+
+    ``cell_tiles`` says one cell draws a block of what it draws through. Over art
+    that is a block of *tiles*; over another tilemap it can only be a block of
+    that map's *cells*, which is a stamp — so a preset stating ``cell_tiles =
+    [2, 2]`` draws 2x2 whichever kind of source it is bound to, rather than
+    shrinking to one cell the moment the source is a map
+    (``docs/design/tilemap-entry.md`` §3.1). ``row_stride`` is the format's
+    ``cell_row_stride`` where it declares one, now counted in source cells, and
+    0 where it does not: the VRAM row its absence means over a bank has no
+    counterpart in a map, whose own width is the step down instead.
+    """
+
+    cells: tuple[int, int]
+    row_stride: int = 0
+
+
+def cell_block(registry, entry: Entry, ctx) -> CellBlock | None:  # noqa: ANN001
+    """``entry``'s own multi-cell block over a tilemap source, or None.
+
+    None where its format declares ``stamp_cells``, which is the stamp spelled
+    outright and wins, and where its cells cover one unit. The size is the
+    container's answer over the codec's, as it is for a map drawn from art
+    (:func:`tilemap_document`) — ``ctx`` is the referrer's own tilemap context.
+    """
+    if tilemap_declares(registry, entry, "stamp_cells"):
+        return None
+    stated = ctx.get(KEY_TILEMAP_CELL_TILES)
+    try:
+        if not stated:
+            preset = registry.preset(tilemap_preset_id(entry))
+            engine = registry.plugin(Stage.INTERPRET_TILEMAP, preset.engine_id)
+            stated = engine.cell_tiles(preset.params)
+        across, down = max(1, int(stated[0])), max(1, int(stated[1]))
+    except (KeyError, TypeError, ValueError, IndexError):
+        return None
+    if (across, down) == (1, 1):
+        return None
+    try:
+        stride = int(tilemap_declares(registry, entry, "cell_row_stride") or 0)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        stride = 0
+    return CellBlock((across, down), max(0, stride))
+
+
+def chain_stamp_cells(
+    registry,  # noqa: ANN001
+    entry: Entry,
+    through: Document,
+    block: CellBlock | None = None,
+) -> tuple[int, int]:
     """How many of ``through``'s **cells** one of ``entry``'s coordinates names.
 
     Whichever side states it, the referrer first: a format whose coordinates
-    always name a fixed block declares ``stamp_cells``; otherwise the source's
+    always name a fixed block declares ``stamp_cells``, or states its cells
+    cover several units (``block``, :func:`cell_block`); otherwise the source's
     published answer (:data:`~celpix.core.context.KEY_TILEMAP_STAMP_CELLS`).
     ``(1, 1)`` for a pair that states nothing, and for a malformed declaration,
     since a wrong guess would expand the map to a multiple of its size.
     """
-    stated = tilemap_declares(
-        registry, entry, "stamp_cells"
-    ) or through.tilemap_ctx.get(KEY_TILEMAP_STAMP_CELLS)
+    stated = (
+        tilemap_declares(registry, entry, "stamp_cells")
+        or (block.cells if block is not None else None)
+        or through.tilemap_ctx.get(KEY_TILEMAP_STAMP_CELLS)
+    )
     try:
         across, down = stated or (1, 1)
         return max(1, int(across)), max(1, int(down))
@@ -244,16 +298,19 @@ def chain_stamp_cells(registry, entry: Entry, through: Document) -> tuple[int, i
         return (1, 1)
 
 
-def chain_source_columns(through: Document) -> int:
+def chain_source_columns(through: Document, block: CellBlock | None = None) -> int:
     """The stride between a stamp's rows, in cells of the **source**.
 
-    The source's own answer first (:data:`~celpix.core.context.
-    KEY_TILEMAP_STAMP_STRIDE`): a table of packed records stamps at the record's
-    width whatever it is displayed at. Else the width its format states;
-    otherwise the width its cells are laid at is the view's, and file order is
-    drawn order there. A stride of 1 in that case would walk a stamp's second
-    row along the same source row instead of down one.
+    The referrer's first, where its own cell block declares a row stride
+    (:class:`CellBlock`). Then the source's own answer (:data:`~celpix.core.
+    context.KEY_TILEMAP_STAMP_STRIDE`): a table of packed records stamps at the
+    record's width whatever it is displayed at. Else the width its format
+    states; otherwise the width its cells are laid at is the view's, and file
+    order is drawn order there. A stride of 1 in that case would walk a stamp's
+    second row along the same source row instead of down one.
     """
+    if block is not None and block.row_stride:
+        return block.row_stride
     stride = through.tilemap_ctx.get(KEY_TILEMAP_STAMP_STRIDE)
     try:
         if stride and int(stride) >= 1:
@@ -616,8 +673,14 @@ def chained_document(
     what is drawn is its cells; this entry's own record size is what the hex dump
     shows. The pixel config stays read-only: the art belongs to the map at the end
     of the chain, and a restamp must never reach it.
+
+    This entry's **own** cell size is not a geometry for the art — its cells are
+    coordinates, and what they draw is the source's cells — so a block it states
+    becomes the stamp (:func:`cell_block`), and the source's cell size is the one
+    the tiles are drawn in.
     """
     assert entry.session is not None
+    block = cell_block(registry, entry, loaded.ctx)
     return Document(
         pixel_data=through.pixel_data,
         bytes_per_tile=through.bytes_per_tile,
@@ -634,10 +697,13 @@ def chained_document(
         chain=CellChain(
             through.cells or [],
             loaded.palette_rows,
-            stamp=chain_stamp_cells(registry, entry, through),
-            source_columns=chain_source_columns(through),
-            dense=is_dense(registry, entry),
+            stamp=chain_stamp_cells(registry, entry, through, block),
+            source_columns=chain_source_columns(through, block),
+            # A cell block is one entry drawing the whole block, which is what
+            # dense means.
+            dense=is_dense(registry, entry) or block is not None,
             stamp_column_major=chain_stamp_column_major(through),
+            base=entry.tile_source.base_index if entry.tile_source else 0,
         ),
         tilemap_config=cfg,
         tilemap_ctx=loaded.ctx,

@@ -207,6 +207,16 @@ class Cell:
 
 BLANK = Cell()
 
+#: What a coordinate naming nothing resolves to — equal to :data:`BLANK` and to
+#: a hidden blank, and deliberately **not the same objects**. A chain more than
+#: one hop deep hands one hop's answer to the next as a coordinate, and a blank
+#: read as a coordinate names source cell 0, so a hole one hop up would draw a
+#: real stamp one hop down. Identity is what lets :func:`resolve_cell` tell "this
+#: named nothing" from a genuine cell 0, which a map built from a
+#: :class:`CellGrid` holds as :data:`BLANK` itself.
+UNRESOLVED = Cell()
+UNRESOLVED_HIDDEN = Cell(visible=False)
+
 
 def cell_orientation(cell: Cell) -> int:
     """``cell``'s flips as the orientation flags the transform helpers take.
@@ -224,7 +234,12 @@ def cell_orientation(cell: Cell) -> int:
 
 
 def resolve_cell(
-    cell: Cell, source: list[Cell], *, carry_rows: bool, at: int | None = None
+    cell: Cell,
+    source: list[Cell],
+    *,
+    carry_rows: bool,
+    at: int | None = None,
+    base: int = 0,
 ) -> Cell:
     """The cell ``cell`` names in the tilemap it draws through, or a blank.
 
@@ -239,6 +254,11 @@ def resolve_cell(
     source cells off the one coordinate (:func:`expand_stamps`). A parameter
     rather than a rebuilt ``Cell`` because a restamp re-resolves every position
     in the map and the copies would be the bulk of the work.
+
+    ``base`` is the binding's base, added to whichever coordinate is read: a
+    chained map's coordinates may number from partway into the source exactly as
+    a plain map's tile numbers may number from partway into a bank
+    (:attr:`~celpix.core.document.CellChain.base`).
 
     Composed rather than dropped because the referring format may carry
     attributes of its own, and discarding them would draw a picture neither file
@@ -266,12 +286,15 @@ def resolve_cell(
       two would do the same. A source with no such bit reads True and leaves the
       referrer's answer standing, which is every format but one.
     """
-    index = cell.index if at is None else at
+    if cell is UNRESOLVED or cell is UNRESOLVED_HIDDEN:
+        # Named nothing one hop up, so it names nothing here either.
+        return cell
+    index = (cell.index if at is None else at) + base
     if not 0 <= index < len(source):
         # A reference the source does not have draws blank rather than failing: a
         # layout outliving the panel it was authored against is ordinary, and so
         # is a restamp typed past the end of the panel.
-        return BLANK if cell.visible else replace(BLANK, visible=False)
+        return UNRESOLVED if cell.visible else UNRESOLVED_HIDDEN
     found = source[index]
     if (
         cell.visible
@@ -316,6 +339,7 @@ def expand_stamp(
     *,
     carry_rows: bool,
     column_major: bool = False,
+    base: int = 0,
 ) -> list[Cell]:
     """The source cells one stamp coordinate draws, in drawn (row-major) order.
 
@@ -342,6 +366,7 @@ def expand_stamp(
             source,
             carry_rows=carry_rows,
             at=cell.index + stamp_offset(dx, dy, stride, column_major=column_major),
+            base=base,
         )
         for dy in range(down)
         for dx in range(across)
@@ -397,6 +422,7 @@ def expand_stamps(
     carry_rows: bool,
     dense: bool = False,
     column_major: bool = False,
+    base: int = 0,
 ) -> list[Cell]:
     """Resolve a stamped map into one source cell per **drawn position**.
 
@@ -419,7 +445,7 @@ def expand_stamps(
     padded out to the width instead of stopping short: cut short, the rows after
     it would start in the wrong place and the last row's lower half would simply
     not be emitted — the whole bottom of the picture missing, at every width that
-    does not divide the entry count. The padding is :data:`BLANK`, which is
+    does not divide the entry count. The padding is :data:`UNRESOLVED`, which is
     already this walk's answer wherever a position's stamp points past the last
     entry. Either way the list is in
     **drawn** order rather than file order, and everything that indexes the file
@@ -455,7 +481,7 @@ def expand_stamps(
     for position in range(positions):
         at = stamp_origin(position, columns, (across, down), dense=dense)
         if not 0 <= at < len(cells):
-            out.append(BLANK)
+            out.append(UNRESOLVED)
             continue
         entry = cells[at]
         offset = stamp_offset(
@@ -465,7 +491,13 @@ def expand_stamps(
             column_major=column_major,
         )
         out.append(
-            resolve_cell(entry, source, carry_rows=carry_rows, at=entry.index + offset)
+            resolve_cell(
+                entry,
+                source,
+                carry_rows=carry_rows,
+                at=entry.index + offset,
+                base=base,
+            )
         )
     return out
 

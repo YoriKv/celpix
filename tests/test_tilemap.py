@@ -2293,6 +2293,131 @@ def test_a_single_stamp_resolves_exactly_as_the_map_does() -> None:
     assert [cell.palette_row for cell in bare] == [1, 2, 5, 6]
 
 
+def _chain_doc(cells, chain, columns: int = 0, cell_tiles=(1, 1)):
+    """A chained map over ``chain`` with nothing else to say: no art, no palette."""
+    from celpix.core.context import KEY_TILEMAP_COLUMNS
+    from celpix.core.document import Document
+
+    ctx = PipelineContext()
+    if columns:
+        ctx.set(KEY_TILEMAP_COLUMNS, columns)
+    return Document(
+        pixel_data=b"",
+        bytes_per_tile=32,
+        tile_width=8,
+        tile_height=8,
+        palette=None,
+        pixel_config=PathwayConfig(
+            source=FileRef(""), interpret_preset_id=SNES_BG, write_enabled=False
+        ),
+        palette_config=PathwayConfig(
+            source=FileRef(""), interpret_preset_id="", write_enabled=False
+        ),
+        cells=cells,
+        chain=chain,
+        cell_tiles=cell_tiles,
+        tilemap_ctx=ctx,
+    )
+
+
+def _field_chain(**top):
+    """map -> block table -> metatile table -> tiles, every hop a dense 2x2 over a
+    packed record: four metatiles of four tiles (100 + 4k ..), and two blocks —
+    metatiles 0 1 / 2 3, and the same reversed. Coordinates name a record's first
+    cell, so they step by 4."""
+    from celpix.core.document import CellChain
+
+    tiles = [Cell(index=100 + at) for at in range(16)]
+    blocks = [Cell(index=4 * k) for k in (0, 1, 2, 3, 3, 2, 1, 0)]
+    quads = CellChain(tiles, False, stamp=(2, 2), source_columns=2, dense=True)
+    return CellChain(
+        blocks,
+        top.pop("carry_rows", False),
+        stamp=(2, 2),
+        source_columns=2,
+        dense=True,
+        through=quads,
+        **top,
+    )
+
+
+def test_a_chain_two_hops_deep_resolves_every_hop_and_snaps_back_through_both() -> None:
+    """A map of blocks of metatiles: one entry draws a 4x4 of tiles, which is
+    the unit everything that places or picks moves in, and a click anywhere in
+    those sixteen positions edits the one entry they came from. A coordinate
+    that names nothing — past the table, or the padding of a short last row —
+    draws nothing at every depth, not the next table's cell 0."""
+    doc = _chain_doc([Cell(index=0), Cell(index=4), Cell(index=99)], _field_chain(), 2)
+    assert doc.stamp_cells == (4, 4)
+    assert doc.drawn_columns == 8
+    assert doc.columns_locked
+    drawn = [cell.index for cell in doc.drawn_cells]
+    assert drawn[:32] == [
+        100, 101, 104, 105, 112, 113, 108, 109,
+        102, 103, 106, 107, 114, 115, 110, 111,
+        108, 109, 112, 113, 104, 105, 100, 101,
+        110, 111, 114, 115, 106, 107, 102, 103,
+    ]  # fmt: skip
+    # Entry 2 names no block, and the rest of its row is padding.
+    assert len(drawn) == 64
+    assert all(cell == Cell() for cell in doc.drawn_cells[32:])
+    for y in range(4):
+        for x in range(4):
+            assert doc.cell_at(y * 8 + x) == 0
+            assert doc.cell_at(y * 8 + 4 + x) == 1
+            assert doc.cell_at((y + 4) * 8 + x) == 2
+    assert all(doc.cell_is_read(at) for at in range(3))
+
+    # With no stated width, Cols counts final positions: 9 floors to two
+    # entries of four.
+    free = _chain_doc([Cell(index=0), Cell(index=4)], _field_chain())
+    free.view.columns = 9
+    assert (free.stamp_columns, free.drawn_columns) == (2, 8)
+    assert not free.columns_locked
+    assert [cell.index for cell in free.drawn_cells] == drawn[:32]
+
+
+def test_attributes_compose_across_every_hop() -> None:
+    """Flips toggle at each hop, so three mirrors face the way one does; a base
+    applies at the hop that states it; and a row a referrer stated survives a
+    middle table whose format has no rows, rather than giving way to the tile
+    table's."""
+    from celpix.core.document import CellChain, resolve_chain
+
+    tiles = [Cell(index=100 + at, palette_row=1, flip_h=True) for at in range(16)]
+    blocks = [Cell(index=4 * k, flip_h=True) for k in (0, 1, 2, 3, 3, 2, 1, 0)]
+    quads = CellChain(tiles, False, stamp=(2, 2), source_columns=2, dense=True)
+    chain = CellChain(
+        blocks, True, stamp=(2, 2), source_columns=2, dense=True, through=quads
+    )
+    entry = Cell(index=0, palette_row=5, flip_h=True)
+    out = resolve_chain([entry], chain, 1)
+    assert len(out) == 16
+    assert all(cell.flip_h and cell.palette_row == 5 for cell in out)
+    # The same entry through a referrer with no rows keeps the tiles' own.
+    bare = resolve_chain([entry], replace(chain, carry_rows=False), 1)
+    assert {cell.palette_row for cell in bare} == {1}
+
+    # A base at each hop: block 1 through a base of 4 cells, and the metatile
+    # table read from record 1 on - so block 1's first metatile (1) reads as 2.
+    based = replace(chain, base=4, through=replace(quads, base=4))
+    assert [cell.index for cell in resolve_chain([Cell(index=0)], based, 1)][:4] == [
+        112, 113, 108, 109,
+    ]  # fmt: skip
+
+
+def test_a_single_entry_preview_is_the_maps_own_resolution_of_it() -> None:
+    """The sheet, the ghost and the readout resolve one entry through the same
+    walk the map does, forced dense at one entry across — so what is on offer
+    is exactly the 4x4 the map draws for that entry."""
+    from celpix.core.document import resolve_chain
+
+    doc = _chain_doc([Cell(index=0), Cell(index=4)], _field_chain(), 2)
+    unit = resolve_chain([Cell(index=4)], doc.chain, 1, dense=True)
+    drawn = doc.drawn_cells
+    assert unit == [drawn[y * 8 + 4 + x] for y in range(4) for x in range(4)]
+
+
 def test_a_stamp_of_metatile_cells_degrades_everywhere_at_once() -> None:
     """A stamp of metatile cells interleaves rectangles no single layout block
     can place on the tile source sheet, so the chain resolves as the plain
@@ -2320,7 +2445,16 @@ def test_a_stamp_of_metatile_cells_degrades_everywhere_at_once() -> None:
             source=FileRef(""), interpret_preset_id="", write_enabled=False
         ),
         cells=[Cell(index=at) for at in range(16)],
-        chain=CellChain(source, False, stamp=(2, 2), source_columns=4),
+        # Two hops deep, the middle one a table of identity coordinates: the
+        # refusal is about the *last* source's cells, and it holds at any depth.
+        chain=CellChain(
+            [Cell(index=at) for at in range(16)],
+            False,
+            stamp=(2, 2),
+            source_columns=4,
+            dense=True,
+            through=CellChain(source, False, stamp=(2, 2), source_columns=4),
+        ),
         cell_tiles=(2, 2),
         tilemap_ctx=ctx,
     )

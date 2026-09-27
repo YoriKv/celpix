@@ -4,6 +4,10 @@
 
 - Fixed Kosinski and Kosinski+ compress stage to be more efficient
 - Added a shared core for some LZ based compression algorithms
+- Container for header checksum repair of Mega Drive / Genesis ROMs
+- Fixed a tilemap drawn through another tilemap ignoring its own `cell_tiles`:
+  a 2x2 cell now draws a 2x2 block of the source map's cells
+- Added base tile offset option to a tilemap using another tilemap as a source
 
 ## v1.1.5 - 2026-09-24
 

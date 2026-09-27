@@ -607,7 +607,7 @@ def test_an_ordinary_tilemap_can_draw_through_another_tilemap(qtbot, tmp_path) -
     window._tile_group.flip_h.trigger()
     assert doc.cells[0].flip_h  # set on the screen's own cell...
     assert doc.drawn_cells[0].flip_h  # ...and composed onto the panel's
-    assert window._tile_base.isHidden()  # no tile numbering for a base to shift
+    assert window._tile_base_label.text() == "Base cell "  # shifts coordinates
     assert "Stamped from panel.PNL" in window._tile_binding_note.text()
 
 
@@ -801,27 +801,56 @@ def test_the_tile_readout_counts_only_entries_the_stamps_read(qtbot, tmp_path) -
     assert "used by 1 stamp." in window._tile_source_line(1)
 
 
-def test_a_stamp_layout_has_no_base_tile_control(qtbot, tmp_path) -> None:
-    """It draws through a panel and takes the panel's base with it, so a base of
-    its own would be a live control that changes nothing."""
-    from celpix.core.tilemap import Cell
-    from celpix.project.workspace import TileMode, TileSource
+def test_a_multi_cell_map_over_a_tilemap_stamps_its_block_from_the_base(
+    qtbot, tmp_path
+) -> None:
+    """A map whose format says a cell covers 2x2 draws 2x2 of whatever it is
+    bound to: over another tilemap that is a block of the source's *cells*, one
+    entry per block, rather than one source cell. The binding's base shifts
+    which source cell a coordinate names, and the bar offers it as such."""
+    from celpix.core.capabilities import ContentKind
+    from celpix.project.workspace import TileMode, TileSource, new_slice
 
+    art = bytes((i * 7 + 3) & 0xFF for i in range(8 * 32))
+    table = bytes(range(64))  # one byte a cell, each naming its own position
+    path = tmp_path / "rom.bin"
+    path.write_bytes(art + table + b"\x02\x00")  # one 16x16 cell naming 2
     window = MainWindow()
     qtbot.addWidget(window)
-    _bound_stamp_layout(window, tmp_path)
-    assert window._tile_base.isHidden()
-    assert window._tile_base_label.isHidden()
+    window._load_pixel(str(path))
+    rom = window._workspace.current
+    tiles = new_slice(rom.path, "art", offset=0, length=len(art))
+    source = new_slice(rom.path, "table", offset=len(art), length=len(table))
+    source.content_kind = ContentKind.TILEMAP
+    source.tilemap_preset_id = "preset.tilemap.index-8bit"
+    source.tile_source = TileSource(mode=TileMode.ENTRY, entry=tiles)
+    refer = new_slice(rom.path, "map", offset=len(art) + len(table), length=2)
+    refer.content_kind = ContentKind.TILEMAP
+    refer.tilemap_preset_id = "preset.tilemap.snes-bg-16x16"  # cell_tiles [2, 2]
+    refer.tile_source = TileSource(mode=TileMode.ENTRY, entry=source)
+    for entry in (tiles, source, refer):
+        window._workspace.insert(entry, len(window._workspace.entries))
+    window._activate_entry(refer)
 
-    # ...and it comes back for an ordinary map, which numbers into a tile bank.
-    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)], name="screen2.SCR")))
-    entry = window._workspace.current
-    entry.tile_source = TileSource(
-        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
-    )
-    window._reload_tilemap(entry)
+    def corners() -> list[int]:
+        doc = window._doc
+        width, stride = doc.stamp_columns * 2, doc.chain.source_columns
+        drawn = doc.drawn_cells
+        assert stride > 1
+        return [drawn[at].index for at in (0, 1, width, width + 1)], stride
 
+    doc = window._doc
+    assert doc.stamp_cells == (2, 2) and doc.chain.dense
+    assert doc.cell_tiles == (1, 1)  # the source's cells are single tiles
+    got, stride = corners()
+    assert got == [2, 3, 2 + stride, 3 + stride]
+
+    assert window._tile_base_label.text() == "Base cell "
     assert not window._tile_base.isHidden()
+    window._tile_base.setValue(4)
+    got, stride = corners()
+    assert got == [6, 7, 6 + stride, 7 + stride]
+    assert refer.tile_source.base_index == 4
 
 
 def test_an_unbound_stamp_layout_still_opens(qtbot, tmp_path) -> None:

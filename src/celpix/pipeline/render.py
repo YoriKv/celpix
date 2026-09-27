@@ -721,8 +721,9 @@ def tile_source_span(doc: Document, limit: int | None = None) -> range:
     Three readings, and they are three different questions:
 
     - A **chained** map's cells are coordinates into another map's cells
-      (§3.1), so the IDs are positions in that list and the bank behind it is
-      one hop further away.
+      (§3.1), so the IDs are positions in that list — shifted by the chain's
+      own base the way a bank's are by the tile base — and the bank behind it
+      is one hop further away.
     - An ordinary map's IDs are the ones landing inside the bank once the base
       is added: ``base + id`` in ``[0, tile_count)``. The base is signed, so a
       map numbering from ``$100`` against a slice of exactly those tiles has a
@@ -742,7 +743,8 @@ def tile_source_span(doc: Document, limit: int | None = None) -> range:
     if not doc.is_tilemap:
         return range(0)
     if doc.chain is not None:
-        start, stop = 0, len(doc.chain.source)
+        base = doc.chain.base
+        start, stop = max(0, -base), len(doc.chain.source) - base
     else:
         base = doc.tile_base_index
         # In whatever unit the indices are: tiles for every ordinary map, and
@@ -798,7 +800,8 @@ def tile_source_ids(doc: Document, limit: int | None = None) -> Sequence[int]:
         # thing it names is bigger than it, and a block number never does.
         return span
     if chain is not None:
-        unit, stride, offset = doc.stamp_cells, chain.source_columns, 0
+        # Aligned in the source's numbering, as a bank's IDs are below.
+        unit, stride, offset = doc.stamp_cells, chain.source_columns, chain.base
     else:
         unit = doc.cell_tiles
         # The walk runs in the bank's numbering, where the neighbours are: the
@@ -813,7 +816,10 @@ def tile_source_ids(doc: Document, limit: int | None = None) -> Sequence[int]:
         # the stride steps between columns (`stamp_offset`).
         stride = max(down, stride)
         return [
-            at for at in span if at % stride % down == 0 and at // stride % across == 0
+            at
+            for at in span
+            if (at + offset) % stride % down == 0
+            and (at + offset) // stride % across == 0
         ]
     stride = max(across, stride)
     return [
@@ -893,6 +899,7 @@ def tile_source_image(
                 chain.source_columns,
                 carry_rows=False,
                 column_major=chain.stamp_column_major,
+                base=chain.base,
             )
         ]
     tiles, layout = expand_cells(doc, reg, cells, columns, doc.stamp_tiles)

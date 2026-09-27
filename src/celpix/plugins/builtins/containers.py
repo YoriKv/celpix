@@ -36,6 +36,8 @@ from celpix.plugins.base import (
     splice,
 )
 
+from .md_rom import repair_checksum
+
 _INES_MAGIC = b"NES\x1a"
 
 # bytes: the ROM a pathway's tiles were read out of, so a Save As can put them
@@ -244,6 +246,8 @@ class SmdContainer:
     loop over 8192 byte pairs, a Mega Drive image being megabytes. The 512-byte
     header is copier metadata this container never decoded, so it is preserved
     rather than regenerated, as is a trailing partial block the read dropped.
+    The cartridge's own checksum is repaired on the deinterleaved image before it
+    is split, exactly as ``container.md-rom`` does it for a plain image.
     """
 
     # Suffix only: the 512-byte header carries no marker this container can assert
@@ -294,6 +298,7 @@ class SmdContainer:
         return bytes(out)
 
     def write(self, data: bytes, dest: WriteTarget, ctx: PipelineContext) -> bytes:
+        data = repair_checksum(data)
         block, half = self._BLOCK, self._HALF
         blocks = len(data) // block
         body = bytearray(blocks * block)

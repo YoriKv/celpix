@@ -210,11 +210,10 @@ class TileSourceDockMixin:
     def _can_set_base_tile(self) -> bool:
         """Whether the picked tile could become the base — the button's gate.
 
-        Needs a pick, a tilemap with a tile numbering for a base to shift, and a
-        binding to hang it on. A **chained** map is the only exclusion, and the
-        same one the binding bar makes: its cells are coordinates into another
-        map, which carries its own base, so there is nothing here for one to mean
-        (``docs/design/tilemap-entry.md`` §3.1).
+        Needs a pick, a tilemap, and a binding to hang it on. A **chained** map
+        qualifies: its cells are coordinates into another map's cells and its
+        base shifts those the same way (:attr:`~celpix.core.document.CellChain.
+        base`), so the picked stamp becomes the one coordinate 0 names.
 
         A **sprite object** is not one. Its records are not cells, but they hold
         tile numbers in the same space and the base shifts them the same way — the
@@ -225,7 +224,7 @@ class TileSourceDockMixin:
         doc, entry = self._doc, self._workspace.current
         if doc is None or entry is None or self._source_tile_id is None:
             return False
-        if not doc.is_tilemap or doc.chain is not None:
+        if not doc.is_tilemap:
             return False
         source = entry.tile_source
         return source is not None and source.is_bound
@@ -255,7 +254,10 @@ class TileSourceDockMixin:
         entry = self._workspace.current
         assert entry is not None and self._doc is not None
         source = entry.tile_source or TileSource()
-        base = self._source_tile_id + self._doc.tile_base_index
+        chain = self._doc.chain
+        base = self._source_tile_id + (
+            chain.base if chain is not None else self._doc.tile_base_index
+        )
         if base == source.base_index:
             return
         self._rebind_tiles(
@@ -280,6 +282,12 @@ class TileSourceDockMixin:
             self._set_base_tile_button.setToolTip(
                 "Make the picked tile the one a subsprite holding $0 draws\n"
                 "Shifts every subsprite's tile by the same amount"
+            )
+            return
+        if doc is not None and doc.chain is not None:
+            self._set_base_tile_button.setToolTip(
+                "Make the picked stamp the one cell 0 names\n"
+                "Shifts every cell by the same amount"
             )
             return
         self._set_base_tile_button.setToolTip(
@@ -752,7 +760,9 @@ class TileSourceDockMixin:
         # A bare coordinate with no rows carried: the line describes the stamp
         # as the source authored it, and no real entry stands behind this ID —
         # a bare cell's row 0 let through would misreport the source's.
-        stamp = resolve_cell(Cell(index=tile_id), chain.source, carry_rows=False)
+        stamp = resolve_cell(
+            Cell(index=tile_id), chain.source, carry_rows=False, base=chain.base
+        )
         # The corner cell's own attributes, which is what a stamp's other cells
         # each have their own of - so the size is stated and the rest is left to
         # the picture rather than listed cell by cell.

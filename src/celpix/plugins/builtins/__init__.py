@@ -63,6 +63,7 @@ from .lz_command import Lz1, Lz1Improved, Lz2, Lz2Improved
 from .lzkn1 import Lzkn1Compression, Lzkn1ModuledCompression
 from .lzss_ring import LzssRingCompression
 from .m7_vram import M7VramReshape
+from .md_rom import MdRomContainer
 from .md_sprite import MdSpriteCodec
 from .n64_rom import N64RomContainer
 from .namco_lz import NamcoLzCompression, StrikeLzCompression
@@ -120,6 +121,7 @@ def register_builtins(reg: Registry) -> None:
         SnesInterleavedContainer(),
         GbRomContainer(),
         SmsRomContainer(),
+        MdRomContainer(),
         N64RomContainer(),
         D88Container(),
         ScrContainer(),

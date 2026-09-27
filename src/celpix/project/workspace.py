@@ -315,6 +315,9 @@ class TileSource:
     ``base_index`` shifts every cell: cell index N draws source tile
     ``base_index + N``. It is what lets a map and its art be bound together when
     the two number their tiles from different places, without rewriting either.
+    Bound to another **tilemap**, the same number shifts coordinates instead:
+    cell index N names source cell ``base_index + N``
+    (:attr:`~celpix.core.document.CellChain.base`).
 
     It is **not** a format field. The header word that looks like one in a screen
     and a PNL panel is not a base index — celPix reads it from no format, and neither

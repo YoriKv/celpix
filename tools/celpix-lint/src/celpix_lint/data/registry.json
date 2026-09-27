@@ -286,6 +286,10 @@
         "pixels",
         "tilemap"
       ],
+      "container.md-rom": [
+        "pixels",
+        "tilemap"
+      ],
       "container.n64-rom": [
         "pixels",
         "tilemap"

@@ -844,6 +844,7 @@ class StampToolMixin:
             chain.source_columns,
             carry_rows=chain.carry_rows,
             column_major=chain.stamp_column_major,
+            base=chain.base,
         )
 
     def _refuse_stamp(self) -> None:

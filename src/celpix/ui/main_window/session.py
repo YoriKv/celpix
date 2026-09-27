@@ -551,14 +551,21 @@ class SessionMixin:
             return 0
         return doc.stated_columns
 
-    def _chain_stamp_cells(self, entry: Entry, through: Document) -> tuple[int, int]:
+    def _chain_stamp_cells(
+        self,
+        entry: Entry,
+        through: Document,
+        block: documents.CellBlock | None = None,
+    ) -> tuple[int, int]:
         """:func:`~celpix.project.documents.chain_stamp_cells`."""
-        return documents.chain_stamp_cells(self._registry, entry, through)
+        return documents.chain_stamp_cells(self._registry, entry, through, block)
 
     @staticmethod
-    def _chain_source_columns(through: Document) -> int:
+    def _chain_source_columns(
+        through: Document, block: documents.CellBlock | None = None
+    ) -> int:
         """:func:`~celpix.project.documents.chain_source_columns`."""
-        return documents.chain_source_columns(through)
+        return documents.chain_source_columns(through, block)
 
     @staticmethod
     def _chain_column_major(through: Document) -> bool:
@@ -1017,11 +1024,12 @@ class SessionMixin:
                 continue
             if source is None or source.entry is not entry:
                 continue
+            block = documents.cell_block(self._registry, other, doc.tilemap_ctx)
             doc.chain = replace(
                 doc.chain,
                 source=cells,
-                stamp=self._chain_stamp_cells(other, through),
-                source_columns=self._chain_source_columns(through),
+                stamp=self._chain_stamp_cells(other, through, block),
+                source_columns=self._chain_source_columns(through, block),
                 stamp_column_major=self._chain_column_major(through),
             )
             doc.resolve()

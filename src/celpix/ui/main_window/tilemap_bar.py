@@ -102,6 +102,18 @@ from celpix.ui.widgets import (
 _NONE = object()
 _FROM_FILE = object()
 
+# The Base spin's two readings. Over art a base shifts tile numbers; over another
+# tilemap the cells are coordinates, so it shifts which source cell they name
+# (`CellChain.base`). The label and the tip swap together on the binding.
+TILE_BASE_TIP = (
+    "Shifts every cell: cell N draws source tile base + N\n"
+    "Negative when the map starts partway into its source"
+)
+TILE_BASE_CHAINED_TIP = (
+    "Shifts every cell: cell N stamps source cell base + N\n"
+    "Negative when the map starts partway into its source"
+)
+
 
 class TilemapBarMixin:
     """The tilemap binding bar, and the swap that puts it on screen.
@@ -169,12 +181,7 @@ class TilemapBarMixin:
         # Signed, because the useful direction for a slice is the negative one:
         # a map numbering from 0x100 bound to a slice that starts there needs
         # cell 0x100 to draw tile 0 (:class:`TileSource`).
-        self._tile_base = hex_spin(
-            -0xFFFF,
-            0xFFFF,
-            "Shifts every cell: cell N draws source tile base + N\n"
-            "Negative when the map starts partway into its source",
-        )
+        self._tile_base = hex_spin(-0xFFFF, 0xFFFF, TILE_BASE_TIP)
         self._tile_base.valueChanged.connect(self._on_tile_base_change)
         row.addWidget(self._tile_base)
 
@@ -313,19 +320,18 @@ class TilemapBarMixin:
             self._fill_codec_combo(entry)
         with signals_blocked(self._tile_base):
             self._tile_base.setValue(source.base_index)
-        # Cells that are coordinates into another tilemap have no tile numbering
-        # for a base to shift: the map draws through that source and takes its
-        # base with it (``_load_tilemap_entry``). True once a tilemap is bound,
-        # and before that for a format that says its cells are coordinates -
-        # which is the whole of what `indirect` decides. Hidden rather than
-        # disabled, on the rule this bar exists for: a control that means nothing
-        # here is not a feature switched off, and the offset controls were
-        # replaced rather than greyed for exactly that reason.
+        # Cells that are coordinates into another tilemap still have a base: it
+        # shifts which source *cell* a coordinate names rather than which tile
+        # (`CellChain.base`), so the spin stays and says which it is. True once
+        # a tilemap is bound, and before that for a format that says its cells
+        # are coordinates - which is the whole of what `indirect` decides.
         chained = self._draws_through_tilemap(entry) or (
             not source.is_bound and self._tilemap_is_indirect(entry)
         )
-        self._tile_base_label.setVisible(not chained)
-        self._tile_base.setVisible(not chained)
+        self._tile_base_label.setText("Base cell " if chained else "Base tile ")
+        self._tile_base.setToolTip(
+            f"{TILE_BASE_CHAINED_TIP if chained else TILE_BASE_TIP} (hex)"
+        )
         self._sync_binding_jump(source)
         self._sync_size_pair()
         self._sync_all_frames()

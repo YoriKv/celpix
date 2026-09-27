@@ -18,7 +18,7 @@ writes the buffer as it stands.
 from __future__ import annotations
 
 from bisect import bisect_left
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from enum import Enum
 
@@ -290,6 +290,19 @@ class CellChain:
     and would be stamped by a metatile map with a slot per stamp, and the panel's
     header says nothing about either. It is a constant of the referring format,
     so the format's preset declares it (``docs/design/tilemap-entry.md`` §3.1).
+
+    ``base`` is the **binding's**: coordinate N names source cell ``base + N``,
+    the chained reading of :attr:`Document.tile_base_index`. A table of 32x32
+    records numbering its 16x16s from partway into their own table needs it for
+    the reason a map numbering its tiles from partway into a bank does. Signed,
+    like the tile base, and a coordinate it pushes out of the source draws blank.
+
+    ``through`` is the **source's own** chain, where the source is itself a map
+    drawing through a map — a field map of blocks, each block a 2x2 of metatiles,
+    each metatile a 2x2 of tiles. Snapshotted with ``source`` and re-pointed with
+    it, so a chain is a list of hops (:attr:`hops`) held entirely on the
+    referrer, and resolving it (:func:`resolve_chain`) needs no document but this
+    one. None for the ordinary chain, whose source's cells are tile numbers.
     """
 
     source: list[Cell]
@@ -298,6 +311,101 @@ class CellChain:
     source_columns: int = 0
     dense: bool = False
     stamp_column_major: bool = False
+    base: int = 0
+    through: CellChain | None = None
+
+    @property
+    def hops(self) -> Iterator[CellChain]:
+        """This hop, then each source's own, down to the one whose cells are tiles."""
+        hop: CellChain | None = self
+        while hop is not None:
+            yield hop
+            hop = hop.through
+
+    @property
+    def growth(self) -> tuple[int, int]:
+        """How much wider and taller the hops **after** this one make the picture.
+
+        A dense hop draws one entry as a whole stamp of positions, so each one
+        multiplies the picture by its stamp; a sparse hop has an entry per
+        position already and multiplies nothing (:func:`resolve_chain`). ``(1,
+        1)`` for a chain one hop deep.
+        """
+        across = down = 1
+        hop = self.through
+        while hop is not None:
+            if hop.dense:
+                across *= max(1, hop.stamp[0])
+                down *= max(1, hop.stamp[1])
+            hop = hop.through
+        return across, down
+
+
+def resolve_chain(
+    cells: list[Cell],
+    chain: CellChain,
+    columns: int,
+    *,
+    stamped: bool = True,
+    carry_rows: bool | None = None,
+    dense: bool | None = None,
+) -> list[Cell]:
+    """``cells`` resolved through every hop of ``chain``, in drawn order.
+
+    **The** resolution walk: the map (:meth:`Document.resolve`) and every
+    single-stamp preview — the tile source sheet, the stamp tool's ghost, the
+    tile readout — go through it, so a preview and the map cannot resolve one
+    coordinate two different ways (``docs/design/tilemap-entry.md`` §3.1).
+
+    Each hop takes a list of cells in drawn order at ``columns`` entries across
+    and hands the next hop the same, which is what makes depth free: the output
+    of a hop is the *source's* cells with the entry's attributes composed on
+    (:func:`~celpix.core.tilemap.resolve_cell`), and a source's cells are the
+    next hop's entries — coordinates again until the last hop, whose cells are
+    tile numbers. A dense hop grows the grid by its stamp, so the width the next
+    hop reads its entries at grows with it. A sparse hop after the first is
+    resolved over the list it is handed, which is right when the referrer's
+    stamps sit on the source's own stamp corners — as any real format's do; a
+    sparse map is an end product, never anyone's source.
+
+    ``stamped`` False is the degraded chain (:attr:`Document.stamp_cells`): every
+    hop resolves one coordinate to one cell. ``carry_rows`` and ``dense``
+    override the **first** hop's, for a preview whose referrer is synthetic (no
+    row of its own to carry) and a single entry (dense whatever the file is).
+
+    A row carries **down** the chain: once a referrer with a palette-row field
+    has stated one, a later hop whose own format has none must not replace it
+    with the bottom table's — so a hop carries rows if it or any hop before it
+    does.
+    """
+    carry = False
+    for depth, hop in enumerate(chain.hops):
+        first = depth == 0
+        carry = carry or (
+            carry_rows if first and carry_rows is not None else hop.carry_rows
+        )
+        stamp = hop.stamp if stamped else (1, 1)
+        if stamp == (1, 1):
+            cells = [
+                resolve_cell(cell, hop.source, carry_rows=carry, base=hop.base)
+                for cell in cells
+            ]
+            continue
+        hop_dense = dense if first and dense is not None else hop.dense
+        cells = expand_stamps(
+            cells,
+            hop.source,
+            columns,
+            stamp,
+            hop.source_columns,
+            carry_rows=carry,
+            dense=hop_dense,
+            column_major=hop.stamp_column_major,
+            base=hop.base,
+        )
+        if hop_dense:
+            columns = max(1, columns) * max(1, stamp[0])
+    return cells
 
 
 @dataclass
@@ -515,7 +623,9 @@ class Document:
         quarters of the entries unread on a sparse one. It needs the referrer's
         own width to know where a row ends — :attr:`stamp_columns`, which on a
         dense map is the view's where the format states nothing, so this is
-        called again whenever that moves (:attr:`drawn_cells`).
+        called again whenever that moves (:attr:`drawn_cells`). A chain more than
+        one hop deep resolves every hop in turn (:func:`resolve_chain`), each
+        dense one growing the picture by its stamp.
         """
         # The one call every cell edit makes, so it is also where the decoded
         # text is dropped: :attr:`text` is the same cells read a second way, and
@@ -524,7 +634,6 @@ class Document:
         self.text_cache = None
         self.layout_cache = None
         chain = self.chain
-        columns = self.stamp_columns
         self.resolved_columns = self.entry_columns
         if self.cells is None:
             self.resolved_cells = None
@@ -539,24 +648,12 @@ class Document:
             self.resolved_cells = None if order is None else cells
             return
         # `stamp_cells`, not `chain.stamp`: the one authority every unit in the
-        # UI reads, so a chain the units cannot report expands nowhere either.
-        stamp = self.stamp_cells
-        if stamp != (1, 1):
-            self.resolved_cells = expand_stamps(
-                cells,
-                chain.source,
-                columns,
-                stamp,
-                chain.source_columns,
-                carry_rows=chain.carry_rows,
-                dense=chain.dense,
-                column_major=chain.stamp_column_major,
-            )
-            return
-        self.resolved_cells = [
-            resolve_cell(cell, chain.source, carry_rows=chain.carry_rows)
-            for cell in cells
-        ]
+        # UI reads, so a chain the units cannot report expands nowhere either —
+        # at any hop. Stamped, the width is `stamp_columns`, which `entry_columns`
+        # then is; unstamped, no hop reads a width at all.
+        self.resolved_cells = resolve_chain(
+            cells, chain, self.entry_columns, stamped=self.stamp_cells != (1, 1)
+        )
 
     @property
     def stated_columns(self) -> int:
@@ -603,7 +700,10 @@ class Document:
             return stated
         chain = self.chain
         stamp = self._chain_stamp
-        if chain is None or not chain.dense or stamp == (1, 1):
+        # A first hop of one cell per entry holds an entry per position, which is
+        # the dense reading and the sparse one at once — so a chain whose *later*
+        # hops grow the picture gets the same fallback a dense one does.
+        if chain is None or stamp == (1, 1) or not self._first_hop_dense:
             return 0
         # Floored to whole stamps, so a Cols the user typed between two of them
         # narrows the picture by the remainder rather than shearing it — and the
@@ -864,7 +964,41 @@ class Document:
         chain = self.chain
         if chain is None or self.cell_tiles != (1, 1):
             return (1, 1)
-        return chain.stamp
+        # **Composed** across the hops: the first hop's stamp, grown by every
+        # dense hop after it — a field-map byte naming a 2x2 of blocks, each a
+        # 2x2 of tiles, is one 4x4 unit on screen, and that is the unit a click,
+        # a pick and a paste have to move in.
+        (across, down), (grow_across, grow_down) = chain.stamp, chain.growth
+        return max(1, across) * grow_across, max(1, down) * grow_down
+
+    @property
+    def _chain_growth(self) -> tuple[int, int]:
+        """How much the hops **after the first** grow the picture, ``(1, 1)`` for
+        none — and for a chain that degraded, which grows nothing
+        (:attr:`stamp_cells`)."""
+        chain = self.chain
+        if chain is None or self.stamp_cells == (1, 1):
+            return (1, 1)
+        return chain.growth
+
+    @property
+    def _first_hop_stamp(self) -> tuple[int, int]:
+        """The stamp the **referrer's own entries** are laid out in — the first
+        hop's, as resolved (:attr:`stamp_cells` without the later hops' growth)."""
+        (across, down), (grow_across, grow_down) = self.stamp_cells, self._chain_growth
+        return across // grow_across, down // grow_down
+
+    @property
+    def _first_hop_dense(self) -> bool:
+        """Whether the referrer holds one entry per first-hop stamp.
+
+        True of a dense format, and of a first hop of one cell per entry, where
+        the two readings are the same arithmetic — which is what lets a plain
+        map drawing through a map of metatiles lay its picture out wider than
+        its entries without being declared anything.
+        """
+        chain = self.chain
+        return chain is not None and (chain.dense or chain.stamp == (1, 1))
 
     @property
     def stamp_cells(self) -> tuple[int, int]:
@@ -1161,11 +1295,14 @@ class Document:
         chain = self.chain
         # The same condition :meth:`resolve` expands a dense map under: with no
         # width at all there is no stamped resolution to be wide, so there is no
-        # width to fix either.
+        # width to fix either. A later dense hop grows the picture whatever the
+        # first hop is, so a sparse first hop fixes one too once it has one.
         columns = self.stamp_columns
-        if chain is None or not chain.dense or not columns:
+        growth = self._chain_growth
+        if chain is None or not columns or not (chain.dense or growth != (1, 1)):
             return 0
-        return columns * max(1, self.stamp_cells[0])
+        first = self._first_hop_stamp[0] if self._first_hop_dense else 1
+        return columns * first * growth[0]
 
     @property
     def columns_locked(self) -> bool:
@@ -1193,7 +1330,8 @@ class Document:
         if self.assembled_columns and not self.assembly_choices:
             return True
         chain = self.chain
-        return chain is not None and chain.dense and bool(self.stated_columns)
+        grows = chain is not None and (chain.dense or self._chain_growth != (1, 1))
+        return grows and bool(self.stated_columns)
 
     @property
     def cell_order(self) -> tuple[int, ...] | None:
@@ -1393,9 +1531,18 @@ class Document:
         # stamp the picture was resolved under, for the same reason
         # (:attr:`stamp_cells`).
         columns = self.stamp_columns
-        stamp = self.stamp_cells
-        if chain is not None and stamp != (1, 1):
-            position = stamp_origin(position, columns, stamp, dense=chain.dense)
+        if chain is not None and self.stamp_cells != (1, 1):
+            # The later hops' growth is undone first — a field map's 4x4 unit is
+            # a 2x2 of its first hop's positions, each grown 2x2 — and what is
+            # left is the single-hop snap in the first hop's own terms.
+            first, (grow_across, grow_down) = self._first_hop_stamp, self._chain_growth
+            dense = self._first_hop_dense
+            if (grow_across, grow_down) != (1, 1):
+                across = columns * first[0] if dense else columns
+                width = across * grow_across
+                x, y = position % width, position // width
+                position = y // grow_down * across + x // grow_across
+            position = stamp_origin(position, columns, first, dense=dense)
         # Last, because the steps above answer in *entry* positions and this is
         # the one step that says which entry of the file that is.
         entries = self.cell_permutation
@@ -1414,8 +1561,10 @@ class Document:
         says is meaningless. Every entry of a dense or unstamped map is read.
         """
         chain = self.chain
-        stamp = self.stamp_cells
-        if chain is None or chain.dense or stamp == (1, 1):
+        # The referrer's own entry grid, so the first hop's stamp: whatever the
+        # later hops do happens to cells this file does not hold.
+        stamp = self._first_hop_stamp
+        if chain is None or self._first_hop_dense or stamp == (1, 1):
             return True
         return stamp_origin(index, self.stamp_columns, stamp) == index
 

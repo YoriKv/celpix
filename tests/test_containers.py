@@ -44,6 +44,8 @@ from celpix.plugins.builtins.containers import (
 )
 from celpix.plugins.builtins.d88 import D88Container
 from celpix.plugins.builtins.gb_rom import GbRomContainer, repair_checksums
+from celpix.plugins.builtins.md_rom import MdRomContainer
+from celpix.plugins.builtins.md_rom import repair_checksum as repair_md_checksum
 from celpix.plugins.builtins.n64_rom import (
     KEY_N64_SWAP,
     N64RomContainer,
@@ -307,6 +309,12 @@ _CONTAINER_SAMPLES = {
             _noise(0x7FF0, 10) + b"TMR SEGA" + bytes(7) + b"\x4c" + _noise(0x8000, 11)
         ),
     ),
+    "container.md-rom": (
+        "f.md",
+        repair_md_checksum(
+            _noise(0x100, 13) + b"SEGA MEGA DRIVE " + _noise(0x7EF0, 14)
+        ),
+    ),
     "container.d88": (
         "f.d88",
         _d88_disk([[(r, 1, _noise(256, r + t), 256) for r in (1, 2)] for t in (0, 2)]),
@@ -533,6 +541,56 @@ def test_sms_write_honours_the_size_nibble_and_the_small_header_slots() -> None:
 def test_sms_write_leaves_a_headerless_file_alone() -> None:
     out = SmsRomContainer().write(b"\xaa" * 64, WriteTarget(b""), PipelineContext())
     assert out == b"\xaa" * 64
+
+
+def _md_rom(size: int = 0x10000) -> bytearray:
+    rom = bytearray(_noise(size, 15))
+    rom[0x100:0x110] = b" SEGA GENESIS   "
+    rom[0x1A4:0x1A8] = (size - 1).to_bytes(4, "big")
+    return rom
+
+
+def _md_sum(rom: bytes, end: int) -> bytes:
+    words = struct.unpack(f">{(end - 0x200) // 2}H", rom[0x200:end])
+    return (sum(words) & 0xFFFF).to_bytes(2, "big")
+
+
+def test_md_write_repairs_the_header_checksum() -> None:
+    # Big-endian words from $200 through the ROM end at $1A4 (an odd address,
+    # inclusive): a tile edit anywhere past the header invalidates the sum.
+    rom = _md_rom()
+    edited = bytearray(rom)
+    edited[0x4000:0x4010] = bytes(range(16))
+    out = MdRomContainer().write(
+        bytes(edited), WriteTarget(bytes(rom)), PipelineContext()
+    )
+    assert out[0x18E:0x190] == _md_sum(out, 0x10000)
+    assert out[:0x18E] + out[0x190:] == bytes(edited[:0x18E] + edited[0x190:])
+
+
+def test_md_write_stops_at_the_header_rom_end() -> None:
+    # An overdump padded past the end the header names is not summed, as the
+    # games' own loops never reach it; a field past the file falls back to it.
+    rom = _md_rom(0x10000)
+    rom[0x1A4:0x1A8] = (0x7FFF).to_bytes(4, "big")
+    out = MdRomContainer().write(bytes(rom), WriteTarget(b""), PipelineContext())
+    assert out[0x18E:0x190] == _md_sum(out, 0x8000)
+    rom[0x1A4:0x1A8] = (0xFFFFFF).to_bytes(4, "big")
+    out = MdRomContainer().write(bytes(rom), WriteTarget(b""), PipelineContext())
+    assert out[0x18E:0x190] == _md_sum(out, 0x10000)
+
+
+def test_md_write_leaves_a_headerless_file_alone() -> None:
+    out = MdRomContainer().write(b"\xaa" * 0x400, WriteTarget(b""), PipelineContext())
+    assert out == b"\xaa" * 0x400
+
+
+def test_smd_write_repairs_the_checksum_before_interleaving() -> None:
+    rom = bytes(_md_rom(0x4000))
+    out = SmdContainer().write(rom, WriteTarget(bytes(512 + 0x4000)), PipelineContext())
+    back = SmdContainer().read(ReadSource(out), PipelineContext())
+    assert back[0x18E:0x190] == _md_sum(back, 0x4000)
+    assert back == repair_md_checksum(rom)
 
 
 def test_gb_write_leaves_a_headerless_file_alone() -> None:
