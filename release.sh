@@ -15,6 +15,10 @@
 #      write the release notes first.)
 #   2. Create an annotated "vX.Y.Z" tag on that commit.
 #   3. Push the branch and the tag to origin. The tag push fires the build.
+#   4. Rebuild the local dist/ with packaging/build.py --clean --archive, so the
+#      app and archive on this machine match the version just released. From
+#      WSL this drives the Windows build through interop (the checkout's dist/
+#      holds the Windows app); skip it with --no-build.
 #
 # Run it from anywhere in the repo — it relocates to the repo root itself.
 
@@ -27,6 +31,7 @@ BUMP="patch"
 FORCE=0
 DRY_RUN=0
 ASSUME_YES=0
+LOCAL_BUILD=1
 
 SCRIPT_NAME="$(basename "$0")"
 
@@ -37,7 +42,8 @@ Usage: $SCRIPT_NAME [major|minor|patch] [options]
 Cut a release: bump __version__ in $VERSION_FILE, stamp the matching
 CHANGELOG.md section's "unreleased" marker with today's date, commit both, tag
 vX.Y.Z, and push the branch + tag to "$REMOTE". The tag push triggers the
-GitHub Actions release build.
+GitHub Actions release build. Finally, rebuild the local dist/ so it matches
+the release (from WSL, the Windows build via interop).
 
 Version bump (positional, default: patch):
   patch            x.y.Z  ->  x.y.(Z+1)   (default)
@@ -50,6 +56,7 @@ Options:
                    files are left uncommitted and are NOT part of the release.
   -n, --dry-run    Show what would happen; change nothing.
   -y, --yes        Don't prompt for confirmation before committing/pushing.
+  --no-build       Don't rebuild the local dist/ after pushing.
   -h, --help       Show this help and exit.
 
 Examples:
@@ -71,6 +78,7 @@ while [ $# -gt 0 ]; do
     -f|--force)        FORCE=1 ;;
     -n|--dry-run)      DRY_RUN=1 ;;
     -y|--yes)          ASSUME_YES=1 ;;
+    --no-build)        LOCAL_BUILD=0 ;;
     -h|--help)         usage; exit 0 ;;
     --)                shift; break ;;
     -*)                printf 'error: unknown option: %s\n\n' "$1" >&2; usage >&2; exit 2 ;;
@@ -142,6 +150,30 @@ grep -qE "^## $TAG([^0-9.]|\$)" CHANGELOG.md \
   || die "CHANGELOG.md has no \"## $TAG\" section — write the release notes before releasing."
 TODAY="$(date +%Y-%m-%d)"
 
+# ── Local build command ─────────────────────────────────────────────────────
+# PyInstaller only builds for the OS it runs under. The dist/ in this checkout
+# holds the Windows app, so from WSL drive the Windows venv's interpreter
+# through interop (cmd.exe inherits the current directory as its D:\ path) —
+# the recipe docs/releasing.md gives. --clean because PyInstaller never purges
+# dist/celpix, and stale files would otherwise ride along into the archive.
+BUILD_ARGS="--clean --archive"
+BUILD_DESC=""
+BUILD_CMD=()
+if [ "$LOCAL_BUILD" -eq 1 ]; then
+  if grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null \
+      && command -v cmd.exe >/dev/null 2>&1 && [ -x .venv/Scripts/python.exe ]; then
+    BUILD_DESC="Windows (via cmd.exe interop)"
+    BUILD_CMD=(cmd.exe /c ".venv\Scripts\python.exe packaging\build.py $BUILD_ARGS")
+  else
+    case "$(uname -s)" in
+      MINGW*|MSYS*|CYGWIN*) BUILD_DESC="Windows"; BUILD_CMD=(.venv/Scripts/python.exe) ;;
+      *)                    BUILD_DESC="$(uname -s)"; BUILD_CMD=(python3) ;;
+    esac
+    # shellcheck disable=SC2206 # BUILD_ARGS is a fixed, space-separated list
+    BUILD_CMD+=(packaging/build.py $BUILD_ARGS)
+  fi
+fi
+
 # ── Plan summary ────────────────────────────────────────────────────────────
 info "Release plan:"
 info "  repo:      $REPO_ROOT"
@@ -150,6 +182,11 @@ info "  bump:      $BUMP"
 info "  version:   $CURRENT_VERSION -> $NEW_VERSION"
 info "  tag:       $TAG  (triggers the release build on push)"
 info "  changelog: stamp \"## $TAG - unreleased\" -> \"## $TAG - $TODAY\""
+if [ "$LOCAL_BUILD" -eq 1 ]; then
+  info "  build:     rebuild local dist/ — $BUILD_DESC"
+else
+  info "  build:     skipped (--no-build)"
+fi
 info ""
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -159,6 +196,9 @@ if [ "$DRY_RUN" -eq 1 ]; then
   info "  2. git tag -a $TAG -m \"Release $TAG\""
   info "  3. git push $REMOTE $BRANCH"
   info "  4. git push $REMOTE $TAG   # triggers the build"
+  if [ "$LOCAL_BUILD" -eq 1 ]; then
+    info "  5. ${BUILD_CMD[*]}   # rebuild local dist/"
+  fi
   exit 0
 fi
 
@@ -225,4 +265,17 @@ info "Released $TAG. GitHub Actions is building the apps and will publish the re
 if [ -n "$slug" ]; then
   info "  https://github.com/$slug/actions"
   info "  https://github.com/$slug/releases"
+fi
+
+# The release is already out, so a failed local build only warns. The build
+# runs from the working tree: with --force it includes the uncommitted changes
+# the release left out.
+if [ "$LOCAL_BUILD" -eq 1 ]; then
+  info ""
+  info "Rebuilding local dist/ for $TAG — $BUILD_DESC ..."
+  if ! "${BUILD_CMD[@]}"; then
+    warn "local build failed; $TAG is released, but dist/ is stale. Retry with:"
+    warn "  ${BUILD_CMD[*]}"
+    exit 1
+  fi
 fi
