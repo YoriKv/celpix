@@ -135,6 +135,10 @@ def test_every_failure_opens_degraded_and_says_why(tmp_path) -> None:
             "table": RegionBinding(offset=0x100, length=4),
             "output_size": RegionBinding(offset=0x100, length=2),
         },
+        "choice not listed": {
+            "table": RegionBinding(offset=0x100, length=4),
+            "order": "sideways",
+        },
     }
     for why, bindings in cases.items():
         sl.inputs = {XOR_ID: bindings}
@@ -185,6 +189,50 @@ def test_a_flag_is_a_bool_and_refuses_a_number(tmp_path) -> None:
     )
     got = resolve_inputs(sl, Stage.COMPRESSION, XOR_ID, reg, ws)
     assert got.values["output_size"] == 8
+
+
+def test_a_choice_is_one_of_its_keys_and_refuses_any_other(tmp_path) -> None:
+    reg = _registry()
+    ws, _parent, sl = _rom(tmp_path)
+    # Always delivered: unbound is the default, else the first option.
+    assert resolve_inputs(sl, Stage.COMPRESSION, XOR_ID, reg, ws).values["order"] == (
+        "forward"
+    )
+    sl.inputs = {XOR_ID: {**sl.inputs[XOR_ID], "order": "reverse"}}
+    _cfg, px = _load(sl, ws, reg)
+    assert px.data == _xor(STREAM, TABLE)[::-1]
+
+    # A key the plugin does not list survives the project file — it is the
+    # resolver's to refuse, with a notice naming the choices, rather than the
+    # reader's to drop so that it quietly reads as the default.
+    sl.inputs = {XOR_ID: {**sl.inputs[XOR_ID], "order": "sideways"}}
+    project = tmp_path / "p.celpix"
+    save_project(ws, str(project), reg)
+    loaded = load_project(str(project)).entries[1]
+    assert loaded.inputs[XOR_ID]["order"] == "sideways"
+    got = resolve_inputs(sl, Stage.COMPRESSION, XOR_ID, reg, ws)
+    assert [p.key for p in got.problems] == ["order"]
+    assert "forward, reverse" in got.problems[0].detail
+    sl.inputs = {XOR_ID: {**sl.inputs[XOR_ID], "order": 1}}
+    assert [
+        p.key for p in resolve_inputs(sl, Stage.COMPRESSION, XOR_ID, reg, ws).problems
+    ] == ["order"]
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"options": ()},
+        {"options": (("a", "A"), ("a", "B"))},
+        {"options": (("a", "A"),), "default": "b"},
+        {"options": (("a", "A"),), "required": True},
+    ],
+)
+def test_a_malformed_choice_declaration_is_refused(bad) -> None:
+    from celpix.plugins.base import InputKind, InputSpec  # noqa: PLC0415
+
+    with pytest.raises(ValueError):
+        InputSpec("part", "Part", InputKind.CHOICE, **{"required": False, **bad})
 
 
 def test_a_parent_file_region_reads_the_parents_unsaved_bytes(tmp_path) -> None:
@@ -311,6 +359,7 @@ def test_bindings_round_trip_through_a_project_in_every_shape(tmp_path) -> None:
             "table": RegionBinding(offset=0x100, length=4),
             "output_size": 32,
             "invert": True,
+            "order": "reverse",
         }
     }
     project = tmp_path / "p.celpix"
@@ -323,6 +372,7 @@ def test_bindings_round_trip_through_a_project_in_every_shape(tmp_path) -> None:
     assert stored["output_size"] == {"offset": 0x300, "width": 2, "endian": "little"}
     assert raw["entries"][2]["inputs"][XOR_ID]["output_size"] == 32
     assert raw["entries"][2]["inputs"][XOR_ID]["invert"] is True
+    assert raw["entries"][2]["inputs"][XOR_ID]["order"] == "reverse"
     assert raw["entries"][0]["inputs"][XOR_ID]["table"] == {
         "offset": 0x100,
         "length": 4,
@@ -340,6 +390,7 @@ def test_bindings_round_trip_through_a_project_in_every_shape(tmp_path) -> None:
     )
     assert second.inputs[XOR_ID]["output_size"] == 32
     assert second.inputs[XOR_ID]["invert"] is True
+    assert second.inputs[XOR_ID]["order"] == "reverse"
 
 
 def test_a_binding_onto_a_closed_entry_is_dropped_on_load(tmp_path) -> None:

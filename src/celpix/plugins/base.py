@@ -362,6 +362,7 @@ class InputKind(str, Enum):
     REGION = "region"  # bytes cut from the entry's file or from another entry
     INTEGER = "integer"  # a number: a literal, or read out of bytes
     FLAG = "flag"  # yes or no: a checkbox, never required, unbound is its default
+    CHOICE = "choice"  # one of a declared list: a drop-down, never required
 
 
 @dataclass(frozen=True)
@@ -395,6 +396,16 @@ class InputSpec:
     exception: it is always delivered, as ``bool(default)`` when unbound, since
     a switch has no third state worth a plugin's attention.
 
+    A **choice** is one of ``options``, an ordered tuple of ``(key, label)``
+    pairs: the key is what a project file stores and what the plugin is handed
+    — a compatibility surface, like the input's own key — and the label is what
+    the drop-down shows. Like a flag it is **never required** and always
+    delivered: unbound, it is ``default`` (a key), or the first option when
+    there is none, so the drop-down never has to show an empty state. A
+    declaration breaking that — no options, a repeated key, a default among
+    none of them, ``required`` left on — is refused when the spec is built, so
+    the plugin fails to load with the reason rather than at the first entry.
+
     ``when_param`` is for an **engine**, whose inputs every preset on it would
     otherwise show: named, the input is offered only to an entry whose preset
     states that parameter — the packed tilemap engine's side array, which the
@@ -414,8 +425,49 @@ class InputSpec:
     stride: int = 1
     minimum: int = 0
     maximum: int = 0xFFFF_FFFF
-    default: int | None = None
+    default: int | str | None = None
     when_param: str = ""
+    options: tuple[tuple[str, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.kind is not InputKind.CHOICE:
+            if self.options:
+                raise ValueError(
+                    f"input {self.key!r}: options are only read on a choice"
+                )
+            return
+        # Normalised so a list of lists from a plugin compares and hashes like
+        # the tuple it means — the spec is frozen and may key a cache.
+        options = tuple((str(key), str(label)) for key, label in self.options)
+        object.__setattr__(self, "options", options)
+        keys = [key for key, _label in options]
+        if not keys:
+            raise ValueError(f"choice {self.key!r} declares no options")
+        if len(set(keys)) != len(keys) or not all(keys):
+            raise ValueError(
+                f"choice {self.key!r} repeats an option key or has an empty one"
+            )
+        if self.default is not None and self.default not in keys:
+            raise ValueError(
+                f"choice {self.key!r}: default {self.default!r} is not one of {keys}"
+            )
+        if self.required:
+            # A drop-down always shows one of its options, so "unbound" is a
+            # state the user could neither see nor produce: the default stands in.
+            raise ValueError(
+                f"choice {self.key!r} cannot be required: declare required=False"
+            )
+
+    @property
+    def choice_default(self) -> str:
+        """What an unbound **choice** delivers: its default, else its first option."""
+        if isinstance(self.default, str):
+            return self.default
+        return self.options[0][0] if self.options else ""
+
+    def option_label(self, key: str) -> str | None:
+        """The label a choice shows for ``key``; ``None`` for a key it lacks."""
+        return next((label for k, label in self.options if k == key), None)
 
 
 # The stages whose declared inputs are resolved and delivered, in pipeline order.

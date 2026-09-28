@@ -15,17 +15,21 @@ Rules
 - Only compression plugins and tilemap code formats may declare inputs. A
   tilemap format passes them as ``FormatInfo(..., inputs=(...))``. Declared on
   any other stage they are ignored, and celPix warns at load.
-- Kinds: ``REGION`` (bytes), ``INTEGER`` and ``FLAG`` (bool).
+- Kinds: ``REGION`` (bytes), ``INTEGER``, ``FLAG`` (bool) and ``CHOICE``
+  (one of ``options``, ``(key, label)`` pairs; the plugin gets the key, the
+  Inputs window shows the label). A choice is never required
+  (``required=False``); unbound it is ``default``, else the first option.
 - A required input is always present when a method runs. If it is unbound or
   invalid, celPix runs the stage as pass-through, marks the entry and names the
   input to bind.
 - An optional input that is unbound and has no ``default`` is absent from the
-  dict. A flag is always present: ``bool(default)`` when unbound.
+  dict. A flag and a choice are always present.
 - ``KEY_INPUTS`` is set for ``decompress``, ``compress``, the live preview and
   Scan.
 - Inputs are never written back. ``compress`` must raise for data the bound
   inputs cannot represent.
-- ``InputSpec.key`` is stored in project files: renaming it orphans bindings.
+- ``InputSpec.key`` and a choice's option keys are stored in project files:
+  renaming one orphans bindings.
 
 Format: byte-pair encoding. A byte below ``first_code`` is a literal; a byte at
 or above it selects a two-byte phrase from a table stored elsewhere in the file.

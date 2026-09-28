@@ -41,6 +41,7 @@ from celpix.plugins.builtins import (
     lz_command,
     lzkn1,
     lzss_ring,
+    lzw,
     namco_lz,
     nemesis,
     packbits,
@@ -2021,6 +2022,67 @@ def test_saxman_truncation_is_an_error_unless_partial() -> None:
     prefix, _, complete = saxman.decompress(cut, partial=True)
     assert 0 < len(prefix) < len(plain) and plain.startswith(prefix)
     assert not complete
+
+
+# -- LZW ------------------------------------------------------------------------
+
+_LZW_GIF2 = lzw.Params(
+    initial_bits=3, literal_bits=2, lsb_first=True, clear_code=4, end_code=5
+)
+_LZW_TIFF = lzw.Params(clear_code=256, end_code=257, early_change=True)
+_LZW_FIXED = lzw.Params(initial_bits=12, max_bits=12, end_code=0xFFF)
+
+
+def test_lzw_known_vectors_both_bit_orders() -> None:
+    """``1 1 1`` as GIF would store it (2-bit literals, 3-bit LSB-first codes:
+    clear, 1, the code being defined, end), and ``aaa`` as fixed 12-bit MSB-first
+    codes with the end code at the top of the table (literal, $100, $FFF)."""
+    assert lzw.decompress(bytes.fromhex("8c0b"), _LZW_GIF2) == (
+        bytes((1, 1, 1)),
+        2,
+        True,
+    )
+    assert lzw.compress(bytes((1, 1, 1)), _LZW_GIF2) == bytes.fromhex("8c0b")
+    fixed = bytes.fromhex("061100fff0")
+    assert lzw.decompress(fixed + b"\xaa", _LZW_FIXED) == (b"aaa", 5, True)
+    assert lzw.compress(b"aaa", _LZW_FIXED) == fixed
+    assert _LZW_FIXED.first == 0x100 and _LZW_GIF2.first == 6
+
+
+def test_lzw_early_change_widens_one_code_sooner() -> None:
+    gif8 = lzw.Params(clear_code=256, end_code=257)
+    assert [gif8.width(n) for n in (510, 511, 512)] == [9, 9, 10]
+    assert [_LZW_TIFF.width(n) for n in (510, 511, 512)] == [9, 10, 10]
+    assert _LZW_TIFF.width(1 << 12) == 12  # a full table stays at the maximum
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        _LZW_FIXED,  # no clear: the table freezes at $FFE
+        _LZW_TIFF,  # clears when full, early change
+        lzw.Params(
+            literal_bits=4, initial_bits=5, lsb_first=True, clear_code=16, end_code=17
+        ),
+        lzw.Params(),  # no special codes: the slice bounds the stream
+    ],
+    ids=["fixed-freeze", "tiff", "gif-4bit", "bare"],
+)
+def test_lzw_round_trips_past_a_full_table(params: lzw.Params) -> None:
+    rng = random.Random(11)
+    symbols = 1 << params.literal_bits
+    plain = bytes(rng.randrange(min(symbols, 12)) for _ in range(12000))
+    stream = lzw.compress(plain, params)
+    out, consumed, complete = lzw.decompress(stream, params)
+    assert out == plain
+    assert (consumed, complete) == (len(stream), params.end_code is not None)
+
+
+def test_lzw_rejects_special_codes_among_the_literals() -> None:
+    with pytest.raises(ValueError, match="overlaps the literals"):
+        lzw.Params(clear_code=0x41)
+    with pytest.raises(ValueError, match="cannot reach"):
+        lzw.Params(initial_bits=8, clear_code=256)
 
 
 def test_lzkn1_decodes_a_reference_stream() -> None:

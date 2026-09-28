@@ -753,7 +753,7 @@ def test_inputs_shapes_the_loader_skips_are_reported(project, entry):
                 _bound_slice(
                     entry,
                     flag=True,
-                    text="0x100",
+                    listed=[1, 2],
                     negative={"offset": -1, "length": 4},
                     wide={"offset": 0x300, "width": 9},
                     order={"offset": 0x300, "width": 2, "endian": "middle"},
@@ -763,7 +763,7 @@ def test_inputs_shapes_the_loader_skips_are_reported(project, entry):
         },
         files=ROM,
     )
-    # A boolean is a flag's shape, so `flag=True` is only an undeclared key.
+    # A boolean is a flag's shape and a string a choice's, so neither is E907.
     assert codes.count("E907") == 1
     assert "E909" in codes and "E910" in codes
     assert "W911" in codes and "W913" in codes
@@ -865,7 +865,9 @@ def _project_with_input(tmp_path, value):
 def _input_codes(report) -> list[str]:
     # the minimal fixture project draws its own findings (no session, no view);
     # only the declaration checks are under test here
-    return [d.code for d in report.diagnostics if d.code in ("E914", "W913", "E919")]
+    return [
+        d.code for d in report.diagnostics if d.code in ("E914", "W913", "E919", "E920")
+    ]
 
 
 def test_a_flag_bound_as_a_number_is_an_error_and_a_boolean_is_quiet(tmp_path, ids):
@@ -873,6 +875,18 @@ def test_a_flag_bound_as_a_number_is_an_error_and_a_boolean_is_quiet(tmp_path, i
     assert _input_codes(report) == ["E919"]
     report = lint(str(_project_with_input(tmp_path, {"strict": True})), ids)
     assert _input_codes(report) == []
+
+
+def test_a_choice_outside_its_options_or_on_a_number_is_an_error(tmp_path, ids):
+    # Refused by the app like an out-of-range integer: the stage is dropped.
+    for value, codes in (
+        ({"part": "tiles"}, []),
+        ({"part": "attrs"}, ["E920"]),
+        ({"part": 1}, ["E920"]),
+        ({"interleave": "tiles"}, ["E920"]),
+    ):
+        report = lint(str(_project_with_input(tmp_path, value)), ids)
+        assert _input_codes(report) == codes, value
 
 
 def test_an_input_outside_the_declared_range_is_an_error(tmp_path, ids):

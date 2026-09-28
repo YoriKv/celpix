@@ -421,11 +421,57 @@ class FlagRow(_Row):
             )
 
 
+class ChoiceRow(_Row):
+    """A **choice** input: a drop-down of the spec's labels, holding its keys.
+
+    The flag's rule, for the flag's reason: unbound reads as the default, so
+    the default showing binds nothing and only another option is written. A
+    stored key the plugin does not list is kept as an extra item, marked, so
+    the status mark can say why it is refused and Apply does not quietly
+    replace it before the user has picked something else.
+    """
+
+    use_selection_requested = Signal(object)  # never emitted: nothing to select
+    go_to_requested = Signal(object)  # never emitted: nowhere to go
+
+    def __init__(self, spec: InputSpec, sources: list[Entry]) -> None:
+        super().__init__(spec, sources)
+        # The format pickers' width, not the short one: the labels are the
+        # plugin's, so nothing here bounds how long they run.
+        self._combo = CompactComboBox(PRESET_COMBO_WIDTH)
+        for key, label in spec.options:
+            self._combo.addItem(label, key)
+        self._combo.setToolTip(spec.tooltip or spec.label)
+        self._combo.currentIndexChanged.connect(lambda _i: self.changed.emit())
+
+    def widgets(self) -> list[QWidget]:
+        return [self._combo]
+
+    def binding(self) -> str | None:
+        key = self._combo.currentData()
+        return None if key == self.spec.choice_default else key
+
+    def set_binding(self, binding: InputBinding | None) -> None:
+        with signals_blocked(self._combo):
+            # Drop any unknown key a previous binding added: the list is the
+            # spec's options plus, at most, the one being shown.
+            while self._combo.count() > len(self.spec.options):
+                self._combo.removeItem(self._combo.count() - 1)
+            key = binding if isinstance(binding, str) else self.spec.choice_default
+            at = self._combo.findData(key)
+            if at < 0:
+                self._combo.addItem(f"{key} (unknown)", key)
+                at = self._combo.count() - 1
+            self._combo.setCurrentIndex(at)
+
+
 def _row_for(spec: InputSpec, sources: list[Entry]) -> _Row:
     if spec.kind is InputKind.INTEGER:
         return IntegerRow(spec, sources)
     if spec.kind is InputKind.FLAG:
         return FlagRow(spec, sources)
+    if spec.kind is InputKind.CHOICE:
+        return ChoiceRow(spec, sources)
     return RegionRow(spec, sources)
 
 

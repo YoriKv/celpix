@@ -59,11 +59,13 @@ class XorTableCodec:
     """A scheme whose stream is XORed against a table kept elsewhere — the
     smallest plugin with **inputs** (``docs/design/plugin-inputs.md``).
 
-    Three inputs, one of each kind: the table is a required region of 2-byte
+    Four inputs, one of each kind: the table is a required region of 2-byte
     elements, the output size an optional integer that truncates the result,
-    and a flag that inverts every byte on top. Like PackBits it has no end
-    marker, so it never reports completion. Both directions are the one XOR
-    (and the one inversion), so a round trip is exact whatever the table.
+    a flag that inverts every byte on top, and a choice that reverses the
+    result. Like PackBits it has no end marker, so it never reports
+    completion. Both directions are the one XOR (and the one inversion), with
+    the reversal on the other side of it, so a round trip is exact whatever
+    the table.
     """
 
     info = PluginInfo(
@@ -83,18 +85,39 @@ class XorTableCodec:
                 unit="byte",
             ),
             InputSpec("invert", "Invert", InputKind.FLAG, required=False),
+            InputSpec(
+                "order",
+                "Order",
+                InputKind.CHOICE,
+                required=False,
+                options=(("forward", "Forward"), ("reverse", "Reversed")),
+            ),
         ),
     )
 
-    def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
-        inputs = ctx.get(KEY_INPUTS) or {}
+    @staticmethod
+    def _code(data: bytes, inputs: dict) -> bytes:
         out = xor_bytes(data, inputs["table"])
         if inputs.get("invert"):
             out = bytes(b ^ 0xFF for b in out)
+        return out
+
+    @staticmethod
+    def _cut(out: bytes, inputs: dict) -> bytes:
         return out[: inputs["output_size"]] if "output_size" in inputs else out
 
+    def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
+        inputs = ctx.get(KEY_INPUTS) or {}
+        out = self._code(data, inputs)
+        if inputs.get("order") == "reverse":
+            out = out[::-1]
+        return self._cut(out, inputs)
+
     def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
-        return self.decompress(data, ctx)
+        inputs = ctx.get(KEY_INPUTS) or {}
+        if inputs.get("order") == "reverse":
+            data = data[::-1]
+        return self._cut(self._code(data, inputs), inputs)
 
 
 def xor_bytes(data: bytes, table: bytes) -> bytes:

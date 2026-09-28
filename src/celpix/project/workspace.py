@@ -2003,7 +2003,9 @@ def _stage_inputs(
     plugin_id: str,
     registry: Registry,
     workspace: Workspace | None,
-) -> tuple[dict[Stage, dict[str, bytes | int]], tuple[tuple[Stage, str, str], ...]]:
+) -> tuple[
+    dict[Stage, dict[str, bytes | int | str]], tuple[tuple[Stage, str, str], ...]
+]:
     """``stage``'s resolved inputs in the config's shape, and its problems as
     the ``(stage, summary, detail)`` notices the load will say.
 

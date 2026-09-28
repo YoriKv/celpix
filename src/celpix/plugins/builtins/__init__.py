@@ -63,6 +63,7 @@ from .lz16 import Lz16Compression, Lz16ImprovedCompression
 from .lz_command import Lz1, Lz1Improved, Lz2, Lz2Improved
 from .lzkn1 import Lzkn1Compression, Lzkn1ModuledCompression
 from .lzss_ring import LzssRingCompression
+from .lzw import LzwCompression
 from .m7_vram import M7VramReshape
 from .md_rom import MdRomContainer
 from .md_sprite import MdSpriteCodec
@@ -158,6 +159,7 @@ def register_builtins(reg: Registry) -> None:
         Lz16ImprovedCompression(),
         KoeiLzCompression(),
         LzssRingCompression(),
+        LzwCompression(),
         GbaLz77Compression(),
         NemesisCompression(),
         EnigmaCompression(),

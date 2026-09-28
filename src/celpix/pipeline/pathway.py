@@ -134,7 +134,7 @@ class PathwayConfig:
     # (:func:`~celpix.project.inputs.resolve_inputs`); the pipeline only hands
     # each stage its own dict as :data:`~celpix.core.context.KEY_INPUTS` right
     # before running it. A stage with no entry here gets no key at all.
-    inputs: dict[Stage, dict[str, bytes | int]] = field(default_factory=dict)
+    inputs: dict[Stage, dict[str, bytes | int | str]] = field(default_factory=dict)
     # Why a stage's inputs could not be resolved, as ``(stage, summary, detail)``
     # — said once at load, like ``missing_plugins``. The stage they belong to has
     # already been put on its fallback by the host: a compression scheme with an

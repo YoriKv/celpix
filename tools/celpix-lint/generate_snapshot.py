@@ -62,6 +62,12 @@ def snapshot() -> dict:
                         "minimum": int(spec.minimum),
                         "maximum": int(spec.maximum),
                         "stride": int(spec.stride),
+                        # Only a choice has options, and only its keys are stored.
+                        **(
+                            {"options": [key for key, _label in spec.options]}
+                            if spec.options
+                            else {}
+                        ),
                     }
                     for spec in plugin.info.inputs
                 ]

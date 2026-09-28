@@ -2,14 +2,15 @@
 they need from outside its own bytes (``docs/design/plugin-inputs.md``).
 
 Keyed by **plugin id**, then by the input's key, and every binding is one of
-four shapes told apart by its keys and type: a region (``offset`` and
+five shapes told apart by its keys and type: a region (``offset`` and
 ``length``), an integer read from bytes (``offset``, ``width``, ``endian``), a
-bare integer, or a bare boolean for a flag.
+bare integer, a bare boolean for a flag, or a bare string for a choice.
 Either of the first two may add ``entry_index`` to reach into another entry's
 resolved bytes, the composite piece's rule and the same positional fragility.
 
 The half that needs the plugin — which keys a codec declares, the range an
-integer must fall in, the stride a region's length must divide by — travels in
+integer must fall in, the keys a choice may name, the stride a region's length
+must divide by — travels in
 the registry snapshot (``known.KnownIds.inputs``), because the consequence of
 getting it wrong is the quietest failure in the format: the app **refuses** a
 binding outside the declared range and drops the whole stage, so a compressed
@@ -133,8 +134,8 @@ def _declared(
     specs: list[dict],
     pointer: str,
 ) -> None:
-    """The binding against what the plugin declared: a key it asks for, and a
-    literal inside the range it accepts."""
+    """The binding against what the plugin declared: a key it asks for, a
+    literal inside the range it accepts, and a choice among its options."""
     spec = next((s for s in specs if s.get("key") == key), None)
     if spec is None:
         ctx.warn(
@@ -159,6 +160,31 @@ def _declared(
                 "that stage removed, with only a notice to say why.",
             )
         return
+    if spec.get("kind") == "choice":
+        options = spec.get("options") or []
+        if not isinstance(binding, str) or binding not in options:
+            ctx.error(
+                "E920",
+                f"{key!r} = {binding!r} is not one of the choices {plugin_id!r} "
+                f"declares ({', '.join(options)}) — celPix refuses the binding and "
+                "drops the stage",
+                pointer=pointer,
+                entry=view,
+                detail="A choice is a bare string naming one option's key. The "
+                "entry opens with that stage removed, with only a notice to say "
+                "why.",
+            )
+        return
+    if isinstance(binding, str):
+        ctx.error(
+            "E920",
+            f"{key!r} = {binding!r}, a choice, but {plugin_id!r} wants "
+            f"{'a region' if spec.get('kind') == 'region' else 'an integer'} there "
+            "— celPix refuses the binding and drops the stage",
+            pointer=pointer,
+            entry=view,
+        )
+        return
     if isinstance(binding, bool) or not isinstance(binding, int):
         return
     lo, hi = spec.get("minimum", 0), spec.get("maximum", 0xFFFF_FFFF)
@@ -178,8 +204,8 @@ def _declared(
 
 
 def _binding(ctx: Context, view: EntryView, binding: object, pointer: str) -> None:
-    if isinstance(binding, bool):
-        return  # a flag; whether the plugin wants one there is `_declared`'s
+    if isinstance(binding, bool | str):
+        return  # a flag or a choice; whether the plugin wants one is `_declared`'s
     if isinstance(binding, int):
         if binding < 0:
             ctx.warn(
@@ -199,7 +225,7 @@ def _binding(ctx: Context, view: EntryView, binding: object, pointer: str) -> No
             entry=view,
             detail="A region is {offset, length}; an integer read from bytes is "
             "{offset, width, endian}; a literal is a bare number; a flag is a "
-            "bare true or false.",
+            "bare true or false; a choice is a bare string.",
         )
         return
     offset = binding.get("offset")

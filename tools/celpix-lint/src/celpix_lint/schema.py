@@ -22,7 +22,7 @@ from __future__ import annotations
 
 #: The reader's own :data:`celpix.project.projectfile.PROJECT_VERSION`. A file
 #: claiming more than this is one a newer celPix wrote.
-KNOWN_PROJECT_VERSION = 5
+KNOWN_PROJECT_VERSION = 6
 
 # -- enumerations (celpix.project.workspace, celpix.core) ------------------
 #: ``EntryKind`` — how an entry is *bounded*.

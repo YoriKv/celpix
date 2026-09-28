@@ -59,6 +59,15 @@ def ids() -> KnownIds:
                         "maximum": 0,
                         "stride": 1,
                     },
+                    {
+                        "key": "part",
+                        "kind": "choice",
+                        "required": False,
+                        "minimum": 0,
+                        "maximum": 0xFFFF_FFFF,
+                        "stride": 1,
+                        "options": ["all", "tiles", "map"],
+                    },
                 ]
             }
         },

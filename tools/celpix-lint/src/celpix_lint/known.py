@@ -35,8 +35,9 @@ class KnownIds:
     #: back to (``celpix.plugins.aliases``).
     renamed: dict[str, str] = field(default_factory=dict)
     #: ``stage -> {plugin id: [input specs]}``, each spec a dict with ``key``,
-    #: ``kind``, ``required``, ``minimum``, ``maximum`` and ``stride`` — what the
-    #: app checks a binding against before accepting it. Only the plugins that
+    #: ``kind``, ``required``, ``minimum``, ``maximum`` and ``stride``, and a
+    #: choice's ``options`` (its keys) — what the app checks a binding against
+    #: before accepting it. Only the plugins that
     #: declare inputs appear; a plugin absent here declares none.
     inputs: dict[str, dict[str, list[dict]]] = field(default_factory=dict)
     #: ``"shipped snapshot"`` or ``"live registry"`` — quoted in the
@@ -178,6 +179,8 @@ def load_live() -> KnownIds | None:
                         "minimum": int(spec.minimum),
                         "maximum": int(spec.maximum),
                         "stride": int(spec.stride),
+                        # A choice's keys; a celPix from before choices has none.
+                        **_options(spec),
                     }
                     for spec in plugin.info.inputs
                 ]
@@ -190,6 +193,11 @@ def load_live() -> KnownIds | None:
         authoritative=True,
         project_version=PROJECT_VERSION,
     )
+
+
+def _options(spec) -> dict:  # noqa: ANN001 — a celpix InputSpec
+    options = getattr(spec, "options", ())
+    return {"options": [key for key, _label in options]} if options else {}
 
 
 def for_project(ids: KnownIds, project_path: str) -> KnownIds:

@@ -136,13 +136,21 @@ export UV_PROJECT_ENVIRONMENT=.venv-linux
 uv run tools/celpix-lint/generate_snapshot.py
 ```
 
+Regenerate whenever a plugin, a preset or `PROJECT_VERSION` changes. A new
+project version also needs `KNOWN_PROJECT_VERSION` in `celpix_lint/schema.py`
+bumped by hand; the generator does not touch it.
+
 ## Developing
 
 ```bash
 cd tools/celpix-lint
-uv run --with pytest pytest        # or: PYTHONPATH=src python -m pytest
-uv run ruff check . && uv run ruff format .
+uv run --no-project --with pytest --with-editable . pytest -q tests
+uv run --no-project --with ruff ruff check src tests
 ```
+
+Run them from this folder. The package has no dependency on celPix, so celPix's
+own suite does not run these tests, and `uv run pytest tools/celpix-lint` from
+the repo root fails on imports.
 
 The tests write real project files to a temp directory rather than feeding dicts
 to the checks, because half of what is being tested is the reading — path

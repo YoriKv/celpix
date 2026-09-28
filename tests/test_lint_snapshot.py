@@ -98,6 +98,12 @@ def test_input_declarations_match(snapshot):
                     "minimum": int(spec.minimum),
                     "maximum": int(spec.maximum),
                     "stride": int(spec.stride),
+                    # a choice's keys are what a stored binding is checked against
+                    **(
+                        {"options": [key for key, _label in spec.options]}
+                        if spec.options
+                        else {}
+                    ),
                 }
                 for spec in plugin.info.inputs
             ]

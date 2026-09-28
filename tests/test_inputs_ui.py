@@ -214,7 +214,8 @@ def test_the_slice_dialog_shows_the_codecs_bindings_only_under_that_codec(
     qtbot.addWidget(dialog)
     assert (
         dialog._inputs.text()
-        == "Key table: 0x000100, 4 B; Output size: unbound (optional); Invert: no"
+        == "Key table: 0x000100, 4 B; Output size: unbound (optional); Invert: no; "
+        "Order: Forward"
     )
     dialog._decompress.setCurrentIndex(dialog._decompress.findData(NO_COMPRESSION))
     assert dialog._inputs.text() == ""
@@ -256,6 +257,7 @@ def test_the_slice_dialogs_badge_edits_the_codec_the_dialog_has_picked(
         (XOR_ID, "table"),
         (XOR_ID, "output_size"),
         (XOR_ID, "invert"),
+        (XOR_ID, "order"),
     }
     # Above the modal dialog, or it would be drawn and then ignore every click.
     assert form.windowModality() == Qt.WindowModality.ApplicationModal
@@ -268,6 +270,7 @@ def test_the_slice_dialogs_badge_edits_the_codec_the_dialog_has_picked(
         (XOR_ID, "table"),
         (XOR_ID, "output_size"),
         (XOR_ID, "invert"),
+        (XOR_ID, "order"),
     }
     assert form.windowModality() == Qt.WindowModality.ApplicationModal
     dialog.refresh_inputs()  # what returning to the dialog does
@@ -360,3 +363,36 @@ def test_a_flag_row_binds_only_when_switched(qtbot, tmp_path) -> None:
     window._inputs_window._on_apply()
     assert "invert" not in entry.inputs[XOR_ID]
     assert window._doc.pixel_data == xor_bytes(STREAM, TABLE)
+
+
+def test_a_choice_row_stores_keys_and_keeps_a_key_it_does_not_list(
+    qtbot, tmp_path
+) -> None:
+    window, rom = _open(qtbot, tmp_path)
+    entry = _bound_slice(window, rom)
+    window._activate_entry(entry)
+    window._show_inputs(entry)
+    form = window._inputs_window
+    row = form._rows[(XOR_ID, "order")]
+    # Labels shown, keys stored; the default showing binds nothing.
+    assert [row._combo.itemText(i) for i in range(row._combo.count())] == [
+        "Forward",
+        "Reversed",
+    ]
+    assert row.binding() is None
+    row._combo.setCurrentIndex(1)
+    assert row.binding() == "reverse"
+    form._on_apply()
+    assert entry.inputs[XOR_ID]["order"] == "reverse"
+    assert window._doc.pixel_data == xor_bytes(STREAM, TABLE)[::-1]
+
+    # A key the plugin does not list (a typo, a newer plugin's option) is shown
+    # as itself and marked, not swapped for the default behind the user's back.
+    entry.inputs = {XOR_ID: {**entry.inputs[XOR_ID], "order": "sideways"}}
+    window._show_inputs(entry)
+    row = window._inputs_window._rows[(XOR_ID, "order")]
+    assert row._combo.currentText() == "sideways (unknown)"
+    assert row.binding() == "sideways"
+    assert row.status_widget().text() == "!"
+    row._combo.setCurrentIndex(0)
+    assert row.status_widget().text() != "!"

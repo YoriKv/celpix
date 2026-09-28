@@ -1,6 +1,6 @@
 # Project File Format
 
-Specification of the `.celpix` project file. Schema version **5**.
+Specification of the `.celpix` project file. Schema version **6**.
 
 ## 1. Encoding
 
@@ -94,9 +94,9 @@ Keys that name another entry: `current`, `tile_source.entry_index`,
 | Rule | |
 |---|---|
 | `version` | Top-level int. Missing reads as `1` |
-| Writer | Always writes the current version (`5`) |
+| Writer | Always writes the current version (`6`) |
 | Older file | Migrated forward one version at a time before any key is read |
-| Newer file | Opened with the tolerance rules of §2.2; the UI warns that saving rewrites it at version 5 and drops unknown keys |
+| Newer file | Opened with the tolerance rules of §2.2; the UI warns that saving rewrites it at version 6 and drops unknown keys |
 | Plugin id renames | Independent of `version` (§2.5) |
 
 | Migration | Change |
@@ -105,6 +105,7 @@ Keys that name another entry: `current`, `tile_source.entry_index`,
 | 2 → 3 | None. Adds `inputs` |
 | 3 → 4 | None. Adds `palette_mode: "entry"` with `palette.entry`; `offset` palettes on composites; new plugin input keys |
 | 4 → 5 | None. Adds `session`/`view` on `palette` entries, `parent` on slices and bookmarks, `current` naming a `palette` entry |
+| 5 → 6 | None. Adds the choice binding shape (§5.10) |
 
 ## 4. Top level
 
@@ -314,6 +315,7 @@ Binding shapes (determined by type and keys present):
 | Shape | JSON | Constraints |
 |---|---|---|
 | Flag | `true` \| `false` | — |
+| Choice | string | One of the option keys the plugin declares. Any other string loads, but the input fails to resolve and the entry opens degraded |
 | Literal integer | int | — |
 | Region | `{"offset": int, "length": int}` | `offset` ≥ 0, `length` ≥ 0 |
 | Integer from bytes | `{"offset": int, "width": int, "endian": "big" \| "little"}` | `offset` ≥ 0, `width` ≥ 1. A `width` over 8 loads, but the input fails to resolve and the entry opens degraded. `endian` other than `"little"` reads as big. Presence of `width` selects this shape |
@@ -435,7 +437,7 @@ Copying entries places the same Entry records on the clipboard.
 
 ```json
 {
-  "version": 5,
+  "version": 6,
   "current": 1,
   "entries": [
     {

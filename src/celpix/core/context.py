@@ -60,8 +60,9 @@ KEY_DECOMPRESS_PARTIAL = "compression.allow-partial"
 # extent, not a truncation point. Distinguishes "the whole structure is in
 # view" from a best-effort partial decode.
 KEY_DECOMPRESS_COMPLETE = "compression.complete"
-# dict[str, bytes | int]: the **current stage's** resolved inputs — the bytes
-# and numbers a plugin declared it needs from outside its own slice
+# dict[str, bytes | int | str]: the **current stage's** resolved inputs — the
+# bytes, numbers, flags and choice keys a plugin declared it needs from outside
+# its own slice
 # (:class:`~celpix.plugins.base.InputSpec`), keyed by the spec's ``key``. Set by
 # the host immediately before each stage that declares any runs, and only from
 # that stage's own bindings, so a compression input and a tilemap input of the

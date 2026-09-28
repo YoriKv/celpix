@@ -6,7 +6,7 @@ table is shared by forty streams and stored ahead of them, or a sprite mapping
 kept as parallel arrays, needs bytes no slice can reach — so the plugin
 **declares** what it needs (:class:`~celpix.plugins.base.InputSpec`), the entry
 **binds** each one (:attr:`~celpix.project.workspace.Entry.inputs`), and this
-module turns the bindings into the ``bytes`` and ``int`` values the pipeline
+module turns the bindings into the ``bytes``, ``int`` and ``str`` values the pipeline
 hands over as :data:`~celpix.core.context.KEY_INPUTS`
 (``docs/design/plugin-inputs.md``).
 
@@ -125,9 +125,9 @@ class IntegerFromBytes:
 
 
 #: One bound input: a region, an integer read from bytes, a literal integer,
-#: or a flag's ``bool`` — told from an integer by its type, since ``bool`` is
-#: an ``int`` subclass and a flag spec refuses a number.
-InputBinding = RegionBinding | IntegerFromBytes | int | bool
+#: a flag's ``bool`` — told from an integer by its type, since ``bool`` is an
+#: ``int`` subclass and a flag spec refuses a number — or a choice's option key.
+InputBinding = RegionBinding | IntegerFromBytes | int | bool | str
 #: One plugin's bindings, by the spec's key.
 Bindings = dict[str, InputBinding]
 
@@ -172,7 +172,7 @@ class ResolvedInputs:
     binding to quietly drop.
     """
 
-    values: dict[str, bytes | int]
+    values: dict[str, bytes | int | str]
     problems: tuple[InputProblem, ...] = ()
 
     @property
@@ -382,7 +382,7 @@ def resolve_inputs(
     """
     specs = offered_specs(input_specs(registry, stage, plugin_id), entry, registry)
     bindings = entry.inputs.get(plugin_id, {})
-    values: dict[str, bytes | int] = {}
+    values: dict[str, bytes | int | str] = {}
     problems: list[InputProblem] = []
     sources: dict[int, tuple[bytes, int]] = {}
 
@@ -409,6 +409,8 @@ def resolve_inputs(
                 values[spec.key] = spec.default
             elif spec.kind is InputKind.FLAG:
                 values[spec.key] = bool(spec.default)
+            elif spec.kind is InputKind.CHOICE:
+                values[spec.key] = spec.choice_default
             continue
         try:
             values[spec.key] = _resolve_one(spec, binding, source_of)
@@ -421,16 +423,27 @@ class _Unresolved(Exception):
     """One binding's failure, carrying the notice detail."""
 
 
+def _shape(binding: InputBinding) -> str:
+    """What a binding is, in the words a wrong-shape notice uses."""
+    if isinstance(binding, RegionBinding):
+        return "a byte range"
+    if isinstance(binding, bool):
+        return "yes or no"
+    if isinstance(binding, str):
+        return "a choice"
+    return "a number"
+
+
 def _resolve_one(
     spec: InputSpec,
     binding: InputBinding,
     source_of,  # noqa: ANN001 — Callable[[RegionBinding | IntegerFromBytes], tuple[bytes, int]]
-) -> bytes | int:
+) -> bytes | int | str:
     if spec.kind is InputKind.REGION:
         if not isinstance(binding, RegionBinding):
             raise _Unresolved(
-                f"{spec.label} is bound as a number, but this format\n"
-                "needs a byte range here."
+                f"{spec.label} is bound as {_shape(binding)}, but this\n"
+                "format needs a byte range here."
             )
         stride = max(1, spec.stride)
         if binding.length <= 0:
@@ -446,10 +459,25 @@ def _resolve_one(
         if isinstance(binding, bool):
             return binding
         raise _Unresolved(
-            f"{spec.label} is bound as a "
-            f"{'byte range' if isinstance(binding, RegionBinding) else 'number'},\n"
+            f"{spec.label} is bound as {_shape(binding)},\n"
             "but this format wants yes or no here."
         )
+    if spec.kind is InputKind.CHOICE:
+        if not isinstance(binding, str):
+            raise _Unresolved(
+                f"{spec.label} is bound as {_shape(binding)},\n"
+                "but this format wants one of its choices here."
+            )
+        if spec.option_label(binding) is None:
+            # Refused rather than read as the default: a key this plugin does not
+            # list is a typo or a newer plugin's option, and quietly decoding
+            # something else is the one failure nobody would notice.
+            raise _Unresolved(
+                f"{spec.label} is {binding!r}, which is not one of\n"
+                f"this format's choices: "
+                f"{', '.join(key for key, _label in spec.options)}."
+            )
+        return binding
     if spec.kind is InputKind.INTEGER:
         if isinstance(binding, IntegerFromBytes):
             if not 1 <= binding.width <= _MAX_INT_WIDTH:
@@ -463,8 +491,8 @@ def _resolve_one(
             value = binding
         else:
             raise _Unresolved(
-                f"{spec.label} is bound as a byte range, but this format\n"
-                "needs a number here."
+                f"{spec.label} is bound as {_shape(binding)}, but this\n"
+                "format needs a number here."
             )
         if not spec.minimum <= value <= spec.maximum:
             raise _Unresolved(

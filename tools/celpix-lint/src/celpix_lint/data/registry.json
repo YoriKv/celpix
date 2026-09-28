@@ -19,6 +19,68 @@
           "stride": 1
         }
       ],
+      "compression.lzw": [
+        {
+          "key": "initial_bits",
+          "kind": "integer",
+          "maximum": 16,
+          "minimum": 2,
+          "required": false,
+          "stride": 1
+        },
+        {
+          "key": "max_bits",
+          "kind": "integer",
+          "maximum": 16,
+          "minimum": 2,
+          "required": false,
+          "stride": 1
+        },
+        {
+          "key": "literal_bits",
+          "kind": "integer",
+          "maximum": 8,
+          "minimum": 1,
+          "required": false,
+          "stride": 1
+        },
+        {
+          "key": "bit_order",
+          "kind": "choice",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "options": [
+            "msb",
+            "lsb"
+          ],
+          "required": false,
+          "stride": 1
+        },
+        {
+          "key": "clear_code",
+          "kind": "integer",
+          "maximum": 65535,
+          "minimum": 1,
+          "required": false,
+          "stride": 1
+        },
+        {
+          "key": "end_code",
+          "kind": "integer",
+          "maximum": 65535,
+          "minimum": 1,
+          "required": false,
+          "stride": 1
+        },
+        {
+          "key": "early_change",
+          "kind": "flag",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "required": false,
+          "stride": 1
+        }
+      ],
       "compression.nes-ppu-list": [
         {
           "key": "page",
@@ -218,6 +280,10 @@
         "tilemap"
       ],
       "compression.lzss-ring": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.lzw": [
         "pixels",
         "tilemap"
       ],
@@ -684,7 +750,7 @@
     ],
     "reshape": []
   },
-  "project_version": 5,
+  "project_version": 6,
   "renamed": {
     "codec.color-indexed": "codec.palette.indexed",
     "codec.color-mask": "codec.palette.mask",

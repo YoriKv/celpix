@@ -321,7 +321,7 @@ def find_next_structure(
     *,
     progress_every: int = 64,
     on_tick: Callable[[int], bool] | None = None,
-    inputs: dict[str, bytes | int] | None = None,
+    inputs: dict[str, bytes | int | str] | None = None,
     alignment: int = 1,
     accept: Callable[[bytes, int], bool] | None = None,
 ) -> ScanResult:

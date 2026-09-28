@@ -88,7 +88,7 @@ from celpix.project.workspace import (
 # detail: an id names what an entry was opened *with*, so a rename with no
 # forwarding address resets that entry to pass-through, which reads as data
 # loss. That mapping lives in `plugins/aliases.py`.
-PROJECT_VERSION = 5
+PROJECT_VERSION = 6
 PROJECT_EXTENSION = ".celpix"
 
 # The two alphabet presets celPix used to ship, by the id an older project names
@@ -145,7 +145,7 @@ class LoadedProject:
 #
 # One entry per version bump, keyed by the version it *reads*: ``_MIGRATIONS[n]``
 # takes a document written at version ``n`` and returns it at ``n + 1``. They run
-# in sequence, so a version-1 file opened by a version-5 build is walked forward
+# in sequence, so a version-1 file opened by a version-6 build is walked forward
 # one step at a time and no migration ever has to know about more than the bump
 # it was written for.
 #
@@ -233,11 +233,26 @@ def _migrate_4_to_5(data: dict[str, object]) -> dict[str, object]:
     return data
 
 
+def _migrate_5_to_6(data: dict[str, object]) -> dict[str, object]:
+    """v5 → v6: an input binding may be a bare string — a **choice** input's
+    option key (``docs/design/plugin-inputs.md`` §3).
+
+    Purely additive, so there is nothing to rewrite: every v5 file means the
+    same at v6. The bump exists for the other direction, as 4 → 5's did. A v5
+    build skips a string binding as malformed, so the entry decodes with the
+    choice's default rather than the option bound, and **drops the binding on
+    its next save**. The number is what makes it warn
+    before it does (``docs/design/project-format.md`` §2).
+    """
+    return data
+
+
 _MIGRATIONS: dict[int, Callable[[dict[str, object]], dict[str, object]]] = {
     1: _migrate_1_to_2,
     2: _migrate_2_to_3,
     3: _migrate_3_to_4,
     4: _migrate_4_to_5,
+    5: _migrate_5_to_6,
 }
 
 
@@ -1126,7 +1141,8 @@ def _inputs_dict(
     - a **region** writes ``offset`` and ``length``;
     - an integer **read from bytes** writes ``offset``, ``width`` and ``endian``;
     - a **literal** integer is a bare number;
-    - a **flag** is a bare ``true`` or ``false``.
+    - a **flag** is a bare ``true`` or ``false``;
+    - a **choice** is its option's key, a bare string.
 
     Either of the first two adds ``entry_index`` when it reaches into another
     entry — the position rule :func:`_tile_source_dict` states, ``-1`` for one
@@ -1148,7 +1164,7 @@ def _inputs_dict(
 
 
 def _binding_dict(binding: InputBinding, positions: dict[int, int]) -> object:
-    if isinstance(binding, bool):
+    if isinstance(binding, bool | str):
         return binding
     if isinstance(binding, RegionBinding):
         data: dict[str, object] = {"offset": binding.offset, "length": binding.length}
@@ -1205,7 +1221,10 @@ def _inputs_from(raw: dict) -> tuple[dict[str, Bindings], list[tuple[str, str, i
 
 
 def _binding_from(item: object) -> InputBinding | None:
-    if isinstance(item, bool | int):
+    # A string is kept whatever it says: whether it is one of the plugin's
+    # choices is the resolver's question, which refuses it with a notice
+    # rather than letting it vanish here and read as the default.
+    if isinstance(item, bool | int | str):
         return item
     if not isinstance(item, dict):
         return None

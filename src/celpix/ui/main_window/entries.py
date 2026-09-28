@@ -1488,6 +1488,11 @@ class EntriesMixin:
                 # Always delivered: unbound is the default, so say which.
                 on = binding if isinstance(binding, bool) else bool(spec.default)
                 parts.append(f"{spec.label}: {'yes' if on else 'no'}")
+            elif spec.kind is InputKind.CHOICE:
+                # Always delivered too; a key the plugin lacks is shown as it
+                # is, since that is what the notice will name.
+                key = binding if isinstance(binding, str) else spec.choice_default
+                parts.append(f"{spec.label}: {spec.option_label(key) or key}")
             elif binding is None and spec.default is not None and not spec.required:
                 # What the codec will be handed, not "unbound": an optional
                 # integer with a default is delivered as that default.
