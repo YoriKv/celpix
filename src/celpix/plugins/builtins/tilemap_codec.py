@@ -56,16 +56,11 @@ Params:
   first, so the two are independent.
 - ``cell_tiles`` — ``[across, down]``, how many tiles one cell covers
   (default ``[1, 1]``; a panel cell is ``[2, 2]``).
-- ``record_cells`` / ``record_columns`` / ``records_across`` — the index field
-  is a **record number** of the table the map is bound to, not a position in its
-  cell list. Stated (any one of them), the index is turned into the record's
-  corner cell on decode and snapped back to the record containing it on encode,
-  with the same arithmetic and defaults as ``codec.tilemap.indirect-record``
-  (:mod:`~celpix.plugins.builtins.indirect_record`). That engine reads a byte
-  that is *only* a record number; this one is for a record number sharing its
-  word with flips or other fields — a 16x16 cell of a sprite frame numbering the
-  16x16s of a VRAM image eight across, ``vhii iiii``, where record 1 is the cell
-  two tiles to the right of record 0.
+- ``index_addressing`` — ``"corner"`` (default) or ``"ordinal"``, whether the
+  index names the unit it draws by its top-left element or counts the units.
+  Read off the preset by the host, for every engine alike
+  (:class:`~celpix.core.tilemap.IndexAddressing`); the cell holds the field as
+  stored either way.
 - ``page_columns`` / ``page_rows`` / ``page_counts`` — the page geometry a
   *format* fixes, for hardware that cuts a map into fixed screens and lays the
   pieces out into one picture. Stated together or not at all, and only applied
@@ -104,13 +99,6 @@ from celpix.plugins.builtins._fields import (
     resolve_legend,
 )
 from celpix.plugins.builtins._mask import gather, scatter
-from celpix.plugins.builtins.indirect_record import (
-    RECORD_KEYS,
-    Geometry,
-    containing_at,
-    corner_at,
-    record_geometry,
-)
 
 TILEMAP_ENGINE = "codec.tilemap.packed"
 
@@ -318,32 +306,6 @@ def _limit(field: _Field | None) -> int | None:
     return (1 << sum(width for _, width in field[1])) - 1
 
 
-def _records(params: dict[str, Any]) -> Geometry | None:
-    """The record table the index numbers, or None where it is a plain position."""
-    if not any(key in params for key in RECORD_KEYS):
-        return None
-    if "index" in _side_masks(params):
-        # The side settle rewrites the index's high bits from the array, and on
-        # a record number those are not the bits the cell holds - its index is
-        # the record's corner. No format in hand splits a record number that way.
-        raise ValueError("a record-numbered index cannot keep bits in the side array")
-    return record_geometry(params)
-
-
-def _index_limit(params: dict[str, Any]) -> int | None:
-    """The highest coordinate the index field can name.
-
-    The field's own width, or with a record geometry the corner of the last
-    record it can number — which is the reach a picker has to offer, not the
-    record count.
-    """
-    limit = _limit(_field(params, "index"))
-    records = _records(params)
-    if limit is None or records is None:
-        return limit
-    return corner_at(limit, records)
-
-
 def _layout(params: dict[str, Any]) -> dict[str, _Field | None]:
     return {name: _field(params, name) for name in _FIELDS}
 
@@ -458,7 +420,6 @@ class TilemapCodec:
         size = _cell_bytes(params)
         order = byte_order(params, "endian", "little")
         fields = _layout(params)
-        records = _records(params)
         side = _side_words(params, ctx.get(KEY_INPUTS))
         per_word = _side_cells(params) if side else 1
         above = size * 8
@@ -472,10 +433,9 @@ class TilemapCodec:
                 unit = (at // size) // per_word
                 if unit < len(side):
                     word |= side[unit] << above
-            index = _get(word, fields["index"])
             cells.append(
                 Cell(
-                    index=index if records is None else corner_at(index, records),
+                    index=_get(word, fields["index"]),
                     palette_row=_get(word, fields["palette"]),
                     priority=_get(word, fields["priority"]),
                     flip_h=bool(_get(word, fields["flip_h"])),
@@ -505,14 +465,9 @@ class TilemapCodec:
         # carrying an index and nothing else, so seven of the eight probes below
         # would be a call into a function whose whole answer is "no such field" —
         # and this runs over every cell of the map on every committed edit.
-        readers = dict(_CELL_FIELDS)
-        if (records := _records(params)) is not None:
-            # A coordinate anywhere inside a record writes that record, the rule
-            # the indirect-record engine and a click inside a stamp both follow.
-            readers["index"] = lambda cell: containing_at(cell.index, records)
         present = [
             (field, read)
-            for name, read in readers.items()
+            for name, read in _CELL_FIELDS
             if (field := fields[name]) is not None
         ]
         above = size * 8
@@ -607,9 +562,8 @@ class TilemapCodec:
         field table already knows, so the answer comes out of the one place the
         layout is stated rather than a second that could disagree. A preset with no
         ``index`` describes a format whose cells reference nothing settable.
-        With a record geometry, the last record's corner (:func:`_index_limit`).
         """
-        return _index_limit(params)
+        return _limit(_field(params, "index"))
 
     def palette_row_limit(self, params: dict[str, Any]) -> int | None:
         """How high a cell's palette row can go — the ``palette`` field's width.
@@ -664,12 +618,10 @@ class TilemapCodec:
         are each field's :func:`_limit`.
         """
         side_only = _side_only(params)
-        limits = {name: _limit(field) for name, field in _layout(params).items()}
-        limits["index"] = _index_limit(params)
         return {
             _CELL_ATTR[name]: limit
-            for name, limit in limits.items()
-            if limit is not None and name not in side_only
+            for name, field in _layout(params).items()
+            if (limit := _limit(field)) is not None and name not in side_only
         }
 
     def transform_cell(

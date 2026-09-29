@@ -140,7 +140,10 @@ class SessionMixin:
             return f"Loaded {counted(len(doc.palette), 'color')} from {entry.name}"
         message = f"Loaded {doc.tile_count} tiles from {entry.name}"
         note = self._partial_tile_note()
-        return f"{message} - {note}" if note else message
+        # A tilemap's refusals ride along: this replaces whatever its load said,
+        # and a first open is exactly when they are news.
+        notes = self._tilemap_load_notes(doc) if doc.is_tilemap else []
+        return " ".join([f"{message} - {note}" if note else message, *notes])
 
     def _on_current_entry_changed(self, entry: Entry | None) -> None:
         self._files_panel.set_current(entry)
@@ -388,22 +391,8 @@ class SessionMixin:
             )
             self._apply_restored_state(entry)
             self._apply_tilemap_columns(entry, restored=restored)
-            doc = entry.doc
-            why = doc.stamp_refusal
-            if not quiet and why is not None and doc.chain is not None:
-                # A stamp was stated and the resolution cannot lay it out, so
-                # the map degrades to one cell per entry everywhere at once
-                # (:attr:`~celpix.core.document.Document.stamp_cells`). Said
-                # here rather than nowhere: the picture that comes up is not
-                # the stamped one, and silence would leave that a puzzle. The
-                # size is what one entry would have drawn, every hop composed;
-                # the reason is the document's, which is the one place that
-                # knows which of the refusals applied.
-                across, down = doc.chain.drawn_stamp
-                self.statusBar().showMessage(
-                    f"{across}x{down} stamps not resolved - {why}; "
-                    "drawing one cell per entry."
-                )
+            if not quiet:
+                self._say_load_notes(entry.doc)
             return True
         tiles = self._load_bound_tiles(entry)
         entry.doc = documents.tilemap_document(
@@ -411,7 +400,45 @@ class SessionMixin:
         )
         self._apply_restored_state(entry)
         self._apply_tilemap_columns(entry, restored=restored)
+        if not quiet:
+            self._say_load_notes(entry.doc)
         return True
+
+    def _tilemap_load_notes(self, doc: Document) -> list[str]:
+        """What a tilemap's load had to refuse, one status-line sentence each.
+
+        Said rather than left to the picture, which in both cases is not the
+        one the formats asked for, and silence would leave that a puzzle:
+
+        - A **stamp** was stated and the resolution cannot lay it out, so the
+          map degrades to one cell per entry everywhere at once
+          (:attr:`~celpix.core.document.Document.stamp_cells`). The size is what
+          one entry would have drawn, every hop composed; the reason is the
+          document's, which is the one place that knows which of the refusals
+          applied.
+        - The indices were to **count units** and the source's cannot be
+          numbered, so each is read as its unit's corner
+          (:meth:`~...tilemap_bar.TilemapBarMixin._addressing_refusal_note`).
+        """
+        notes: list[str] = []
+        why = doc.stamp_refusal
+        if why is not None and doc.chain is not None:
+            across, down = doc.chain.drawn_stamp
+            notes.append(
+                f"{across}x{down} stamps not resolved - {why}; "
+                "drawing one cell per entry."
+            )
+        note = self._addressing_refusal_note(doc)
+        if note is not None:
+            notes.append(note)
+        return notes
+
+    def _say_load_notes(self, doc: Document) -> None:
+        """Put :meth:`_tilemap_load_notes` on the status line, as one line so
+        neither replaces the other before it is read."""
+        notes = self._tilemap_load_notes(doc)
+        if notes:
+            self.statusBar().showMessage(" ".join(notes))
 
     def _fail_load(self, entry: Entry, exc: Exception, *, quiet: bool) -> bool:
         """Record that ``entry`` would not open, say so if it is news, answer False.
@@ -1193,8 +1220,10 @@ class SessionMixin:
         place a cell list changes, which is what keeps two views of the same stamps
         in step without either being reloaded.
 
-        The **geometry** is re-read along with the cells: the stamp size and the
-        source's width are the source's answers, and a source whose stated shape
+        The **geometry** is re-read along with the cells: the stamp size, the
+        source's width and what an ordinal index counts in are the source's
+        answers (:func:`~celpix.project.documents.index_reading`), and a source
+        whose stated shape
         moved (a codec or preset switch re-reading its header) would otherwise
         leave every dependent stamping at the old one until reloaded.
         """
@@ -1213,6 +1242,33 @@ class SessionMixin:
                 self._drop_unavailable_edit_mode()
                 current = True
         return current
+
+    def _resync_chain_widths(self, entry: Entry) -> None:
+        """Re-point the maps drawing through ``entry`` when its Cols moved.
+
+        A source that states no width and publishes no stride is stamped at the
+        width its **view** is laid at
+        (:func:`~celpix.project.documents.chain_source_columns`), so Cols on it
+        is part of what every map above it draws: the step between a stamp's
+        rows and, where indices count stamps on a sheet, which stamp each number
+        names. A dependent holds that width as a snapshot, which is compared
+        here rather than re-pointed on every refresh — the view is rebuilt far
+        more often than Cols moves.
+        """
+        doc = entry.doc
+        if doc is None or not doc.is_tilemap or doc.cells is None:
+            return
+        if documents.chain_width_is_stated(doc):
+            return
+        width = self._chain_source_columns(doc)
+        for other in self._workspace.entries:
+            source = other.tile_source
+            if source is None or source.entry is not entry or other.doc is None:
+                continue
+            chain = other.doc.chain
+            if chain is not None and chain.source_columns != width:
+                self._rechain_dependents(entry)
+                return
 
     def _rechain_through(
         self, entry: Entry, seen: set[int], stale: list[Entry]
@@ -1251,16 +1307,33 @@ class SessionMixin:
             if doc.chain is None:
                 continue
             seen.add(id(other))
-            stamp = documents.cell_stamp(self._registry, other, doc.tilemap_ctx)
+            stamp = self._chain_stamp_cells(
+                other,
+                through,
+                documents.cell_stamp(self._registry, other, doc.tilemap_ctx),
+            )
+            # What an ordinal counts is cut by the source's stamp layout, so it
+            # is re-read with it.
+            reading = documents.index_reading(
+                self._registry, other, through=through, stamp=stamp
+            )
+            refused = (doc.stamp_refusal, doc.addressing_refusal)
             doc.chain = replace(
                 doc.chain,
                 source=cells,
-                stamp=self._chain_stamp_cells(other, through, stamp),
+                stamp=stamp,
                 source_columns=self._chain_source_columns(through),
                 stamp_column_major=self._chain_column_major(through),
                 through=through.chain,
+                geometry=reading.geometry,
             )
+            doc.addressing_refusal = reading.refusal
             doc.resolve()
+            if refused != (doc.stamp_refusal, doc.addressing_refusal):
+                # The row wears what the document refuses
+                # (:func:`~celpix.project.workspace.entry_notices`), and this is
+                # a map the gesture was not made on, so nothing else redraws it.
+                self._files_panel.refresh_entry(other)
             current = current or other is self._workspace.current
             current = self._rechain_through(other, seen, stale) or current
         return current

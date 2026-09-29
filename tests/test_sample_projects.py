@@ -71,8 +71,9 @@ def _open(name: str):
     # trusted as the project (``discovery`` module docstring) and a test has
     # nobody to ask. Without it a code plugin is refused by default and the
     # entries that name one open with no format at all.
+    plugins = project_plugin_dir(str(project))
     load_user_plugins(
-        registry, [project_plugin_dir(str(project))], confirm=lambda *a, **k: True
+        registry, [plugins] if plugins else [], confirm=lambda *a, **k: True
     )
     return workspace, registry
 
@@ -505,8 +506,88 @@ def test_the_alex_kidd_sample_project_reads_its_strings_and_stamps_its_maps(
     assert cfg.compression_id == room.compression_id
     cells = pipeline.load_tilemap_data(cfg, registry).cells
     assert len(cells) == 128 * 12
-    # the byte names a metatile and the chain wants its first cell, so every
-    # coordinate is a multiple of four into a table the map cannot overrun
+    # the byte is a metatile's record number as the file holds it - the chain
+    # turns it into the record's first cell - into a table it cannot overrun
     table = room.tile_source.entry
-    assert all(cell.index % 4 == 0 for cell in cells)
-    assert max(cell.index for cell in cells) < table.slice_length * 4
+    assert max(cell.index for cell in cells) < table.slice_length
+
+
+@pytest.mark.parametrize(
+    ("project", "prefix", "raw", "index", "corner", "row"),
+    [
+        # corner addressing, sparse and dense
+        ("tilemaps/tilemaps.celpix", "map/JUNGLE-0.MAP", 0x011C, 0x011C, 284, None),
+        (
+            "counting-cafe/counting-cafe.celpix",
+            "plane map — activity 0 scene 0 plane A",
+            0x000E,
+            0x000E,
+            14,
+            None,
+        ),
+        # ordinal, the geometry read off the table: packed, a base of 1 past a
+        # 17-cell record, a grid eight across, and bytes whose top bits pick a
+        # table
+        (
+            "ferias-frustradas-sms/ferias-frustradas-sms.celpix",
+            "fase 1/room 2 — room map",
+            0x1E,
+            0x1E,
+            480,
+            None,
+        ),
+        (
+            "phantasy-star-2-3/phantasy-star-3.celpix",
+            "Map — LandenWorld, plane B",
+            0x55,
+            0x55,
+            1445,
+            None,
+        ),
+        (
+            "smw/smw.celpix",
+            "Overworld Layer 1 — Map16 index map",
+            0x8A,
+            0x8A,
+            548,
+            None,
+        ),
+        ("smb/smb.celpix", "Back scenery columns", 0x80, 85, 340, 2),
+        # the first of two hops
+        ("ff2/ff2.celpix", "Field map $04", 0x7E, 190, 760, None),
+    ],
+)
+def test_a_chained_sample_map_names_the_corner_cell_it_always_has(
+    project: str, prefix: str, raw: int, index: int, corner: int, row: int | None
+) -> None:
+    """Each stored value lands on the source cell it drew before the model
+    knew ordinals from corners — the corner the hop's **resolution** reads, not
+    only the number the cell holds. The base is added after the conversion. A
+    grouped byte keeps itself in ``flags`` and its record in the index."""
+    from dataclasses import replace
+
+    from celpix.core.document import resolve_chain
+    from celpix.core.tilemap import Cell
+    from celpix.project.documents import load_document
+
+    loaded, registry = _open(project)
+    workspace = _workspace(loaded)
+    entry = next(e for e in workspace.entries if e.name.startswith(prefix))
+    doc = load_document(entry, registry, workspace).doc
+    chain = doc.chain
+    assert chain is not None
+    held = next(
+        c for c in doc.cells if c.index == index and (raw == index or c.flags == raw)
+    )
+    if row is not None:
+        assert held.palette_row == row
+    assert chain.source_cell(index) == corner + chain.base
+    first = resolve_chain(
+        [Cell(index=index)],
+        replace(chain, through=None),
+        1,
+        stamped=doc.stamp_cells != (1, 1),
+        carry_rows=False,
+        dense=True,
+    )[0]
+    assert first == chain.source[corner + chain.base]

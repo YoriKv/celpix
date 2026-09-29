@@ -33,6 +33,7 @@ from celpix.core.context import (
     KEY_TILE_PALETTE_ROWS,
     KEY_TILEMAP_CELL_TILES,
     KEY_TILEMAP_PALETTE_ROW_BASE,
+    KEY_TILEMAP_RECORD_SHAPE,
     KEY_TILEMAP_STAMP_CELLS,
     KEY_TILEMAP_STAMP_COLUMN_MAJOR,
     KEY_TILEMAP_STAMP_STRIDE,
@@ -42,7 +43,17 @@ from celpix.core.document import CellChain, Document
 from celpix.core.errors import Pathway, PipelineError, Stage
 from celpix.core.palette import FULL_PALETTE_COUNT, Palette
 from celpix.core.paletteregions import PaletteRegion, PaletteRegions
-from celpix.core.tilemap import VRAM_ROW_STRIDE, Cell
+from celpix.core.tilemap import (
+    RECORD_KEYS,
+    VRAM_ROW_STRIDE,
+    Cell,
+    Geometry,
+    IndexAddressing,
+    index_corner,
+    metatile_geometry,
+    record_geometry,
+    stamp_geometry,
+)
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import NO_RESHAPE, STAGE_DEFAULT_PRESET, FileRef
@@ -329,13 +340,28 @@ def chain_source_columns(through: Document) -> int:
     would walk a stamp's second row along the same source row instead of down
     one.
     """
+    return (
+        _published_stride(through)
+        or through.stated_columns
+        or max(1, through.view.columns)
+    )
+
+
+def chain_width_is_stated(through: Document) -> bool:
+    """Whether :func:`chain_source_columns` is the source's own statement — a
+    published stride or a stated width — rather than the width its view is
+    laid at, which the user moves with Cols."""
+    return bool(_published_stride(through) or through.stated_columns)
+
+
+def _published_stride(through: Document) -> int:
+    """The stamp stride ``through`` publishes, or 0 for none
+    (:data:`~celpix.core.context.KEY_TILEMAP_STAMP_STRIDE`)."""
     stride = through.tilemap_ctx.get(KEY_TILEMAP_STAMP_STRIDE)
     try:
-        if stride and int(stride) >= 1:
-            return int(stride)
+        return int(stride) if stride and int(stride) >= 1 else 0
     except (TypeError, ValueError):
-        pass
-    return through.stated_columns or max(1, through.view.columns)
+        return 0
 
 
 def chain_stamp_column_major(through: Document) -> bool:
@@ -347,6 +373,174 @@ def chain_stamp_column_major(through: Document) -> bool:
     laid out row by row, whatever order its records keep inside.
     """
     return bool(through.tilemap_ctx.get(KEY_TILEMAP_STAMP_COLUMN_MAJOR))
+
+
+class IndexReading(NamedTuple):
+    """How ``entry``'s indices number what they draw, and who said so.
+
+    ``stated`` is the addressing asked for and ``stated_by`` whose word it was:
+    ``"binding"`` (:attr:`~celpix.project.workspace.TileSource.addressing`),
+    ``"preset"`` (``index_addressing``), ``"record keys"`` (a preset stating
+    any of :data:`~celpix.core.tilemap.RECORD_KEYS`) or ``"default"``.
+
+    ``geometry`` is what is **in force**: None for corner addressing, a
+    :data:`~celpix.core.tilemap.Geometry` for ordinal. An ordinal can still be
+    read as a corner — a unit of one element, whose count *is* its corner, and a
+    source whose units no geometry can number, where ``refusal`` says why.
+    """
+
+    stated: IndexAddressing
+    stated_by: str
+    geometry: Geometry | None = None
+    refusal: str | None = None
+
+    @property
+    def in_force(self) -> IndexAddressing:
+        """The addressing the model reads the indices in."""
+        if self.geometry is None:
+            return IndexAddressing.CORNER
+        return IndexAddressing.ORDINAL
+
+
+def stated_addressing(registry, entry: Entry) -> tuple[IndexAddressing, str]:  # noqa: ANN001
+    """The addressing asked for of ``entry``'s indices, and whose word it is.
+
+    Most specific first: the **binding**'s override, then the referring
+    format's ``index_addressing``, then a format stating a record geometry —
+    which says ordinal by stating what the ordinal counts in — and otherwise
+    corner (:class:`IndexReading` names the four). A word
+    ``index_addressing`` does not have refuses the load earlier
+    (``pipeline._check_declarations``), so one reaching here reads as unset.
+    """
+    source = entry.tile_source
+    if source is not None and source.addressing is not None:
+        return source.addressing, "binding"
+    return format_addressing(registry, entry)
+
+
+def format_addressing(registry, entry: Entry) -> tuple[IndexAddressing, str]:  # noqa: ANN001
+    """:func:`stated_addressing` with the binding's override left out — what
+    ``entry``'s **format** alone says, for a control that offers the override
+    and has to name what clearing it gives back."""
+    word = tilemap_declares(registry, entry, "index_addressing")
+    if word in (IndexAddressing.CORNER.value, IndexAddressing.ORDINAL.value):
+        return IndexAddressing(word), "preset"
+    if any(tilemap_declares(registry, entry, key) is not None for key in RECORD_KEYS):
+        return IndexAddressing.ORDINAL, "record keys"
+    return IndexAddressing.CORNER, "default"
+
+
+def _published_pitch(through: Document) -> int:
+    """How many cells the record ``through`` publishes holds, or 0 for none
+    (:data:`~celpix.core.context.KEY_TILEMAP_RECORD_SHAPE`)."""
+    shape = through.tilemap_ctx.get(KEY_TILEMAP_RECORD_SHAPE)
+    try:
+        return max(0, int(shape[0]) * int(shape[1])) if shape else 0
+    except (TypeError, ValueError, IndexError):
+        return 0
+
+
+def index_reading(
+    registry,  # noqa: ANN001
+    entry: Entry,
+    *,
+    through: Document | None = None,
+    stamp: tuple[int, int] = (1, 1),
+    cell_tiles: tuple[int, int] = (1, 1),
+    cell_row_stride: int = 0,
+    cell_column_stride: int = 0,
+    addressing: IndexAddressing | None = None,
+) -> IndexReading:
+    """How ``entry``'s indices number the units they draw — the one derivation.
+
+    Asked of a map drawing **through** another (``through``, the source's
+    document, and ``stamp``, the chain's stamp in its cells) or over a **bank**
+    (``cell_tiles`` and the two strides its metatile steps). ``addressing``
+    stands in for the binding's override, for a caller asking what a choice
+    would give before making it; left None, the binding's own is read.
+
+    The addressing is :func:`stated_addressing`'s. The geometry an ordinal
+    counts in is the referring format's own where its preset states any
+    ``record_*`` key (:func:`~celpix.core.tilemap.record_geometry`), since that
+    is a statement about the table it was written against; otherwise it is
+    derived from how the source lays the units out
+    (:func:`~celpix.core.tilemap.stamp_geometry`, :func:`~celpix.core.tilemap.
+    metatile_geometry`).
+    """
+    if addressing is not None:
+        stated, stated_by = addressing, "binding"
+    else:
+        stated, stated_by = stated_addressing(registry, entry)
+    if stated is IndexAddressing.CORNER:
+        return IndexReading(stated, stated_by)
+    try:
+        preset = registry.preset(tilemap_preset_id(entry))
+    except KeyError:
+        preset = None
+    params = preset.params if preset is not None else {}
+    if any(key in params for key in RECORD_KEYS):
+        try:
+            return IndexReading(stated, stated_by, record_geometry(params))
+        except (TypeError, ValueError) as exc:
+            return IndexReading(stated, stated_by, None, str(exc))
+    if through is not None:
+        geometry, refusal = stamp_geometry(
+            stamp,
+            chain_source_columns(through),
+            column_major=chain_stamp_column_major(through),
+            pitch=_published_pitch(through),
+        )
+    else:
+        geometry, refusal = metatile_geometry(
+            cell_tiles, cell_row_stride, cell_column_stride
+        )
+    return IndexReading(stated, stated_by, geometry, refusal)
+
+
+def document_index_reading(
+    registry,  # noqa: ANN001
+    workspace: Workspace,
+    entry: Entry,
+    addressing: IndexAddressing | None = None,
+) -> IndexReading | None:
+    """:func:`index_reading` for ``entry`` as its loaded document stands.
+
+    Reads the chain's stamp and source, or the bank's metatile, off
+    ``entry.doc`` — what a control asking "what would ordinal give here" needs,
+    with ``addressing`` as the choice it is asking about. None where there is no
+    tilemap document to ask, and a corner answer for the two shapes whose
+    indices never count units of the bank: a sprite object's subsprites, and a
+    fontmap over glyphs, whose codes already count whole glyphs. None too for a
+    chained map whose source has no document to read the stamps' layout off.
+    """
+    doc = entry.doc
+    if doc is None or not doc.is_tilemap:
+        return None
+    if doc.chain is not None:
+        source = entry.tile_source
+        bound = binding_target(workspace, source) if source is not None else None
+        through = bound.doc if bound is not None else None
+        if through is None:
+            return None
+        return index_reading(
+            registry,
+            entry,
+            through=through,
+            stamp=doc.chain.stamp,
+            addressing=addressing,
+        )
+    if doc.is_sprite or doc.glyph_layout is not None:
+        if addressing is not None:
+            return IndexReading(addressing, "binding")
+        return IndexReading(*stated_addressing(registry, entry))
+    return index_reading(
+        registry,
+        entry,
+        cell_tiles=doc.cell_tiles,
+        cell_row_stride=doc.cell_row_stride,
+        cell_column_stride=doc.cell_column_stride,
+        addressing=addressing,
+    )
 
 
 def row_base_for(
@@ -428,6 +622,7 @@ def fit_tile_base(
     tiles: BoundTiles,
     cell_tiles: tuple[int, int],
     named: frozenset[int] = frozenset(),
+    geometry: Geometry | None = None,
 ) -> None:
     """Shift a map onto a source it overflows, when its own indices say how.
 
@@ -438,7 +633,10 @@ def fit_tile_base(
     once shifted — a condition an absolutely-indexed map never meets — and never
     over a base the user set. ``named`` is the codes a fontmap's font names past
     the end of its sheet (a terminator, a space with no glyph), which draw
-    nothing by design and are not an overflow.
+    nothing by design and are not an overflow. ``geometry`` is the map's index
+    addressing (:attr:`~celpix.core.document.Document.index_geometry`): an
+    ordinal is measured by the tile its metatile starts at, since the base
+    counts tiles whichever way the index does.
     """
     source = entry.tile_source
     if source is None or not source.is_bound or source.base_index or not cells:
@@ -447,7 +645,9 @@ def fit_tile_base(
     if not count:
         return  # unreadable binding: nothing to fit against
     indices = [
-        cell.index for cell in cells if cell.index < count or cell.index not in named
+        index_corner(cell.index, geometry)
+        for cell in cells
+        if cell.index < count or cell.index not in named
     ]
     if not indices:
         return
@@ -731,6 +931,8 @@ def chained_document(
     """
     assert entry.session is not None
     stamp = cell_stamp(registry, entry, loaded.ctx)
+    stamp_cells = chain_stamp_cells(registry, entry, through, stamp)
+    reading = index_reading(registry, entry, through=through, stamp=stamp_cells)
     return Document(
         pixel_data=through.pixel_data,
         bytes_per_tile=through.bytes_per_tile,
@@ -747,7 +949,7 @@ def chained_document(
         chain=CellChain(
             through.cells or [],
             loaded.palette_rows,
-            stamp=chain_stamp_cells(registry, entry, through, stamp),
+            stamp=stamp_cells,
             source_columns=chain_source_columns(through),
             # A stamp stated by the cell size is one entry drawing the whole
             # stamp, which is what dense means.
@@ -755,7 +957,9 @@ def chained_document(
             stamp_column_major=chain_stamp_column_major(through),
             base=entry.tile_source.base_index if entry.tile_source else 0,
             through=through.chain,
+            geometry=reading.geometry,
         ),
+        addressing_refusal=reading.refusal,
         tilemap_config=cfg,
         tilemap_ctx=loaded.ctx,
         tilemap_data=loaded.data,
@@ -766,6 +970,8 @@ def chained_document(
         cell_column_stride=through.cell_column_stride,
         tile_base_index=through.tile_base_index,
         index_mask=through.index_mask,
+        # The resolved cells are the last source's, numbered as it numbers them.
+        index_geometry=through.index_geometry,
         # The source map's rows are what get drawn, so its base applies — unless
         # this entry states one of its own.
         palette_row_base=row_base_for(entry, through.palette_row_base),
@@ -810,10 +1016,27 @@ def tilemap_document(
         cell_tiles = (glyph_layout.block_columns, glyph_layout.block_rows)
     else:
         glyph_layout = None
+    # The stride is the fixed-offset way of finding a cell's other tiles and a
+    # glyph layout the general one, so they are never both set.
+    strided = glyph_layout is None and cell_tiles != (1, 1)
+    row_stride = declared_cell_row_stride(registry, entry) if strided else 0
+    column_stride = declared_cell_column_stride(registry, entry) if strided else 0
+    # A glyph code already counts whole glyphs and a subsprite draws its own run
+    # of tiles, so neither has a unit for an ordinal to count.
+    geometry = refusal = None
+    if glyph_layout is None and loaded.frames is None:
+        reading = index_reading(
+            registry,
+            entry,
+            cell_tiles=cell_tiles,
+            cell_row_stride=row_stride,
+            cell_column_stride=column_stride,
+        )
+        geometry, refusal = reading.geometry, reading.refusal
     if glyph_layout is None:
         font = entry.tile_source.entry if fontmap and entry.tile_source else None
         named = frozenset(g.code for g in font.font_codes) if font else frozenset()
-        fit_tile_base(entry, loaded.cells, tiles, cell_tiles, named)
+        fit_tile_base(entry, loaded.cells, tiles, cell_tiles, named, geometry)
     return Document(
         pixel_data=tiles.data,
         bytes_per_tile=tiles.bytes_per_tile,
@@ -832,20 +1055,12 @@ def tilemap_document(
         tilemap_base_bytes=loaded.disk,
         cell_bytes=loaded.cell_bytes,
         cell_tiles=cell_tiles,
-        # The stride is the fixed-offset way of finding a cell's other tiles and a
-        # glyph layout the general one, so they are never both set.
-        cell_row_stride=(
-            0
-            if glyph_layout is not None or cell_tiles == (1, 1)
-            else declared_cell_row_stride(registry, entry)
-        ),
-        cell_column_stride=(
-            0
-            if glyph_layout is not None or cell_tiles == (1, 1)
-            else declared_cell_column_stride(registry, entry)
-        ),
+        cell_row_stride=row_stride,
+        cell_column_stride=column_stride,
         glyph_layout=glyph_layout,
         index_mask=loaded.index_mask,
+        index_geometry=geometry,
+        addressing_refusal=refusal,
         palette_row_base=row_base_for(
             entry,
             loaded.palette_row_base,
@@ -1326,9 +1541,18 @@ def _load_tilemap(entry, registry, workspace, problems, configure) -> None:  # n
                 f"{entry.name}: {across}x{down} stamps not resolved - {why}; "
                 "drawing one cell per entry."
             )
-        return
-    tiles = _bound_tiles(registry, workspace, entry, problems, configure)
-    entry.doc = tilemap_document(registry, workspace, entry, loaded, cfg, tiles)
+    else:
+        tiles = _bound_tiles(registry, workspace, entry, problems, configure)
+        entry.doc = tilemap_document(registry, workspace, entry, loaded, cfg, tiles)
+    refusal = entry.doc.addressing_refusal
+    if refusal is not None:
+        # The status line's wording (``tilemap_bar._addressing_refusal_note``),
+        # so a headless load and the app report one refusal one way.
+        unit = "stamp" if entry.doc.chain is not None else "metatile"
+        problems.append(
+            f"{entry.name}: indices not counted as {unit}s - {refusal}; "
+            f"reading each as its {unit}'s corner."
+        )
 
 
 def bound_tilemap(

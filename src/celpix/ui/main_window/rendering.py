@@ -979,6 +979,9 @@ class RenderingMixin:
         current = self._workspace.current
         if current is not None:
             self._resync_glyph_layouts(current)
+            # Cols again, for a table other maps stamp from at the width it is
+            # viewed at (:meth:`~...session.SessionMixin._resync_chain_widths`).
+            self._resync_chain_widths(current)
         # Deferred decode: only the visible window's bytes are sliced, then decoded
         # and laid out by the shared arrangement path (2D reflow / block layout).
         # Reads back through doc.view (like zoom/grid below) so the freshly stored

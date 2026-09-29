@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from celpix.core.document import resolve_chain
-from celpix.core.tilemap import Cell, CellGrid
+from celpix.core.tilemap import Cell, CellGrid, containing_at, corner_at
 from celpix.pipeline import pipeline
 from celpix.project.workspace import TileSource
 from celpix.ui import render_bridge
@@ -256,11 +256,8 @@ class TileSourceDockMixin:
         entry = self._workspace.current
         assert entry is not None and self._doc is not None
         source = entry.tile_source or TileSource()
-        chain = self._doc.chain
-        base = self._source_tile_id + (
-            chain.base if chain is not None else self._doc.tile_base_index
-        )
-        if base == source.base_index:
+        base = self._source_pick_origin()
+        if base is None or base == source.base_index:
             return
         self._rebind_tiles(
             entry,
@@ -271,6 +268,50 @@ class TileSourceDockMixin:
         # entry back as it was, and so is the sheet the pick addresses.
         if (entry.tile_source or TileSource()).base_index == base:
             self._set_source_tile(0)
+
+    def _source_pick_origin(self) -> int | None:
+        """Where in the source the held pick starts, the base in force added —
+        or None with nothing picked.
+
+        An ordinal ID counts units, and the base counts cells or tiles whichever
+        way the ID does, so this is the one number a pick means that survives
+        the IDs being re-counted or re-based: the source cell a chained map's
+        stamp starts at, or the bank tile a metatile does.
+        """
+        doc, tile_id = self._doc, self._source_tile_id
+        if doc is None or tile_id is None or not doc.is_tilemap:
+            return None
+        chain = doc.chain
+        return (
+            chain.source_cell(tile_id)
+            if chain is not None
+            else doc.index_origin(tile_id)
+        )
+
+    def _repoint_source_pick(self, origin: int | None) -> None:
+        """Hold the ID that now names ``origin`` (:meth:`_source_pick_origin`),
+        or nothing where no ID does.
+
+        For a change of what the IDs count
+        (:meth:`~...tilemap_bar.TilemapBarMixin._on_index_addressing_change`):
+        the pick is kept on the picture rather than on the number. Counting
+        units, a place inside a unit rather than at its corner has no ID, and the
+        pick is dropped rather than moved onto a neighbour the user did not
+        pick.
+        """
+        doc = self._doc
+        if origin is None or doc is None:
+            return
+        chain = doc.chain
+        offset = origin - (chain.base if chain is not None else doc.tile_base_index)
+        geometry = doc.addressing_geometry
+        if geometry is not None and offset >= 0:
+            unit = containing_at(offset, geometry)
+            offset = unit if corner_at(unit, geometry) == offset else -1
+        if offset < 0:
+            self._clear_source_tile()
+        elif offset != self._source_tile_id:
+            self._set_source_tile(offset)
 
     def _sync_set_base_tile(self) -> None:
         """Converge the button with the pick — and with what it would shift.
@@ -770,7 +811,7 @@ class TileSourceDockMixin:
             )
         chain = doc.chain
         if chain is None:
-            bank = tile_id + doc.tile_base_index
+            bank = doc.index_origin(tile_id)
             where = f"bank tile ${bank:X}" if bank != tile_id else "no base offset"
             return f"Tile ${tile_id:X} - {where} - used by {used}."
         # A bare coordinate with no rows carried: the line describes the stamp
@@ -792,7 +833,7 @@ class TileSourceDockMixin:
         across, down = doc.stamp_cells
         parts = [] if (across, down) == (1, 1) else [f"{across}x{down} cells"]
         parts += [
-            f"tile ${stamp.index + doc.tile_base_index:X}",
+            f"tile ${doc.index_origin(stamp.index):X}",
             f"row {stamp.palette_row}",
         ]
         if stamp.flip_h:

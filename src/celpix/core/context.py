@@ -196,6 +196,9 @@ KEY_TILEMAP_PAGES_ACROSS = "tilemap.pages-across"
 # across as fit the view's Cols, instead of the table's cells
 # running on as one ribbon (``docs/design/tilemap-entry.md`` §6). Unlike a page
 # it states no width and no count, so the last row of records may be short.
+# A map counting this table's stamps also reads the record's size, as the step
+# from one stamp to the next where it holds more than the stamp draws
+# (``project/documents.py``, ``index_reading``).
 KEY_TILEMAP_RECORD_SHAPE = "tilemap.record-shape"
 # bool: the record above stores its cells **down each column** — upper-left,
 # lower-left, upper-right, lower-right for a 2x2 — rather than across each row.

@@ -10,8 +10,8 @@
 # its cells, and because a row's two cells are adjacent, the stamp's second
 # *row* sits two cells on. `stamp_order` stays at its default, which is the only
 # difference between the two. The referring map is an indirect-record preset —
-# `metatile-index` plus whatever the game's record numbering needs — which turns
-# record k into its first cell, 4k.
+# `metatile-index` plus whatever the game's record numbering needs — whose
+# record keys put record k at its first cell, 4k.
 #
 # Its records are contiguous, so the table draws each metatile whole, as many
 # across as Cols holds (docs/design/tilemap-entry.md §6, records). It has no

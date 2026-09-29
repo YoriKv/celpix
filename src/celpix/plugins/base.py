@@ -963,8 +963,10 @@ class TilemapCodecPlugin(Plugin, Protocol):
         What the number *means* follows the document, not this method. On an
         ordinary map it is a tile in the bound source; on a chained one it is a
         position in the map being drawn through, so setting it **restamps** that
-        cell (``docs/design/tilemap-entry.md`` §3.1). The codec is answering the
-        same question either way: how wide is the field.
+        cell (``docs/design/tilemap-entry.md`` §3.1). Either may instead be a
+        count of units — metatiles, stamps, records — which the host turns into
+        the unit's corner (:class:`~celpix.core.tilemap.IndexAddressing`). The
+        codec is answering the same question every way: how wide is the field.
 
         A plugin that omits this method has its cell references left alone, which
         is the safe direction — a codec that was never asked where its index lives

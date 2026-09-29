@@ -43,6 +43,7 @@ from celpix.core.document import ViewOptions
 from celpix.core.errors import Stage
 from celpix.core.font import HOLE, TEMPLATES, Glyph, glyphs_from_spec
 from celpix.core.paletteregions import PaletteRegion, PaletteRegions
+from celpix.core.tilemap import IndexAddressing
 from celpix.core.tilerearrangement import TileRearrangement
 from celpix.pipeline.pathway import DEFAULT_SLOT_FILL, SlotFill
 from celpix.plugins.aliases import current_id
@@ -1124,7 +1125,8 @@ def _view_from(raw: object) -> ViewOptions | None:
 def _tile_source_dict(
     source: TileSource, positions: dict[int, int]
 ) -> dict[str, object]:
-    """A bound tile source as JSON. ``base_index`` rides along when it is set.
+    """A bound tile source as JSON. ``base_index`` and ``addressing`` ride along
+    when they are set.
 
     A binding holds the bound :class:`Entry` itself, and a file cannot name an
     object — so this is where it becomes a **position**, and
@@ -1145,6 +1147,10 @@ def _tile_source_dict(
     data: dict[str, object] = {"mode": source.mode.value, "entry_index": at}
     if source.base_index:
         data["base_index"] = source.base_index
+    # Only an override: unset is the format's own reading, and a project that
+    # never chose one stays byte-identical to one written before the key.
+    if source.addressing is not None:
+        data["addressing"] = source.addressing.value
     return data
 
 
@@ -1167,7 +1173,17 @@ def _tile_source(raw: dict) -> tuple[TileSource, int] | None:
         return None
     if mode is TileMode.NONE:
         return None
-    source = TileSource(mode=mode, base_index=_int(data.get("base_index"), 0) or 0)
+    try:
+        addressing = IndexAddressing(data["addressing"])
+    except (KeyError, ValueError, TypeError):
+        # Unset, or a word this build does not know: the format's own reading,
+        # which is what a binding that states nothing means.
+        addressing = None
+    source = TileSource(
+        mode=mode,
+        base_index=_int(data.get("base_index"), 0) or 0,
+        addressing=addressing,
+    )
     return source, _int(data.get("entry_index"), -1)
 
 

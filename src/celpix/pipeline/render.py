@@ -42,7 +42,7 @@ from celpix.core.document import Document, resolve_chain
 from celpix.core.errors import Pathway, PipelineError, Stage
 from celpix.core.index_grid import IndexGrid
 from celpix.core.sprite import Frame, Subsprite, frame_bounds
-from celpix.core.tilemap import Cell
+from celpix.core.tilemap import Cell, index_span
 from celpix.pipeline._stage import _run, tile_params
 from celpix.pipeline.metrics import palette_row_size
 from celpix.plugins.base import PixelCodecPlugin
@@ -734,6 +734,12 @@ def tile_source_span(doc: Document, limit: int | None = None) -> range:
       run of tiles it can reach is the bank the same way — what differs is that
       nothing here is placed into a grid, not what the numbers mean.
 
+    Where the index is an **ordinal** — a count of stamps or metatiles
+    (:attr:`~celpix.core.document.Document.addressing_geometry`) — the IDs are
+    the counts whose unit's corner lands inside the source once the base is
+    added, which is the same question asked of the unit rather than the element
+    (:func:`~celpix.core.tilemap.index_span`).
+
     ``limit`` is the codec's index-field width
     (:meth:`~celpix.plugins.base.TilemapCodecPlugin.index_limit`), passed in
     because looking it up needs the registry's preset params. ``None`` means the
@@ -743,18 +749,17 @@ def tile_source_span(doc: Document, limit: int | None = None) -> range:
     if not doc.is_tilemap:
         return range(0)
     if doc.chain is not None:
-        base = doc.chain.base
-        start, stop = max(0, -base), len(doc.chain.source) - base
+        base, count = doc.chain.base, len(doc.chain.source)
     else:
-        base = doc.tile_base_index
         # In whatever unit the indices are: tiles for every ordinary map, and
         # **glyphs** where a font's are several tiles each
         # (:attr:`~celpix.core.document.Document.glyph_count`). Reading the
         # tile count there would offer twice the codes the sheet has letters.
-        start, stop = max(0, -base), doc.glyph_count - base
+        base, count = doc.tile_base_index, doc.glyph_count
+    span = index_span(-base, count - base, doc.addressing_geometry)
     if limit is not None:
-        stop = min(stop, limit + 1)
-    return range(start, max(start, stop))
+        span = range(span.start, max(span.start, min(span.stop, limit + 1)))
+    return span
 
 
 def tile_source_ids(doc: Document, limit: int | None = None) -> Sequence[int]:
@@ -788,11 +793,16 @@ def tile_source_ids(doc: Document, limit: int | None = None) -> Sequence[int]:
     reaches every ID in the span, a cell already holding an unaligned one keeps
     it, and the sheet simply has no square to ring it in.
 
+    An **ordinal** index counts whole units already, so every ID in the span is
+    one and the span is the menu, as it is for a glyph.
+
     The sequence is in reading order and **not contiguous**, so a position in it
     is a slot and only the values are IDs: index it, do not do arithmetic on it.
     """
     span = tile_source_span(doc, limit)
     chain = doc.chain
+    if doc.addressing_geometry is not None:
+        return span
     if doc.glyph_layout is not None:
         # A **glyph** is already the unit its index is counted in, so every one
         # of them names a whole unit and there is nothing to narrow: the

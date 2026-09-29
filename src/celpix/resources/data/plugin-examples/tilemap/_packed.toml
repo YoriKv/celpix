@@ -72,7 +72,7 @@ endian = "little"
 # is a 16x16 metatile. A map storing a metatile as four adjacent cells is [1, 1].
 # Bound to another map instead of a tile bank, a cell draws a stamp of that
 # map's cells: one entry per stamp, its index the stamp's top-left cell. An index
-# that is a record number rather than a cell position: record_cells below.
+# that counts stamps rather than naming a cell: index_addressing below.
 # cell_tiles = [1, 1]
 
 # Tile-row stride inside a metatile cell (cell_tiles above [1, 1]): the distance
@@ -148,22 +148,15 @@ endian = "little"
 # quarter of its size.
 # stamp_dense = true
 
-# The index is a record number of the source, not a cell position: record k of
-# a 2x2 stamp is not cell k. Stating any of the three turns the index into the
-# record's first cell on read and back on write; an edit inside a record writes
-# that record. Same keys and defaults as _indirect-record.toml, for a cell that
-# keeps flips or other fields beside its record number.
-#   record_cells    cells per record. Default 4. End to end, record k starts at
-#                   cell k * record_cells.
-#   records_across  0 (default): records end to end. N: the source is a grid N
-#                   records across, record k starting at
-#                   (k // N) * N * record_cells + (k % N) * record_columns.
-#   record_columns  cells across one record. Default 2.
-# A byte `vhii iiii` numbering the 16x16s of a 16-tile-wide VRAM image
-# (record 1 is two tiles right of record 0):
-# record_cells = 4
-# record_columns = 2
-# records_across = 8
+# "corner" (default) or "ordinal": whether the index is the first cell (or
+# tile) of the unit it draws, or counts the units -- stamp k of a table of 2x2
+# stamps is cell 4k, not cell k. The cell holds the number as the file stores
+# it. The units' layout comes from what the map is bound to: a table's
+# stamp_stride and record_shape (below), or a tile bank's cell_tiles and
+# cell_row_stride (above). A byte `vhii iiii` numbering the 16x16s of a
+# 16-tile-wide VRAM image is ordinal with cell_tiles = [2, 2]: unit 1 is two
+# tiles right of unit 0, unit 8 two tile rows down.
+# index_addressing = "ordinal"
 
 # ---- Tables other maps stamp from ----
 #

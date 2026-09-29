@@ -57,7 +57,7 @@ from celpix.core.font import (
 from celpix.core.notices import warn
 from celpix.core.palette import Palette
 from celpix.core.sprite import DEFAULT_SUBSPRITE_TILES, Frame, frame_bounds
-from celpix.core.tilemap import Cell
+from celpix.core.tilemap import RECORD_KEYS, Cell, IndexAddressing, record_geometry
 from celpix.pipeline._stage import (
     _acquire,
     _cell_settler,
@@ -798,6 +798,17 @@ def _check_declarations(params: dict) -> None:
         one_of(params, "layout", ("text", "sprite"), None)
     if "subsprite_size" in params:
         one_of(params, "subsprite_size", ("stated",), None)
+    if "index_addressing" in params:
+        one_of(
+            params,
+            "index_addressing",
+            tuple(word.value for word in IndexAddressing),
+            None,
+        )
+    if any(key in params for key in RECORD_KEYS):
+        # Read by the host where it resolves an index, which has no preset to
+        # name in a report — so a shape no table has is refused here instead.
+        record_geometry(params)
     for key in ("column_major", "indirect", "stamp_dense"):
         flag(params, key)
 

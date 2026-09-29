@@ -1,20 +1,17 @@
-"""An indirect-record map: one byte names a record of a definition table, read as
-the coordinate of that record's first cell.
+"""An indirect-record map: one byte names a record of a definition table.
 
 The engine half of a **dense stamped chain** (``docs/design/tilemap-entry.md``
 §3.1) whose stored value is a *record number* rather than a cell position. A
 side-scroller's level map is the usual shape: one byte per 16x16 metatile, no
 filler, naming an entry of a table that holds four tile numbers per metatile.
 
-celPix resolves a stamp as ``source cell = index + dx + dy * source_columns``
-(``core/tilemap.py``, ``expand_stamps``), so a referring cell's ``index`` has to
-be a **position in the source's cell list**. A record number is not one — fed in
-raw, record 20 of a packed table would draw cells 20, 21, 22 and 23, which is
-the second half of record 5 and the first half of record 6. So the conversion
-belongs to the codec, and no data preset can express it; this module is the one
-place it is written, and a project's preset supplies the numbers. The packed
-engine reads the same three for a cell word whose index field is a record number
-beside flips of its own (``codec.tilemap.packed``):
+**The cell holds the record number, as the byte states it.** A record number
+is an *ordinal* — record 20 of a packed 2x2 table is cell 80, not cell 20 — and
+turning it into the record's corner cell is the host's, where the chain hop
+resolves it (:class:`~celpix.core.tilemap.IndexAddressing`). The table's shape
+rides on the preset beside this engine's own parameters and is read by the host
+for every engine alike, which is also what makes a preset stating any of these
+ordinal-addressed:
 
 ``record_cells``
     cells per record (4 for a 2x2 metatile). A **packed** table — records end
@@ -27,6 +24,11 @@ beside flips of its own (``codec.tilemap.packed``):
     0 (the default) for a packed table. *N* when a reshape has laid the table
     out as a grid *N* records across, so the table reads as a sheet: record
     *k*'s corner is then ``(k // N) * N * record_cells + (k % N) * record_columns``.
+
+The arithmetic is :func:`~celpix.core.tilemap.corner_at`, re-exported here with
+the rest of it for the project plugins that walk a table by hand.
+
+What this engine reads is how a byte names a record:
 
 ``group_bits`` / ``group_starts`` / ``group_rows``
     for a byte whose **top bits choose a sub-table**. ``group_bits`` of them
@@ -56,12 +58,6 @@ not this engine's business either: ``stamp_stride`` (and ``offered_stamp_cells``
 where the offer is not ``stamp_cells``) ride on the preset and the host reads
 them for every engine alike (:mod:`celpix.pipeline.table_layout`).
 
-**An edit snaps.** ``encode`` divides a coordinate back to the record containing
-it, so a reference set to a cell that is not a record's corner writes the record
-it falls inside — the same rule ``Document.cell_at`` applies to a click anywhere
-within a stamp, and the only honest answer for a file that has no way to name
-a quarter of a record.
-
 Among the sample projects reading through it: Alex Kidd in Shinobi World and
 The Story of Melroon over packed two-cell-wide tables, Super Mario World's Map16
 index maps over a table reshaped eight records across, and Super Mario Bros.'
@@ -78,36 +74,22 @@ from typing import Any
 
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
-from celpix.core.tilemap import Cell
+
+# The geometry is the host's, which is what turns a record into its corner (the
+# module docstring); re-exported so a project plugin walking a table by hand
+# imports the arithmetic from beside the engine it describes.
+from celpix.core.tilemap import (  # noqa: F401
+    RECORD_KEYS,
+    Cell,
+    Geometry,
+    containing_at,
+    corner_at,
+    record_geometry,
+)
 from celpix.plugins._params import flag
 from celpix.plugins.base import PluginInfo
 
 MAX_RECORD = 0xFF
-
-#: ``(cells per record, cells across one record, records across the table)`` —
-#: the table's shape, read once and passed down (:func:`record_geometry`).
-Geometry = tuple[int, int, int]
-
-#: The parameters that state a record geometry. The packed engine reads its
-#: index as a record number only where a preset states one of them.
-RECORD_KEYS = ("record_cells", "record_columns", "records_across")
-
-
-def record_geometry(params: dict[str, Any]) -> Geometry:
-    """The record table's shape off ``params``, each key at its default where unset.
-
-    Shared with the packed engine (``tilemap_codec``), whose index field can be a
-    record number too: the arithmetic is written once, here, for both.
-    """
-    cells = int(params.get("record_cells", 4))
-    columns = int(params.get("record_columns", 2))
-    across = int(params.get("records_across", 0))
-    if cells < 1 or columns < 1 or across < 0:
-        raise ValueError(
-            f"record_cells and record_columns must be positive and records_across "
-            f"non-negative, got {cells}, {columns}, {across}"
-        )
-    return cells, columns, across
 
 
 def _groups(params: dict[str, Any]) -> tuple[int, list[int]]:
@@ -124,13 +106,12 @@ def _groups(params: dict[str, Any]) -> tuple[int, list[int]]:
     return 8 - bits, starts
 
 
-# The four conversions below come in pairs: an ``_at`` form taking the
-# parameters **already read**, and the public one that reads them. Every
-# walk here is per cell — a decode of a screen, an encode of one, a settle on
-# every edit — so the parsing is hoisted out of the loop and the loop calls the
-# inner form. The outer form is what a caller with only ``params`` in hand wants,
-# and is the one the host and the tests reach for. The record pair's inner form
-# is public as well: the packed engine walks its cells the same way.
+# The conversions below come in pairs: an ``_at`` form taking the parameters
+# **already read**, and the public one that reads them. Every walk here is per
+# cell — a decode of a screen, an encode of one, a settle on every edit — so the
+# parsing is hoisted out of the loop and the loop calls the inner form. The
+# outer form is what a caller with only ``params`` in hand wants, and is the one
+# project plugins and the tests reach for.
 def _record_at(byte: int, low: int, starts: Sequence[int]) -> tuple[int, int]:
     """``(record, group)`` a stored byte names."""
     group = byte >> low
@@ -173,29 +154,6 @@ def _byte_at(record: int, low: int, starts: Sequence[int], stored: int) -> int:
     return (group << low) | ((record - starts[group]) & ((1 << low) - 1))
 
 
-def corner_at(record: int, geometry: Geometry) -> int:
-    """The source cell a record's first (upper-left) cell sits at."""
-    cells, columns, across = geometry
-    if not across:
-        return record * cells
-    row, column = divmod(record, across)
-    return row * across * cells + column * columns
-
-
-def containing_at(cell: int, geometry: Geometry) -> int:
-    """The record a source cell falls inside — ``corner_at``'s inverse, snapping."""
-    cells, columns, across = geometry
-    cell = max(0, cell)
-    if not across:
-        return cell // cells
-    # A row of records is `across * cells` cells laid out as `cells // columns`
-    # source rows of `across * columns` cells each, so the record's column is
-    # read off the position within *its* source row, whichever row of the
-    # record the cell sits in.
-    row, offset = divmod(cell, across * cells)
-    return row * across + (offset % (across * columns)) // columns
-
-
 def record_of(byte: int, params: dict[str, Any]) -> tuple[int, int]:
     """``(record, group)`` a stored byte names."""
     low, starts = _groups(params)
@@ -221,15 +179,15 @@ def containing_record(cell: int, params: dict[str, Any]) -> int:
 
 @lru_cache(maxsize=8)
 def _byte_tables(
-    low: int, starts: tuple[int, ...], geometry: Geometry
+    low: int, starts: tuple[int, ...]
 ) -> tuple[tuple[int, ...], tuple[int, ...]]:
-    """``(source cell, palette row)`` per stored byte — ``settle_cells``' tables.
+    """``(record, palette row)`` per stored byte — ``settle_cells``' tables.
 
-    What a cell has to hold to be settled, answered by two lookups instead of two
-    divisions and a bisect: a cell is settled exactly when the byte it carries
-    still names its index and it is drawn in that byte's group. 256 entries covers
-    every byte a grouped map can hold, so the tables are complete rather than a
-    cache of answers.
+    What a cell has to hold to be settled, answered by two lookups instead of
+    arithmetic and a bisect: a cell is settled exactly when the byte it carries
+    still names its index and it is drawn in that byte's group. 256 entries
+    covers every byte a grouped map can hold, so the tables are complete rather
+    than a cache of answers.
 
     Cached on the numbers they are built from, so a preset pays for them once a
     session rather than once an edit — the *read* parameters and not the params
@@ -238,9 +196,7 @@ def _byte_tables(
     mask = (1 << low) - 1
     bytes_ = range(MAX_RECORD + 1)
     return (
-        tuple(
-            corner_at(starts[byte >> low] + (byte & mask), geometry) for byte in bytes_
-        ),
+        tuple(starts[byte >> low] + (byte & mask) for byte in bytes_),
         tuple(byte >> low for byte in bytes_),
     )
 
@@ -259,14 +215,13 @@ class IndirectRecordCodec:
     ) -> list[Cell]:
         rows = flag(params, "group_rows")
         low, starts = _groups(params)
-        geometry = record_geometry(params)
         grouped = low < 8
         cells = []
         for byte in data:
             record, group = _record_at(byte, low, starts)
             cells.append(
                 Cell(
-                    index=corner_at(record, geometry),
+                    index=record,
                     palette_row=group if rows else 0,
                     # The stored byte rides along where a record can be named by
                     # more than one of them, so `encode` can hand back the one
@@ -283,11 +238,7 @@ class IndirectRecordCodec:
         self, cells: list[Cell], params: dict[str, Any], ctx: PipelineContext
     ) -> bytes:
         low, starts = _groups(params)
-        geometry = record_geometry(params)
-        return bytes(
-            _byte_at(containing_at(cell.index, geometry), low, starts, cell.flags)
-            for cell in cells
-        )
+        return bytes(_byte_at(cell.index, low, starts, cell.flags) for cell in cells)
 
     def settle_cells(self, cells: list[Cell], params: dict[str, Any]) -> list[Cell]:
         """``cells`` with every palette row back in step with the byte it will be.
@@ -301,11 +252,6 @@ class IndirectRecordCodec:
         answered is carried with it, which is what keeps the row, the carried byte
         and what a save writes from ever disagreeing.
 
-        The **index is left alone**, though ``encode`` snaps a coordinate to the
-        record containing it: the index is the field the user set, not one derived
-        from another, and snapping it here would move a reference out from under
-        them mid-edit.
-
         Cheap on the way it is usually asked — a whole list, on every edit, with
         almost every cell already settled. A cell is settled exactly when the byte
         it carries still names its own index and it is drawn in that byte's group,
@@ -317,21 +263,19 @@ class IndirectRecordCodec:
         low, starts = _groups(params)
         if low == 8 or not flag(params, "group_rows"):
             return cells
-        geometry = record_geometry(params)
         starts = tuple(starts)
-        corners, rows = _byte_tables(low, starts, geometry)
+        records, rows = _byte_tables(low, starts)
         out: list[Cell] | None = None
         for at, cell in enumerate(cells):
             stored = cell.flags
             index = cell.index
-            if 0 <= stored <= MAX_RECORD and corners[stored] == index:
+            if 0 <= stored <= MAX_RECORD and records[stored] == index:
                 if cell.palette_row == rows[stored]:
                     continue
-            # Not settled by the table — a byte from somewhere else, or an index
-            # that is not a record's corner, which is a legitimate place for a
-            # reference to sit (``encode`` snaps it). Measured the long way, and
-            # it may still turn out to agree.
-            byte = _byte_at(containing_at(index, geometry), low, starts, stored)
+            # Not settled by the table — a byte from somewhere else, or a record
+            # the carried byte does not name. Measured the long way, and it may
+            # still turn out to agree.
+            byte = _byte_at(index, low, starts, stored)
             row = rows[byte]
             if cell.palette_row == row and stored == byte:
                 continue
@@ -349,8 +293,8 @@ class IndirectRecordCodec:
         return (1, 1)
 
     def index_limit(self, params: dict[str, Any]) -> int:
-        """The highest coordinate a stored byte can name — the last record's corner."""
-        return corner(record_of(MAX_RECORD, params)[0], params)
+        """The highest record a stored byte can name — the top group's last."""
+        return record_of(MAX_RECORD, params)[0]
 
     def palette_row_limit(self, params: dict[str, Any]) -> int | None:
         # None even with `group_rows`: the row follows the record (the module

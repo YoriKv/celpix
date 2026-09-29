@@ -4,6 +4,11 @@
 
 - Fixed the Edit Slice dialog inputs display text
 - Fixed performance on big projects
+- A tilemap's index can count whole stamps or metatiles instead of naming their
+  corner, chosen per format (`index_addressing`) or per map with the tilemap
+  bar's Index counts
+- Fixed maps drawn through a table not following a change to the table's Cols until reloaded
+- A map whose stamps could not be resolved or counted wears a warning in the files panel, with the reason
 
 ## v1.1.7 - 2026-09-29
 

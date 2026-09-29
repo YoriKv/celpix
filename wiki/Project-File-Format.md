@@ -406,7 +406,8 @@ Written only when `content_kind` is `"tilemap"`. Read on any `file`/`slice` reco
 |---|---|---|---|---|
 | `mode` | string | — | always | `"entry"`. `"none"` or unknown = unbound |
 | `entry_index` | entry ref | `-1` | always | Tile source entry |
-| `base_index` | int | `0` | omitted at 0 | Cell N draws source tile `base_index + N`. Signed |
+| `base_index` | int | `0` | omitted at 0 | Added to the source tile (or cell) an index names: N, or under ordinal addressing the first of unit N. Signed |
+| `addressing` | string | unset | omitted when unset | `"corner"`: an index names its unit's first tile or cell. `"ordinal"`: an index counts units. Overrides the cell format's. Unknown = unset |
 
 - Valid source: a `pixels` entry, or a `tilemap` entry whose own chain of `tile_source` bindings does not loop back. Never a `bookmark`, never itself.
 - Unresolvable `entry_index`: the tilemap opens unbound.

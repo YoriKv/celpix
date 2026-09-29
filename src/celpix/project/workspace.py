@@ -61,7 +61,8 @@ from celpix.core.context import (
 from celpix.core.document import Document, ViewOptions
 from celpix.core.errors import PipelineError, Stage, fault_report
 from celpix.core.font import Glyph
-from celpix.core.notices import Notice, notices
+from celpix.core.notices import Notice, NoticeLevel, notices
+from celpix.core.tilemap import IndexAddressing
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import DEFAULT_SLOT_FILL, PathwayConfig, SlotFill
 from celpix.plugins.base import (
@@ -338,11 +339,22 @@ class TileSource:
     tiles 0x100-0x1EE bound to a slice holding exactly those, where cell
     0x100 must draw the slice's tile 0. A cell that lands outside the source
     renders blank, so a wrong base is visible rather than corrupting anything.
+    The base counts cells or tiles whichever way the index is addressed: it is
+    added after an ordinal is turned into its unit's corner.
+
+    ``addressing`` is the binding's word on how an index numbers what it draws
+    — its unit's corner, or a count of units
+    (:class:`~celpix.core.tilemap.IndexAddressing`) — and wins over what the
+    referring format states. None, the usual answer, leaves the format's
+    (``project/documents.py``, ``index_reading``). On the binding because what
+    an index counts is a fact about the pair: the units are the source's, cut
+    the way the source lays them out.
     """
 
     mode: TileMode = TileMode.NONE
     entry: Entry | None = None
     base_index: int = 0
+    addressing: IndexAddressing | None = None
 
     @property
     def is_bound(self) -> bool:
@@ -3194,6 +3206,9 @@ def entry_notices(entry: Entry) -> tuple[Notice, ...]:
     something, or one whose optional metadata could not be read
     (:func:`~celpix.pipeline._stage._probe`), has the same claim on the row's
     tooltip as a container that dropped a tail.
+
+    Then what the **document** refuses (:func:`_refusal_notices`), which no
+    stage could have said: it is a fact about the pair of a map and its source.
     """
     if entry.doc is None:
         return ()
@@ -3201,7 +3216,48 @@ def entry_notices(entry: Entry) -> tuple[Notice, ...]:
         notices(entry.doc.pixel_ctx)
         + notices(entry.doc.palette_ctx)
         + notices(entry.doc.tilemap_ctx)
+        + _refusal_notices(entry.doc)
     )
+
+
+def _refusal_notices(doc: Document) -> tuple[Notice, ...]:
+    """What ``doc`` draws differently from what its formats asked for.
+
+    A stamp the chain states and cannot lay out
+    (:attr:`~celpix.core.document.Document.stamp_refusal`), and indices that
+    were to count units and are read as corners
+    (:attr:`~celpix.core.document.Document.addressing_refusal`). Warnings, by
+    the level's own test: the picture is not simply what the file says.
+
+    **Derived on every ask rather than recorded at load**, because neither is
+    fixed by the load. Both follow the source — its cell size, the width it is
+    viewed at — and a re-chain moves them without reading this entry again, so
+    a recorded notice would outlive the refusal it reports, or miss one.
+    """
+    found: list[Notice] = []
+    chain = doc.chain
+    why = doc.stamp_refusal
+    if why is not None and chain is not None:
+        across, down = chain.drawn_stamp
+        found.append(
+            Notice(
+                NoticeLevel.WARNING,
+                f"{across}x{down} stamps not resolved",
+                f"{why[:1].upper()}{why[1:]},\nso each entry draws one cell",
+            )
+        )
+    why = doc.addressing_refusal
+    if why is not None:
+        unit = "stamp" if chain is not None else "metatile"
+        found.append(
+            Notice(
+                NoticeLevel.WARNING,
+                f"Indices not counted as {unit}s",
+                f"{why[:1].upper()}{why[1:]},\n"
+                f"so each index is read as its {unit}'s corner",
+            )
+        )
+    return tuple(found)
 
 
 @dataclass(frozen=True)

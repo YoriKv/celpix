@@ -9,7 +9,7 @@
 # 2x2 of its cells, and because a column's two cells are adjacent, the stamp's
 # second *column* sits two cells on. The referring map is an indirect-record
 # preset — `metatile-index` plus whatever the game's record numbering needs —
-# which turns record k into its first cell, 4k.
+# whose record keys put record k at its first cell, 4k.
 #
 # Its records are contiguous, so the table draws each metatile whole, as many
 # across as Cols holds (docs/design/tilemap-entry.md §6, records). It has no

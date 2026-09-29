@@ -43,8 +43,12 @@ from celpix.core.sprite import DEFAULT_SUBSPRITE_TILES, drawn_frames
 from celpix.core.tilemap import (
     NO_CELL,
     Cell,
+    Geometry,
+    IndexAddressing,
     column_order,
+    corner_at,
     expand_stamps,
+    index_corner,
     page_assemblies,
     page_order,
     record_order,
@@ -309,6 +313,16 @@ class CellChain:
     it, so a chain is a list of hops (:attr:`hops`) held entirely on the
     referrer, and resolving it (:func:`resolve_chain`) needs no document but this
     one. None for the ordinary chain, whose source's cells are tile numbers.
+
+    ``geometry`` is how this hop's coordinates **number** the source: None where
+    a coordinate is the source cell at its stamp's corner, and a
+    :data:`~celpix.core.tilemap.Geometry` where it counts stamps — record 20 of a
+    packed 2x2 table is cell 80 (:class:`~celpix.core.tilemap.IndexAddressing`).
+    Converted before the base and the stamp walk, and still converted where the
+    stamp degrades to one cell (:attr:`Document.stamp_cells`): the entry names
+    its stamp's corner cell either way, never the cell its number happens to be.
+    The binding's and the referrer's to state, the source's to shape
+    (``project/documents.py``, ``index_reading``).
     """
 
     source: list[Cell]
@@ -319,6 +333,12 @@ class CellChain:
     stamp_column_major: bool = False
     base: int = 0
     through: CellChain | None = None
+    geometry: Geometry | None = None
+
+    def source_cell(self, index: int) -> int:
+        """The source cell coordinate ``index`` names first — its stamp's
+        corner, with the base added. Where it lands may be outside the source."""
+        return index_corner(index, self.geometry) + self.base
 
     @property
     def hops(self) -> Iterator[CellChain]:
@@ -402,7 +422,9 @@ def resolve_chain(
     resolved stamped (:attr:`CellChain.sparse_below`, :attr:`Document.stamp_cells`).
 
     ``stamped`` False is the degraded chain (:attr:`Document.stamp_cells`): every
-    hop resolves one coordinate to one cell. ``carry_rows`` and ``dense``
+    hop resolves one coordinate to one cell — the corner of the stamp it counts
+    to, where the hop is ordinal-addressed (:attr:`CellChain.geometry`), since
+    that is the cell the entry names. ``carry_rows`` and ``dense``
     override the **first** hop's, for a preview whose referrer is synthetic (no
     row of its own to carry) and a single entry (dense whatever the file is).
 
@@ -419,9 +441,24 @@ def resolve_chain(
     for hop in chain.hops:
         carry = carry or hop.carry_rows
         stamp = hop.stamp if stamped else (1, 1)
-        if stamp == (1, 1):
+        geometry = hop.geometry
+        if stamp == (1, 1) and geometry is None:
             cells = [
                 resolve_cell(cell, hop.source, carry_rows=carry, base=hop.base)
+                for cell in cells
+            ]
+            continue
+        if stamp == (1, 1):
+            # Degraded or one-cell, an ordinal still names its stamp's corner:
+            # entry n draws that cell, never cell n.
+            cells = [
+                resolve_cell(
+                    cell,
+                    hop.source,
+                    carry_rows=carry,
+                    at=corner_at(cell.index, geometry),
+                    base=hop.base,
+                )
                 for cell in cells
             ]
             continue
@@ -435,6 +472,7 @@ def resolve_chain(
             dense=hop.dense,
             column_major=hop.stamp_column_major,
             base=hop.base,
+            geometry=geometry,
         )
         if hop.dense:
             columns = max(1, columns) * max(1, stamp[0])
@@ -563,7 +601,23 @@ class Document:
     # (``docs/graphics-formats-reference/snes-hardware-notes.md`` §5). Per format
     # rather than global, because the field is the format's: a bare Game Boy index
     # has no neighbours to find, and a stamp layout's word is a coordinate.
+    # Applied in corner addressing only: an ordinal's neighbours are found by the
+    # geometry below, not by an adder working inside the field.
     index_mask: int = 0
+    # How a cell's index **numbers** the metatiles it draws over the bank: None
+    # where it is the metatile's corner tile, a
+    # :data:`~celpix.core.tilemap.Geometry` where it counts metatiles
+    # (:class:`~celpix.core.tilemap.IndexAddressing`). Converted before the base
+    # and the metatile walk (:meth:`index_origin`). On a chained map it is the
+    # last source's, like the rest of this geometry, because the resolved cells
+    # are that source's; the referrer's own reading of *its* coordinates is
+    # :attr:`CellChain.geometry`.
+    index_geometry: Geometry | None = None
+    # Why an ordinal the binding or the format asked for is read as a corner
+    # after all, worded for the status line like :attr:`stamp_refusal` — or None
+    # where nothing was refused. About this document's own cells: the hop it
+    # reads through, or the bank it draws from.
+    addressing_refusal: str | None = None
     # Whether the cell *format* gives a cell a palette row to name, as the codec
     # declares it (:meth:`~celpix.plugins.base.TilemapCodecPlugin.has_palette_rows`).
     # A property of the format and not of this file: a screen whose cells all sit
@@ -1464,13 +1518,13 @@ class Document:
         alphabet = self.font_alphabet
         if not self.spells_out or alphabet is None:
             return laid, None
-        # The sheet's extent, in the format's own index space: the base the
-        # binding starts at is added to a code before it names anything
-        # (:meth:`cell_tile_indices`), so the bound has to be asked in the same
+        # The sheet's extent, asked of where a code lands: the base the binding
+        # starts at is added to a code before it names anything
+        # (:meth:`index_origin`), so the bound has to be asked in the same
         # terms the cells are written in — and in the same *unit*, which on a
         # font of 8x16 glyphs is glyphs and not tiles (:attr:`glyph_count`).
         first, count = self.tile_base_index, self.glyph_count
-        key = (self.cells, alphabet, first, count, order)
+        key = (self.cells, alphabet, first, count, self.index_geometry, order)
         cached = self.layout_cache
         if (
             cached is not None
@@ -1484,7 +1538,9 @@ class Document:
         spelled = False
         for at, cell in enumerate(laid):
             codes = (
-                () if 0 <= first + cell.index < count else alphabet.spelling(cell.index)
+                ()
+                if 0 <= self.index_origin(cell.index) < count
+                else alphabet.spelling(cell.index)
             )
             if not codes:
                 drawn.append(cell)
@@ -1808,7 +1864,9 @@ class Document:
         added after it, so :attr:`index_mask` wraps the neighbours inside the
         field the way the hardware's adder does. The two orders agree whenever
         there is no mask, addition being addition; they differ exactly where the
-        run would otherwise leave the field.
+        run would otherwise leave the field. An **ordinal** index is turned into
+        its metatile's corner tile first (:meth:`index_origin`), and walks
+        unmasked: its field holds a count, and the corner is past it.
 
         A :attr:`glyph_layout` answers first and by a different route: there the
         index is a **block number** of the source's own arrangement rather than a
@@ -1823,15 +1881,16 @@ class Document:
         if layout is not None:
             return layout.block_slots(self.tile_base_index + cell.index)
         across, down = self.cell_tiles
+        geometry = self.index_geometry
         if across <= 1 and down <= 1:
             # The ordinary hardware cell — one tile, no run to walk and no order
             # for a flip to reverse. Answered here rather than through the walk
             # because a repaint asks this once per cell, thousands of times. No
             # mask either: a lone index came out of the field already inside it.
-            return [self.tile_base_index + cell.index]
+            return [self.index_origin(cell.index)]
         across, down = max(1, across), max(1, down)
         run = tile_run(
-            cell.index,
+            index_corner(cell.index, geometry),
             across,
             down,
             self.cell_row_stride or across,
@@ -1839,9 +1898,40 @@ class Document:
             flip_h=cell.flip_h,
             flip_v=cell.flip_v,
         )
-        if self.index_mask:
+        if self.index_mask and geometry is None:
             return [self.tile_base_index + (index & self.index_mask) for index in run]
         return [self.tile_base_index + index for index in run]
+
+    def index_origin(self, index: int) -> int:
+        """Where in the source the unit ``index`` names starts, base added.
+
+        **The** conversion from a cell's number to the bank: the tile its
+        metatile starts at — ``index`` itself in corner addressing, the corner of
+        the metatile it counts to in ordinal (:attr:`index_geometry`) — shifted
+        by :attr:`tile_base_index`. In **glyphs** under a :attr:`glyph_layout`,
+        whose indices already count whole units. Every reader that turns an
+        index into a place in the bank asks this — the tile walk
+        (:meth:`cell_tile_indices`), the readout, a base picked off the sheet —
+        so none of them can read an ordinal as a corner.
+        """
+        if self.glyph_layout is not None:
+            return self.tile_base_index + index
+        return self.tile_base_index + index_corner(index, self.index_geometry)
+
+    @property
+    def addressing_geometry(self) -> Geometry | None:
+        """The geometry this document's **own** cells are numbered in, or None
+        for corner addressing: its chain's first hop, else its bank's."""
+        chain = self.chain
+        return chain.geometry if chain is not None else self.index_geometry
+
+    @property
+    def index_addressing(self) -> IndexAddressing:
+        """The addressing in force for this document's own cells — what an index
+        on the Cell spin and the tile source sheet counts."""
+        if self.addressing_geometry is None:
+            return IndexAddressing.CORNER
+        return IndexAddressing.ORDINAL
 
     @classmethod
     def palette_only(

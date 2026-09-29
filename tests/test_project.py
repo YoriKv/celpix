@@ -10,6 +10,7 @@ from celpix.core.document import Document, ViewOptions
 from celpix.core.font import HOLE, Glyph, GlyphRole, sequential
 from celpix.core.palette import Palette
 from celpix.core.paletteregions import PaletteRegions
+from celpix.core.tilemap import IndexAddressing
 from celpix.pipeline.pathway import DEFAULT_SLOT_FILL, PathwayConfig, SlotFill
 from celpix.pipeline.pipeline import load_palette
 from celpix.plugins.base import RAW_CONTAINER, FileRef
@@ -625,7 +626,10 @@ def test_a_tilemap_entry_round_trips_with_its_binding(tmp_path) -> None:
             content_kind=ContentKind.TILEMAP,
             tilemap_preset_id="preset.tilemap.snes-bg",
             tile_source=TileSource(
-                mode=TileMode.ENTRY, entry=ws.entries[0], base_index=16
+                mode=TileMode.ENTRY,
+                entry=ws.entries[0],
+                base_index=16,
+                addressing=IndexAddressing.ORDINAL,
             ),
             # 0 is the value that has to survive as a *choice*: the user setting it
             # against a format that says 8 is exactly the override this field is
@@ -647,6 +651,13 @@ def test_a_tilemap_entry_round_trips_with_its_binding(tmp_path) -> None:
     # this project's first row loaded as — not a number kept for later.
     assert source.entry is loaded.entries[0]
     assert source.base_index == 16
+    assert source.addressing is IndexAddressing.ORDINAL
+
+    # A word this build does not know is the format's own reading, not a failure.
+    document = json.loads(project.read_text(encoding="utf-8"))
+    document["entries"][1]["tile_source"]["addressing"] = "sideways"
+    project.write_text(json.dumps(document), encoding="utf-8")
+    assert load_project(str(project)).entries[1].tile_source.addressing is None
 
 
 def test_a_pixel_entry_writes_no_tilemap_keys(tmp_path) -> None:

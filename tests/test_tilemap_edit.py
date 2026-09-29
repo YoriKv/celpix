@@ -1084,18 +1084,18 @@ def test_restamping_a_map_two_hops_up_goes_by_the_whole_stamp(qtbot, tmp_path) -
     _bank, _quads, _blocks, field = _two_hop_chain(window, tmp_path)
     doc, reg = window._doc, window._registry
 
-    assert list(pipeline.tile_source_span(doc, window._cell_index_limit())) == list(
-        range(8)
-    )
-    assert list(pipeline.tile_source_ids(doc)) == [0, 4]  # one per outer stamp
+    # The field's byte counts outer stamps, so the IDs are those counts: one
+    # per outer stamp, each whole.
+    assert list(pipeline.tile_source_span(doc, window._cell_index_limit())) == [0, 1]
+    assert list(pipeline.tile_source_ids(doc)) == [0, 1]
     # The sheet's two stamps are the map's two entries, pixel for pixel.
     sheet = pipeline.tile_source_image(doc, reg, 2).grid
     picture = pipeline.tilemap_image(doc, reg, 8).grid
     assert (sheet.width, sheet.height) == (picture.width, picture.height) == (64, 32)
     assert sheet == picture
     # The readout resolves every hop: outer 1's corner is inner 3's, tile 3.
-    assert window._tile_source_line(4) == (
-        "Stamp $4 - 4x4 cells, tile $3, row 0 - used by 1 stamp."
+    assert window._tile_source_line(1) == (
+        "Stamp $1 - 4x4 cells, tile $3, row 0 - used by 1 stamp."
     )
 
     # A right-drag inside entry 0 picks what it names; a press anywhere in
@@ -1115,14 +1115,20 @@ def test_restamping_a_map_two_hops_up_goes_by_the_whole_stamp(qtbot, tmp_path) -
     window._on_slots_selected(1 * 8 + 5, 2 * 8 + 6)
     assert window._copy_selection()
     copied = window._cell_clipboard
-    assert (copied.width, copied.height) == (1, 1) and copied.get(0, 0).index == 4
+    assert (copied.width, copied.height) == (1, 1) and copied.get(0, 0).index == 1
     window._on_slots_selected(3 * 8 + 3, 3 * 8 + 3)
     window._paste()
-    assert [cell.index for cell in doc.cells] == [4, 4]
+    assert [cell.index for cell in doc.cells] == [1, 1]
     assert _drawn(doc) == _nested(b"\x01\x01")
 
     window._write_current()
     assert Path(field.path).read_bytes() == b"\x01\x01"
+
+    # Set Base Cell takes the picked stamp's corner, in cells: outer stamp 1
+    # starts at cell 4 of the outer table, and that is where cell 0 then reads.
+    window._source_tile_id = 1
+    window._on_set_base_tile()
+    assert field.tile_source.base_index == 4
 
 
 def test_editing_a_stamp_layout_is_refused(qtbot, tmp_path) -> None:

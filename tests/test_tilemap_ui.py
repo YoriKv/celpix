@@ -2631,6 +2631,224 @@ def test_a_binding_that_cannot_be_read_leaves_nothing_changed(
     assert window._undo_stack.count() == steps  # nothing to undo, so no step
 
 
+def _table_over_raw_map(qtbot, tmp_path):
+    """A dense table of 2x2 stamps drawing through a raw map, counted by corner.
+
+    The raw map states no width, so it is laid at its view's Cols and its
+    stamps are numbered along that. The table's entries are 0..7; entry 2 is
+    source cell 2 as a corner and the third stamp, starting at cell 4, as a
+    count. The map's cell N holds tile ``N % 8``, which tells them apart.
+    Returns (window, raw map, table).
+    """
+    from celpix.core.capabilities import ContentKind
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    raw = _tilemap_file(tmp_path, [Cell(index=i % 8) for i in range(32)])
+    window._load_pixel(str(raw), content_kind=ContentKind.TILEMAP)
+    source = window._workspace.current
+    source.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
+    window._reload_tilemap(source)
+    path = tmp_path / "table.bin"
+    path.write_bytes(bytes(range(8)))
+    window._load_pixel(str(path), content_kind=ContentKind.TILEMAP)
+    table = window._workspace.current
+    table.tilemap_preset_id = _register_corner_stamps(window)
+    table.tile_source = TileSource(mode=TileMode.ENTRY, entry=source)
+    window._reload_tilemap(table)
+    return window, source, table
+
+
+def _register_corner_stamps(window) -> str:
+    """Register the table's format with ``window``, which has a registry of its
+    own, and answer its id."""
+    from celpix.core.errors import Stage
+    from celpix.plugins.base import Preset
+
+    preset = Preset(
+        id="preset.tilemap.corner-stamps",
+        name="A dense table of 2x2 stamps, counted by corner",
+        stage=Stage.INTERPRET_TILEMAP,
+        engine_id="codec.tilemap.packed",
+        params={
+            "bytes": 1,
+            "fields": "iiii iiii",
+            "indirect": True,
+            "stamp_dense": True,
+            "stamp_cells": [2, 2],
+        },
+    )
+    window._registry.register_preset(preset)
+    return preset.id
+
+
+def _count_indices_as(window, row: int) -> None:
+    """Pick row ``row`` of Index counts the way a click does."""
+    window._index_addressing.setCurrentIndex(row)
+    window._on_index_addressing_change(row)
+
+
+def _third_stamps_corner(doc) -> int:
+    """The tile the table's entry 2 draws first: its stamp's corner cell's."""
+    at = next(i for i in range(len(doc.drawn_cells)) if doc.cell_at(i) == 2)
+    return doc.drawn_cells[at].index
+
+
+def test_counting_stamps_rereads_the_map_as_one_undoable_step(qtbot, tmp_path) -> None:
+    """Choosing Stamps on a corner-counting map re-resolves every index through
+    the source's stamp grid, and the tile source panel offers stamp numbers
+    rather than corner cells. The base stays in cells, and the held pick stays
+    on the stamp it named. One step, which undoes and redoes with the combo
+    following — it is filled from the entry, not from the gesture."""
+    from celpix.core.tilemap import IndexAddressing
+    from celpix.pipeline import pipeline
+
+    window, _source, table = _table_over_raw_map(qtbot, tmp_path)
+    combo = window._index_addressing
+    assert [combo.itemText(i) for i in range(3)] == [
+        "Format (Cells)",
+        "Cells",
+        "Stamps",
+    ]
+    assert combo.isEnabled()
+    assert _third_stamps_corner(window._doc) == 2
+    window._set_source_tile(4)  # the third stamp's corner cell
+    steps = window._undo_stack.count()
+
+    _count_indices_as(window, 2)
+    assert table.tile_source.addressing is IndexAddressing.ORDINAL
+    assert table.tile_source.base_index == 0
+    assert _third_stamps_corner(window._doc) == 4
+    ids = pipeline.tile_source_ids(window._doc, window._cell_index_limit())
+    assert list(ids[:3]) == [0, 1, 2]  # stamps, not their corners 0, 2, 4
+    assert window._source_tile_id == 2
+    assert window._undo_stack.count() == steps + 1
+    assert window._undo_stack.undoText() == "count indices as stamps"
+
+    window._undo_stack.undo()
+    assert table.tile_source.addressing is None
+    assert combo.currentIndex() == 0
+    assert _third_stamps_corner(window._doc) == 2
+    window._undo_stack.redo()
+    assert combo.currentIndex() == 2
+    assert _third_stamps_corner(window._doc) == 4
+
+
+def test_index_counts_is_off_where_a_unit_is_one_element(qtbot, tmp_path) -> None:
+    """A screen's cells over a bank are one tile each, so a metatile's number
+    and its corner are the same number: the choice would change nothing, and
+    the control says why rather than offering it."""
+    from celpix.core.tilemap import Cell
+
+    window, _entry = _bound_tilemap(qtbot, tmp_path, [Cell(index=1)])
+    combo = window._index_addressing
+    assert [combo.itemText(i) for i in range(3)] == [
+        "Format (Tiles)",
+        "Tiles",
+        "Metatiles",
+    ]
+    assert not combo.isEnabled()
+    assert "same number" in combo.toolTip()
+
+
+def test_counting_stamps_survives_the_project(qtbot, tmp_path) -> None:
+    """The choice is binding state no file records, so the project is its only
+    record: saved and reopened, the map counts stamps and the bar says so."""
+    from celpix.core.tilemap import IndexAddressing
+
+    window, _source, table = _table_over_raw_map(qtbot, tmp_path)
+    _count_indices_as(window, 2)
+    project = tmp_path / "p.celpix"
+    window._save_project_to(str(project))
+
+    other = MainWindow()
+    qtbot.addWidget(other)
+    _register_corner_stamps(other)
+    other._load_project(str(project))
+    reopened = next(e for e in other._workspace.entries if e.name == table.name)
+    other._activate_entry(reopened)
+    assert reopened.tile_source.addressing is IndexAddressing.ORDINAL
+    assert other._index_addressing.currentIndex() == 2
+    assert _third_stamps_corner(other._doc) == 4
+
+
+def test_stamps_counted_on_a_width_nobody_stated_are_explained(qtbot, tmp_path) -> None:
+    """Two things the picture cannot say. A raw source states no width, so its
+    stamps are numbered along its view's Cols — which the tooltip warns of. And
+    at a Cols that is not a whole number of stamps they cannot be numbered at
+    all: the combo still shows what was asked, and the tooltip and the status
+    line say each index is read as its stamp's corner instead."""
+    window, source, table = _table_over_raw_map(qtbot, tmp_path)
+    _count_indices_as(window, 2)
+    combo = window._index_addressing
+    assert window._doc.chain.geometry[2] == source.doc.view.columns // 2
+    assert "source's Cols" in combo.toolTip()
+
+    window._activate_entry(source)
+    window._columns.setValue(7)
+    window._activate_entry(table)
+    window._reload_tilemap(table)
+    assert window._doc.chain.geometry is None
+    assert combo.currentIndex() == 2  # what was asked, though refused
+    assert "not a whole number of stamps" in combo.toolTip()
+    assert "corner instead" in combo.toolTip()
+    assert "Indices not counted as stamps" in window.statusBar().currentMessage()
+
+
+def test_cols_on_a_source_viewed_at_its_width_repoints_the_maps_above(
+    qtbot, tmp_path
+) -> None:
+    """The source's Cols is the step between a stamp's rows where no file states
+    a width, so moving it is a change to every map drawn through it — made when
+    the spin moves, and unmade with it, not at the next unrelated re-read."""
+    window, source, table = _table_over_raw_map(qtbot, tmp_path)
+    _count_indices_as(window, 2)
+    before = table.doc.chain.source_columns
+    # The fixture's tiles repeat every 8 cells, which a halved width cannot show
+    # in the picture — so the cell a stamp starts at is what is asked.
+    assert (before, table.doc.chain.source_cell(5)) == (16, 10)
+
+    window._activate_entry(source)
+    window._columns.setValue(8)
+    chain = table.doc.chain
+    assert (chain.source_columns, chain.geometry[2]) == (8, 4)
+    assert chain.source_cell(5) == 18  # second row of stamps, four to a row
+
+    window._undo_stack.undo()
+    assert table.doc.chain.source_columns == 16
+    assert table.doc.chain.source_cell(5) == 10
+
+
+def test_a_refusal_marks_the_maps_row_for_as_long_as_it_holds(qtbot, tmp_path) -> None:
+    """A refused map looks like any other in the picture's absence, and the
+    status line said so once at most — so its row wears the warning. It follows
+    the source rather than the load: a Cols on the source that is not a whole
+    number of stamps marks the map above, and one that is clears it."""
+    from celpix.project.workspace import entry_notices
+
+    window, source, table = _table_over_raw_map(qtbot, tmp_path)
+    _count_indices_as(window, 2)
+    row = window._files_panel._items[table]
+    assert entry_notices(table) == ()
+
+    window._activate_entry(source)
+    window._columns.setValue(7)
+    assert [n.summary for n in entry_notices(table) if n.is_warning] == [
+        "Indices not counted as stamps"
+    ]
+    assert "not a whole number of stamps" in row.toolTip(1)
+    assert not row.icon(1).isNull()
+
+    window._columns.setValue(8)
+    assert entry_notices(table) == ()
+    assert "Indices not counted" not in row.toolTip(1)
+
+
 def test_a_sprite_maps_size_pair_survives_the_project(qtbot, tmp_path) -> None:
     """Per-entry project state, like the two bases: the pair is not in the file, so
     losing it on reload would lose the only record of it."""

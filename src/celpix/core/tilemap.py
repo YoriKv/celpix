@@ -22,6 +22,7 @@ copying, and what makes two equal grids compare equal.
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -233,6 +234,187 @@ def cell_orientation(cell: Cell) -> int:
     return (TILE_FLIP_H if cell.flip_h else 0) | (TILE_FLIP_V if cell.flip_v else 0)
 
 
+# -- index addressing ------------------------------------------------------
+#
+# Where one index draws a **unit** of several elements — a stamp of another
+# map's cells, a metatile of the bank's tiles — there are two ways to number
+# the units, and a file uses one or the other:
+#
+# - **corner**: the index is the unit's first (upper-left) element, so over a
+#   map it is a source cell and over a bank a tile. What the model reads by
+#   default, and the only reading a unit of one element has.
+# - **ordinal**: the index counts units, 0, 1, 2 ... — a stamp number, a
+#   metatile number. Record 20 of a packed 2x2 table is cell 80, not cell 20.
+#
+# ``Cell.index`` holds what the file holds either way, so a codec only decodes
+# and the hex view, a restamp and the round trip all speak the file's number.
+# The conversion happens where an index is resolved — the chain hop
+# (:func:`expand_stamps`, :func:`~celpix.core.document.resolve_chain`) and the
+# over-art tile walk
+# (:meth:`~celpix.core.document.Document.cell_tile_indices`) — and **before**
+# the binding's base, which counts cells or tiles in both addressings.
+#
+# The model carries ``None`` for corner addressing and a :data:`Geometry` for
+# ordinal, which already expresses both source shapes: records packed end to
+# end, and records laid out as a grid several across.
+
+
+class IndexAddressing(str, Enum):
+    """How an index numbers the units it draws — the two readings above.
+
+    ``value`` is the word a preset states as ``index_addressing`` and a binding
+    stores as its override (:attr:`~celpix.project.workspace.TileSource.
+    addressing`), str-valued for that reason.
+    """
+
+    CORNER = "corner"
+    ORDINAL = "ordinal"
+
+
+#: ``(cells per unit, cells across one unit, units across the source)`` — the
+#: shape an ordinal counts in (:func:`corner_at`). The last is 0 for units
+#: packed end to end and *N* for a source laid out as a grid *N* units across.
+Geometry = tuple[int, int, int]
+
+#: The preset parameters that state a :data:`Geometry` outright. A referring
+#: preset stating any of them is ordinal-addressed unless something says
+#: otherwise (``project/documents.py``, ``index_reading``).
+RECORD_KEYS = ("record_cells", "record_columns", "records_across")
+
+
+def record_geometry(params: dict) -> Geometry:
+    """The geometry ``params`` states, each key at its default where unset.
+
+    Defaults are a 2x2 record packed end to end, the ordinary metatile table.
+    Raises ``ValueError`` for a shape no table has, which the load reports
+    against the preset (``pipeline._check_declarations``).
+    """
+    cells = int(params.get("record_cells", 4))
+    columns = int(params.get("record_columns", 2))
+    across = int(params.get("records_across", 0))
+    if cells < 1 or columns < 1 or across < 0:
+        raise ValueError(
+            f"record_cells and record_columns must be positive and records_across "
+            f"non-negative, got {cells}, {columns}, {across}"
+        )
+    return cells, columns, across
+
+
+def corner_at(record: int, geometry: Geometry) -> int:
+    """The element unit ``record``'s first (upper-left) element sits at."""
+    cells, columns, across = geometry
+    if not across:
+        return record * cells
+    row, column = divmod(record, across)
+    return row * across * cells + column * columns
+
+
+def containing_at(cell: int, geometry: Geometry) -> int:
+    """The unit an element falls inside — :func:`corner_at`'s inverse, snapping."""
+    cells, columns, across = geometry
+    cell = max(0, cell)
+    if not across:
+        return cell // cells
+    # A row of units is `across * cells` elements laid out as `cells // columns`
+    # source rows of `across * columns` elements each, so the unit's column is
+    # read off the position within *its* source row, whichever row of the unit
+    # the element sits in.
+    row, offset = divmod(cell, across * cells)
+    return row * across + (offset % (across * columns)) // columns
+
+
+def index_corner(index: int, geometry: Geometry | None) -> int:
+    """The element ``index`` names first: itself in corner addressing, its
+    unit's corner in ordinal (:func:`corner_at`). The base is not added."""
+    return index if geometry is None else corner_at(index, geometry)
+
+
+def index_span(low: int, high: int, geometry: Geometry | None) -> range:
+    """The indices whose first element lands in ``[low, high)``, as a run.
+
+    The same run :func:`index_corner` would test one index at a time, found by
+    bisection: a corner grows with its index in both shapes, so the indices
+    that land inside are contiguous. Never negative, since no index field is.
+    """
+    low = max(0, low)
+    if geometry is None:
+        return range(low, max(low, high))
+    if high <= 0:
+        return range(0)
+    # A corner is never below its own index (every unit is at least one element
+    # and at least one across), so nothing past `high` can land below it.
+    candidates = range(high + 1)
+    start = bisect_left(candidates, low, key=lambda n: corner_at(n, geometry))
+    stop = bisect_left(candidates, high, key=lambda n: corner_at(n, geometry))
+    return range(start, max(start, stop))
+
+
+def stamp_geometry(
+    stamp: tuple[int, int],
+    source_columns: int,
+    *,
+    column_major: bool = False,
+    pitch: int = 0,
+) -> tuple[Geometry | None, str | None]:
+    """The geometry an ordinal counts stamps in, from how the **source** lays
+    them out — and why there is none, where there cannot be one.
+
+    Read off the source because the stamp is a rectangle cut out of it: its
+    stride (``source_columns``) says whether the stamps are records packed end
+    to end or windows on a sheet.
+
+    - **Packed** where the stride is the stamp's own width (row order) or height
+      (``column_major``): one stamp is whole rows of the source, and stamp *n*
+      starts ``n * pitch`` cells in. ``pitch`` is the record the source
+      publishes where it holds more cells than the stamp draws (a 17-cell
+      record around a 4x4 stamp), else the stamp's own area.
+    - **A grid** otherwise, the stamps laid ``source_columns // across`` to a
+      row of the sheet.
+
+    ``(None, None)`` for a stamp of one cell, whose ordinal is its corner. A
+    column-major stamp on a sheet, and a sheet whose width is not a whole
+    number of stamps, have no geometry of this shape: ``None`` with the reason,
+    worded for the status line like :attr:`~celpix.core.document.Document.
+    stamp_refusal`, and the index is read as a corner.
+    """
+    across, down = max(1, stamp[0]), max(1, stamp[1])
+    if (across, down) == (1, 1):
+        return None, None
+    area = across * down
+    stride = max(1, source_columns)
+    if stride == (down if column_major else across):
+        return (max(area, pitch), across, 0), None
+    if column_major:
+        return None, "stamps stored down each column are not numbered on a sheet"
+    if stride % across:
+        return None, "the source's width is not a whole number of stamps"
+    return (area, across, stride // across), None
+
+
+def metatile_geometry(
+    cell_tiles: tuple[int, int], row_stride: int, column_stride: int = 0
+) -> tuple[Geometry | None, str | None]:
+    """The geometry an ordinal counts metatiles in, over a tile bank.
+
+    :func:`stamp_geometry`'s twin one level down, from the strides the cell
+    format states for its metatile (``docs/design/tilemap-entry.md`` §3.1):
+    **packed** where the row stride is the metatile's own width or the cell is
+    filled down each column (``column_stride`` above 1) — its tiles are then
+    consecutive, and metatile *n* starts ``n * across * down`` tiles in — and
+    otherwise **a grid** ``row_stride // across`` metatiles to a row of the
+    bank, the console VRAM array a 16x16 cell steps through.
+    """
+    across, down = max(1, cell_tiles[0]), max(1, cell_tiles[1])
+    if (across, down) == (1, 1):
+        return None, None
+    stride = row_stride or across
+    if column_stride > 1 or stride == across:
+        return (across * down, across, 0), None
+    if stride % across:
+        return None, "the bank's row is not a whole number of metatiles"
+    return (across * down, across, stride // across), None
+
+
 def resolve_cell(
     cell: Cell,
     source: list[Cell],
@@ -361,15 +543,18 @@ def expand_stamp(
     carry_rows: bool,
     column_major: bool = False,
     base: int = 0,
+    geometry: Geometry | None = None,
 ) -> list[Cell]:
     """The source cells one stamp coordinate draws, in drawn (row-major) order.
 
     One entry's worth of :func:`expand_stamps`' walk, factored out for the
     previews that render a single stamp — the tile source sheet and the stamp
     tool's ghost — so a preview and the map cannot resolve the same coordinate
-    two different ways. The corner is the coordinate itself and the rest of the
-    stamp steps the **source's** rows: ``source_columns`` is the stride between
-    a stamp's rows because a stamp is a rectangle cut out of the source.
+    two different ways. The corner is the coordinate itself, or the stamp it
+    counts to under ordinal addressing (``geometry``, :func:`index_corner`),
+    and the rest of the stamp steps the **source's** rows: ``source_columns``
+    is the stride between a stamp's rows because a stamp is a rectangle cut out
+    of the source.
 
     ``cell`` is the *referring* entry, passed whole for the reason
     :func:`resolve_cell` composes it: its flips, its row where the format
@@ -382,12 +567,13 @@ def expand_stamp(
     """
     across, down = max(1, stamp[0]), max(1, stamp[1])
     stride = max(1, source_columns)
+    corner = index_corner(cell.index, geometry)
     return [
         resolve_cell(
             cell,
             source,
             carry_rows=carry_rows,
-            at=cell.index
+            at=corner
             + stamp_offset(
                 *stamp_cell(cell, dx, dy, (across, down)),
                 stride,
@@ -450,12 +636,15 @@ def expand_stamps(
     dense: bool = False,
     column_major: bool = False,
     base: int = 0,
+    geometry: Geometry | None = None,
 ) -> list[Cell]:
     """Resolve a stamped map into one source cell per **drawn position**.
 
     The referring map is a grid of stamps and the source is a grid of cells, and
     this is the one place the two shapes meet: the entry a position's stamp comes
-    from (:func:`stamp_origin`) names the source cell that stamp's corner draws,
+    from (:func:`stamp_origin`) names the source cell that stamp's corner draws
+    — the entry's index itself, or under ordinal addressing the corner of the
+    stamp it counts to (``geometry``, :func:`index_corner`) —
     and the rest of the stamp walks the source's *own* rows from there — offset
     ``x % across + (y % down) * source_columns``. That last term is why
     ``source_columns`` is a parameter and not the referrer's width: a stamp is a
@@ -527,7 +716,7 @@ def expand_stamps(
                 entry,
                 source,
                 carry_rows=carry_rows,
-                at=entry.index + offset,
+                at=index_corner(entry.index, geometry) + offset,
                 base=base,
             )
         )

@@ -2249,6 +2249,8 @@ def test_relocate_missing_corrects_path_loads_and_clears(
     assert entry.doc is not None and window._doc.tile_count == 8
     assert missing_paths(window._workspace) == []
     assert not window._locate_missing_action.isEnabled()
+    # The paths moved in place, so the disk watch has to follow them itself.
+    assert window._fs_watcher.files() == [str(moved)]
 
     # The whole run is one step: undo points the file and its slice back at the
     # old path, under the old name, and the entry is missing again.
@@ -2257,9 +2259,11 @@ def test_relocate_missing_corrects_path_loads_and_clears(
     assert (entry.path, cut.path, entry.name) == (str(rom), str(rom), rom.name)
     assert data_missing(entry) and entry.doc is None
     assert window._locate_missing_action.isEnabled()
+    assert window._fs_watcher.files() == []
     window._undo_stack.redo()
     assert window._undo_stack.count() == depth
     assert (entry.path, cut.path, entry.name) == (str(moved), str(moved), moved.name)
+    assert window._fs_watcher.files() == [str(moved)]
     assert window._doc is entry.doc and window._doc.tile_count == 8
 
 
