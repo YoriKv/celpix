@@ -99,6 +99,11 @@ tools for accuracy where available.
 - **[mdtools](https://github.com/sikthehedgehog/mdtools)**
 - **[SGDK](https://github.com/Stephane-D/SGDK)**
 - **[Koei Decompress](https://www.romhacking.net/utilities/1083/)**
+- **[GBDK-2020](https://github.com/gbdk-2020/gbdk-2020)**
+- **[clownnemesis](https://github.com/Clownacy/clownnemesis)**
+- **[konami-compression-tools](https://github.com/vladikcomper/konami-compression-tools)**
+- **[bemaniutils](https://github.com/DragonMinded/bemaniutils)**
+- **[bmp2tilecompressors](https://github.com/maxim-zhao/bmp2tilecompressors)**
 
 ## AI Use Disclaimer
 
