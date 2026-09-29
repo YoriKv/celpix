@@ -109,8 +109,11 @@ class DiskWatchMixin:
         self._disk_rest.setInterval(CHANGE_REST_MS)
         self._disk_rest.timeout.connect(self._check_disk_changes)
         ws = self._workspace
-        ws.on_added.append(lambda _entry: self._sync_disk_watch())
-        ws.on_removed.append(lambda _entry: self._sync_disk_watch())
+        # An addition can only grow the set, so it tracks the new entry's files
+        # alone: re-deriving the set from every entry per addition makes opening
+        # a project quadratic in its entries.
+        ws.on_added.append(self._watch_entry_files)
+        ws.on_removed.append(self._unwatch_entry_files)
         ws.on_reset.append(self._sync_disk_watch)
 
     # -- watching -----------------------------------------------------------
@@ -126,6 +129,26 @@ class DiskWatchMixin:
         self._disk_state.retain(paths)
         self._disk_state.track(paths)
         self._rewatch()
+
+    def _watch_entry_files(self, entry: Entry) -> None:
+        """:meth:`_sync_disk_watch` for one arrival: its files join the set."""
+        self._disk_state.track(entry.paths)
+        self._rewatch()
+
+    def _unwatch_entry_files(self, entry: Entry) -> None:
+        """:meth:`_sync_disk_watch` for one departure, which only it can shrink.
+
+        Most departures are one row of many on the same file — a file closing
+        takes every slice under it — and the first remaining row reading it
+        settles that nothing leaves the set. The full sync, which resolves every
+        remaining entry's path, runs only when a file may really be going: per
+        departure it would make closing a file quadratic in its slices.
+        """
+        leaving = {p for p in entry.paths if p}
+        entries = self._workspace.entries
+        if all(any(p in e.paths for e in entries) for p in leaving):
+            return
+        self._sync_disk_watch()
 
     def _rewatch(self) -> None:
         """Subscribe the watcher to exactly the tracked files that exist.

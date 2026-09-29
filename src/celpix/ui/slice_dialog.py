@@ -265,6 +265,9 @@ class SliceDialog(QDialog):
         # Read-only: what the slice will be created with (a file's preview
         # bindings) or currently binds — the badge above is the editor.
         self._inputs = QLabel()
+        # Wrapped: a codec with many inputs makes one long "; "-joined line,
+        # which unwrapped would set the whole dialog's width.
+        self._inputs.setWordWrap(True)
         self._inputs.setToolTip(
             "What this codec needs from elsewhere in the file, and\n"
             "where the slice binds it. Edit it with the button beside\n"

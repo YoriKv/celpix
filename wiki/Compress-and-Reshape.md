@@ -43,6 +43,8 @@ already uses it:
 The plugin is a data file. celPix loads it without asking for trust:
 
 ```toml
+# Compress & Reshape: a compression scheme, then a reshape run over what
+# it unpacks. On save the two run backwards, in the opposite order.
 id = "compression.smw-background-rle1-screens"
 name = "SMW background (RLE1 + screens)"
 engine_id = "compression.compress-reshape"

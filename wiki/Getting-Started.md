@@ -43,11 +43,12 @@ The tile sheets are 3bpp and compressed. They are stored one after another.
 ![The first sheet's bytes, still packed](images/02-raw-bytes.png)
 
 3. Set **Compression** to **LZ2 improved (SMW, Yoshi's Island)**. The
-   **Decompressed view** window shows the unpacked sheet.
+   **Decompressed** window shows the unpacked sheet.
 
 ![The first sheet, unpacked](images/02-lz2-preview.png)
 
-The status line shows the packed size, for example `structure 0x838 B`.
+The line under the unpacked sheet shows the packed size, for example
+`structure 0x0838 B`.
 
 4. Click **Jump to Next** to go to the next sheet. The sheets start at `$459F9`,
    `$46231`, `$46CBB`, and so on.

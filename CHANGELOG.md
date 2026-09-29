@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.1.8 - unreleased
+
+- Fixed the Edit Slice dialog inputs display text
+- Fixed performance on big projects
+
 ## v1.1.7 - 2026-09-29
 
 - Added LZW compression with input parameters for lzw variants

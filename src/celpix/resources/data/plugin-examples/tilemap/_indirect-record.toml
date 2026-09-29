@@ -11,7 +11,8 @@
 #   map draws as a dense chain of stamps (tilemap-entry.md sec 3.1). A map whose
 #   cells already hold cell positions uses _packed.toml with `indirect`.
 #
-#   The format has no flips and no writable palette row. Sample projects with
+#   The format has no flips and no writable palette row: a record number sharing
+#   its cell with flips is _packed.toml with the same record keys. Sample projects with
 #   their own preset on this engine: alex-kidd, smw, smb, ferias-frustradas,
 #   ferias-frustradas-sms.
 #

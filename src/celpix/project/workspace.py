@@ -1228,24 +1228,33 @@ class Workspace:
         """:meth:`children_of` against an arbitrary list — what :meth:`reorder`
         asks of the list it is *about* to commit, where the live one still holds
         the group it has lifted out."""
+        is_child = Workspace.child_test(entry)
+        return [e for e in entries if is_child(e)]
+
+    @staticmethod
+    def child_test(entry: Entry) -> Callable[[Entry], bool]:
+        """The test :meth:`children_of` puts to each row, to ask of rows one at
+        a time.
+
+        For a caller after the *first* child in some stretch of the list: it can
+        stop there, where building the whole list costs a :meth:`path_key` per
+        row — asked once per row added, as a project load does, that is
+        quadratic in the entries.
+        """
         if entry.kind is EntryKind.SLICE:
-            return [
-                e
-                for e in entries
-                if e.kind is EntryKind.SLICE
+            return lambda e: (
+                e.kind is EntryKind.SLICE
                 and e.parent_kind is EntryKind.SLICE
                 and e.parent_entry is entry
-            ]
+            )
         if entry.kind not in (EntryKind.FILE, EntryKind.PALETTE):
-            return []
+            return lambda _e: False
         key = Workspace.path_key(entry.path)
-        return [
-            e
-            for e in entries
-            if e.kind in (EntryKind.SLICE, EntryKind.BOOKMARK)
+        return lambda e: (
+            e.kind in (EntryKind.SLICE, EntryKind.BOOKMARK)
             and e.parent_kind is entry.kind
             and Workspace.path_key(e.path) == key
-        ]
+        )
 
     def descendants_of(self, entry: Entry) -> list[Entry]:
         """Every entry anchored under ``entry`` at any depth, depth first.

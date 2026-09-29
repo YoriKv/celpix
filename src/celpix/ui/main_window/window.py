@@ -663,8 +663,8 @@ class MainWindow(
         entries = self._workspace.entries
         later = entries[entries.index(entry) + 1 :]
         if parent is not None:
-            siblings = self._workspace.children_of(parent)
-            return next((e for e in later if e in siblings), None)
+            is_sibling = self._workspace.child_test(parent)
+            return next((e for e in later if is_sibling(e)), None)
         section = self._files_panel.section_of(entry)
         return next(
             (

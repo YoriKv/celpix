@@ -2141,6 +2141,34 @@ def test_the_indirect_record_engine_names_a_records_corner_and_snaps_back() -> N
     assert codec.index_limit(grid) == (255 // 8) * 32 + (255 % 8) * 2
 
 
+def test_a_packed_index_can_be_a_record_number_beside_its_flips() -> None:
+    """The packed engine's record geometry: a sprite frame's ``vhii iiii`` cell
+    numbers the 16x16s of a 16-tile-wide VRAM image eight across, so record 1 is
+    two cells on from record 0 rather than one. The flips stay the word's own, and
+    an edit inside a record writes that record with them."""
+    codec = TilemapCodec()
+    ctx = PipelineContext()
+    params = {
+        "fields": "vhii iiii",
+        "record_cells": 4,
+        "record_columns": 2,
+        "records_across": 8,
+    }
+    stored = bytes([0x01, 0x49, 0xC0])
+    cells = codec.decode(stored, params, ctx)
+    assert [(c.index, c.flip_h, c.flip_v) for c in cells] == [
+        (2, False, False),
+        (34, True, False),
+        (0, True, True),
+    ]
+    assert codec.encode(cells, params, ctx) == stored
+    # a coordinate on record 20's lower-right cell writes record 20, flips kept
+    edited = [replace(cells[1], index=72 + 17)]
+    assert codec.encode(edited, params, ctx) == bytes([0x40 | 20])
+    assert codec.index_limit(params) == (63 // 8) * 32 + (63 % 8) * 2
+    assert codec.cell_fields(params)["index"] == codec.index_limit(params)
+
+
 def test_grouped_records_pick_a_sub_table_and_its_palette_row() -> None:
     """A byte's top bits choose which of several tables laid end to end the
     record is in, and with ``group_rows`` that choice is the cell's row too; a

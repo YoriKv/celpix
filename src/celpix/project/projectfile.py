@@ -235,14 +235,17 @@ def _migrate_4_to_5(data: dict[str, object]) -> dict[str, object]:
 
 def _migrate_5_to_6(data: dict[str, object]) -> dict[str, object]:
     """v5 → v6: an input binding may be a bare string — a **choice** input's
-    option key (``docs/design/plugin-inputs.md`` §3).
+    option key (``docs/design/plugin-inputs.md`` §3) — and a slice may be cut
+    from another slice, ``"parent": "slice"`` with a ``parent_index``
+    (``docs/design/slices-and-parents.md`` §6).
 
     Purely additive, so there is nothing to rewrite: every v5 file means the
     same at v6. The bump exists for the other direction, as 4 → 5's did. A v5
     build skips a string binding as malformed, so the entry decodes with the
-    choice's default rather than the option bound, and **drops the binding on
-    its next save**. The number is what makes it warn
-    before it does (``docs/design/project-format.md`` §2).
+    choice's default rather than the option bound, and reads a nested slice as
+    a slice of the file, its offset landing in the wrong bytes — and **drops
+    both the binding and the parent on its next save**. The number is what
+    makes it warn before it does (``docs/design/project-format.md`` §2).
     """
     return data
 
@@ -936,7 +939,7 @@ def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
         # them — and, since it opens as a sheet of swatches, the session and
         # view of that sheet. No palette source of its own: its palette is its
         # own bytes, decoded on load (``docs/design/palette-editing.md`` §2).
-        return Entry(
+        entry = Entry(
             name=name if isinstance(name, str) and name else basename(path),
             kind=kind,
             path=path,
@@ -952,6 +955,10 @@ def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
             session=(_session_from(session) if isinstance(session, dict) else None),
             pending_view=_view_from(raw.get("view")),
         )
+        # Sliced and previewed like a file, so it holds preview bindings like
+        # one (:func:`~celpix.project.inputs.prune_bindings`).
+        _read_inputs_onto(entry, raw)
+        return entry
     offset_key = "offset" if kind is EntryKind.BOOKMARK else "slice_offset"
     # A child cut from a registered palette says so; absent — every child in
     # every project written before palettes could be sliced — means a file. A

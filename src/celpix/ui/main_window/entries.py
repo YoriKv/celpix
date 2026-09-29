@@ -655,6 +655,9 @@ class EntriesMixin:
                 if not any(entry is seen for seen in touched):
                     touched.append(entry)
             relocated += 1
+        # Located paths replaced the missing ones in place, which no addition or
+        # removal announces: the watch follows them to the files now read.
+        self._sync_disk_watch()
         self._sync_locate_action()
         # Re-show the current entry: a now-resolvable one loads; one whose picked
         # file was invalid (or still skipped) falls back to the unavailable state.
@@ -760,6 +763,9 @@ class EntriesMixin:
                 doc.palette, doc.palette_config, doc.palette_ctx = palette, config, ctx
                 doc.palette_base_bytes, doc.palette_edits = base, set(edits)
             self._files_panel.refresh_entry(entry)
+        # The paths moved under entries already in the list, which no addition or
+        # removal announces: the watch follows them to the files now read.
+        self._sync_disk_watch()
         self._sync_locate_action()
         self._on_current_entry_changed(self._workspace.current)
         self._refresh_window_title()
@@ -1967,6 +1973,8 @@ class EntriesMixin:
             self._capture_session()
         if moved:
             retarget_files(self._workspace, entry, edit.paths)
+            # Moved in place, which no addition or removal announces.
+            self._sync_disk_watch()
         self._sync_locate_action()  # the new list may name a file that isn't there
         self._reread_entries(family)
 

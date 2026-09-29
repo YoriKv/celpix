@@ -393,6 +393,27 @@ def test_bindings_round_trip_through_a_project_in_every_shape(tmp_path) -> None:
     assert second.inputs[XOR_ID]["order"] == "reverse"
 
 
+def test_a_palette_files_bindings_round_trip(tmp_path) -> None:
+    ws, parent, sl = _rom(tmp_path)
+    pal = tmp_path / "colors.pal"
+    pal.write_bytes(bytes(0x20))
+    palette = Entry(name="colors.pal", kind=EntryKind.PALETTE, path=str(pal))
+    palette.inputs = {
+        XOR_ID: {
+            "table": RegionBinding(entry=sl, offset=0, length=4),
+            "output_size": 16,
+        }
+    }
+    ws.insert(palette, len(ws.entries))
+    project = tmp_path / "p.celpix"
+    save_project(ws, str(project), _registry())
+
+    _, first, loaded = load_project(str(project)).entries
+    assert loaded.kind is EntryKind.PALETTE
+    assert loaded.inputs[XOR_ID]["table"].entry is first
+    assert loaded.inputs[XOR_ID]["output_size"] == 16
+
+
 def test_a_binding_onto_a_closed_entry_is_dropped_on_load(tmp_path) -> None:
     ws, parent, sl = _rom(tmp_path)
     gone = Entry(name="gone", kind=EntryKind.SLICE, path=parent.path)

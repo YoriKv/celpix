@@ -59,8 +59,9 @@ Not stored in the file:
 
 ### 2.4 Entry references
 
-Keys that name another entry: `current`, `tile_source.entry_index`,
-`pieces[].entry_index`, `inputs.*.*.entry_index`, `palette.entry`.
+Keys that name another entry: `current`, `parent_index`,
+`tile_source.entry_index`, `pieces[].entry_index`, `inputs.*.*.entry_index`,
+`palette.entry`.
 
 | Rule | |
 |---|---|
@@ -166,7 +167,7 @@ Unknown or missing `kind` reads as `file`.
 | `sprite_size_pair` | ○ | ○ | – | – | – |
 | `palette_row_base` | ○ | ○ | – | – | ○ |
 | `font` | ○ | ○ | – | – | ○ |
-| `inputs` | ○ | ○ | – | – | – |
+| `inputs` | ○ | ○ | – | ○ | – |
 | `session` | ● | ● | ● | ○ | ● |
 | `view` | ○ | ○ | ○ | ○ | ○ |
 | `palette` | ○ | ○ | ○ | – | ○ |
@@ -300,7 +301,7 @@ Code — command form:
 
 - Records with a non-integer `code` or empty `text`/`name` are skipped.
 - Missing `role` reads as `"text"`; unknown `role` reads as `"text"`.
-- Legacy (no `font` key): `alphabet_preset_id` `"alphabet.ascii-upper"` or `"alphabet.ascii"` plus `alphabet_base` are read as a font. Never written.
+- Legacy, when `font` is absent or not an object: a non-empty `alphabet_preset_id` reads as `use: true`; `"alphabet.ascii-upper"` and `"alphabet.ascii"` also supply `chars` (the **Fill with…** runs), any other id an empty run. `alphabet_base` reads as `base`; absent or 0 takes that preset's own (`0` / `32`). Never written.
 
 ### 5.10 `inputs`
 
@@ -312,8 +313,8 @@ Values bound to inputs a plugin declares (data outside the entry's bytes).
 
 - Both levels sorted by key when written.
 - Plugin ids go through the alias table (§2.5).
-- On a `file`: bindings for each compression preview codec. On a `slice` or tilemap: bindings for the plugins it reads through.
-- On save, bindings for plugins the entry no longer uses and keys the plugin no longer declares are removed.
+- On a `file` or `palette`: bindings for each compression preview codec. On a `slice` or tilemap: bindings for the plugins it reads through.
+- On save, bindings for plugins the entry no longer uses and keys the plugin no longer declares are removed. A plugin not installed keeps every key.
 
 Binding shapes (determined by type and keys present):
 
@@ -365,8 +366,8 @@ Written on every entry except a `palette` entry never opened as a sheet.
 | `palette_regions` | array of `[start, length, row]` | `[]` | omitted when empty | Pinned palette rows. `start`/`length` in pixels of the entry's picture; `length` > 0. Written sorted, disjoint, coalesced |
 
 - Values are clamped against the file size on load.
-- `tile_rearrangement` must be a permutation: no index repeated on either side, and the set of virtual indices equals the set of actual indices. Otherwise both rearrangement keys are dropped.
-- `tile_orientations`: a tile listed twice or `flags` outside 1–7 drops both rearrangement keys.
+- `tile_rearrangement`: a virtual index listed twice keeps its last pair. The result must be a permutation: no actual index repeated, no negative index, and the set of virtual indices equals the set of actual indices. Otherwise both rearrangement keys are dropped.
+- `tile_orientations`: a tile listed twice keeps its last entry; `flags` 0 drops that entry. A negative tile or `flags` outside 0–7 drops both rearrangement keys.
 - `palette_regions`: malformed triples are skipped; overlaps resolve earlier-wins.
 - Legacy, read but never written: `tile_map` (= `tile_rearrangement`). Ignored: `zoom`.
 
