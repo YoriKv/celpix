@@ -19,16 +19,19 @@ only *carries* its lazily loaded :class:`~celpix.core.document.Document` and
 the config factory (:func:`pixel_config_for`) that tells the pipeline how to
 read it.
 
-**Slices reference their parent by path**, and **one region has one authority**:
-the parent owns its bytes and a slice is a derived view of a window of them
+**A slice of a file references its parent by path**, a **nested slice** — one
+cut from another slice — references its parent slice by identity
+(:attr:`Entry.parent_entry`), and **one region has one authority**: the parent
+owns its bytes and a slice is a derived view of a window of them, to any depth
 (``docs/design/slices-and-parents.md``). Reading is an ordinary bounded
 :class:`~celpix.plugins.base.FileRef` served by the ordinary container — from the
 file on disk, *except* where the parent's own buffer is the only truth (it holds
-unsaved pixel edits, or it reorders), when :func:`pixel_config_for` points the
-source at that buffer instead (``FileRef.data``). Writing never deposits at those
+unsaved pixel edits, it reorders, or it is a slice whose decoded bytes are the
+nested slice's coordinate space), when :func:`pixel_config_for` points the source
+at that buffer instead (``FileRef.data``). Writing never deposits at those
 bounds: the pathway is flagged ``writes_through_parent`` and the host folds the
-slice into the parent's buffer and writes the *parent*, so the parent's container
-runs over bytes that changed inside it.
+slice into the parent's buffer and writes the *parent* — up the chain to the file,
+so the file's container runs over bytes that changed inside it.
 
 Cached documents of other entries on the same path go stale only when one of them
 saves — :meth:`Workspace.invalidate_path` drops those caches (except dirty ones:
@@ -535,20 +538,43 @@ class LoadFailure:
         return cls(exc.summary(), fault_report(fault) if fault is not None else "")
 
 
+class ParentSliceMissing(Exception):
+    """A nested slice was asked to open with no parent slice to read.
+
+    Its own exception rather than a :class:`~celpix.core.errors.PipelineError`,
+    because no stage ran and no plugin failed: the bytes it windows into are
+    simply not in the list (:meth:`Workspace.chain_broken`). The message is the
+    whole of what the load failure says.
+    """
+
+
+class SliceOutsideParent(Exception):
+    """A nested slice was asked to open on a window its parent slice's decoded
+    bytes do not reach (:func:`outside_parent`).
+
+    Its own exception for :class:`ParentSliceMissing`'s reason: no stage ran and
+    no plugin failed. The message is the whole of what the load failure says.
+    """
+
+
 @dataclass(eq=False)  # identity semantics: two slices may share coordinates
 class Entry:
     """One open item: a whole file, an offset+length slice of one, or a bookmark.
 
-    ``path`` is the file itself for FILE entries and the **parent** file for
-    SLICE and BOOKMARK entries. **Slices and bookmarks never nest**: both are
-    always anchored to a whole file, never to another slice, so their ``path``
-    always names a FILE and the open-entries list is exactly two levels deep.
-    ``slice_offset`` is an absolute offset from byte 0 of the file —
-    deliberately not header-relative, so a slice or bookmark never shifts when
-    the parent's header-skip display setting changes. ``slice_length`` may
-    start ``None`` for a decompressed slice ("to be discovered"): the first
-    load backfills it from the structure's true extent so save-back is
-    slot-bounded.
+    ``path`` is the file itself for FILE entries and the **root** file for
+    SLICE and BOOKMARK entries. A bookmark is always anchored to a whole file. A
+    slice is anchored to a whole file *or to another slice* — a **nested slice**
+    (``parent_kind`` SLICE, the parent held in :attr:`parent_entry`), which
+    windows into its parent's *decoded* bytes: tiles and a map unpacked from one
+    stream are two slices of the slice that unpacks it. The chain nests to any
+    depth and always ends at a FILE or a PALETTE, whose path every entry in it
+    carries. ``slice_offset`` is an absolute offset from byte 0 of the file for a
+    slice of a file — deliberately not header-relative, so a slice or bookmark
+    never shifts when the parent's header-skip display setting changes — and an
+    offset from byte 0 of the parent slice's decoded buffer for a nested one.
+    ``slice_length`` may start ``None`` for a decompressed slice ("to be
+    discovered"): the first load backfills it from the structure's true extent so
+    save-back is slot-bounded.
 
     A BOOKMARK is a position marker, not a document: it has no length and is
     never loaded or made current. It repurposes the restore fields as its
@@ -584,7 +610,10 @@ class Entry:
     # A **slice carries its parent's list**, not one of its own: its offset is
     # into the parent's joined buffer, so the same files have to be joined the
     # same way to mean anything. Copying them at creation keeps a slice able to
-    # answer that on its own, without a workspace to look its parent up in.
+    # answer that on its own, without a workspace to look its parent up in. A
+    # nested slice carries the list its whole chain ends at, since those are the
+    # files its bytes finally live in — what a missing-file scan, a relocate and
+    # a save's invalidation all key on.
     extra_paths: tuple[str, ...] = ()
     slice_offset: int = 0
     slice_length: int | None = None
@@ -616,15 +645,24 @@ class Entry:
     # *permutes* them they are not, and the slice reads its buffer instead
     # (:func:`_parent_view_bytes`).
     container_id: str = RAW_CONTAINER
-    # SLICE and BOOKMARK entries only: which kind of whole-file row ``path``
-    # names — a FILE, or a PALETTE. A slice is anchored by path, and a ``.pal``
-    # can be open as both a graphics file and a registered palette at once, so
-    # the path alone cannot say which of the two a slice was cut from; this
-    # does. FILE for every entry any older project holds, which is what they
-    # all were (``docs/design/project-format.md``).
+    # SLICE and BOOKMARK entries only: which kind of row the entry was cut from —
+    # a FILE, a PALETTE, or (a slice only) another SLICE. A slice of a file is
+    # anchored by path, and a ``.pal`` can be open as both a graphics file and a
+    # registered palette at once, so the path alone cannot say which of the two
+    # a slice was cut from; this does. FILE for every entry any older project
+    # holds, which is what they all were (``docs/design/project-format.md``).
     parent_kind: EntryKind = EntryKind.FILE
+    # A **nested** slice's parent slice, by identity (``parent_kind`` SLICE), and
+    # None on every other entry. Identity rather than the path a slice of a file
+    # is found by, because every slice of one file shares that path — the same
+    # reason a tile binding and a composite piece hold the entry itself. None on
+    # a nested slice is a broken chain (a project naming a parent it does not
+    # hold), which opens inert rather than reading the file at an offset that
+    # was never a file offset (:meth:`Workspace.chain_broken`).
+    parent_entry: Entry | None = None
     doc: Document | None = None  # lazy: loaded on first activation
-    # Children of this **file** whose current bytes are not in its buffer yet.
+    # Children of this **file or slice** whose current bytes are not in its
+    # buffer yet.
     #
     # A slice edit has to reach the file that owns those bytes, and re-encoding it
     # to get there is the expensive half — on a compressed slice it is a search
@@ -637,6 +675,10 @@ class Entry:
     # plus these, and "dirty" alone would leave the edited version standing in the
     # buffer after it had been undone in the slice. Identity-keyed, like every
     # other reference to an entry (this class is ``eq=False``).
+    #
+    # Down a chain every link owes the one below it: an edit to a nested slice
+    # puts it here on its parent slice, and the parent slice here on *its*
+    # parent, up to the file — so settling any member finds every debt above it.
     pending_folds: set[Entry] = field(default_factory=set)
     # SLICE entries only: why the last fold of this slice into its parent was
     # refused — a re-encoded stream that no longer fits its slot, a compressor
@@ -909,10 +951,10 @@ def new_slice(
     is the one statement of what a slice entry is, shared by that path and by
     :meth:`Workspace.add_slice`.
 
-    ``parent_path`` is always a whole *file* — slices never nest, so a slice's
-    parent is a FILE or a PALETTE (``parent_kind``), never another slice — and
-    it becomes the entry's ``path``: a slice is named by the file it cuts into,
-    not by one of its own.
+    ``parent_path`` is a whole *file* — a FILE or a PALETTE (``parent_kind``) —
+    and it becomes the entry's ``path``: a slice is named by the file it cuts
+    into, not by one of its own. A slice of another slice is named by the parent
+    *entry*, which a path cannot say, so it is built by :func:`slice_of` alone.
     ``offset`` is likewise absolute in that file, and ``length`` may be ``None``
     for a compressed slice whose extent is discovered on first load.
 
@@ -976,6 +1018,11 @@ def slice_of(
     not one thing to inherit from — and the ``None``-sourced shape means "this
     file" on the slice exactly as it did on the parent
     (:class:`RegionBinding`).
+
+    ``parent`` may itself be a **slice**: the result is then a nested slice, its
+    ``offset`` counted from byte 0 of the parent's decoded buffer and the parent
+    held by identity (:attr:`Entry.parent_entry`). The file list is still the
+    parent's, which is the root file's, since that is where its bytes end up.
     """
     entry = new_slice(
         parent.path,
@@ -987,6 +1034,8 @@ def slice_of(
         reshape_id,
         parent_kind=parent.kind,
     )
+    if parent.kind is EntryKind.SLICE:
+        entry.parent_entry = parent
     entry.content_kind = parent.content_kind
     inherited = parent.inputs.get(compression_id)
     if inherited:
@@ -1155,52 +1204,170 @@ class Workspace:
         ]
 
     def slices_of(self, entry: Entry) -> list[Entry]:
-        """The SLICE entries carved from ``entry``'s file, in list order.
+        """The SLICE entries cut directly from ``entry``, in list order.
 
-        Only a FILE or a PALETTE has slices — slices never nest — so this is a
-        single hop, never recursive.
+        One hop: a file's own slices, or a slice's nested ones — not theirs in
+        turn. :meth:`descendants_of` is the whole subtree.
         """
         return [e for e in self.children_of(entry) if e.kind is EntryKind.SLICE]
 
     def children_of(self, entry: Entry) -> list[Entry]:
-        """The SLICE and BOOKMARK entries anchored to ``entry``'s file, in
-        list order (empty unless ``entry`` is a FILE or a PALETTE — children
-        never nest). A FILE and a PALETTE sharing a path are not each other's
-        children, and nor are their slices: a child says which kind of row it
-        was cut from (:attr:`Entry.parent_kind`)."""
+        """The entries anchored **directly** to ``entry``, in list order.
+
+        A FILE's or a PALETTE's slices and bookmarks, matched by path, and a
+        SLICE's nested slices, matched by identity (:attr:`Entry.parent_entry`).
+        Empty for every other kind. A FILE and a PALETTE sharing a path are not
+        each other's children, and nor are their slices: a child says which kind
+        of row it was cut from (:attr:`Entry.parent_kind`) — which is also what
+        keeps a nested slice, sharing its root file's path, off the file's list.
+        """
         return self._children_in(entry, self.entries)
 
-    def _children_in(self, entry: Entry, entries: list[Entry]) -> list[Entry]:
+    @staticmethod
+    def _children_in(entry: Entry, entries: list[Entry]) -> list[Entry]:
         """:meth:`children_of` against an arbitrary list — what :meth:`reorder`
         asks of the list it is *about* to commit, where the live one still holds
         the group it has lifted out."""
+        if entry.kind is EntryKind.SLICE:
+            return [
+                e
+                for e in entries
+                if e.kind is EntryKind.SLICE
+                and e.parent_kind is EntryKind.SLICE
+                and e.parent_entry is entry
+            ]
         if entry.kind not in (EntryKind.FILE, EntryKind.PALETTE):
             return []
-        key = self.path_key(entry.path)
+        key = Workspace.path_key(entry.path)
         return [
             e
             for e in entries
             if e.kind in (EntryKind.SLICE, EntryKind.BOOKMARK)
             and e.parent_kind is entry.kind
-            and self.path_key(e.path) == key
+            and Workspace.path_key(e.path) == key
         ]
 
+    def descendants_of(self, entry: Entry) -> list[Entry]:
+        """Every entry anchored under ``entry`` at any depth, depth first.
+
+        A child comes before its own children and siblings keep list order, which
+        is the order the list itself holds a group in (:meth:`reorder` keeps it
+        so) — so this is also the group's rows as they sit under ``entry``.
+        """
+        return self.descendants_in(entry, self.entries)
+
+    @staticmethod
+    def descendants_in(entry: Entry, entries: list[Entry]) -> list[Entry]:
+        """:meth:`descendants_of` against an arbitrary list, in one pass over it —
+        what a paste asks of the list it is building before any of it is added.
+
+        The nested levels are indexed by parent once rather than asked of the
+        list per slice: a ROM with hundreds of slices would otherwise make every
+        close and every move quadratic in them. The seen-set is what ends a walk
+        round a parent chain a hand-edited project made circular.
+        """
+        nested: dict[int, list[Entry]] = {}
+        for e in entries:
+            if e.kind is EntryKind.SLICE and e.parent_kind is EntryKind.SLICE:
+                if e.parent_entry is not None:
+                    nested.setdefault(id(e.parent_entry), []).append(e)
+        out: list[Entry] = []
+        seen = {id(entry)}
+
+        def walk(children: list[Entry]) -> None:
+            for child in children:
+                if id(child) in seen:
+                    continue
+                seen.add(id(child))
+                out.append(child)
+                walk(nested.get(id(child), []))
+
+        walk(
+            nested.get(id(entry), [])
+            if entry.kind is EntryKind.SLICE
+            else Workspace._children_in(entry, entries)
+        )
+        return out
+
     def parent_of(self, entry: Entry) -> Entry | None:
-        """The open FILE or PALETTE entry a SLICE or BOOKMARK is anchored to.
+        """The open entry a SLICE or BOOKMARK is anchored to.
+
+        For a slice or bookmark of a file, the open FILE or PALETTE — which of
+        the two whole-file kinds is the child's own word
+        (:attr:`Entry.parent_kind`), because a ``.pal`` can be open as both at
+        once and the path cannot tell them apart. For a **nested slice**, the
+        parent slice it holds (:attr:`Entry.parent_entry`), while that is still
+        in the list.
 
         None for the three kinds that anchor to nothing: a FILE and a PALETTE,
         whose path is their own file, and a **COMPOSITE**, which has no path at
         all. That last one is not merely tidy — a composite's ``path`` is ``""``,
         which :meth:`path_key` resolves to the working *directory*, so asking
         would be looking a file up by a name no file has.
-
-        Which of the two whole-file kinds is the child's own word
-        (:attr:`Entry.parent_kind`), because a ``.pal`` can be open as both at
-        once and the path cannot tell them apart.
         """
         if entry.kind in (EntryKind.FILE, EntryKind.PALETTE, EntryKind.COMPOSITE):
             return None
+        if entry.parent_kind is EntryKind.SLICE:
+            parent = entry.parent_entry
+            # ``in`` compares identity here: Entry is eq=False.
+            return parent if parent is not None and parent in self.entries else None
         return self._find(entry.parent_kind, entry.path)
+
+    def ancestors_of(self, entry: Entry) -> list[Entry]:
+        """``entry``'s parent, its parent's parent, and so on — nearest first.
+
+        Stops at the first link that is not open, so the last element is the
+        file the chain ends at only when the chain is whole
+        (:meth:`root_of`). Guarded against a circular chain, which only a
+        hand-edited project can hold and which then simply stops.
+        """
+        out: list[Entry] = []
+        seen = {id(entry)}
+        parent = self.parent_of(entry)
+        while parent is not None and id(parent) not in seen:
+            seen.add(id(parent))
+            out.append(parent)
+            parent = self.parent_of(parent)
+        return out
+
+    def root_of(self, entry: Entry) -> Entry | None:
+        """The FILE or PALETTE ``entry``'s chain ends at, or None.
+
+        The entry itself for a whole file. None where the chain does not reach
+        one — a composite, a slice of a file that is not open, or a nested slice
+        whose chain is broken on the way up. The one to ask wherever an answer is
+        in **file** coordinates rather than a parent's: an Offset palette and a
+        "this file" input binding both address the ROM beside the stream, not the
+        stream a nested slice windows into.
+        """
+        if entry.kind in (EntryKind.FILE, EntryKind.PALETTE):
+            return entry
+        chain = self.ancestors_of(entry)
+        top = chain[-1] if chain else None
+        if top is None or top.kind not in (EntryKind.FILE, EntryKind.PALETTE):
+            return None
+        return top
+
+    def chain_broken(self, entry: Entry) -> bool:
+        """Whether a nested slice somewhere up ``entry``'s chain has lost its parent.
+
+        A nested slice's bytes exist only as a window of its parent slice's
+        decoded buffer, so with that parent gone there is nothing to read — and
+        its offset is not a file offset, so falling back to the file would read
+        bytes it never named. False for a slice of a file, whose parent may be
+        closed without harm (it reads the file), and for everything else.
+        """
+        seen: set[int] = set()
+        node = entry
+        while node.kind is EntryKind.SLICE and node.parent_kind is EntryKind.SLICE:
+            if id(node) in seen:
+                return True  # a circular chain has no bytes at the end of it
+            seen.add(id(node))
+            parent = self.parent_of(node)
+            if parent is None:
+                return True
+            node = parent
+        return False
 
     def dirty_entries(self) -> list[Entry]:
         """Every entry with anything unsaved, on either pathway.
@@ -1287,6 +1454,21 @@ class Workspace:
         self.insert(entry, self.add_index_for(entry))
         return entry
 
+    def add_slice_under(
+        self,
+        parent: Entry,
+        name: str,
+        offset: int,
+        length: int | None,
+        compression_id: str = NO_COMPRESSION,
+        reshape_id: str = NO_RESHAPE,
+    ) -> Entry:
+        """:meth:`add_slice` given the parent entry — the non-undoable add for a
+        slice of a slice, whose parent a path cannot name (:func:`slice_of`)."""
+        entry = slice_of(parent, name, offset, length, compression_id, reshape_id)
+        self.insert(entry, self.add_index_for(entry))
+        return entry
+
     def insert(self, entry: Entry, index: int) -> None:
         """Insert an already-constructed entry at ``index`` (undo/redo path:
         re-adding restores the *same* Entry object, so its document, session
@@ -1297,13 +1479,19 @@ class Workspace:
     def add_index_for(self, entry: Entry) -> int:
         """Where a newly created ``entry`` belongs in the list.
 
-        The end, except a **slice or bookmark of an open file**, which lands in
-        offset order among that file's children. That seeding is the only thing
-        the offsets decide: from then on the order is the user's, so dragging a
-        row moves it and an offset edit leaves it where it sits
-        (:meth:`reorder`). Seeding rather than sorting is what lets both be true
-        — a list nobody has arranged still reads low-to-high, which is the order
-        slices are usually carved in.
+        The end, except a **slice or bookmark of an open parent** — a file, or a
+        slice for a nested one — which lands in offset order among that parent's
+        own children. That seeding is the only thing the offsets decide: from
+        then on the order is the user's, so dragging a row moves it and an
+        offset edit leaves it where it sits (:meth:`reorder`). Seeding rather
+        than sorting is what lets both be true — a list nobody has arranged
+        still reads low-to-high, which is the order slices are usually carved in.
+
+        Offsets are compared among **siblings** only, since a nested slice's
+        offset counts in its parent's decoded buffer and says nothing about
+        where it falls among its parent's own siblings. A sibling is taken with
+        its whole subtree, so a new row never lands between a slice and the
+        slices nested under it.
 
         A child whose parent isn't open has no group to sort within, so it goes
         to the end like anything else.
@@ -1315,10 +1503,11 @@ class Workspace:
         later = next((e for e in siblings if e.slice_offset > entry.slice_offset), None)
         if later is not None:
             return self.entries.index(later)
-        # Past the last child, or straight after the parent when it has none —
-        # never merely "at the parent's index + 1", which would bury a new slice
-        # under the ones already there.
-        return self.entries.index(siblings[-1] if siblings else parent) + 1
+        # Past the parent's whole subtree, or straight after the parent when it
+        # has none — never merely "at the parent's index + 1", which would bury
+        # a new slice under the ones already there.
+        group = [parent, *self.descendants_of(parent)]
+        return max(self.entries.index(e) for e in group) + 1
 
     def reorder(self, entry: Entry, before: Entry | None) -> bool:
         """Move ``entry`` so it sits immediately in front of ``before``.
@@ -1328,16 +1517,19 @@ class Workspace:
         all of them. ``before`` is the entry the moved row lands in front
         of, ``None`` for last in its own group. False when nothing moved.
 
-        A **file takes its slices and bookmarks with it**. They are matched by
-        path rather than position, so the list *could* leave them behind — but a
-        parent has to precede its children for the panel to nest them (that is
-        the order a project reload replays), so the whole group moves as one, and
-        ``before`` names the row the group as a whole goes in front of.
+        A **row takes everything under it along**: a file its slices and
+        bookmarks, a slice the slices nested in it, to any depth. They are
+        matched by path or by parent rather than position, so the list *could*
+        leave them behind — but a parent has to precede its children for the
+        panel to nest them (that is the order a project reload replays), so the
+        whole group moves as one, and ``before`` names the row the group as a
+        whole goes in front of.
 
-        For a **slice or bookmark** ``None`` means after its last sibling rather
-        than at the end of the list: a child dropped last in its parent's group
-        is still that parent's child, and letting it drift past unrelated entries
-        would only break the contiguity the file move above relies on.
+        For a **slice or bookmark** ``None`` means after its parent's whole
+        subtree rather than at the end of the list: a child dropped last in its
+        parent's group is still that parent's child, and letting it drift past
+        unrelated entries would only break the contiguity the move above relies
+        on.
 
         What ``before`` does *not* have to be is the entry that immediately
         follows in this flat list. The panel groups rows into sections, so two
@@ -1345,10 +1537,11 @@ class Workspace:
         here; inserting in front of ``before`` gets their relative order right
         either way, which is the only thing the display reads.
         """
-        group = [entry, *self.children_of(entry)]
-        if before is not None and any(before is member for member in group):
+        group = [entry, *self.descendants_of(entry)]
+        members = {id(member) for member in group}
+        if before is not None and id(before) in members:
             return False
-        rest = [e for e in self.entries if not any(e is member for member in group)]
+        rest = [e for e in self.entries if id(e) not in members]
         if before is not None:
             at = rest.index(before)
         elif entry.kind in (EntryKind.SLICE, EntryKind.BOOKMARK):
@@ -1356,8 +1549,8 @@ class Workspace:
             if parent is None:
                 at = len(rest)
             else:
-                siblings = self._children_in(parent, rest)
-                at = rest.index(siblings[-1] if siblings else parent) + 1
+                tail = [parent, *self.descendants_in(parent, rest)]
+                at = max(rest.index(e) for e in tail) + 1
         else:
             at = len(rest)
         rest[at:at] = group
@@ -1386,11 +1579,12 @@ class Workspace:
         return True
 
     def close(self, entry: Entry, *, with_children: bool = True) -> list[Entry]:
-        """Remove ``entry`` — and, for a file or palette, the children under it.
+        """Remove ``entry`` — and everything anchored under it, to any depth.
 
         A slice or bookmark nested under a closed parent would be an orphan in
-        the list, so the parent takes its children with it (the UI confirms
-        first). Returns everything removed. If the current entry was among
+        the list — and a nested slice under a closed parent slice would have no
+        bytes at all — so the parent takes its whole subtree with it (the UI
+        confirms first). Returns everything removed. If the current entry was among
         them, ``current`` moves to a list neighbour — skipping bookmarks, which
         cannot be current, and palettes, which are registered rather than
         browsed (:func:`_browsable`) — or None when no candidate remains.
@@ -1400,7 +1594,7 @@ class Workspace:
         bookmark already in the list adopts it, and taking the adoptee out with
         the file would lose a row the add never put there.
         """
-        removed = [entry, *(self.children_of(entry) if with_children else ())]
+        removed = [entry, *(self.descendants_of(entry) if with_children else ())]
         anchor = min(self.entries.index(e) for e in removed)
         for e in removed:
             self.entries.remove(e)
@@ -1558,6 +1752,27 @@ def _browsable(entry: Entry) -> bool:
     return entry.kind.has_document and entry.kind is not EntryKind.PALETTE
 
 
+def anchor_kind(entry: Entry) -> EntryKind:
+    """Which kind of whole-file row a slice's or bookmark's chain is cut from.
+
+    :attr:`Entry.parent_kind` for a child of a file, and the same answer for a
+    nested slice, found by walking its parents to the one cut from a file — a
+    run of colours carved out of a slice of a ``.pal`` is still a slice of a
+    palette. Walked through the entries themselves rather than a workspace,
+    since the question is asked of rows before any list holds them. A chain
+    that breaks on the way up answers FILE, what an unstated parent means.
+    """
+    seen: set[int] = set()
+    node = entry
+    while node.parent_kind is EntryKind.SLICE:
+        parent = node.parent_entry
+        if parent is None or id(node) in seen:
+            return EntryKind.FILE
+        seen.add(id(node))
+        node = parent
+    return node.parent_kind
+
+
 def section_kind(entry: Entry, registry: Registry | None = None) -> ContentKind:
     """Which section of the open-entries list ``entry``'s row is filed under.
 
@@ -1578,8 +1793,8 @@ def section_kind(entry: Entry, registry: Registry | None = None) -> ContentKind:
 
     The other exception is stated rather than read off a format: a **palette
     file** is filed with the palettes by being one (:attr:`Entry.kind`), and so
-    is every slice and bookmark cut from it (:attr:`Entry.parent_kind`) — the
-    row sits under its parent's, and its parent is in that section. Its
+    is every slice and bookmark cut from it, at any depth (:func:`anchor_kind`) —
+    the row sits under its parent's, and its parent is in that section. Its
     ``content_kind`` is PIXELS for the same reason a swatch composite's is: what
     files a row and what its bytes are remain two questions.
 
@@ -1595,7 +1810,7 @@ def section_kind(entry: Entry, registry: Registry | None = None) -> ContentKind:
     """
     if entry.kind is EntryKind.PALETTE or (
         entry.kind in (EntryKind.SLICE, EntryKind.BOOKMARK)
-        and entry.parent_kind is EntryKind.PALETTE
+        and anchor_kind(entry) is EntryKind.PALETTE
     ):
         return ContentKind.PALETTE
     if entry.kind is not EntryKind.COMPOSITE or registry is None:
@@ -1798,7 +2013,9 @@ def pixel_config_for(
     is the same thing. The rebase is what keeps that honest: the parent's buffer
     starts at its header skip, so it is handed over as ``data`` with a matching
     ``data_base``, leaving the slice's own ``offset`` file-absolute for reading,
-    writing and the address display alike.
+    writing and the address display alike. A **nested** slice needs the workspace
+    to be read at all: its bytes are always its parent slice's decoded buffer,
+    reached through the chain above it (:func:`_parent_read`).
 
     A compression scheme that can be decoded but not re-encoded yields a config
     with ``write_enabled=False`` — the slice loads and views fine, it just can't
@@ -1848,9 +2065,7 @@ def pixel_config_for(
             write_enabled=writable,
             missing_plugins=missing,
         )
-    parent = workspace.parent_of(entry) if workspace is not None else None
-    reordered = parent is not None and reorders_bytes(parent, registry)
-    live, live_base = _parent_view_bytes(entry, parent, reordered, registry, preset_id)
+    read = _parent_read(entry, registry, preset_id, workspace)
     # What the scheme needs from outside the slice — a shared code table, an
     # output size — resolved here because only the host can reach the parent's
     # buffer and the other entries a binding names. A scheme whose inputs do not
@@ -1864,51 +2079,157 @@ def pixel_config_for(
     if problems:
         compression_id = NO_COMPRESSION
         writable = False
-    if parent is not None:
-        # **Every** slice is saved by splicing into the parent's buffer and
-        # writing the parent, not by depositing at its own bounds. Under a
-        # reordering parent that is the only thing that *can* work; everywhere
-        # else it is what keeps the file whole - the parent's container gets to
-        # run its write half (repair a checksum, re-wrap a header) over bytes
-        # that changed inside it, which a splice around it silently skips.
-        #
-        # So the parent's own write is the thing this can fail on: a parent that
-        # cannot save (a reshape with no unshape, a container with no write, a
-        # plugin this build hasn't got) leaves the slice with nowhere to land.
-        # A slice is part of the larger whole and cannot outrank it.
-        writable = (
-            writable and pixel_config_for(parent, preset_id, registry).write_enabled
-        )
-    return PathwayConfig(
+    # **Every** slice is saved by splicing into the parent's buffer and writing
+    # the parent, not by depositing at its own bounds. Under a reordering parent
+    # that is the only thing that *can* work; everywhere else it is what keeps
+    # the file whole - the parent's container gets to run its write half (repair
+    # a checksum, re-wrap a header) over bytes that changed inside it, which a
+    # splice around it silently skips.
+    #
+    # So the parent's own write is the thing this can fail on: a parent that
+    # cannot save (a reshape with no unshape, a container with no write, a
+    # plugin this build hasn't got) leaves the slice with nowhere to land. A
+    # slice is part of the larger whole and cannot outrank it — and down a chain
+    # of nested slices that is every link's, since each is saved through the one
+    # above it.
+    writable = writable and read.writable
+    source = FileRef(
         # The parent's *whole* file list, not just the file the slice is named
         # after: a slice's offset addresses the parent's joined buffer, so
         # reading one chip of a several-chip region would put every offset past
         # the first chip somewhere else entirely.
-        source=FileRef(
-            entry.paths,
-            offset=entry.slice_offset,
-            length=entry.slice_length,
-            data=live,
-            data_base=live_base,
-        ),
+        entry.paths,
+        offset=entry.slice_offset,
+        length=entry.slice_length,
+        data=read.data,
+        data_base=read.base,
+    )
+    return PathwayConfig(
+        source=source,
         # The slice's own bounds: a file position where the parent reads
-        # straight, a position in its buffer where it reorders. Either way they
-        # bound the splice and the slot checks rather than naming a deposit —
-        # `writes_through_parent` says the parent performs the delivery. Without
-        # a workspace there is no parent to route through, and the config falls
-        # back to depositing here (the factory's caller-beware form).
-        dest=FileRef(entry.paths, offset=entry.slice_offset, length=entry.slice_length),
+        # straight, a position in its buffer where it reorders or is a slice.
+        # Either way they bound the splice and the slot checks rather than
+        # naming a deposit — `writes_through_parent` says the parent performs
+        # the delivery. Without a workspace there is no parent to route through,
+        # and the config falls back to depositing here (the factory's
+        # caller-beware form).
+        dest=_slice_dest(entry, source, read),
         interpret_preset_id=preset_id,
         interpret_params=interpret_params_for(entry, preset_id, registry),
         reshape_id=reshape_id,
         compression_id=compression_id,
         slot_fill=entry.slot_fill,
         write_enabled=writable,
-        writes_through_parent=parent is not None,
+        writes_through_parent=read.through,
         missing_plugins=missing,
         inputs=inputs,
         input_problems=problems,
     )
+
+
+@dataclass(frozen=True)
+class _ParentRead:
+    """What a slice's config takes from its parent: the bytes it reads, their
+    base, whether the parent can carry a write out, and whether one is routed
+    through it at all."""
+
+    data: bytes | None
+    base: int
+    writable: bool
+    through: bool
+
+
+def _parent_read(
+    entry: Entry, registry: Registry, preset_id: str, workspace: Workspace | None
+) -> _ParentRead:
+    """The parent half of a slice's config, for both pathways.
+
+    A slice of a **file** reads the files at its offset, or the parent's buffer
+    where that is the only truth (:func:`_parent_view_bytes`), and is writable
+    only as far as the file's own stages are.
+
+    A **nested** slice always reads its parent slice's own decoded bytes, since
+    its offset counts from byte 0 of them and names no file position at all. Its
+    writability is the parent's *config*, which is the parent's own stages and,
+    recursively, every link above — so the parent's config is built once here,
+    with the workspace, and serves both questions: its read (when the parent has
+    no document to borrow the bytes from) and its ``write_enabled``.
+
+    A nested slice whose chain is broken (:meth:`Workspace.chain_broken`) reads
+    an **empty** buffer and cannot write: falling back to the file would read
+    bytes at an offset that was never a file offset. The load funnel refuses it
+    before this is reached; this is the backstop for everything else that builds
+    a config.
+    """
+    parent = workspace.parent_of(entry) if workspace is not None else None
+    if entry.parent_kind is not EntryKind.SLICE:
+        reordered = parent is not None and reorders_bytes(parent, registry)
+        data, base = _parent_view_bytes(entry, parent, reordered, registry, preset_id)
+        writable = (
+            parent is None
+            or pixel_config_for(parent, preset_id, registry).write_enabled
+        )
+        return _ParentRead(data, base, writable, parent is not None)
+    if parent is None or workspace is None or workspace.chain_broken(entry):
+        return _ParentRead(b"", 0, False, True)
+    parent_cfg = pixel_config_for(parent, preset_id, registry, workspace)
+    data = own_bytes(parent)
+    if data is None:
+        data = pipeline.read_region(parent_cfg, registry)[0]
+    return _ParentRead(data, 0, parent_cfg.write_enabled, True)
+
+
+def _slice_dest(entry: Entry, source: FileRef, read: _ParentRead) -> FileRef:
+    """Where a slice's write is bounded: its own offset and length.
+
+    A nested slice's carries the parent's buffer as well, where a slice of a file
+    names only the files: the bounds are positions in that buffer, and a scheme
+    that packs against the bytes before its stream (``KEY_SURROUND``) reads them
+    from the destination — which for a nested slice is the parent's decoded
+    bytes, never the file at an offset it does not name. Nothing deposits there
+    either way (``writes_through_parent``).
+    """
+    if entry.parent_kind is EntryKind.SLICE:
+        return source
+    return FileRef(entry.paths, offset=entry.slice_offset, length=entry.slice_length)
+
+
+def outside_parent(entry: Entry, cfg: PathwayConfig) -> bool:
+    """Whether a nested slice's window runs off its parent slice's decoded bytes.
+
+    Asked of the config, which carries the very buffer the read is about to cut
+    (:func:`_parent_read`). The window was inside it when the slice was made —
+    the dialog checks — but the buffer is a decode, and what it unpacks to moves
+    with the parent: re-pointed, resized, or its stream edited underneath. The
+    read itself cannot say so, since cutting a buffer past its end is an empty
+    or a short window rather than an error, and a slice opening on bytes it was
+    never cut from is worse than one that will not open.
+
+    False for a slice of a file, whose window is the container's to honour, and
+    for a length still to be discovered, which reads to the end of what is there.
+    """
+    if entry.parent_kind is not EntryKind.SLICE or cfg.source.data is None:
+        return False
+    size = len(cfg.source.data)
+    start = entry.slice_offset
+    length = entry.slice_length
+    return start >= size or (length is not None and start + length > size)
+
+
+def own_bytes(entry: Entry) -> bytes | None:
+    """The bytes ``entry``'s loaded document holds as its **own**, or None.
+
+    What a nested slice reads and what its fold is spliced into, so the two can
+    never disagree about which buffer that is. A pixel document's own bytes are
+    its ``pixel_data``; a **tilemap**'s are its cells' buffer (``tilemap_data``),
+    since its ``pixel_data`` is art borrowed from whatever it is bound to and has
+    nothing to do with the region the entry is. None without a document — the
+    caller reads the region instead.
+    """
+    doc = entry.doc
+    if doc is None:
+        return None
+    return doc.tilemap_data if doc.is_tilemap else doc.pixel_data
 
 
 def tilemap_config_for(
@@ -1959,9 +2280,11 @@ def tilemap_config_for(
             inputs=inputs,
             input_problems=problems,
         )
-    parent = workspace.parent_of(entry) if workspace is not None else None
-    reordered = parent is not None and reorders_bytes(parent, registry)
-    live, live_base = _parent_view_bytes(entry, parent, reordered, registry, preset_id)
+    read = _parent_read(entry, registry, preset_id, workspace)
+    if entry.parent_kind is EntryKind.SLICE:
+        # A map nested in a slice is written through that slice and then up the
+        # chain, so it can write only where every link can.
+        writable = writable and read.writable
     # A compressed map's scheme may declare inputs of its own — how many parts a
     # de-interleaved stream weaves, which is 2 for a map where the same scheme
     # weaves 4 for tiles — resolved and degraded exactly as the pixel side does.
@@ -1974,24 +2297,25 @@ def tilemap_config_for(
         writable = False
     inputs = {**inputs, **scheme_inputs}
     problems = scheme_problems + problems
+    source = FileRef(
+        entry.paths,
+        offset=entry.slice_offset,
+        length=entry.slice_length,
+        data=read.data,
+        data_base=read.base,
+    )
     return PathwayConfig(
-        source=FileRef(
-            entry.paths,
-            offset=entry.slice_offset,
-            length=entry.slice_length,
-            data=live,
-            data_base=live_base,
-        ),
+        source=source,
         # The slice's own bounds bound the splice, and the parent performs the
         # delivery — the same routing a pixel slice gets, so a restamp lands
         # where the cells were read from rather than at a raw file position.
-        dest=FileRef(entry.paths, offset=entry.slice_offset, length=entry.slice_length),
+        dest=_slice_dest(entry, source, read),
         interpret_preset_id=preset_id,
         reshape_id=entry.reshape_id,
         compression_id=compression_id,
         slot_fill=entry.slot_fill,
         write_enabled=writable,
-        writes_through_parent=parent is not None,
+        writes_through_parent=read.through,
         inputs=inputs,
         input_problems=problems,
     )
@@ -2596,7 +2920,9 @@ def _parent_view_bytes(
     registry: Registry,
     preset_id: str,
 ) -> tuple[bytes | None, int]:
-    """The parent bytes a slice reads through, and the file offset they start at.
+    """The parent bytes a slice of a **file** reads through, and the file offset
+    they start at. (A nested slice has no choice to make: it always reads its
+    parent slice's buffer — :func:`_parent_read`.)
 
     ``(None, 0)`` — read the files — whenever the parent's own Read is a plain
     window onto them, because then the slice's offset lands on the same bytes
@@ -2635,7 +2961,7 @@ def palette_source_for(entry: Entry) -> PaletteSource | None:
     inverse of :meth:`_apply_restored_state`'s consumption of ``pending_palette``
     — it's what both project-save and new-slice seeding read to carry a palette
     forward. An offset source is an absolute file offset, so it resolves against
-    a slice's parent file exactly as it does for the parent itself.
+    the file a slice's chain ends at exactly as it does for that file itself.
     """
     # A palette entry's palette is its own file, decoded from its own bytes and
     # rebuilt from them on every load: nothing about it is restorable state, and
@@ -2728,8 +3054,9 @@ def path_exists(path: str) -> bool:
 def data_missing(entry: Entry) -> bool:
     """Whether any of the entry's data files is gone from disk.
 
-    For a slice or bookmark this is the parent file (their ``path``); a missing
-    parent leaves the child unloadable exactly as a missing file does. **Any**
+    For a slice or bookmark this is the root file (their ``path``, at any depth
+    of nesting); a missing parent leaves the child unloadable exactly as a
+    missing file does. **Any**
     of a several-file region counts: the region is the files joined, so one
     absent chip does not shorten it, it moves every byte after the gap.
     """
@@ -2838,7 +3165,7 @@ def path_is_palette_only(ws: Workspace, path: str) -> bool:
     # than through :func:`section_kind`, which also files by content kind.
     return not any(
         entry.kind is not EntryKind.PALETTE
-        and entry.parent_kind is not EntryKind.PALETTE
+        and anchor_kind(entry) is not EntryKind.PALETTE
         and any(Workspace.path_key(p) == key for p in entry.paths)
         for entry in ws.entries
     )
@@ -3020,7 +3347,8 @@ def retarget_files(ws: Workspace, entry: Entry, paths: tuple[str, ...]) -> list[
     and the file a save is attributed to. So the children move in the same step —
     a child's offset addresses the *joined* buffer (:func:`pixel_config_for`), so
     it has to be joined the same way to mean anything, and one left on the old
-    path would no longer find its parent at all.
+    path would no longer find its parent at all. Slices nested under those move
+    too: they carry the file list their chain ends at.
 
     A FILE's display name defaults to its first file's basename, so it follows
     the list too — unless the user has renamed the row, which is theirs to keep
@@ -3033,7 +3361,7 @@ def retarget_files(ws: Workspace, entry: Entry, paths: tuple[str, ...]) -> list[
     named_after_file = entry.name == basename(entry.path)
     # The children are found *before* the path moves — they are keyed by the one
     # that is about to change.
-    touched = [entry, *ws.children_of(entry)]
+    touched = [entry, *ws.descendants_of(entry)]
     for moved in touched:
         moved.path = first
         moved.extra_paths = tuple(rest)
@@ -3045,7 +3373,7 @@ def retarget_files(ws: Workspace, entry: Entry, paths: tuple[str, ...]) -> list[
 def exportable_entries(ws: Workspace) -> list[Entry]:
     """The entries a bulk (whole-project) export should render, in list order.
 
-    Every slice, plus every FILE that has **no** slices. A file that *has* slices
+    Every slice and every FILE that has **no** slices. A file that *has* slices
     is skipped: its slices are the curated regions worth exporting, so dumping the
     whole file alongside them would be redundant (and a whole ROM is rarely a
     useful image). A sliced file is exported only when the user names it
@@ -3058,17 +3386,24 @@ def exportable_entries(ws: Workspace) -> list[Entry]:
     cut from one is a slice like any other and does appear — someone carved
     that range out on purpose, which is the same claim any slice makes.
 
+    A **slice with slices nested in it** follows the file's rule, for the file's
+    reason: it is the stream its nested slices were carved out of (the tiles and
+    the map one decompression holds), and they are the curated regions. Nested
+    slices themselves appear like any slice.
+
     A **composite** always appears, and is not redundant with the pieces it is
     assembled from even though its bytes are theirs: the picture it makes is one
     nobody else in the list draws, which is the whole reason it exists. It has no
-    slices of its own to defer to either — a slice's parent is always a file or
-    a palette.
+    slices of its own to defer to either — a slice is cut from a file, a palette
+    or another slice, never from a composite.
     """
     result: list[Entry] = []
     for entry in ws.entries:
-        if entry.kind in (EntryKind.SLICE, EntryKind.COMPOSITE):
+        if entry.kind is EntryKind.COMPOSITE:
             result.append(entry)
-        elif entry.kind is EntryKind.FILE and not ws.slices_of(entry):
+        elif entry.kind in (EntryKind.FILE, EntryKind.SLICE) and not ws.slices_of(
+            entry
+        ):
             result.append(entry)
     return result
 

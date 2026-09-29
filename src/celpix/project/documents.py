@@ -874,9 +874,11 @@ def tilemap_document(
 def palette_offset_owner(workspace: Workspace, entry: Entry | None) -> Entry | None:
     """The FILE entry whose coordinates ``entry``'s Offset palette is in.
 
-    ``entry`` itself when it is a whole file; its **parent** when it is a slice,
-    because a slice's palette offsets are parent-absolute and deliberately reach
-    outside its own window. ``None`` when the parent is not open.
+    ``entry`` itself when it is a whole file; the file its chain ends at when it
+    is a slice, because a slice's palette offsets are file-absolute and
+    deliberately reach outside its own window — a nested slice's included, since
+    colours live in the ROM beside a compressed stream rather than inside it.
+    ``None`` when that file is not open.
 
     A **composite** comes from no file, so it borrows the coordinates of its
     first piece that has an entry — the file a VRAM window's first bank sits in,
@@ -890,7 +892,7 @@ def palette_offset_owner(workspace: Workspace, entry: Entry | None) -> Entry | N
     if entry.kind is EntryKind.COMPOSITE:
         first = next((p.entry for p in entry.pieces if p.entry is not None), None)
         return palette_offset_owner(workspace, first) if first is not entry else None
-    return workspace.parent_of(entry)
+    return workspace.root_of(entry)
 
 
 def offset_palette_files(workspace: Workspace, entry: Entry) -> tuple[str, ...]:

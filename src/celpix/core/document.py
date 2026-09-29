@@ -1962,15 +1962,23 @@ class Document:
 
     @property
     def anchor_base(self) -> int:
-        """The file byte this document's position 0 corresponds to.
+        """The byte this document's position 0 corresponds to, in the buffer it
+        was read out of.
 
-        The coordinates an offset is *written down* in: what a slice offset, a
-        pinned palette region and a jump-to-source all mean. Raw sources (no
-        decompressor, no reshape) anchor source-file-absolute — past whatever a
+        The coordinates an offset is *written down* in: what a slice offset, an
+        Offset palette's address and a jump-to-source all mean. Raw sources (no
+        decompressor, no reshape) anchor source-absolute — past whatever a
         container skipped, or the slice offset for a raw slice. A decompressed
         stream has no linear mapping back to file offsets, and a reshaped one is a
         byte permutation of its region, so under either the base is 0 and those
         offsets are positions in the reordered buffer instead.
+
+        A file byte for a whole file and for a slice of one. For a **nested**
+        slice it is a position in its parent slice's decoded buffer, which names
+        no file byte at all — the document cannot tell the two apart, so a caller
+        that needs *file* coordinates asks the window
+        (:meth:`~celpix.ui.main_window.navigation.NavigationMixin.
+        _view_has_file_coordinates`).
 
         Not what the address box shows: that is a display policy on top of this
         (:meth:`~celpix.ui.main_window.navigation.NavigationMixin._address_base`),
@@ -1981,9 +1989,8 @@ class Document:
         began: it works its start out from the format (past a copier header, past
         the iNES header and the PRG banks) and the host never asked for it.
 
-        This lives on the document because it is what pinned palette regions are
-        anchored in (:mod:`celpix.core.paletteregions`), and export resolves them
-        with no window to ask.
+        On the document because it is a fact about the read, which the document
+        holds: the config it was read through and the context that read left.
         """
         if not self.pixel_config.reads_raw_bytes:
             return 0

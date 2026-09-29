@@ -49,7 +49,12 @@ from .d88 import D88Container
 from .direct_color_codec import DirectColorCodec
 from .enigma import EnigmaCompression
 from .gb_rom import GbRomContainer
+from .gba_diff import GbaDiff8Compression, GbaDiff16Compression
+from .gba_huffman import GbaHuffmanCompression
 from .gba_lz77 import GbaLz77Compression
+from .gba_rle import GbaRleCompression
+from .gbdk_lz import GbdkLzCompression
+from .gbdk_rle import GbdkRleCompression
 from .indexed_codec import IndexedColorCodec
 from .indirect_record import IndirectRecordCodec
 from .koei_lz import KoeiLzCompression
@@ -108,6 +113,7 @@ from .tilemap_codec import TilemapCodec
 from .tim import TimClutContainer, TimContainer
 from .tpl_palette import TplPaletteContainer
 from .ys_spr import SprContainer
+from .zx0 import Zx0Compression
 
 if TYPE_CHECKING:
     from celpix.plugins.base import Preset, ReshapePlugin
@@ -161,6 +167,10 @@ def register_builtins(reg: Registry) -> None:
         LzssRingCompression(),
         LzwCompression(),
         GbaLz77Compression(),
+        GbaRleCompression(),
+        GbaHuffmanCompression(),
+        GbaDiff8Compression(),
+        GbaDiff16Compression(),
         NemesisCompression(),
         EnigmaCompression(),
         KosinskiCompression(),
@@ -184,6 +194,9 @@ def register_builtins(reg: Registry) -> None:
         PrsCompression(),
         AplibCompression(),
         Lz4wCompression(),
+        GbdkLzCompression(),
+        GbdkRleCompression(),
+        Zx0Compression(),
         PvrCompression(),
         PackBitsCompression(),
         PhantasyStarRleCompression(),

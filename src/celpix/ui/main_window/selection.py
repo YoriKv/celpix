@@ -1055,14 +1055,15 @@ class SelectionMixin:
             has and self._offset_palette_refusal(self._workspace.current) is None
         )
         self._sync_pin_actions()
-        # Only whole files spawn slices - slices never nest. Nor does a tilemap:
-        # a slice is a pixel entry over a byte region, and the region a cell
-        # selection names is a run of records in a map, which is not a thing the
-        # pixel machinery on the other end of the dialog can open.
+        # A file and a slice spawn slices — a slice's windowing into its decoded
+        # bytes. Not a tilemap: a slice is a pixel entry over a byte region, and
+        # the region a cell selection names is a run of records in a map, which
+        # is not a thing the pixel machinery on the other end of the dialog can
+        # open.
         current = self._workspace.current
         can_slice = (
             current is not None
-            and current.kind is EntryKind.FILE
+            and current.kind in (EntryKind.FILE, EntryKind.SLICE)
             and not (self._doc is not None and self._doc.is_tilemap)
         )
         self._new_slice_from_selection_action.setEnabled(has and can_slice)

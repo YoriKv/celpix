@@ -21,7 +21,7 @@ celPix is built on Python + Qt (PySide6) and runs on Windows, macOS, and Linux.
 - **Supported formats** - a wide variety of pixel and palette formats, covering
   the full set of formats supported by existing tools (YY-CHR, etc).
 - **Compression** - SNES LZ1/LZ2/LZ16, Konami RLE, PackBits, LZSS, GBA/NDS BIOS
-  LZ77, Sega's Nemesis/Enigma/Kosinski, and more. A decompressed preview overlay
+  LZ77/RLE/Huffman, Sega's Nemesis/Enigma/Kosinski, and more. A decompressed preview overlay
   and support for editing decompressed pixel data.
 - **Containers & Reshaping** - support for appending multiple files together and then a variety of byte "reshaping" plugins such as merging split ROM chips, deinterleaving, reversing bit order, etc
 - **Editing** - full set of editing tools with undo/redo, copy/paste/etc internally
@@ -83,14 +83,14 @@ the accumulated community knowledge this project represents. No code was copied
 or used from these projects directly. Codecs were tested against these other
 tools for accuracy where available.
 
-- **[YY-CHR](https://www.romhacking.net/utilities/119/)**
+- **[YY-CHR](https://romhack.ing/database/content/entry/ydNw5JQBNs8FWu0CSI9m/yy_chr-net)**
 - **[Tile Molester](https://github.com/toruzz/TileMolester)**
 - **[MushROMs](https://github.com/bonimy/MushROMs)**
-- **[CrystalTile2](https://www.romhacking.net/utilities/818/)**
+- **[CrystalTile2](https://romhack.ing/database/content/entry/SNNw5JQBNs8FWu0CVJJ2/crystal-tile-2)**
 - **[Advynia](https://github.com/KarisaAdvynia/Advynia)**
 - **[DreamCompress](https://www.romhacking.net/utilities/1900/)**
 - **[SuperFamiconv](https://github.com/Optiroc/SuperFamiconv)**
-- **[Tile Layer Pro](https://www.romhacking.net/utilities/108/)**
+- **[Tile Layer Pro](https://segaretro.org/Tile_Layer_Pro)**
 - **[PSXSDK](https://github.com/nathanhi/psxsdk)**
 - **[hcgcad](https://github.com/LuigiBlood/hcgcad)**
 - **[MAME](https://github.com/mamedev/mame)**
@@ -98,7 +98,7 @@ tools for accuracy where available.
 - **[Beehive](https://github.com/BigEvilCorporation/Beehive)**
 - **[mdtools](https://github.com/sikthehedgehog/mdtools)**
 - **[SGDK](https://github.com/Stephane-D/SGDK)**
-- **[Koei Decompress](https://www.romhacking.net/utilities/1083/)**
+- **[Koei Decompress](https://romhack.ing/database/content/entry/btNw5JQBNs8FWu0CS5By/koei-decompress)**
 - **[GBDK-2020](https://github.com/gbdk-2020/gbdk-2020)**
 - **[clownnemesis](https://github.com/Clownacy/clownnemesis)**
 - **[konami-compression-tools](https://github.com/vladikcomper/konami-compression-tools)**

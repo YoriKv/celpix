@@ -97,9 +97,13 @@ class PaletteOffsetMixin:
         """Where Offset mode starts: the selected tile, else the window top-left.
 
         In the coordinates a palette offset is written in - the owner's, which for
-        a slice is its parent's, because an Offset palette deliberately reaches
-        outside the slice's own window. So this is not the number the offset box
-        shows while a slice is on screen; that one counts from the slice.
+        a slice is the file its chain ends at
+        (:func:`~celpix.project.documents.palette_offset_owner`), because an
+        Offset palette deliberately reaches outside the slice's own window. So
+        this is not the number the offset box shows while a slice is on screen;
+        that one counts from the slice. A view with no file coordinates - a
+        decompressed one, a nested slice - starts at the bare view position
+        (:meth:`~...navigation.NavigationMixin._tile_anchor_offset`).
         """
         assert self._doc is not None
         # No stamp here, so no on-screen snap - this only reads a byte offset.

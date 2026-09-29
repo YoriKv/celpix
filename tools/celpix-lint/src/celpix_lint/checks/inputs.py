@@ -76,7 +76,7 @@ def _plugin(ctx: Context, view: EntryView, plugin_id: str, pointer: str) -> None
     and one the entry actually reads through."""
     if not ctx.ids.usable:
         return
-    if not any(ctx.ids.has(stage, plugin_id) for stage in INPUT_STAGES):
+    if not any(ctx.ids.has_plugin(stage, plugin_id) for stage in INPUT_STAGES):
         elsewhere = ctx.ids.stage_of(plugin_id)
         if elsewhere is not None:
             ctx.error(
@@ -101,12 +101,11 @@ def _plugin(ctx: Context, view: EntryView, plugin_id: str, pointer: str) -> None
             ctx.warn(
                 "W905",
                 f"`inputs` names {plugin_id!r}, which is not one of celPix's built-in "
-                "compression or tilemap ids",
+                "compression or tilemap engine ids",
                 pointer=pointer,
                 entry=view,
-                detail="A project plugin declaring inputs is the usual case here "
-                "(no built-in declares any). Re-run with --live to check against "
-                "your own registry.",
+                detail="A plugin installed outside the project is the usual case "
+                "here. Re-run with --live to check against your own registry.",
             )
         return
     # A slice reads through exactly one compression scheme; bindings for any

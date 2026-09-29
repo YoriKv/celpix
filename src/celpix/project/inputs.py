@@ -540,7 +540,8 @@ def _source_bytes(
 ) -> tuple[bytes, int]:
     """The buffer a binding's source supplies and the file offset it starts at.
 
-    ``None`` is the entry's own file, read as a raw slice of it would be. A
+    ``None`` is the entry's own file — the root file, for a nested slice — read
+    as a raw slice of it would be. A
     named entry is read as it reads itself — container, reshape, decompressor —
     and its offsets are into that result, so the base comes back as 0.
     """
@@ -557,7 +558,9 @@ def _source_bytes(
         return _view_bytes(source, registry, workspace)[0], 0
     owner = entry if entry.kind in (ws.EntryKind.FILE, ws.EntryKind.PALETTE) else None
     if owner is None and workspace is not None:
-        owner = workspace.parent_of(entry)
+        # The file the chain ends at, not a nested slice's parent slice: a code
+        # table lives in the ROM beside the stream, never inside the stream.
+        owner = workspace.root_of(entry)
     if owner is None:
         # No parent in hand — the files as plain bytes, which is what a slice's
         # parent is as far as anything here can know.

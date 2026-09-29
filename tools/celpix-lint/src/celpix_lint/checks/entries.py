@@ -160,6 +160,7 @@ def _why_not(key: str, kind: str) -> str:
         "slice_offset": "",
         "offset": "",
         "parent": "Only a slice or bookmark is cut from another entry.",
+        "parent_index": "Only a slice can be nested in another slice.",
         "palette": "A palette entry *is* a palette source; it does not have one.",
         "pieces": "Only a composite is assembled from other entries.",
         "palette_preset_id": "On anything else the codec lives at "
@@ -300,7 +301,8 @@ def _slice_bounds(ctx: Context, view: EntryView) -> None:
                 f"`{key}` is {offset!r}, not an integer — it reads as 0",
                 pointer=view.at(key),
                 entry=view,
-                detail="The offset is absolute from byte 0 of the parent file.",
+                detail="The offset is absolute from byte 0 of the parent file — "
+                "or of the parent slice's decoded bytes, for a nested slice.",
             )
         elif offset < 0:
             ctx.error(

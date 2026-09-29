@@ -1088,6 +1088,25 @@ class NavigationMixin:
         assert self._doc is not None
         return self._doc.anchor_base
 
+    def _view_has_file_coordinates(self) -> bool:
+        """Whether a view position past :meth:`_anchor_base` names a place in the
+        coordinates the **file's** own offsets are written in - an Offset palette,
+        a *This file* input binding - which resolve against the root file of a
+        slice's chain (``Workspace.root_of``).
+
+        Not under a decompressor, whose stream has no position-for-position
+        mapping back. Nor on a **nested** slice, raw or not: its positions, and
+        its base with them, count in its parent slice's decoded buffer - stream
+        coordinates, which name no file byte (``docs/design/slices-and-parents.md``
+        §6). A reshape still qualifies, since those offsets are the reordered
+        buffer's on both sides.
+        """
+        assert self._doc is not None
+        entry = self._workspace.current
+        if entry is not None and entry.parent_kind is EntryKind.SLICE:
+            return False
+        return self._doc.pixel_config.positions_are_slice_offsets
+
     def _addresses_are_view_relative(self) -> bool:
         """Whether the address surfaces count from the view's own first byte.
 
@@ -1116,10 +1135,17 @@ class NavigationMixin:
         return self._doc.tilemap_anchor_base
 
     def _tile_anchor_offset(self, tile: int) -> int:
-        """``tile``'s byte offset on the current (nudged) grid, in the coordinates
-        an offset is written down in (:meth:`_anchor_base`)."""
+        """``tile``'s byte offset on the current (nudged) grid, in the file
+        coordinates an Offset palette is written in (:meth:`_anchor_base`).
+
+        A view with none (:meth:`_view_has_file_coordinates`) gives the bare view
+        position - what a decompressed view's 0 base gives anyway - rather than a
+        nested slice's base, which is a position in its parent's stream and would
+        read as a file offset it is not.
+        """
         assert self._doc is not None
-        return self._anchor_base() + self._nudge + tile * self._doc.bytes_per_tile
+        base = self._anchor_base() if self._view_has_file_coordinates() else 0
+        return base + self._nudge + tile * self._doc.bytes_per_tile
 
     def _tile_address(self, tile: int) -> int:
         """``tile``'s byte offset on the current (nudged) grid, as displayed."""

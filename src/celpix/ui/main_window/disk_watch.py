@@ -315,15 +315,17 @@ class DiskWatchMixin:
             if entry.kind in (EntryKind.FILE, EntryKind.PALETTE) and on(entry):
                 self._reload_region(entry, tally)
         # A slice whose file is not itself open reads the file for itself, so
-        # it is its own region here (``slices-and-parents.md`` §2).
+        # it is its own region here (``slices-and-parents.md`` §2), with the
+        # slices nested in it. A nested slice is never one of these: its parent
+        # is a slice, and one with none left has nothing on disk to re-read.
         for entry in list(ws.entries):
             if (
                 entry.kind is EntryKind.SLICE
+                and entry.parent_kind is not EntryKind.SLICE
                 and on(entry)
-                and entry.doc is not None
                 and ws.parent_of(entry) is None
             ):
-                tally.add(self._reload_document(entry, tally))
+                self._reload_region(entry, tally)
         # The graphics rendering a re-read palette file show its colours by
         # reference, and are holding the ones the old bytes decoded to.
         for entry in tally.reloaded:
@@ -341,39 +343,56 @@ class DiskWatchMixin:
         """Reload ``file`` and everything derived from its bytes.
 
         Its buffer is the authority for the region, so the unsaved edits its
-        slices hold are settled into it first and it is merged once. The slices
-        are then dropped and re-derived from the merged buffer, exactly as an
-        edit to the file drops them (``_propagate_pixel_edit``) — except one
-        whose fold was refused, which holds the only copy of its edit, and one
-        with unsaved *colours*, which are not in the buffer and are carried
-        across a re-read instead. A file never loaded has nothing to merge; its
-        loaded slices read the file for themselves and are reloaded as their own
-        regions.
+        slices hold — to any depth, each nested slice's folded into the slice
+        above it on the way — are settled into it first and it is merged once.
+        The slices are then dropped and re-derived from the merged buffer,
+        exactly as an edit to the file drops them (``_propagate_pixel_edit``) —
+        except one whose fold was refused, which holds the only copy of its edit
+        and of those of the slices nested in it, and one with unsaved *colours*,
+        which are not in the buffer and are carried across a re-read instead.
+
+        An entry never loaded has nothing to merge; a loaded slice under it reads
+        through it for itself, and is reloaded as a region of its own — the same
+        rule one level down, since a slice's buffer is the authority for the
+        slices nested in it.
         """
         ws = self._workspace
-        children = [
+        loaded = [
             c
-            for c in ws.children_of(file)
+            for c in ws.descendants_of(file)
             if c.kind is EntryKind.SLICE and c.doc is not None
         ]
         if file.doc is None:
-            for child in children:
-                tally.add(self._reload_document(child, tally))
-            self._bytes_moved([file, *children], tally)
+            for child in ws.children_of(file):
+                if child.kind is EntryKind.SLICE:
+                    self._reload_region(child, tally)
+            if file.kind is not EntryKind.SLICE:
+                self._bytes_moved([file, *loaded], tally)
             return
         self._settle_region(file)
         merge = self._reload_document(file, tally)
         if merge is None:
             return  # unreadable now: it keeps its bytes, and so do its slices
         tally.add(merge)
-        for child in children:
-            if child.fold_refused is not None:
+        self._drop_reloaded_slices(file, tally)
+        if file.kind is not EntryKind.SLICE:
+            self._bytes_moved([file, *loaded], tally)
+
+    def _drop_reloaded_slices(self, entry: Entry, tally: _Reload) -> None:
+        """Re-derive every loaded slice under ``entry`` from its merged buffer.
+
+        A refused fold keeps its document and everything nested under it, for
+        the reason :meth:`_reload_region` gives; unsaved colours ride a re-read.
+        """
+        for child in self._workspace.children_of(entry):
+            if child.kind is not EntryKind.SLICE or child.fold_refused is not None:
                 continue
-            if child.palette_dirty:
-                self._reread_from_disk(child, tally)
-            else:
-                ws.drop_document(child)
-        self._bytes_moved([file, *children], tally)
+            if child.doc is not None:
+                if child.palette_dirty:
+                    self._reread_from_disk(child, tally)
+                else:
+                    self._workspace.drop_document(child)
+            self._drop_reloaded_slices(child, tally)
 
     def _bytes_moved(self, owners: list[Entry], tally: _Reload) -> None:
         """Everything that holds a *decode* of ``owners``' bytes reads them again.

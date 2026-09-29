@@ -128,10 +128,11 @@ class TilemapFormat(Protocol):
     :class:`~celpix.plugins.base.TilemapCodecPlugin` carries, each minus
     ``params``: ``transform_cell(cell, op)``, ``index_limit()``,
     ``palette_row_limit()``, ``has_palette_rows()``,
-    ``palette_row_granularity()``, ``settle_cells(cells)``, ``has_line_flag()``,
-    ``has_visibility()`` and
-    ``cell_fields()`` — plus the two a ``layout = "sprite"`` format adds,
-    ``size_pair()`` and ``frames(cells, ctx)``, which have no place on a grid.
+    ``palette_row_granularity()``, ``settle_cells(cells)`` (or
+    ``settle_cells(cells, inputs)`` for a format that declares inputs),
+    ``has_line_flag()``, ``has_visibility()`` and ``cell_fields()`` — plus the
+    two a ``layout = "sprite"`` format adds, ``size_pair()`` and
+    ``frames(cells, ctx)``, which have no place on a grid.
     **A format that wants its cells edited has to define ``index_limit``** — the
     host refuses what a codec has not been asked about, so omitting it leaves the
     cell reference unsettable and every flip refused, exactly as it would for a
@@ -160,12 +161,19 @@ def _params_last(impl: Any) -> Any:
     return call
 
 
-def _params_middle(impl: Any) -> Any:
-    """The same for the surfaces whose ``params`` sits between two arguments:
-    ``frames(cells, params, ctx)`` and ``shared_entries(index, params, count)``."""
+def _params_second(impl: Any) -> Any:
+    """The same for the surfaces that pass ``params`` second, whatever follows it:
+    ``frames(cells, params, ctx)``, ``shared_entries(index, params, count)`` and
+    ``settle_cells(cells, params[, inputs])``.
 
-    def call(first: Any, params: dict[str, Any], last: Any) -> Any:
-        return impl(first, last)
+    Dropped by position rather than by counting from the end because the host
+    calls ``settle_cells`` with a trailing ``inputs`` only when the entry has
+    some — so the same surface arrives with two arguments or three, and only the
+    second is ever ``params``.
+    """
+
+    def call(first: Any, params: dict[str, Any], *rest: Any) -> Any:
+        return impl(first, *rest)
 
     return call
 
@@ -177,7 +185,7 @@ _OPTIONAL: dict[Stage, dict[str, Any]] = {
     Stage.INTERPRET_PIXEL: {},
     Stage.INTERPRET_PALETTE: {
         "entries_per_unit": _params_last,
-        "shared_entries": _params_middle,
+        "shared_entries": _params_second,
     },
     Stage.INTERPRET_TILEMAP: {
         "transform_cell": _params_last,
@@ -185,12 +193,12 @@ _OPTIONAL: dict[Stage, dict[str, Any]] = {
         "palette_row_limit": _params_last,
         "has_palette_rows": _params_last,
         "palette_row_granularity": _params_last,
-        "settle_cells": _params_last,
+        "settle_cells": _params_second,
         "has_line_flag": _params_last,
         "has_visibility": _params_last,
         "cell_fields": _params_last,
         "size_pair": _params_last,
-        "frames": _params_middle,
+        "frames": _params_second,
     },
 }
 

@@ -50,12 +50,15 @@ from celpix.project.workspace import (
     EntrySession,
     LoadFailure,
     PaletteMode,
+    ParentSliceMissing,
+    SliceOutsideParent,
     TileSource,
     backfill_slice_length,
     composite_config,
     composite_layout,
     composite_preset_id,
     load_failed,
+    outside_parent,
     record_composite_layout,
     tilemap_config_for,
     unavailable,
@@ -158,7 +161,8 @@ class SessionMixin:
         # A file's buffer is the authority for its bytes, but its slices hold
         # their edits in derived buffers of their own until something reconciles
         # them - so reconcile before showing it. Looking at a ROM has to show
-        # what was edited through a slice of it; they are the same bytes.
+        # what was edited through a slice of it; they are the same bytes. A slice
+        # with slices nested in it is the same case one level down.
         self._fold_slice_edits_into(entry)
         self._restore_session(entry)
         self._drop_unavailable_edit_mode()
@@ -233,6 +237,19 @@ class SessionMixin:
         Runs on first activation and again whenever the cached document was
         invalidated by a save into the same file.
         """
+        if self._workspace.chain_broken(entry):
+            # A nested slice windows into its parent slice's decoded bytes, and
+            # its offset names nothing in the file — so with that parent gone
+            # there is nothing to read, and the entry opens inert saying so.
+            return self._fail_load(
+                entry,
+                ParentSliceMissing(
+                    f"{entry.name} is a region of another slice's decoded bytes, "
+                    "and that slice is not open, so there is nothing to read it "
+                    "from."
+                ),
+                quiet=quiet,
+            )
         if entry.session is None:
             entry.session = self._seed_session(entry)
         session = entry.session
@@ -260,6 +277,8 @@ class SessionMixin:
             )
         else:
             cfg = self._pixel_config(entry, session.pixel_preset_id)
+            if outside_parent(entry, cfg):
+                return self._fail_outside_parent(entry, quiet=quiet)
         # A pending bitmap width re-cuts the codec's tile geometry, so it is an
         # input to this first load rather than something the view applied
         # afterwards can express - the entry would otherwise open at the codec's
@@ -301,6 +320,22 @@ class SessionMixin:
             self._seed_tile_palette_rows(entry, px.ctx.get(KEY_TILE_PALETTE_ROWS, b""))
         return True
 
+    def _fail_outside_parent(self, entry: Entry, *, quiet: bool) -> bool:
+        """Refuse to open a nested slice whose window its parent's decoded bytes
+        do not reach (:func:`~celpix.project.workspace.outside_parent`), saying
+        what to change: the slice's own coordinates, since the parent's are what
+        the bytes now are."""
+        parent = self._workspace.parent_of(entry)
+        where = parent.name if parent is not None else "its parent slice"
+        return self._fail_load(
+            entry,
+            SliceOutsideParent(
+                f"{entry.name} lies outside {where}'s unpacked bytes, so there "
+                "is nothing to read it from. Edit Slice to move it inside them."
+            ),
+            quiet=quiet,
+        )
+
     def _load_tilemap_entry(
         self, entry: Entry, *, quiet: bool = False, live: bytes | None = None
     ) -> bool:
@@ -329,6 +364,8 @@ class SessionMixin:
         # (:meth:`~...rendering.RenderingMixin._apply_tilemap_columns`).
         restored = entry.pending_view is not None
         cfg = self._tilemap_config(entry, self._tilemap_preset_id(entry))
+        if outside_parent(entry, cfg):
+            return self._fail_outside_parent(entry, quiet=quiet)
         try:
             loaded = pipeline.load_tilemap_data(
                 cfg, self._registry, live, size_pair=entry.sprite_size_pair
@@ -396,6 +433,8 @@ class SessionMixin:
         """
         if isinstance(exc, PipelineError):
             failure = LoadFailure.from_error(exc)
+        elif isinstance(exc, ParentSliceMissing | SliceOutsideParent):
+            failure = LoadFailure(str(exc))
         else:
             # OSError's own text already names the path; the errno's phrase is
             # the part worth having.
@@ -798,10 +837,10 @@ class SessionMixin:
         left the list is the ordinary closed-source case the assembly already
         degrades — a second row over the same path would not put the piece back on
         it. A composite can never be a piece
-        (:func:`~celpix.project.workspace.can_compose`), so there is no nesting to
-        walk. A file no longer on disk is left alone, the way every other missing
-        file here is: the composite still assembles, and the run it could not read
-        goes blank and says so
+        (:func:`~celpix.project.workspace.can_compose`), so there is no composite
+        nesting to walk. A file no longer on disk is left alone, the way every
+        other missing file here is: the composite still assembles, and the run it
+        could not read goes blank and says so
         (:func:`~celpix.project.workspace.composite_layout`).
         """
         for piece in entry.pieces:
@@ -809,6 +848,12 @@ class SessionMixin:
             if source is None or source.kind is not EntryKind.SLICE:
                 continue
             if self._workspace.parent_of(source) is not None:
+                continue
+            if source.parent_kind is EntryKind.SLICE:
+                # A nested slice's parent is a slice, not a file: its offset
+                # names a place in that slice's decoded bytes, so opening the
+                # root file would give it nothing to read. Its run goes blank
+                # like any other piece that cannot be read.
                 continue
             if not Path(source.path).is_file():
                 continue
@@ -857,19 +902,19 @@ class SessionMixin:
         A slice's bytes live inside its parent's, so the two are one region with
         two names: an edit through either changes what the other shows
         (``docs/design/slices-and-parents.md``). The answer is the entry first,
-        then its parent for a slice or its slices for a file — never sibling
-        slices, which share a parent but not necessarily any bytes, and never
-        anything for a composite, whose bytes are all somebody else's.
+        then every link above it for a slice — its parent, and for a nested one
+        each parent slice up to the file — then every slice under it, to any
+        depth: never sibling slices, which share a parent but not necessarily
+        any bytes, and never anything for a composite, whose bytes are all
+        somebody else's.
         """
         out = [entry]
         if entry.kind is EntryKind.SLICE:
-            parent = self._workspace.parent_of(entry)
-            if parent is not None:
-                out.append(parent)
-        elif entry.kind in (EntryKind.FILE, EntryKind.PALETTE):
+            out += self._workspace.ancestors_of(entry)
+        if entry.kind in (EntryKind.FILE, EntryKind.PALETTE, EntryKind.SLICE):
             out += [
                 child
-                for child in self._workspace.children_of(entry)
+                for child in self._workspace.descendants_of(entry)
                 if child.kind is EntryKind.SLICE
             ]
         return out
@@ -1521,27 +1566,50 @@ class SessionMixin:
                 self._selected_last = max(tiles)
         self._sync_selection_actions()
         self._set_palette_mode(session.palette_mode)  # also arms Write
-        self._set_file_actions_enabled(is_file)
+        self._set_file_actions_enabled(is_file, sliceable=self._can_hold_slices(entry))
         self._refresh_window_title()
 
-    def _set_file_actions_enabled(self, enabled: bool) -> None:
-        """Arm (or disarm) the actions only a whole FILE entry offers.
+    def _set_file_actions_enabled(
+        self, enabled: bool, *, sliceable: bool | None = None
+    ) -> None:
+        """Arm (or disarm) the actions only a whole FILE entry offers, and the
+        slice actions, which a slice offers too.
 
-        Slices and bookmarks don't nest, and a file's byte stream is always raw,
-        so its positions map straight to file offsets. A slice also has no
-        container of its own — it reads through its parent's coordinates — so
-        that follows the same rule. One list, so the enable and the disable paths
-        cannot disagree about what is on it.
+        A bookmark is anchored to a whole file only, so it is a file's row alone.
+        A slice has no container of its own either — it reads through its
+        parent's coordinates. But a slice is cut from like a file: a slice of it
+        windows into its decoded bytes (``docs/design/slices-and-parents.md``),
+        so ``sliceable`` arms those separately, defaulting to ``enabled``. One
+        list, so the enable and the disable paths cannot disagree about what is
+        on it.
         """
         for action in (
-            self._new_slice_action,
-            self._new_slice_from_view_action,
             self._new_bookmark_action,
             self._change_container_action,
             self._container_info_action,
         ):
             action.setEnabled(enabled)
+        for action in (self._new_slice_action, self._new_slice_from_view_action):
+            action.setEnabled(enabled if sliceable is None else sliceable)
         self._sync_entry_scope()  # a veto that runs after every owner
+
+    @staticmethod
+    def _can_hold_slices(entry: Entry | None) -> bool:
+        """Whether a slice can be cut from ``entry``: a whole file or palette, or
+        a slice whose own bytes are a buffer a slice can window into.
+
+        Not a **map** slice. A map's own bytes are its cells, and it is written
+        from them rather than from the buffer they were read out of, so a slice
+        cut from that buffer would have nowhere to fold its edits into.
+        """
+        if entry is None:
+            return False
+        if entry.kind in (EntryKind.FILE, EntryKind.PALETTE):
+            return True
+        return (
+            entry.kind is EntryKind.SLICE
+            and entry.content_kind is not ContentKind.TILEMAP
+        )
 
     def _clear_document_view(self) -> None:
         """Blank the canvas and disable every document-bound action - shared by

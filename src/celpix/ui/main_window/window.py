@@ -248,6 +248,12 @@ class MainWindow(
         # True while a command's undo/redo is applying state - push sites bail
         # on it, so an apply can never cascade into pushing a second command.
         self._applying_undo = False
+        # The entries a fold is being made into right now, by identity. A fold
+        # down a chain of nested slices may have to load a middle link to fold
+        # into it, and that load settles its own chain on the way — which would
+        # otherwise fold the very parent this one is half-way through
+        # (:meth:`~...writing.WritingMixin._settle_region`).
+        self._folding: set[int] = set()
         # The .celpix file this session was loaded from / last saved to, so
         # File ▸ Save Project can rewrite it without re-asking for a path.
         self._project_path: str | None = None
@@ -633,10 +639,10 @@ class MainWindow(
         ws.on_reset.append(self._forget_all_visits)
 
     def _on_entry_added(self, entry: Entry) -> None:
-        # The panel nests a slice under its parent file's item when it's open,
-        # and takes its position from the list rather than deriving one: the
-        # order of the rows is the user's (they drag them), so the workspace is
-        # the only thing that knows it.
+        # The panel nests a slice under its parent's item when it's open — a
+        # file's, or a slice's for a nested one — and takes its position from
+        # the list rather than deriving one: the order of the rows is the user's
+        # (they drag them), so the workspace is the only thing that knows it.
         parent = self._workspace.parent_of(entry)
         self._files_panel.add_entry(entry, parent, self._next_row(entry, parent))
 
@@ -1083,7 +1089,7 @@ class MainWindow(
             self._activate_entry(entry)
 
     def _apply_close_entry(self, entry: Entry, *, with_children: bool = True) -> None:
-        """Take ``entry`` (and, for a file, its slices) out of the workspace;
+        """Take ``entry`` (and everything nested under it) out of the workspace;
         the current view repoints to a neighbour via the workspace.
 
         ``with_children=False`` takes ``entry`` alone — the undo of an add, which
@@ -1092,7 +1098,10 @@ class MainWindow(
         # Asked before the close, while the bindings still resolve: every map
         # drawing through this file (or through one of its slices) holds a decoded
         # copy of the art and would go on showing it.
-        going = [entry, *(self._workspace.children_of(entry) if with_children else ())]
+        going = [
+            entry,
+            *(self._workspace.descendants_of(entry) if with_children else ()),
+        ]
         orphaned = self._maps_drawing_from(going)
         self._workspace.close(entry, with_children=with_children)
         self._sync_locate_action()

@@ -45,6 +45,25 @@ def test_slice_offset_palette_reads_parent_file_absolute(qtbot, tmp_path) -> Non
     assert doc.palette_config.write_enabled is True
 
 
+def test_palette_from_selection_on_a_nested_slice_reads_the_bare_position(
+    qtbot, tmp_path
+) -> None:
+    """A nested slice's base is a position in its parent's stream, not a file
+    offset, so Palette from Selection takes the view position as it stands -
+    what a decompressed view gives - rather than adding that base to it."""
+    px = tmp_path / "p.4bpp.sfc"
+    px.write_bytes(bytes(0x400))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    outer = window._workspace.add_slice(str(px), "outer", 0x80, 0x200)
+    inner = window._workspace.add_slice_under(outer, "inner", 0x80, 0x100)
+    window._activate_entry(inner)
+    window._select_tiles(1, 1)
+    window._load_palette_from_selection()
+    assert window._doc.palette_config.source.offset == 32
+
+
 def test_palette_export_writes_a_pal_and_registers_it(qtbot, tmp_path, monkeypatch):
     """An Offset palette lives buried in the pixel file; exporting is the only
     way it becomes a file of its own, and the export joins Palettes so it is

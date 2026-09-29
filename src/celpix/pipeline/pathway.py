@@ -181,7 +181,9 @@ class PathwayConfig:
 
         Decompression is the one stage that breaks it. A decompressed stream is
         not a permutation of the bytes it came from — it is longer, with no
-        position-for-position mapping back — so nothing in it can anchor a slice,
-        whose offset has to name where the *compressed* structure starts.
+        position-for-position mapping back — so nothing in it can anchor a slice
+        *beside* this one, whose offset has to name where the *compressed*
+        structure starts. A slice nested *in* this one is the other case, and is
+        not asked here: its offset counts in exactly this decoded buffer.
         """
         return self.compression_id == NO_COMPRESSION

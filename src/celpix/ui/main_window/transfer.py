@@ -303,10 +303,21 @@ class TransferMixin:
         )
 
     def _export_file_slices(self, entry: Entry | None) -> None:
-        """Export every slice of ``entry``'s file as its own PNG into a folder."""
+        """Export every slice of ``entry``'s file as its own PNG into a folder.
+
+        Nested slices included, under the bulk export's rule: a slice with
+        slices of its own is the stream they were carved from, and they are what
+        is exported in its place (:func:`~celpix.project.workspace.
+        exportable_entries`).
+        """
         if entry is None or entry.kind is not EntryKind.FILE:
             return
-        slices = self._workspace.slices_of(entry)
+        ws = self._workspace
+        slices = [
+            e
+            for e in ws.descendants_of(entry)
+            if e.kind is EntryKind.SLICE and not ws.slices_of(e)
+        ]
         if not slices:
             return
         folder = QFileDialog.getExistingDirectory(

@@ -4,12 +4,13 @@ Every path that writes bytes out — File ▸ Write, Write All, the files dock's
 Write, and the unsaved-changes gate the project and quit paths go through first.
 
 **One region, one authority** (``docs/design/slices-and-parents.md``). A slice's
-bytes are a *derived* view of a window of its parent's, so the parent owns them.
-Four methods carry that between them and none of them is where the rule lives:
-:meth:`~WritingMixin._propagate_pixel_edit` folds a slice edit into the parent's
-buffer as it lands, :meth:`~WritingMixin._fold_slice_edits_into` is the fold
-itself, :meth:`~WritingMixin._write_pixels_through_parent` routes a save out
-through the parent so its container runs, and
+bytes are a *derived* view of a window of its parent's, so the parent owns them —
+and a nested slice's parent is another slice, whose own parent owns *its* bytes,
+up to the file. Four methods carry that between them and none of them is where
+the rule lives: :meth:`~WritingMixin._propagate_pixel_edit` records what a slice
+edit owes up its chain as it lands, :meth:`~WritingMixin._fold_slice_edits_into`
+is the fold itself, :meth:`~WritingMixin._write_pixels_through_parent` routes a
+save out through the chain so the file's container runs, and
 :meth:`~WritingMixin._mark_region_saved` settles who is clean afterwards. Keeping
 the four in one module is the point of the module: split up, each reads like a
 special case of the others.
@@ -349,9 +350,9 @@ class WritingMixin:
         is on screen but not in the document, and a file that doesn't match what
         the user is looking at is not what Write means.
 
-        A slice inside a region its parent reorders takes the long way round
-        (:meth:`_write_pixels_through_parent`) — its bytes have no file position
-        of their own.
+        A slice takes the long way round (:meth:`_write_pixels_through_parent`)
+        — through its parent, and up a chain of them for a nested slice — so the
+        file's container is what puts the bytes down.
         """
         assert entry.doc is not None
         if entry is self._workspace.current:
@@ -443,10 +444,15 @@ class WritingMixin:
         A slice's bytes are a **derived** view of a window of its parent's
         region — the identity for a plain slice, a decode for a compressed or
         reshaped one, which is why the two cannot simply share one buffer. So
-        they are separate copies with the parent's as the file's authority, and
+        they are separate copies with the parent's as the authority, and
         reconciliation runs one way: each dirty slice is re-encoded exactly as a
         save would lay it down (``pipeline.encoded_pixel_bytes``) and spliced in
         at the offset it was read from.
+
+        ``parent`` is a file, a palette, or a **slice** whose own slices window
+        into its decoded buffer. A slice parent's offsets count from byte 0 of
+        that buffer; a file's are file-absolute, rebased across whatever its
+        container skipped.
 
         Called wherever that buffer is about to be *believed* — shown, or
         written — so looking at a file shows what was edited through its slices,
@@ -454,6 +460,13 @@ class WritingMixin:
         the same range. ``also`` folds one more slice whether or not it is dirty,
         for an explicit Write on a clean one. Returns what was folded, so a write
         can mark exactly those saved.
+
+        **Deepest debts first.** A child that is itself owed folds by *its*
+        children is settled before it is encoded, recursively, so what it hands
+        up already holds them — and a child with no document that owes such a
+        fold is loaded for the purpose, since its buffer is the only place the
+        edits below it can be carried up through. A slice whose own buffer this
+        fold changed then owes its parent in turn, which is recorded here.
 
         A slice that cannot encode (no compressor, no unshape) is skipped rather
         than failing the fold: it has nothing to contribute and never had, and
@@ -465,28 +478,99 @@ class WritingMixin:
         would leave the edited version standing in the buffer after the undo. The
         debt is discharged whatever came of each child: one that cannot encode
         never could, and keeping it would re-attempt the failure at every read.
+        The one exception is a clean child that could not be opened: it keeps
+        the debt, since nothing else would bring it back to be folded once it
+        opens.
 
         A child whose fold is **refused** is recorded as such on the child
-        (:attr:`~celpix.project.workspace.Entry.fold_refused`). Two things refuse
-        one: a re-encoded stream that no longer fits its slot, and a slice this
-        buffer does not reach — anchored before the window the parent's container
-        opened on the file, or running past the end of it. Either is recorded,
-        because the buffer then lacks that slice's edits while two things
-        downstream assume otherwise: the parent's write marks its dirty slices
-        saved, and the parent's edit drops their documents. Both read the record
-        and leave such a slice alone, dirty and loaded, and the write says so.
-        Not re-attempted at every read for the reason above; the next write of
-        either side tries again.
+        (:attr:`~celpix.project.workspace.Entry.fold_refused`). Four things
+        refuse one: a re-encoded stream that no longer fits its slot, a slice
+        this buffer does not reach — anchored before the window the parent's
+        container opened on the file, or running past the end of it — a parent
+        that is a **map**, whose own bytes are its cells and are written from
+        them, and a child owed folds of its own that has no document and will
+        not open, whose buffer is the only way up for the edits nested in it.
+        Each is recorded, because the buffer then lacks that slice's edits while
+        two things downstream assume otherwise: the parent's write marks its
+        dirty slices saved, and the parent's edit drops their documents. Both
+        read the record and leave such a slice alone, dirty and holding whatever
+        document it has, with everything nested under it, and the write says
+        so. Not re-attempted at every read for the reason above; the next write
+        of either side tries again.
         """
-        if parent.kind not in (EntryKind.FILE, EntryKind.PALETTE) or parent.doc is None:
+        if not self._can_fold_into(parent) or id(parent) in self._folding:
             return []
+        self._folding.add(id(parent))
+        try:
+            folded = self._fold_children(parent, also)
+        finally:
+            self._folding.discard(id(parent))
+        # A palette file's colours are a decode of the bytes just folded into,
+        # and every graphic mirroring them is showing the old ones.
+        if folded and parent.kind is EntryKind.PALETTE:
+            self._redecode_palette_entry(parent)
+        if folded and parent.kind is EntryKind.SLICE:
+            # The slice's own buffer just moved, which is an edit to *its*
+            # parent: the debt goes one link up, and on up the chain.
+            self._record_fold_debts(parent)
+        return folded
+
+    @staticmethod
+    def _can_fold_into(parent: Entry) -> bool:
+        """Whether ``parent`` is a kind with slices, and has a buffer to hold them."""
+        kinds = (EntryKind.FILE, EntryKind.PALETTE, EntryKind.SLICE)
+        return parent.kind in kinds and parent.doc is not None
+
+    def _fold_children(self, parent: Entry, also: Entry | None) -> list[Entry]:
+        """The body of :meth:`_fold_slice_edits_into`, with ``parent`` marked as
+        being folded into."""
+        assert parent.doc is not None
         owed = parent.pending_folds
-        base = parent.doc.pixel_ctx.get(KEY_SOURCE_OFFSET, 0)
+        # A slice's children count from byte 0 of its decoded buffer; a file's
+        # from byte 0 of the file, which its buffer may start past.
+        base = (
+            0
+            if parent.kind is EntryKind.SLICE
+            else parent.doc.pixel_ctx.get(KEY_SOURCE_OFFSET, 0)
+        )
         folded: list[Entry] = []
+        still_owed: set[Entry] = set()
         for child in self._workspace.children_of(parent):
-            if child.kind is not EntryKind.SLICE or child.doc is None:
+            if child.kind is not EntryKind.SLICE:
                 continue
             if not (child.pixel_dirty or child is also or child in owed):
+                continue
+            if child.pending_folds:
+                # Its own nested slices first, so their edits ride up inside it.
+                if child.doc is None and not self._load_entry(child, quiet=True):
+                    # Its buffer is the only way up for the edits below it, so
+                    # without one they reach neither this buffer nor the disk,
+                    # and a skip left silent here has this parent's write mark
+                    # them saved and its edit drop them. Refused like the others
+                    # below, and the debt kept while the child is clean: a dirty
+                    # one is retried by every fold, a clean one only if owed.
+                    child.fold_refused = (
+                        "could not be opened, so the edits nested in it have "
+                        "nowhere to go"
+                    )
+                    if not child.pixel_dirty:
+                        still_owed.add(child)
+                    continue
+                try:
+                    self._fold_slice_edits_into(child)
+                except PipelineError:
+                    pass  # recorded on the grandchild; this child still folds
+            if child.doc is None:
+                continue
+            if parent.doc.is_tilemap:
+                # A map's own bytes are its cells, and it is written from them
+                # rather than from the buffer they were read out of, so bytes
+                # spliced in here would not survive its next write.
+                child.fold_refused = (
+                    f"lies inside {parent.name}, a tilemap, whose bytes are "
+                    "written from its cells, so there is nowhere in it to fold "
+                    "these bytes into"
+                )
                 continue
             try:
                 # A map carved from the file folds its *cells*: its pixel buffer is
@@ -521,26 +605,44 @@ class WritingMixin:
             child.fold_refused = None
             folded.append(child)
         parent.pending_folds.clear()
-        # A palette file's colours are a decode of the bytes just folded into,
-        # and every graphic mirroring them is showing the old ones.
-        if folded and parent.kind is EntryKind.PALETTE:
-            self._redecode_palette_entry(parent)
+        parent.pending_folds.update(still_owed)
         return folded
 
+    def _record_fold_debts(self, entry: Entry) -> None:
+        """Record that ``entry``'s bytes are owed up its whole chain.
+
+        Its parent owes it, and every further ancestor owes the one below: a
+        nested slice's edit reaches the file only once each link has folded the
+        one under it, and settling any link must find the debts above it. Each
+        ancestor's borrowed copies go stale with it, and its row says so.
+        """
+        below = entry
+        for ancestor in self._workspace.ancestors_of(entry):
+            ancestor.pending_folds.add(below)
+            self._drop_bound_copies(ancestor)
+            self._files_panel.refresh_entry(ancestor)
+            below = ancestor
+
     def _propagate_pixel_edit(self, entry: Entry, keep: Entry | None = None) -> None:
-        """Carry a pixel edit across the file/slice boundary **as it lands**.
+        """Carry a pixel edit across the parent/slice boundary **as it lands**.
 
-        The file's buffer is the authority for its bytes, so an edit made
-        through a slice is folded into it immediately rather than at show or
-        write time. That is what keeps the two from racing: the parent then
-        holds every unsaved change to the region, so a later edit made *on* the
-        parent composes on top of them instead of being reverted by a stale
-        slice window folded in behind it.
+        The parent's buffer is the authority for its bytes, so an edit made
+        through a slice is owed to it immediately rather than discovered at show
+        or write time. That is what keeps the two from racing: the parent then
+        holds every unsaved change to the region by the time anything reads it,
+        so a later edit made *on* the parent composes on top of them instead of
+        being reverted by a stale slice window folded in behind it.
 
-        Editing the parent goes the other way: every slice cache is dropped, the
-        **dirty ones included**. Dropping those is safe only because of the fold
-        above - their edits are already in this buffer, so re-deriving from it
-        loses nothing and picks up what was just edited besides.
+        Down a chain of **nested** slices the debt is recorded at every link —
+        the parent slice owes the edited one, its parent owes it, up to the file
+        (:meth:`_record_fold_debts`) — so the file's settle finds it.
+
+        Editing a parent goes the other way: every slice cache **under** it is
+        dropped, to any depth and the **dirty ones included**. Dropping those is
+        safe only because of the fold above — their edits are already in this
+        buffer, so re-deriving from it loses nothing and picks up what was just
+        edited besides. A slice with both a parent and slices of its own does
+        both halves.
 
         The parent's unsaved-state token is **not** stamped here. The file does
         have unsaved changes and both rows do say so, but which token it takes is
@@ -548,8 +650,8 @@ class WritingMixin:
         parent back the exact state it was in before, which only the push site
         saw (:meth:`~...tile_bytes.TileBytesMixin._apply_pixel_bytes`). Splitting
         the two is what let one edit acquire *several* owners — a composite's
-        pieces — without this method having to know how many
-        (``docs/design/composite-entry.md``).
+        pieces, a nested slice's ancestors — without this method having to know
+        how many (``docs/design/composite-entry.md``).
 
         ``keep`` is a slice whose document the caller is **holding** and so cannot
         have taken away: an Entry-mode palette read out of the consumer's own
@@ -563,9 +665,6 @@ class WritingMixin:
         is safe for the same reason: those bytes are on screen already.
         """
         if entry.kind is EntryKind.SLICE:
-            parent = self._workspace.parent_of(entry)
-            if parent is None:
-                return
             # The debt is recorded, not paid. Re-encoding the slice is what a
             # fold costs, and on a compressed one that is a search for the
             # tightest packing — the better part of a second on a Mega Drive tile
@@ -578,32 +677,40 @@ class WritingMixin:
             # exactly what the parent has to be given back — a fold of only what
             # is dirty would strand the edit in the parent's buffer after it had
             # been undone in the slice's.
-            parent.pending_folds.add(entry)
-            self._drop_bound_copies(parent)
-            self._files_panel.refresh_entry(parent)
-        elif entry.kind in (EntryKind.FILE, EntryKind.PALETTE):
-            for child in self._workspace.children_of(entry):
-                if child.kind is not EntryKind.SLICE or child.doc is None:
-                    continue
-                if child is keep:
-                    continue
-                # A slice whose fold was refused keeps its document: the buffer
-                # does not hold its edits, so re-deriving it from the buffer
-                # would be the one way to lose them. It goes on showing its own
-                # bytes rather than this edit until it fits and is written.
-                if child.fold_refused is not None:
-                    continue
+            self._record_fold_debts(entry)
+        if entry.kind in (EntryKind.FILE, EntryKind.PALETTE, EntryKind.SLICE):
+            self._drop_derived_slices(entry, keep)
+
+    def _drop_derived_slices(self, entry: Entry, keep: Entry | None) -> None:
+        """Drop the document of every slice under ``entry``, to any depth.
+
+        A slice whose fold was refused keeps its document, and so does everything
+        nested under it: the buffer does not hold its edits, so re-deriving it
+        from the buffer would be the one way to lose them — and its own nested
+        slices' edits live in *its* buffer, which is not the one that moved. It
+        goes on showing its own bytes rather than this edit until it fits and is
+        written. ``keep``'s subtree is left alone for the same reason: its
+        document is held, so nothing under it has moved.
+        """
+        for child in self._workspace.children_of(entry):
+            if child.kind is not EntryKind.SLICE or child is keep:
+                continue
+            if child.fold_refused is not None:
+                continue
+            if child.doc is not None:
                 self._drop_bound_copies(child)
                 self._workspace.drop_document(child)
+            self._drop_derived_slices(child, keep)
 
     def _settle_region(self, entry: Entry | None) -> None:
         """Pay any fold ``entry``'s region owes, before its bytes are believed.
 
         The lazy half of "edits fold into the owner" (``slices-and-parents.md``
-        §2). An edit through a slice records the debt on the file that owns those
-        bytes rather than re-encoding on the spot, and this is where it is
-        settled: at each point the buffer is about to be handed to something that
-        will act on it, and nowhere else.
+        §2). An edit through a slice records the debt on the parent that owns
+        those bytes — and on every link above it, for a nested slice — rather
+        than re-encoding on the spot, and this is where it is settled: at each
+        point the buffer is about to be handed to something that will act on it,
+        and nowhere else.
 
         Those points are few, and they are the ones the eager fold was implicitly
         covering — every read of a file's live bytes already went through one of
@@ -611,7 +718,7 @@ class WritingMixin:
 
         - **A slice reading its parent**, through the one factory that builds a
           pathway config (:meth:`~...interpretation.InterpretationMixin.
-          _pixel_config` → ``pixel_config_for`` → ``_parent_view_bytes``).
+          _pixel_config` → ``pixel_config_for``).
         - **A map reading the bank it is bound to**
           (:meth:`~...session.SessionMixin._load_bound_tiles`), the one deliberate
           exception to ``entry_view_bytes`` being the single funnel.
@@ -620,25 +727,48 @@ class WritingMixin:
         - **Showing** the file, and **writing** anything in its region, both of
           which folded before and still do.
 
-        Takes the entry that is about to be read *or* one of its slices, and
-        settles the file either way, so a caller need not work out which it holds.
-        Costs a dict lookup when there is nothing owed, which is the common case.
+        Takes **any member of the chain** — the entry about to be read, one of
+        its slices, a slice nested anywhere under it — and settles from that
+        entry up to the file, **bottom-up**: its own debts, then its parent's,
+        and so on. Each fold settles the children it folds first
+        (:meth:`_fold_slice_edits_into`), so the file is settled last and holds
+        everything. Costs a set test per link when there is nothing owed, which
+        is the common case.
+
+        A link already being folded into stops the walk: the fold in progress is
+        the one settling everything above it, and folding it again half-way
+        through would hand its parent a buffer that is not finished yet.
         """
         if entry is None:
             return
-        parent = (
-            entry
-            if entry.kind in (EntryKind.FILE, EntryKind.PALETTE)
-            else self._workspace.parent_of(entry)
-        )
-        if parent is None or not parent.pending_folds:
+        for node in (entry, *self._workspace.ancestors_of(entry)):
+            if id(node) in self._folding:
+                return
+            if not node.pending_folds:
+                continue
+            try:
+                self._fold_slice_edits_into(node)
+            except PipelineError:
+                # An edit that cannot be encoded still belongs on screen; the
+                # write path is where that failure is worth reporting.
+                pass
+
+    def _settle_own(self, entry: Entry) -> None:
+        """Pay the folds owed to ``entry`` alone — not the chain above it.
+
+        What an edit landing on ``entry`` needs, where a reader needs the whole
+        chain (:meth:`_settle_region`): the edit is about to drop every slice
+        document under ``entry``, so what they owe it must be in its buffer
+        first. The links above are not touched, which is what keeps a stroke
+        through a compressed slice from re-encoding it into its parent on every
+        stroke after the first.
+        """
+        if not entry.pending_folds or id(entry) in self._folding:
             return
         try:
-            self._fold_slice_edits_into(parent)
+            self._fold_slice_edits_into(entry)
         except PipelineError:
-            # An edit that cannot be encoded still belongs on screen; the write
-            # path is where that failure is worth reporting.
-            pass
+            pass  # reported by the write path, as for any settle
 
     def _drop_bound_copies(self, owner: Entry) -> None:
         """Drop the borrowed tiles of every map bound to ``owner``.
@@ -671,55 +801,82 @@ class WritingMixin:
                 continue
             self._workspace.drop_document(bound)
 
-    def _mark_region_saved(self, parent: Entry) -> None:
+    def _carried_to(self, entry: Entry, root: Entry) -> bool:
+        """Whether ``entry``'s last fold, and every one above it below ``root``,
+        landed — so its edits are in ``root``'s buffer."""
+        for node in (entry, *self._workspace.ancestors_of(entry)):
+            if node is root:
+                return True
+            if node.fold_refused is not None:
+                return False
+        return False
+
+    def _mark_region_saved(self, root: Entry) -> None:
         """Mark clean everything whose unsaved bytes just went to disk with
-        ``parent``.
+        ``root``.
 
-        A write of a file writes its whole region, and every dirty slice of it
-        has its edits inside that region already - folded as they landed
-        (:meth:`_propagate_pixel_edit`) - so they are on disk too. Leaving them
-        marked dirty would claim otherwise, and a later write of one would put
-        its own window back over whatever has happened since.
+        A write of a file writes its whole region, and every dirty slice under
+        it — to any depth — has its edits inside that region already, folded
+        link by link on the way up (:meth:`_fold_slice_edits_into`), so they are
+        on disk too. Leaving them marked dirty would claim otherwise, and a later
+        write of one would put its own window back over whatever has happened
+        since.
 
-        Every dirty slice **except one whose fold was refused**: its edits are
-        in no buffer and on no disk, so it stays dirty, and the caller reports
-        it (:meth:`_report_refused_folds`). Marking it saved was how an edit
-        that had grown past its slot vanished without a word.
+        Every dirty slice **except one whose fold was refused**, and every slice
+        nested under one: their edits are in no buffer the file holds and on no
+        disk, so they stay dirty, and the caller reports them
+        (:meth:`_report_refused_folds`). Marking them saved was how an edit that
+        had grown past its slot vanished without a word.
         """
-        self._workspace.mark_saved(parent, palette=False)
-        for child in self._workspace.children_of(parent):
+        self._workspace.mark_saved(root, palette=False)
+        for child in self._workspace.descendants_of(root):
             if (
                 child.kind is EntryKind.SLICE
                 and child.pixel_dirty
-                and child.fold_refused is None
+                and self._carried_to(child, root)
             ):
                 self._workspace.mark_saved(child, palette=False)
 
-    def _report_refused_folds(self, parent: Entry) -> None:
-        """Tell the user which of ``parent``'s slices a write just left behind.
+    def _report_refused_folds(self, root: Entry) -> None:
+        """Tell the user which of ``root``'s slices a write just left behind.
 
-        After a region write: a slice whose fold was refused is still dirty and
-        still loaded, so nothing is lost — but the write it was part of has
-        reported success, and a user who takes that as "everything is on disk"
-        would close the project over an edit that is not. One modal, naming each
-        slice and the reason, which is the reason the encoder gave.
+        After a region write: a slice whose fold was refused — at its own link or
+        at one above it — is still dirty and still loaded, so nothing is lost;
+        but the write it was part of has reported success, and a user who takes
+        that as "everything is on disk" would close the project over an edit
+        that is not. One modal, naming each slice and the reason, which is the
+        reason the encoder gave at the link that refused.
         """
         left = [
             child
-            for child in self._workspace.children_of(parent)
+            for child in self._workspace.descendants_of(root)
             if child.kind is EntryKind.SLICE
             and child.pixel_dirty
-            and child.fold_refused is not None
+            and not self._carried_to(child, root)
         ]
         if not left:
             return
-        lines = "\n".join(f"• {child.name}: {child.fold_refused}" for child in left)
+        lines = "\n".join(
+            f"• {child.name}: {self._refusal_of(child, root)}" for child in left
+        )
         self._alert(
-            f"{parent.name} was written, but the unsaved changes in "
+            f"{root.name} was written, but the unsaved changes in "
             f"{counted(len(left), 'slice')} could not go with it and are still "
             f"unsaved:\n\n{lines}\n\nMake them fit and write again.",
             title="celPix - write",
         )
+
+    def _refusal_of(self, entry: Entry, root: Entry) -> str:
+        """Why ``entry``'s edits did not reach ``root``: its own refusal, or the
+        one at the nearest link above it that its edits are waiting in."""
+        if entry.fold_refused is not None:
+            return entry.fold_refused
+        for ancestor in self._workspace.ancestors_of(entry):
+            if ancestor is root:
+                break
+            if ancestor.fold_refused is not None:
+                return f"held in {ancestor.name}, which {ancestor.fold_refused}"
+        return "it could not be folded"
 
     def _write_pixels_through_parent(self, entry: Entry) -> bool:
         """Persist a slice by folding it into its parent and writing that.
@@ -734,40 +891,58 @@ class WritingMixin:
         it (a checksum repair, a re-wrapped header), which depositing around it
         skips.
 
-        Its **sibling** slices' unsaved edits go too, and so do the parent's own:
-        one write of one region cannot honour some of what that region currently
-        holds and not the rest. Everything folded comes back clean.
+        A **nested** slice goes up its chain a link at a time: folded into its
+        parent slice, that slice into its own parent, and so on to the file,
+        whose write is the one deposit. Every link is loaded for the purpose
+        first, file first, so each is read against a parent that already holds
+        what is above it.
 
-        False (already reported) when there is no parent to write through; a
-        pipeline failure raises for the caller to report.
+        Its **sibling** slices' unsaved edits go too, and so do the parents'
+        own: one write of one region cannot honour some of what that region
+        currently holds and not the rest. Everything folded comes back clean.
+
+        False (already reported) when there is no chain to write through or a
+        link refused the fold; a pipeline failure raises for the caller to
+        report.
         """
         assert entry.doc is not None
-        parent = self._workspace.parent_of(entry)
-        if parent is None:
+        chain = self._workspace.ancestors_of(entry)
+        root = chain[-1] if chain else None
+        if root is None or root.kind not in (EntryKind.FILE, EntryKind.PALETTE):
+            what = (
+                "the slice it was cut from, which is no longer open"
+                if self._workspace.chain_broken(entry)
+                else f"{Path(entry.path).name}, which is no longer open"
+            )
             self._alert(
-                f"{entry.name} is a region of {Path(entry.path).name}, so it is "
-                "written as part of that file - which is no longer open.",
+                f"{entry.name} is a region of {what}, so there is nothing to "
+                "write it through.",
                 title="celPix - write",
             )
             return False
-        # Loudly, not quietly: if the parent won't open, *why* is what the user
+        # Loudly, not quietly: if a link won't open, *why* is what the user
         # needs, and this method has nothing to add to it.
-        if parent.doc is None and not self._load_entry(parent):
-            return False
-        folded = self._fold_slice_edits_into(parent, also=entry)
-        if entry not in folded:
-            self._alert(
-                f"{entry.name} lies outside {parent.name}'s region, so there is "
-                "nowhere in it to write these bytes back to.",
-                title="celPix - write",
-            )
-            return False
-        # The parent's pixel pathway alone: its palette is a separate source in a
+        for link in reversed(chain):
+            if link.doc is None and not self._load_entry(link):
+                return False
+        below = entry
+        for link in chain:
+            folded = self._fold_slice_edits_into(link, also=below)
+            if below not in folded:
+                self._alert(
+                    f"{below.name} could not be written into {link.name}: "
+                    f"it {below.fold_refused or 'could not be folded'}.",
+                    title="celPix - write",
+                )
+                return False
+            below = link
+        assert root.doc is not None
+        # The file's pixel pathway alone: its palette is a separate source in a
         # separate file, and this write says nothing about it.
-        pipeline.save(parent.doc, self._registry, palette=False)
-        self._note_written(parent.paths)
-        self._mark_region_saved(parent)
-        self._report_refused_folds(parent)
+        pipeline.save(root.doc, self._registry, palette=False)
+        self._note_written(root.paths)
+        self._mark_region_saved(root)
+        self._report_refused_folds(root)
         return True
 
     def _refresh_stale_current(self) -> None:

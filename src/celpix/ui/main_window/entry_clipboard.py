@@ -24,15 +24,23 @@ is refused. A slice and a bookmark carry no such identity — ``Entry`` is
 ``eq=False`` precisely because two of them may share coordinates — so those are
 the kinds Duplicate is for.
 
-**A pasted slice belongs to the file the paste is aimed at.** Pointing at a
-second, differently-patched copy of a ROM and pasting a whole set of slices onto
-it is the operation this exists for; falling back to the parent the copy
-remembers is what makes a paste into an empty project restore what was copied.
+**A pasted slice keeps the depth it was copied from; the row the paste is
+aimed at only picks the chain.** Pointing at a second, differently-patched copy
+of a ROM and pasting a whole set of slices onto it is the operation this exists
+for, and it works because offsets are kept — which means something only while
+they count from the same kind of buffer. So a slice of a file lands under the
+file the targeted row's chain ends at, whichever row of that chain was aimed at,
+and a slice nested *n* deep lands in the chain's slice *n* deep; a chain with no
+such slice refuses it, saying why, rather than read an offset into unpacked bytes
+as a file offset. Falling back to the parent the copy remembers is what makes a
+paste into an empty project restore what was copied. A slice nested in another is
+copied with everything under it, and the links inside a copied set are kept —
+they name rows of the same payload by position.
 """
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from os.path import basename, exists
 
 from celpix.project import projectfile
@@ -70,11 +78,25 @@ TILE_SLOT = -1
 #: whose bytes this row's colours are decoded from
 #: (``docs/design/palette-editing.md``). One per row, like the tile binding.
 PALETTE_SLOT = -2
+#: The slot a **nested slice**'s parent slice is remembered under — the one row
+#: a copied nested slice can be put back under when its parent was not copied
+#: with it. One per row.
+PARENT_SLOT = -3
 #: Where the slots for a row's **input bindings** start, counting down: the
 #: *n*-th binding that names an entry (in :func:`~celpix.project.inputs.
-#: iter_bindings` order) sits at ``INPUT_SLOT_BASE - n``. Below the two above so
-#: the four kinds of reference a row can hold never share a number.
-INPUT_SLOT_BASE = -3
+#: iter_bindings` order) sits at ``INPUT_SLOT_BASE - n``. Below the three above
+#: so the five kinds of reference a row can hold never share a number.
+INPUT_SLOT_BASE = -4
+
+
+@dataclass(frozen=True)
+class _Refusal:
+    """A lone copied child that no row of the targeted chain can hold, with the
+    sentence the status bar says it in — the third answer
+    :meth:`~EntryClipboardMixin._paste_host` gives, beside a host and "aims at
+    nothing"."""
+
+    reason: str
 
 
 def _named_bindings(entry: Entry):  # noqa: ANN202 — Iterator[tuple[str, str, RegionBinding | IntegerFromBytes]]
@@ -101,6 +123,12 @@ def _rows_at(
     return [e for e in entries if e.kind in kinds and Workspace.path_key(e.path) == key]
 
 
+def _subtree_end(row: Entry, pending: list[Entry]) -> int:
+    """The index just past ``row`` and everything nested under it in ``pending``."""
+    group = [row, *Workspace.descendants_in(row, pending)]
+    return max(pending.index(e) for e in group) + 1
+
+
 class EntryClipboardMixin:
     """The four clipboard verbs over the files pane's rows.
 
@@ -112,11 +140,12 @@ class EntryClipboardMixin:
 
     # -- copying out ----------------------------------------------------------
     def _copy_entry(self, entry: Entry) -> None:
-        """Put ``entry`` on the clipboard — with its children, if it is a file.
+        """Put ``entry`` on the clipboard — with everything nested under it.
 
-        A file takes its slices and bookmarks the way a removal does: they are
-        windows into it and mean nothing without it, so a copy that left them
-        behind would paste a ROM and lose the work of finding things inside it.
+        A file takes its slices and bookmarks the way a removal does, and a slice
+        the slices nested in it: they are windows into it and mean nothing
+        without it, so a copy that left them behind would paste a ROM and lose
+        the work of finding things inside it.
         """
         copied = self._entry_group(entry)
         clipboard.put_entries(
@@ -161,6 +190,8 @@ class EntryClipboardMixin:
             for slot, piece in enumerate(entry.pieces):
                 if piece.entry is not None:
                     bound[(at, slot)] = piece.entry
+            if entry.parent_kind is EntryKind.SLICE and entry.parent_entry is not None:
+                bound[(at, PARENT_SLOT)] = entry.parent_entry
             for n, (_plugin, _key, binding) in enumerate(_named_bindings(entry)):
                 bound[(at, INPUT_SLOT_BASE - n)] = binding.entry
         return bound
@@ -183,8 +214,8 @@ class EntryClipboardMixin:
         self._remove_entry(entry, confirm=False)
 
     def _entry_group(self, entry: Entry) -> list[Entry]:
-        """``entry`` and the rows that travel with it, in list order."""
-        return [entry, *self._workspace.children_of(entry)]
+        """``entry`` and the rows that travel with it, parent before child."""
+        return [entry, *self._workspace.descendants_of(entry)]
 
     @staticmethod
     def _describe(entries: list[Entry]) -> str:
@@ -214,6 +245,10 @@ class EntryClipboardMixin:
         a file or a palette the answer is a message rather than a disabled key: a
         row's identity being its path is not obvious from looking at it, and
         Ctrl+D doing nothing at all would read as a bug.
+
+        A slice is duplicated with the slices nested in it, the copies nested in
+        the copy, and lands beside the original — under the same parent, which is
+        the row it is aimed at, and the one row of its chain at its own depth.
         """
         if entry.kind not in _MULTIPLE_KINDS:
             what = "A file" if entry.kind is EntryKind.FILE else "A palette"
@@ -225,15 +260,16 @@ class EntryClipboardMixin:
         # Round-tripped through the payload rather than deep-copied by hand, so a
         # duplicate is the same operation as a paste and cannot drift from it —
         # but through memory, leaving whatever is on the clipboard alone.
+        group = self._entry_group(entry)
         payload = projectfile.entries_payload(
-            [entry], self._workspace.entries, clipboard.SESSION_TOKEN
+            group, self._workspace.entries, clipboard.SESSION_TOKEN
         )
         copied = projectfile.entries_from_payload(payload)
         if copied:
             self._place_copies(
                 copied,
-                entry,
-                bindings=self._live_bindings([entry]),
+                self._workspace.parent_of(entry),
+                bindings=self._live_bindings(group),
                 verb="Duplicated",
             )
 
@@ -260,7 +296,6 @@ class EntryClipboardMixin:
         last-in-first-out — anything that moved a row since is taken back before
         this step is — which is the same reasoning an undone removal restores by.
         """
-        host = self._paste_host(target)
         # The files the payload brought with it. A child whose own parent is in
         # the copy stays with that parent wherever it lands, and only a child
         # pasted *alone* is re-aimed at the targeted row — copying a ROM and its
@@ -271,8 +306,16 @@ class EntryClipboardMixin:
             for record in copied
             if record.entry.kind in _PARENT_KINDS
         }
+        # Every copied row by the position it was copied from — how a nested
+        # slice finds the parent slice copied along with it.
+        by_source = {
+            record.source_index: record.entry
+            for record in copied
+            if record.source_index >= 0
+        }
         placed: list[Entry] = []
         skipped: list[str] = []
+        refused: list[str] = []
         # The files the copy could not bring, because a row already holds their
         # path. Their children stay behind with them: a file takes its slices in
         # both directions, so a copy of a whole ROM pasted back into the project
@@ -293,11 +336,22 @@ class EntryClipboardMixin:
         for record in copied:
             entry = record.entry
             key = Workspace.path_key(entry.path)
+            copied_parent = (
+                by_source.get(record.parent_source_index)
+                if record.parent_source_index is not None
+                else None
+            )
             if entry.kind not in _MULTIPLE_KINDS:
                 if _rows_at(pending, entry.path, (entry.kind,)):
                     skipped.append(entry.name)  # a file is its path; never twice
                     left_behind.add(key)
                     continue
+            elif copied_parent is not None:
+                # Nested in a slice copied along with it: it stays in that copy,
+                # wherever the copy landed — or out of the paste with it.
+                if not any(copied_parent is e for e in placed):
+                    continue
+                self._reparent(entry, copied_parent)
             elif entry.kind in _CHILD_KINDS:
                 if key in left_behind:
                     continue
@@ -305,11 +359,30 @@ class EntryClipboardMixin:
                 # a ``.pal`` can be open as a file and as a palette at once, and
                 # a slice of the palette must not be adopted by the file.
                 own = (entry.parent_kind, key) in carried
-                parent = (None if own else host) or next(
-                    iter(_rows_at(pending, entry.path, (entry.parent_kind,))), None
-                )
+                # The parent slice it was copied out of, when this process
+                # copied it and it is still in the list.
+                live = bindings.get((record.source_index, PARENT_SLOT))
+                if live is not None and not any(live is e for e in pending):
+                    live = None
+                parent = None if own else self._paste_host(target, record, live)
+                if isinstance(parent, _Refusal):
+                    refused.append(parent.reason)
+                    continue
+                if parent is None and entry.parent_kind is EntryKind.SLICE:
+                    # Aimed at nothing, and its parent slice was not copied: the
+                    # live one, else no parent at all — inert and saying why,
+                    # never a slice of the file at an offset that is not a file
+                    # offset.
+                    parent = live
+                elif parent is None:
+                    parent = next(
+                        iter(_rows_at(pending, entry.path, (entry.parent_kind,))),
+                        None,
+                    )
                 if parent is not None:
                     self._reparent(entry, parent)
+                elif entry.parent_kind is EntryKind.SLICE:
+                    entry.parent_entry = None
                 elif exists(entry.path):
                     # Pasted into a project that has never seen the file the
                     # slice cuts into: open it too, so the row arrives nested
@@ -320,10 +393,9 @@ class EntryClipboardMixin:
             entry.name = self._free_name(entry, pending)
             place(entry)
         if not placements:
+            said = [f"Already open: {', '.join(skipped)}."] if skipped else []
             self.statusBar().showMessage(
-                f"Already open: {', '.join(skipped)}."
-                if skipped
-                else "Nothing to paste here."
+                " ".join([*said, *refused]) or "Nothing to paste here."
             )
             return
         self._rebind_copies(copied, placed, bindings)
@@ -346,21 +418,72 @@ class EntryClipboardMixin:
             )
         )
         note = f" ({len(skipped)} already open)" if skipped else ""
-        self.statusBar().showMessage(f"{verb} {self._describe(placed)}{note}.")
+        self.statusBar().showMessage(
+            " ".join([f"{verb} {self._describe(placed)}{note}.", *refused])
+        )
 
-    def _paste_host(self, target: Entry | None) -> Entry | None:
-        """The file a pasted slice or bookmark should be cut out of.
+    def _paste_host(
+        self,
+        target: Entry | None,
+        record: projectfile.CopiedEntry,
+        live: Entry | None,
+    ) -> Entry | _Refusal | None:
+        """The row a lone pasted slice or bookmark should be cut out of — or a
+        :class:`_Refusal`, or ``None`` where the paste aims at nothing.
 
-        The targeted row's own file: a file or palette row is itself, a slice
-        or bookmark row is the one it already belongs to. A composite names no
-        file to cut into, so it aims at nothing and the copy falls back to the
-        parent it remembers.
+        The target names a **chain** rather than a host: the rows from the file
+        its chain ends at down to the targeted row itself. The host is the row of
+        that chain at the copy's own depth (``record.parent_depth``), because an
+        offset is kept and so has to count from the same kind of buffer it was
+        copied against. Depth 0 is the file — so a slice of a file aimed at any
+        slice of it, itself included, lands beside that slice rather than inside
+        it — and depth *n* the chain's slice *n* deep, which has to be a slice a
+        slice can be cut from (not a map).
+
+        A chain without that row refuses the copy, with one exception: aimed at
+        ``live`` — the parent slice it was copied out of, still in the list — or
+        at anything above it, it goes back into ``live``, so a nested slice pasted
+        onto its own ROM's row returns to the stream it came from.
+
+        No target, a composite, or a row whose chain reaches no file names no
+        chain at all: the caller falls back to the parent the copy remembers.
         """
-        if target is None:
+        root = self._workspace.root_of(target) if target is not None else None
+        if root is None:
             return None
-        if target.kind in _PARENT_KINDS:
-            return target
-        return self._workspace.parent_of(target)
+        depth = record.parent_depth
+        if depth == 0:
+            return root
+        chain = [*reversed(self._workspace.ancestors_of(target)), target]
+        host = chain[depth] if depth < len(chain) else None
+        if (
+            host is not None
+            and host.kind is EntryKind.SLICE
+            and self._can_hold_slices(host)
+        ):
+            return host
+        if (
+            live is not None
+            and self._can_hold_slices(live)
+            and (live is target or target in self._workspace.ancestors_of(live))
+        ):
+            return live
+        name = f'"{record.entry.name}"'
+        if host is not None and host.kind is EntryKind.SLICE:
+            return _Refusal(
+                f"{name} is cut from a slice's unpacked bytes, and "
+                f'"{host.name}" is a map, which holds no slices.'
+            )
+        if depth == 1:
+            onto = "a bookmark" if target.kind is EntryKind.BOOKMARK else "a file"
+            return _Refusal(
+                f"{name} is cut from a slice's unpacked bytes, so it can only be "
+                f"pasted onto a slice, not onto {onto}."
+            )
+        return _Refusal(
+            f"{name} is cut from the unpacked bytes of a slice {depth} levels "
+            "below its file, so it can only be pasted onto a row that deep."
+        )
 
     @staticmethod
     def _reparent(entry: Entry, parent: Entry) -> None:
@@ -371,11 +494,19 @@ class EntryClipboardMixin:
         it. What has to change with the parent is the file list those offsets are
         counted against — a region spread over several chips is addressed as the
         join, so a child carries its parent's whole list or means nothing
-        (:attr:`~celpix.project.workspace.Entry.extra_paths`).
+        (:attr:`~celpix.project.workspace.Entry.extra_paths`). A slice parent is
+        held by identity, which is what makes the copy a nested slice of it.
+
+        Its **level never changes**: every parent a paste hands it sits at the
+        depth it was copied from (:meth:`_paste_host`) — a file for a file's
+        child, a slice for a slice's. That is what keeps a kept offset
+        meaningful: a file offset read as one into unpacked bytes, or the
+        reverse, names bytes the copy never did.
         """
         entry.path = parent.path
         entry.extra_paths = parent.extra_paths
         entry.parent_kind = parent.kind
+        entry.parent_entry = parent if parent.kind is EntryKind.SLICE else None
 
     def _file_entry_for(self, child: Entry) -> Entry:
         """A row for the file a pasted child cuts into — a FILE, or the
@@ -402,10 +533,20 @@ class EntryClipboardMixin:
         Not the offset-sorted position a freshly *carved* slice gets. A paste is
         an arrangement the user is making by hand — several rows in the order
         they copied them — and dropping each one into the middle of the existing
-        list by its offset would scatter it.
+        list by its offset would scatter it. Last means past the whole subtree of
+        the last sibling, so a row never lands between a slice and the slices
+        nested in it.
         """
         if entry.kind not in _CHILD_KINDS:
             return len(pending)
+        if entry.parent_kind is EntryKind.SLICE:
+            parent = entry.parent_entry
+            if parent is None or not any(parent is e for e in pending):
+                return len(pending)
+            return _subtree_end(parent, pending)
+        parent = next(iter(_rows_at(pending, entry.path, (entry.parent_kind,))), None)
+        if parent is not None:
+            return _subtree_end(parent, pending)
         # The group is the rows under the same *kind* of parent: a ``.pal`` open
         # as a file and as a palette at once has two, one after each row.
         siblings = [
@@ -414,9 +555,8 @@ class EntryClipboardMixin:
             if e.parent_kind is entry.parent_kind
         ]
         if siblings:
-            return pending.index(siblings[-1]) + 1
-        parent = next(iter(_rows_at(pending, entry.path, (entry.parent_kind,))), None)
-        return pending.index(parent) + 1 if parent is not None else len(pending)
+            return _subtree_end(siblings[-1], pending)
+        return len(pending)
 
     def _free_name(self, entry: Entry, pending: list[Entry]) -> str:
         """``entry``'s name, made distinct from the rows it is landing among.
@@ -441,7 +581,14 @@ class EntryClipboardMixin:
     @staticmethod
     def _name_group(entry: Entry, pending: list[Entry]) -> list[Entry]:
         """The rows a pasted one has to be told apart from — its siblings under
-        the same file, or the top-level rows of the same kind."""
+        the same parent, or the top-level rows of the same kind."""
+        if entry.parent_kind is EntryKind.SLICE and entry.kind is EntryKind.SLICE:
+            return [
+                e
+                for e in pending
+                if e.parent_kind is EntryKind.SLICE
+                and e.parent_entry is entry.parent_entry
+            ]
         if entry.kind in _CHILD_KINDS:
             return [
                 e

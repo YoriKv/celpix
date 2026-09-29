@@ -383,11 +383,21 @@ def _entry_dict(
         if entry.container_id != RAW_CONTAINER:
             data["container_id"] = entry.container_id
     if entry.kind in (EntryKind.SLICE, EntryKind.BOOKMARK):
-        # Which kind of whole-file row the child was cut from. Only when it is
-        # not a file, so every slice and bookmark any older project holds is
-        # written exactly as before (:attr:`Entry.parent_kind`).
+        # Which kind of row the child was cut from. Only when it is not a file,
+        # so every slice and bookmark any older project holds is written exactly
+        # as before (:attr:`Entry.parent_kind`).
         if entry.parent_kind is not EntryKind.FILE:
             data["parent"] = _KIND_NAMES[entry.parent_kind]
+        # A nested slice names its parent slice by position, the way a tile
+        # binding names its bank: every slice of one file shares the path, so
+        # nothing else can say which of them it was cut from. ``-1`` for one
+        # whose parent is not in the list being written, which reads back as the
+        # broken chain it is (:func:`_bind_slice_parents`).
+        if entry.parent_kind is EntryKind.SLICE:
+            parent = entry.parent_entry
+            data["parent_index"] = (
+                positions.get(id(parent), -1) if parent is not None else -1
+            )
     if entry.kind is EntryKind.SLICE:
         data["slice_offset"] = entry.slice_offset
         data["slice_length"] = entry.slice_length
@@ -669,6 +679,33 @@ class CopiedEntry:
     #: hold (``docs/design/plugin-inputs.md`` §3). ``-1`` for a source that
     #: was not part of the copy.
     input_sources: tuple[tuple[str, str, int], ...] = ()
+    #: The position a **nested slice**'s parent slice sat at, or ``None`` on
+    #: every row that is not one — the same join again, for the reference that
+    #: says which slice this one was cut from. ``-1`` for a parent that was not
+    #: part of the copy.
+    parent_source_index: int | None = None
+    #: How deep the row's **parent** sits: ``0`` for a child of a file or a
+    #: palette, ``1`` for one nested in a slice of a file, and so on. Not a
+    #: position, and not a join — the one thing a paste places a lone child by,
+    #: since a kept offset counts from the same kind of buffer only at the same
+    #: depth (``docs/design/slices-and-parents.md`` §6).
+    parent_depth: int = 0
+
+
+def _parent_depth(entry: Entry) -> int:
+    """How many slice links sit between ``entry`` and its file — the links it
+    can see, on a broken chain, and each of them once on a circular one."""
+    depth = 0
+    seen = {id(entry)}
+    node = entry
+    while node.parent_kind is EntryKind.SLICE:
+        depth += 1
+        parent = node.parent_entry
+        if parent is None or id(parent) in seen:
+            break
+        seen.add(id(parent))
+        node = parent
+    return depth
 
 
 def entries_payload(
@@ -694,6 +731,10 @@ def entries_payload(
     for entry in entries:
         data = _entry_dict(entry, None, positions)
         data["source_index"] = positions.get(id(entry), -1)
+        # Here and not in :func:`_entry_dict`: a project states the chain whole
+        # in ``parent_index``, where a lone copied child has only this left.
+        if entry.kind in (EntryKind.SLICE, EntryKind.BOOKMARK):
+            data["parent_depth"] = _parent_depth(entry)
         written.append(data)
     return {
         "version": CLIPBOARD_VERSION,
@@ -732,6 +773,10 @@ def entries_from_payload(raw: object) -> list[CopiedEntry]:
         # handed back beside it the same way; the paste resolves or drops them.
         input_sources = entry._pending_input_sources
         entry._pending_input_sources = ()
+        # A nested record is at least one level down whatever it says, so one
+        # written without the key reads as exactly that.
+        floor = 1 if entry.parent_kind is EntryKind.SLICE else 0
+        depth = max(_int(record.get("parent_depth"), 0) or 0, floor)
         out.append(
             CopiedEntry(
                 entry=entry,
@@ -741,6 +786,12 @@ def entries_from_payload(raw: object) -> list[CopiedEntry]:
                 piece_sources=tuple(at for _piece, at in pieces),
                 palette_source_index=_palette_entry_index(record),
                 input_sources=input_sources,
+                parent_source_index=(
+                    _int(record.get("parent_index"), -1)
+                    if entry.parent_kind is EntryKind.SLICE
+                    else None
+                ),
+                parent_depth=depth,
             )
         )
     return out
@@ -819,6 +870,7 @@ def load_project(path: str) -> LoadedProject:
             parsed.append(_entry_from_dict(raw, base_dir))
         except Exception:  # noqa: BLE001 — a garbage entry degrades, never aborts
             parsed.append(None)
+    _bind_slice_parents(data.get("entries", []), parsed)
     _bind_tile_sources(data.get("entries", []), parsed)
     # After the bindings and for the same reason: both turn a stored position
     # back into an object, and both can only do it once every entry exists.
@@ -902,9 +954,15 @@ def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
         )
     offset_key = "offset" if kind is EntryKind.BOOKMARK else "slice_offset"
     # A child cut from a registered palette says so; absent — every child in
-    # every project written before palettes could be sliced — means a file.
+    # every project written before palettes could be sliced — means a file. A
+    # slice cut from a slice says so too, and its parent entry is found once
+    # every entry exists (:func:`_bind_slice_parents`). A bookmark is only ever
+    # anchored to a whole file, so "slice" on one means nothing and reads as one.
     parent_kind = _KINDS_BY_NAME.get(raw.get("parent"), EntryKind.FILE)
-    if parent_kind not in (EntryKind.FILE, EntryKind.PALETTE):
+    allowed = (EntryKind.FILE, EntryKind.PALETTE)
+    if kind is EntryKind.SLICE:
+        allowed = (*allowed, EntryKind.SLICE)
+    if parent_kind not in allowed:
         parent_kind = EntryKind.FILE
     entry = Entry(
         name=name if isinstance(name, str) and name else basename(path),
@@ -1104,6 +1162,46 @@ def _tile_source(raw: dict) -> tuple[TileSource, int] | None:
         return None
     source = TileSource(mode=mode, base_index=_int(data.get("base_index"), 0) or 0)
     return source, _int(data.get("entry_index"), -1)
+
+
+def _bind_slice_parents(raw_entries: list, parsed: list[Entry | None]) -> None:
+    """Point every nested slice at the parent slice its stored position named.
+
+    Resolved against ``parsed`` **including the entries that failed to parse**,
+    for the reason :func:`_bind_tile_sources` gives.
+
+    A position that names nothing, names something other than a slice, names the
+    entry itself, or closes a loop leaves the entry nested with **no** parent —
+    a broken chain, which opens inert and says so
+    (:meth:`~celpix.project.workspace.Workspace.chain_broken`). Never read as a
+    slice of the file instead: its offset counts in a parent's decoded bytes, and
+    at that offset in the file are bytes it never named.
+    """
+    for raw, entry in zip(raw_entries, parsed, strict=True):
+        if entry is None or entry.parent_kind is not EntryKind.SLICE:
+            continue
+        at = _int(raw.get("parent_index"), -1) if isinstance(raw, dict) else -1
+        target = parsed[at] if at is not None and 0 <= at < len(parsed) else None
+        if target is None or target is entry or target.kind is not EntryKind.SLICE:
+            continue
+        entry.parent_entry = target
+    # A loop can only be seen once every link is in place: each entry of one
+    # points at a real slice, just never at a file. Every member is cut loose,
+    # found first and cleared after, so which of them was listed first does not
+    # decide which one keeps a parent.
+    looped = []
+    for entry in parsed:
+        if entry is None or entry.parent_entry is None:
+            continue
+        seen: set[int] = set()
+        node = entry.parent_entry
+        while node is not None and node is not entry and id(node) not in seen:
+            seen.add(id(node))
+            node = node.parent_entry
+        if node is entry:
+            looped.append(entry)
+    for entry in looped:
+        entry.parent_entry = None
 
 
 def _bind_tile_sources(raw_entries: list, parsed: list[Entry | None]) -> None:

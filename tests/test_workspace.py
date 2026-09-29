@@ -1076,3 +1076,94 @@ def test_a_palette_file_is_sliced_like_a_file_and_filed_with_the_palettes(
     # Closing the palette takes its slice with it and leaves the graphics row.
     assert ws.close(palette) == [palette, run]
     assert ws.entries == [same_path]
+
+
+# -- nested slices (docs/design/slices-and-parents.md) ----------------------
+def _packed_rom(tmp_path, payload: bytes, at: int = 0x100, size: int = 0x800):
+    """A ROM holding ``payload`` LZ2-packed at ``at``; (path, stream)."""
+    from celpix.plugins.builtins.lz_command import compress
+
+    stream = compress(payload, big_endian_offsets=True)
+    image = bytearray(bytes([0x11]) * size)
+    image[at : at + len(stream)] = stream
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(bytes(image))
+    return rom, stream
+
+
+def test_a_nested_chain_is_one_group_to_every_list_operation(tmp_path) -> None:
+    """Three levels under one file: the chain answers up and down, a new slice
+    seeds among its own siblings, a move carries the subtree with the parent
+    still first, and a close takes the lot."""
+    from celpix.project.workspace import slice_of
+
+    ws = Workspace()
+    rom = ws.open_file(str(tmp_path / "rom.bin"))
+    other = ws.open_file(str(tmp_path / "other.bin"))
+    packed = ws.add_slice(rom.path, "packed", 0x100, 0x80, "compression.lz2")
+    tiles = ws.add_slice_under(packed, "tiles", 0x40, 0x40)
+    early = ws.add_slice_under(packed, "early", 0x00, 0x20)  # seeds before tiles
+    deep = ws.add_slice_under(tiles, "deep", 0x10, 0x10)
+    late = ws.add_slice(rom.path, "late", 0x400, 0x40)
+
+    assert ws.entries == [rom, packed, early, tiles, deep, late, other]
+    assert (deep.path, deep.parent_kind) == (rom.path, EntryKind.SLICE)
+    assert ws.parent_of(deep) is tiles and ws.parent_of(tiles) is packed
+    assert ws.children_of(rom) == [packed, late]  # one hop, by path and kind
+    assert ws.children_of(packed) == [early, tiles]
+    assert ws.descendants_of(rom) == [packed, early, tiles, deep, late]
+    assert ws.ancestors_of(deep) == [tiles, packed, rom]
+    assert ws.root_of(deep) is rom and not ws.chain_broken(deep)
+
+    # A slice with slices of its own is left out of a bulk export, like a file.
+    assert packed not in exportable_entries(ws) and deep in exportable_entries(ws)
+
+    # The parent moves with its whole subtree, and a child dropped "last" lands
+    # after its parent's subtree rather than at the end of the list.
+    assert ws.reorder(packed, None)
+    assert ws.entries == [rom, late, packed, early, tiles, deep, other]
+    assert ws.reorder(early, None)
+    assert ws.entries == [rom, late, packed, tiles, deep, early, other]
+
+    assert ws.close(packed) == [packed, tiles, deep, early]
+    assert ws.entries == [rom, late, other]
+    # Out of the list, a nested slice has no parent to read — never the file.
+    assert ws.parent_of(deep) is None and ws.chain_broken(deep)
+    orphan = slice_of(deep, "orphan", 0, 4)
+    assert orphan.parent_entry is deep and ws.chain_broken(orphan)
+
+
+def test_a_nested_slice_reads_its_parents_decoded_bytes(tmp_path) -> None:
+    """A nested slice's offset counts in the parent slice's *decompressed*
+    buffer, at any depth, loaded parent or not — and a broken chain reads
+    nothing rather than the file at an offset it never named."""
+    reg = default_registry()
+    payload = bytes((i * 7 + 3) & 0xFF for i in range(0x100))
+    rom, stream = _packed_rom(tmp_path, payload)
+    ws = Workspace()
+    rom_entry = ws.open_file(str(rom))
+    packed = ws.add_slice(
+        rom_entry.path, "packed", 0x100, len(stream), "compression.lz2"
+    )
+    tiles = ws.add_slice_under(packed, "tiles", 0x40, 0x80)
+    deep = ws.add_slice_under(tiles, "deep", 0x20, 0x20)
+    preset = "preset.pixel.snes-4bpp"
+
+    cfg = pixel_config_for(tiles, preset, reg, ws)
+    assert (cfg.source.offset, cfg.source.data_base) == (0x40, 0)
+    assert cfg.writes_through_parent and cfg.write_enabled
+    assert pipeline.load_pixel_data(cfg, reg).data == payload[0x40:0xC0]
+    deep_cfg = pixel_config_for(deep, preset, reg, ws)
+    assert pipeline.load_pixel_data(deep_cfg, reg).data == payload[0x60:0x80]
+
+    # A loaded parent is read from its document: its unsaved bytes are the truth.
+    tiles.doc = _fake_doc()
+    tiles.doc.pixel_data = b"\x5a" * 0x80
+    deep_cfg = pixel_config_for(deep, preset, reg, ws)
+    assert pipeline.load_pixel_data(deep_cfg, reg).data == b"\x5a" * 0x20
+
+    ws.close(tiles)
+    ws.insert(deep, len(ws.entries))  # its parent gone, as a broken project has it
+    broken = pixel_config_for(deep, preset, reg, ws)
+    assert ws.chain_broken(deep)
+    assert broken.source.data == b"" and not broken.write_enabled

@@ -322,6 +322,86 @@ def test_a_slice_of_a_palette_file_round_trips_its_parent_kind(tmp_path) -> None
     assert cut.parent_kind is EntryKind.FILE
 
 
+def test_a_nested_slice_round_trips_its_parent_by_position(tmp_path) -> None:
+    """A slice of a slice names its parent by index, which is re-derived on every
+    save so a reorder cannot leave it naming a neighbour; an index that names
+    nothing usable reads back as a broken chain, never as a slice of the file.
+    The file is still the current version: the keys are part of it."""
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(bytes(0x400))
+    ws = Workspace()
+    file = ws.open_file(str(rom))
+    packed = ws.add_slice(file.path, "packed", 0x100, 0x80, "compression.lz2")
+    tiles = ws.add_slice_under(packed, "tiles", 0x40, 0x40)
+    deep = ws.add_slice_under(tiles, "deep", 0x10, 0x10)
+    other = ws.add_slice(file.path, "other", 0x0, 0x40)
+    ws.reorder(other, packed)  # every position after it moves
+
+    project = tmp_path / "hack.celpix"
+    save_project(ws, str(project))
+    raw = json.loads(project.read_text(encoding="utf-8"))
+    assert raw["version"] == PROJECT_VERSION == 6
+    names = [e["name"] for e in raw["entries"]]
+    assert names == ["rom.bin", "other", "packed", "tiles", "deep"]
+    assert raw["entries"][3]["parent"] == "slice"
+    assert raw["entries"][3]["parent_index"] == 2
+    assert raw["entries"][4]["parent_index"] == 3
+    assert "parent_index" not in raw["entries"][2]
+
+    restored = load_project(str(project)).entries
+    back = Workspace()
+    back.replace(restored, None)
+    r_packed, r_tiles, r_deep = restored[2], restored[3], restored[4]
+    assert r_tiles.parent_entry is r_packed and r_deep.parent_entry is r_tiles
+    assert back.descendants_of(restored[0]) == restored[1:]
+    assert (r_deep.slice_offset, r_deep.parent_kind) == (0x10, EntryKind.SLICE)
+
+    # Pointed at a file, at itself, into a loop, or off the end: no parent.
+    raw["entries"][3]["parent_index"] = 0
+    raw["entries"][4]["parent_index"] = 4
+    raw["entries"].append(dict(raw["entries"][4], name="a", parent_index=6))
+    raw["entries"].append(dict(raw["entries"][4], name="b", parent_index=5))
+    raw["entries"].append(dict(raw["entries"][4], name="far", parent_index=99))
+    project.write_text(json.dumps(raw), encoding="utf-8")
+    broken = load_project(str(project)).entries
+    assert [e.parent_entry for e in broken[3:]] == [None] * 5
+    assert all(e.parent_kind is EntryKind.SLICE for e in broken[3:])
+    assert deep.parent_entry is tiles  # the live workspace was never touched
+
+
+def test_a_copied_slice_carries_its_parents_depth_on_the_clipboard_only(
+    tmp_path,
+) -> None:
+    """How deep a copied child's parent sits is what a paste places it by, so it
+    rides on the clipboard record — a nested one missing it reads as one level
+    down, the least any nested slice can be — and never in a saved project,
+    where ``parent_index`` already says it."""
+    from celpix.project.projectfile import entries_from_payload, entries_payload
+
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(bytes(0x400))
+    ws = Workspace()
+    file = ws.open_file(str(rom))
+    packed = ws.add_slice(file.path, "packed", 0x100, 0x80)
+    tiles = ws.add_slice_under(packed, "tiles", 0x40, 0x40)
+    deep = ws.add_slice_under(tiles, "deep", 0x10, 0x10)
+    mark = Entry(name="mark", kind=EntryKind.BOOKMARK, path=file.path)
+    ws.insert(mark, len(ws.entries))
+
+    payload = entries_payload([file, packed, tiles, deep, mark], ws.entries, "s")
+    records = payload["entries"]
+    assert isinstance(records, list)
+    assert [r.get("parent_depth") for r in records] == [None, 0, 1, 2, 0]
+    assert [c.parent_depth for c in entries_from_payload(payload)] == [0, 0, 1, 2, 0]
+    for record in records:
+        record.pop("parent_depth", None)
+    assert [c.parent_depth for c in entries_from_payload(payload)] == [0, 0, 1, 1, 0]
+
+    project = tmp_path / "hack.celpix"
+    save_project(ws, str(project))
+    assert "parent_depth" not in project.read_text(encoding="utf-8")
+
+
 def test_inline_colors_survive_without_activation(tmp_path) -> None:
     rom = tmp_path / "rom.bin"
     rom.write_bytes(b"\x00" * 32)

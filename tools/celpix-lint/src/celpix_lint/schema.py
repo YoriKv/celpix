@@ -33,6 +33,9 @@ KINDS_WITH_DOCUMENT = ("file", "slice", "palette", "composite")
 CONTENT_KINDS = ("pixels", "tilemap", "palette")
 #: ``PaletteMode``.
 PALETTE_MODES = ("default", "file", "offset", "entry", "emulator", "custom")
+#: What a slice or bookmark's ``parent`` may say it was cut from. Absent means
+#: ``"file"``; ``"slice"`` (a nested slice) is read on a slice alone.
+PARENT_KINDS = ("file", "palette", "slice")
 #: ``TileMode``. ``none`` means unbound and the writer never emits it.
 TILE_MODES = ("none", "entry")
 #: ``SlotFill``. ``ff`` is the default and is omitted when written.
@@ -93,6 +96,7 @@ ENTRY_KEYS = frozenset(
         "view",
         "palette",
         "parent",
+        "parent_index",
         # Read but never written — the older spelling of `tile_rearrangement`'s
         # owner. Tolerated at the entry level for the same reason the view
         # tolerates the key itself.
@@ -125,8 +129,11 @@ KIND_ONLY = {
     # bytes. Every kind carries a session and a view, so neither is listed.
     "palette": ("file", "slice", "bookmark", "composite"),
     # What a slice or bookmark was cut from — "palette" for a registered palette
-    # file, absent for a graphics file — which only a child has.
+    # file, "slice" for a slice nested in another, absent for a graphics file —
+    # which only a child has.
     "parent": ("slice", "bookmark"),
+    # Which entry a nested slice was cut from, by position: only a slice nests.
+    "parent_index": ("slice",),
 }
 
 #: Keys the loader needs, by kind. Absent means the entry is skipped entirely

@@ -67,9 +67,9 @@ Roughly, by family:
 | `F0xx` | The file is not a readable project at all — I/O, JSON syntax, wrong shape. Fatal; nothing else runs. |
 | `E1xx` `W1xx` | The document: `version`, `current`, the project-wide view settings. |
 | `E2xx` `W2xx` | Entry shape — the kind, the keys that kind actually reads, the scalars. |
-| `E3xx` | The files on disk: missing references, offsets past the end, one file open twice. |
+| `E3xx` | The files on disk: missing references, offsets past the end, one file open twice. A nested slice is left alone here: its offsets count in its parent slice's decoded bytes, whose length only a decompression could tell. |
 | `E4xx` | Plugin and preset ids, and containers framing the wrong kind of entry. |
-| `E5xx` | References between entries: parents, joined regions, tile bindings, composite pieces, the entry a palette is read from. |
+| `E5xx` | References between entries: parents — the file a slice is cut from, and the slice a nested slice names by `parent_index` — joined regions, tile bindings, composite pieces, the entry a palette is read from. |
 | `E6xx` | `session` and `palette`, and whether the mode and the block agree. |
 | `E7xx` | The `view` block, the tile rearrangement, the pinned palette regions. |
 | `E8xx` | The `font` alphabet. |
@@ -81,9 +81,9 @@ of their own and so resolved 0x24000 bytes past the end of chip one; a `palette_
 colors from byte 0 instead of the offset that was meant.
 
 **What no linter can catch is a reference that shifted.** `current`,
-`tile_source.entry_index` and `pieces[].entry_index` are positions in `entries`,
-so inserting or moving a record slides every reference past it onto its
-neighbour. `E1xx`/`E5xx` report one that ends up out of range or naming something
+`parent_index`, `tile_source.entry_index` and `pieces[].entry_index` are
+positions in `entries`, so inserting or moving a record slides every reference
+past it onto its neighbour. `E1xx`/`E5xx` report one that ends up out of range or naming something
 it may not name; one that lands on another perfectly bindable entry is
 indistinguishable from the binding that was meant, and opens quietly wrong. The
 answer is upstream — resolve positions in one pass when generating the file, and

@@ -907,6 +907,39 @@ def test_an_input_the_plugin_never_declared_is_a_warning(tmp_path, ids):
     assert _input_codes(report) == ["W913"]
 
 
+def test_tilemap_inputs_are_checked_against_the_engine_not_the_presets(tmp_path, ids):
+    # A tilemap entry names a *preset*, but its bindings are keyed by the engine
+    # behind it — the id space the preset lookup never sees, so a correctly keyed
+    # binding must not read as an unknown plugin, and a wrong key still must.
+    from dataclasses import replace
+
+    engine = "codec.tilemap.sprite-table"
+    frames = {"key": "frames", "kind": "region", "required": True, "minimum": 0}
+    ids = replace(
+        ids,
+        plugins={**ids.plugins, "interpret-tilemap": {engine: []}},
+        inputs={**ids.inputs, "interpret-tilemap": {engine: [frames]}},
+    )
+    (tmp_path / "rom.sfc").write_bytes(bytes(0x100))
+
+    def codes(bindings: dict) -> list[str]:
+        path = tmp_path / "map.celpix"
+        tilemap = {
+            "kind": "file",
+            "name": "sprites",
+            "path": "rom.sfc",
+            "content_kind": "tilemap",
+            "tilemap_preset_id": "preset.tilemap.snes-bg",
+            "inputs": {engine: bindings},
+        }
+        path.write_text(json.dumps({"version": 3, "entries": [tilemap]}))
+        found = lint(str(path), ids).diagnostics
+        return [d.code for d in found if d.code in ("W905", "E904", "W913")]
+
+    assert codes({"frames": {"offset": 0, "length": 16}}) == []
+    assert codes({"frame": {"offset": 0, "length": 16}}) == ["W913"]
+
+
 def test_live_without_celpix_says_it_fell_back(tmp_path, monkeypatch, capsys):
     """--live is a stronger claim than the snapshot can back; when celPix cannot
     be imported the run says so, instead of reporting clean against the snapshot
@@ -920,3 +953,69 @@ def test_live_without_celpix_says_it_fell_back(tmp_path, monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "celPix is not importable here" in err
     assert "Re-run with --live" not in err
+
+
+# -- nested slices ---------------------------------------------------------
+def _nested(entry, **overrides):
+    """A slice nested in the slice at entry 1, 0x40 into its decoded bytes."""
+    fields = {
+        "kind": "slice",
+        "name": "inner",
+        "slice_offset": 0x40,
+        "slice_length": 0x20,
+        "parent": "slice",
+        "parent_index": 1,
+    }
+    return entry(**{**fields, **overrides})
+
+
+def test_a_nested_slice_is_bounded_by_its_parent_not_the_file(project, entry):
+    """Its offset counts in the parent slice's decoded bytes, which only a
+    decompression knows — so the file's size bounds nothing and nothing is said.
+    A file-level slice past the end still is."""
+    packed = entry(
+        kind="slice",
+        name="packed",
+        slice_offset=0x100,
+        slice_length=0x80,
+        compression_id="compression.lz2",
+    )
+    far = _nested(entry, slice_offset=0x20000)
+    codes = project({"version": 1, "entries": [entry(), packed, far]}, files=ROM)
+    assert codes == []
+
+
+@pytest.mark.parametrize(
+    ("parent_index", "code"),
+    [(None, "E506"), (7, "E506"), (0, "E507"), (2, "E507")],
+)
+def test_a_nested_slice_must_name_another_slice(project, entry, parent_index, code):
+    packed = entry(kind="slice", name="packed", slice_offset=0x100, slice_length=0x80)
+    inner = _nested(entry)
+    if parent_index is None:
+        del inner["parent_index"]
+    else:
+        inner["parent_index"] = parent_index
+    codes = project({"version": 1, "entries": [entry(), packed, inner]}, files=ROM)
+    assert code in codes
+
+
+def test_a_nested_slice_order_files_and_loops(project, entry):
+    packed = entry(kind="slice", name="packed", slice_offset=0x100, slice_length=0x80)
+    first_then_parent = [entry(), _nested(entry, parent_index=2), packed]
+    assert "E503" in project({"version": 1, "entries": first_then_parent}, files=ROM)
+
+    elsewhere = _nested(entry, path="other.sfc")
+    files = {**ROM, "other.sfc": 0x10000}
+    codes = project(
+        {"version": 1, "entries": [entry(), packed, elsewhere]}, files=files
+    )
+    assert "E508" in codes
+
+    loop = [entry(), _nested(entry, parent_index=2), _nested(entry, parent_index=1)]
+    assert project({"version": 1, "entries": loop}, files=ROM).count("E510") == 2
+
+    stray = entry(kind="slice", slice_offset=0, parent_index=0)
+    assert "W509" in project({"version": 1, "entries": [entry(), stray]}, files=ROM)
+    odd = entry(kind="bookmark", offset=0, parent="slice")
+    assert "E505" in project({"version": 1, "entries": [entry(), odd]}, files=ROM)

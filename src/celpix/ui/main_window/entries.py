@@ -67,6 +67,7 @@ from celpix.project.workspace import (
     EntrySession,
     PaletteSource,
     SliceParams,
+    anchor_kind,
     composite_format_for,
     composite_layout,
     composite_preset_id,
@@ -75,6 +76,7 @@ from celpix.project.workspace import (
     missing_paths,
     new_composite,
     one_disk_scan,
+    own_bytes,
     palette_source_for,
     path_is_palette_only,
     pixel_config_for,
@@ -944,9 +946,16 @@ class EntriesMixin:
 
         ``position`` defaults to the grid's current byte position; the selection
         and structure gestures pass their own document-relative start.
+
+        On a **slice** the new slice is nested in it, and its coordinates are the
+        slice's own decoded buffer from byte 0 — so the view position is the
+        offset as it stands.
         """
         assert self._doc is not None
         at = self._byte_position() if position is None else position
+        current = self._workspace.current
+        if current is not None and current.kind is EntryKind.SLICE:
+            return at
         return self._anchor_base() + at
 
     def _slice_source(self) -> tuple[Entry, Document] | None:
@@ -956,13 +965,17 @@ class EntriesMixin:
         the coordinates a slice offset is written in
         (:attr:`~celpix.pipeline.pathway.PathwayConfig.positions_are_slice_offsets`)
         - which a reshaped or interleaved view's are, because a slice of such a
-        parent reads that same reordered buffer. Only a decompressed view is
-        excluded. ``None`` when nothing qualifies; callers add any
-        gesture-specific guard (a selection, a found structure).
+        parent reads that same reordered buffer. A **slice** always qualifies,
+        decompressed or not: what is carved from it is nested in it, and a nested
+        slice's offset is a position in exactly the buffer on screen. ``None``
+        when nothing qualifies; callers add any gesture-specific guard (a
+        selection, a found structure).
         """
         entry, doc = self._workspace.current, self._doc
         if entry is None or doc is None:
             return None
+        if entry.kind is EntryKind.SLICE:
+            return (entry, doc) if self._can_hold_slices(entry) else None
         return (entry, doc) if doc.pixel_config.positions_are_slice_offsets else None
 
     def _new_slice_current(self) -> None:
@@ -972,8 +985,8 @@ class EntriesMixin:
             self._new_slice_for(entry)
 
     def _new_slice_for(self, entry: Entry) -> None:
-        """Open the slice dialog for the file ``entry`` (only files spawn
-        slices - slices never nest)."""
+        """Open the slice dialog for ``entry`` — a file, a palette, or a slice,
+        which the new one is then nested in."""
         # Prefill from the view only when the dialog targets the file on screen;
         # a right-clicked non-current file has no live viewport to read.
         offset = (
@@ -1310,18 +1323,37 @@ class EntriesMixin:
             if entry.compression_id != NO_COMPRESSION
             else None
         )
-        if entry.pixel_dirty or entry.palette_dirty:
+        # The slices nested in this one re-read with it: their offsets count in
+        # its decoded bytes, which the edit is about to change.
+        nested = self._workspace.descendants_of(entry)
+        dirty = [e for e in (entry, *nested) if e.pixel_dirty or e.palette_dirty]
+        if dirty:
+            whose = (
+                "its"
+                if dirty == [entry]
+                else f"the unsaved changes of {', '.join(e.name for e in dirty)} -"
+            )
             answer = QMessageBox.question(
                 self,
                 "celPix - edit slice",
-                f"Editing {entry.name} re-reads it from disk, discarding its "
+                f"Editing {entry.name} re-reads it from disk, discarding {whose} "
                 "unsaved changes. Continue?",
             )
             if answer != QMessageBox.StandardButton.Yes:
                 return
+        # A nested slice is bounded by its parent slice's decoded bytes rather
+        # than by the files.
+        parent = self._workspace.parent_of(entry)
+        extent = None
+        if entry.parent_kind is EntryKind.SLICE and parent is not None:
+            extent = self._slice_buffer_length(parent)
+            if extent is None:
+                return
         params = SliceDialog.get_slice(
             self,
             self._registry,
+            extent=extent,
+            source=parent.name if extent is not None and parent is not None else "",
             paths=entry.paths,  # a slice carries its parent's whole file list
             offset=entry.slice_offset,
             length=entry.slice_length,
@@ -1419,15 +1451,22 @@ class EntriesMixin:
         re-packed slot (:func:`~celpix.pipeline.pipeline.resized_slot_bytes`)
         is spliced into the parent's buffer as one ordinary byte edit: undoable,
         marking the file unsaved, and dropping the slice's cache so it re-reads
-        at its new size. ``through`` is the slice, so an undo comes back to the
+        at its new size. A **nested** slice's parent is a slice, so the splice
+        lands in that slice's decoded bytes and is owed up its chain like any
+        edit to it. ``through`` is the slice, so an undo comes back to the
         view the resize was asked for in (``docs/design/slices-and-parents.md``
         §5). False, already reported, when it did not happen.
         """
         parent = self._workspace.parent_of(entry)
         if parent is None:
+            where = (
+                "the slice it was cut from"
+                if entry.parent_kind is EntryKind.SLICE
+                else Path(entry.path).name
+            )
             self._alert(
-                f"{entry.name} is a region of {Path(entry.path).name}, which is "
-                "no longer open, so there is nowhere to put the resized bytes.",
+                f"{entry.name} is a region of {where}, which is no longer open, "
+                "so there is nowhere to put the resized bytes.",
                 title="celPix - resize",
             )
             return False
@@ -1451,7 +1490,21 @@ class EntriesMixin:
             self._alert(f"Cannot resize {entry.name}: {exc}", title="celPix - resize")
             return False
         assert parent.doc is not None
-        base = int(parent.doc.pixel_ctx.get(KEY_SOURCE_OFFSET, 0) or 0)
+        if parent.doc.is_tilemap:
+            self._alert(
+                f"{entry.name} lies inside {parent.name}, a tilemap, whose bytes "
+                "are written from its cells, so there is nowhere to put the "
+                "resized bytes.",
+                title="celPix - resize",
+            )
+            return False
+        # A slice parent's buffer counts from 0; a file's from wherever its
+        # container started reading.
+        base = (
+            0
+            if parent.kind is EntryKind.SLICE
+            else int(parent.doc.pixel_ctx.get(KEY_SOURCE_OFFSET, 0) or 0)
+        )
         start = entry.slice_offset - base
         if start < 0 or start + len(slot) > len(parent.doc.pixel_data):
             self._alert(
@@ -1535,8 +1588,10 @@ class EntriesMixin:
             self._capture_session()
         # Pixel edits die with the old region; the palette does not - it isn't
         # tied to the slice's coordinates, so drop_document carries it across.
-        # Nothing is unsaved once the edits themselves are gone.
-        self._reread_entries([entry])
+        # Nothing is unsaved once the edits themselves are gone. The slices
+        # nested in this one go with it: they are windows into the bytes that
+        # just moved.
+        self._reread_entries([entry, *self._workspace.descendants_of(entry)])
 
     def _reread_entries(self, entries: list[Entry]) -> None:
         """Drop each entry's document so its next activation re-reads the file.
@@ -1702,7 +1757,7 @@ class EntriesMixin:
         # user gets the choice first. A re-pointed file re-reads its slices with
         # it, so their edits are on the table too. A resize is the same story
         # told about the file rather than the reading of it, so it joins the gate.
-        family = [entry, *self._workspace.children_of(entry)] if moved else [entry]
+        family = [entry, *self._workspace.descendants_of(entry)] if moved else [entry]
         if not self._confirm_container_discard(family):
             return
         # Before the command, and outside it: this one writes the file, and a
@@ -1894,14 +1949,15 @@ class EntriesMixin:
         """Put ``edit``'s file list, container and reshape on ``entry`` and
         re-read - the application path for container edits and their undos.
 
-        The children come along whenever the file list moved: a slice's offset
-        addresses the parent's *joined* buffer, so it has to be joined the same
-        way to mean anything, and it finds its parent by the path that is about
-        to change (:func:`~celpix.project.workspace.retarget_files`). They are
-        collected before the move, while that path is still the old one.
+        The children come along whenever the file list moved, and the slices
+        nested under them: a slice's offset addresses the parent's *joined*
+        buffer, so it has to be joined the same way to mean anything, and it
+        finds its parent by the path that is about to change
+        (:func:`~celpix.project.workspace.retarget_files`). They are collected
+        before the move, while that path is still the old one.
         """
         moved = edit.paths != entry.paths
-        family = [entry, *self._workspace.children_of(entry)] if moved else [entry]
+        family = [entry, *self._workspace.descendants_of(entry)] if moved else [entry]
         entry.container_id = edit.container_id
         entry.reshape_id = edit.reshape_id
         # Format, arrangement and view survive the re-read for the same reason
@@ -1965,13 +2021,15 @@ class EntriesMixin:
         )
 
     def _jump_to_slice_source(self, slice_entry: Entry) -> None:
-        """Files dock ▸ Jump to Source: show a slice's bytes in its parent file.
+        """Files dock ▸ Jump to Source: show a slice's bytes in its parent.
 
         The inverse of :meth:`_seed_slice_from_parent` (which seeds a new slice
         from its parent): it reconfigures the *parent* with the *slice's* own
         pixel and palette settings and lands the view on the slice's offset, so
         the slice's tiles appear at their real position in the whole file. The
-        parent is opened first if it was closed.
+        parent is opened first if it was closed. A nested slice's parent is the
+        slice it was cut from, shown at the child's offset in its decoded bytes —
+        always open while the child can be read, so never reopened.
 
         A compressed slice arrives with its codec in the *preview* combo, not in
         the parent's own read: the main view always shows raw bytes, so the
@@ -2068,6 +2126,15 @@ class EntriesMixin:
         parent = self._workspace.parent_of(child)
         if parent is not None:
             self._push_jump(parent, child, target)
+            return
+        if child.parent_kind is EntryKind.SLICE:
+            # A nested slice's parent is a slice, closed only with everything
+            # under it — so this is a broken chain, and reopening the file would
+            # land on an offset that was never a file offset.
+            self.statusBar().showMessage(
+                f"{child.name}'s parent slice is not open, so there is nowhere "
+                "to jump to."
+            )
             return
         # Reopened as what the child was cut from: a slice of a palette file
         # names a registered palette, and it comes back as one.
@@ -2175,7 +2242,14 @@ class EntriesMixin:
         else:
             self._activate_entry(parent)
         if land is not None and self._workspace.current is parent and self._doc:
-            self._land_on_byte(land.slice_offset)
+            # A nested slice's offset counts from byte 0 of its parent slice's
+            # buffer, which is position 0 of the view; a slice of a file's is
+            # written down in the file's coordinates, which is what the landing
+            # takes.
+            at = land.slice_offset
+            if parent.kind is EntryKind.SLICE:
+                at += self._anchor_base()
+            self._land_on_byte(at)
         # The parent's format may have moved either way, and a map bound to it
         # holds tiles decoded under the old one.
         self._reresolve_bound_art(self._maps_drawing_from([parent]))
@@ -2371,13 +2445,31 @@ class EntriesMixin:
         length: int | None = None,
         compression_id: str = NO_COMPRESSION,
     ) -> None:
+        if not self._can_hold_slices(parent):
+            self._alert(
+                f"{parent.name} is a tilemap slice, and a slice cannot be cut from "
+                "one: a map is written from its cells rather than from the bytes "
+                "they were read out of, so a slice of those bytes would have "
+                "nowhere to put its edits. Cut the slice from the entry the map "
+                "was cut from instead.",
+                title="celPix - new slice",
+            )
+            return
+        # A slice parent's decoded bytes bound the new slice's offsets, in place
+        # of the files' size: a nested slice counts from byte 0 of them.
+        extent = None
+        if parent.kind is EntryKind.SLICE:
+            extent = self._slice_buffer_length(parent)
+            if extent is None:
+                return  # reported: a parent that cannot be read has no bytes
         # The parent's whole file list, both to bound the dialog's offsets (a
         # region spread over several chips is addressed as the concatenation)
         # and so the slice inherits the list its offsets are relative to.
         #
         # The **Content** row is offered wherever the parent's own answer could be
-        # wrong, which is both graphic readings of a file. A palette file's
-        # slices are runs of its colours, so there is nothing to pick.
+        # wrong, which is both graphic readings of a file or of a slice of one. A
+        # palette file's slices are runs of its colours, at any depth, so there
+        # is nothing to pick.
         params = SliceDialog.get_slice(
             self,
             self._registry,
@@ -2386,8 +2478,11 @@ class EntriesMixin:
             length=length,
             compression_id=compression_id,
             content_kind=parent.content_kind,
-            choose_content=parent.kind is EntryKind.FILE
+            choose_content=parent.kind in (EntryKind.FILE, EntryKind.SLICE)
+            and anchor_kind(parent) is EntryKind.FILE
             and parent.content_kind in (ContentKind.PIXELS, ContentKind.TILEMAP),
+            extent=extent,
+            source=parent.name if parent.kind is EntryKind.SLICE else "",
             inputs_hint=lambda codec: self._inputs_hint(parent, codec),
             # A new slice has nothing to bind *on* yet, so the badge edits the
             # parent file's bindings for the codec — which ``slice_of`` hands
@@ -2413,14 +2508,43 @@ class EntriesMixin:
         self._seed_slice_from_parent(entry)
         self._push_command(AddEntryCommand(self, entry, f'new slice "{entry.name}"'))
 
+    def _slice_buffer_length(self, entry: Entry) -> int | None:
+        """How many bytes a slice's own decoded buffer holds — what a slice
+        nested in it is bounded by — or None, reported, when it cannot be read.
+
+        Its live document's bytes when it has one (a map's are its cells'
+        buffer, :func:`~celpix.project.workspace.own_bytes`), else the region
+        read fresh through its chain, settled first so a pending edit above it
+        counts.
+        """
+        held = own_bytes(entry)
+        if held is not None:
+            return len(held)
+        preset = (
+            entry.session.pixel_preset_id
+            if entry.session is not None
+            else self._pixel_preset_id()
+        )
+        try:
+            data, _ctx = pipeline.read_region(
+                self._pixel_config(entry, preset), self._registry
+            )
+        except PipelineError as exc:
+            self._report(exc)
+            return None
+        except OSError as exc:
+            self._alert(f"Cannot read {entry.name}: {exc}", title="celPix - slice")
+            return None
+        return len(data)
+
     # -- removal -------------------------------------------------------------
     def _remove_entry(self, entry: Entry, *, confirm: bool = True) -> None:
         """Remove one entry — :meth:`_remove_entries` for a list of one."""
         self._remove_entries([entry], confirm=confirm)
 
     def _remove_entries(self, entries: list[Entry], *, confirm: bool = True) -> None:
-        """Remove every entry in ``entries`` (a file takes its slices and
-        bookmarks with it), confirming once for the lot - Remove is also on the
+        """Remove every entry in ``entries`` (a row takes everything nested
+        under it along), confirming once for the lot - Remove is also on the
         Delete key, and a slip there costs each entry's whole session setup.
 
         ``confirm=False`` is **Cut**, which has already said where the row is
@@ -2446,7 +2570,7 @@ class EntriesMixin:
         if any(root.kind is EntryKind.PALETTE for root in roots):
             self._capture_session()
         going = {
-            e for root in roots for e in (root, *self._workspace.children_of(root))
+            e for root in roots for e in (root, *self._workspace.descendants_of(root))
         }
         # Only the graphics that are *staying* need re-homing: one being removed
         # in the same gesture would be re-pointed at a custom palette on its way
@@ -2473,15 +2597,17 @@ class EntriesMixin:
             self._undo_stack.endMacro()
 
     def _removal_roots(self, entries: list[Entry]) -> list[Entry]:
-        """``entries`` in list order, minus every row a selected *parent* already
-        takes with it — a file picked along with two of its own slices is one
-        removal, not three.
+        """``entries`` in list order, minus every row a selected *ancestor*
+        already takes with it — a file picked along with two of its own slices is
+        one removal, not three, and so is a slice picked with one nested two
+        levels under it.
         """
         chosen = set(entries)
         return [
             entry
             for entry in self._workspace.entries
-            if entry in chosen and self._workspace.parent_of(entry) not in chosen
+            if entry in chosen
+            and not any(a in chosen for a in self._workspace.ancestors_of(entry))
         ]
 
     def _confirm_removal(
@@ -2494,14 +2620,15 @@ class EntriesMixin:
         """Ask before removing ``roots``; True to go ahead.
 
         One prompt however many rows are going, naming what travels with them:
-        the slices and bookmarks a file takes, the unsaved edits that are
+        the slices and bookmarks a file takes and the slices nested in a slice,
+        to any depth, the unsaved edits that are
         discarded, and the graphics a palette leaves needing colors of their own.
 
         A palette with consumers is asked about **even when ``confirm`` is
         False**: the caller that skips the question is Cut, and re-homing a
         graphic is a change to that graphic, which the clipboard is not holding.
         """
-        victims = [(root, self._workspace.children_of(root)) for root in roots]
+        victims = [(root, self._workspace.descendants_of(root)) for root in roots]
         if len(roots) == 1:
             root = roots[0]
             message = f"Remove {root.name}?"
@@ -2543,7 +2670,8 @@ class EntriesMixin:
 
     @staticmethod
     def _kind_count(victims: list[tuple[Entry, list[Entry]]], kind: EntryKind) -> int:
-        """How many rows of ``kind`` come along as *children* of what is going."""
+        """How many rows of ``kind`` come along *under* what is going, at any
+        depth."""
         return sum(e.kind is kind for _root, children in victims for e in children)
 
     def _push_removal(self, entry: Entry, rehomed: list[Entry] | None) -> None:
@@ -2553,7 +2681,7 @@ class EntriesMixin:
         keeps its colors as a Custom copy so none is left showing a palette that
         is gone, and the whole thing is one undo step.
         """
-        victims = [entry, *self._workspace.children_of(entry)]
+        victims = [entry, *self._workspace.descendants_of(entry)]
         entries = self._workspace.entries
         positions = [(entries.index(e), e) for e in victims]
         if rehomed:

@@ -219,11 +219,11 @@ def test_slice_entry_views_bounded_region_with_view_relative_addresses(
     assert window._anchor_base() == 64
     assert not window._change_container_action.isEnabled()
     assert window._write_action.isEnabled()
-    # Slices never nest: a slice on screen offers no slice-creation actions.
-    window._on_slots_selected(0, 0)  # a selection can't unlock from-selection
-    assert not window._new_slice_action.isEnabled()
-    assert not window._new_slice_from_view_action.isEnabled()
-    assert not window._new_slice_from_selection_action.isEnabled()
+    # A slice on screen is cut from like a file: what it spawns nests in it.
+    window._on_slots_selected(0, 0)
+    assert window._new_slice_action.isEnabled()
+    assert window._new_slice_from_view_action.isEnabled()
+    assert window._new_slice_from_selection_action.isEnabled()
 
     # Switching back to the parent shows the whole file from its own state, and
     # the file *does* spawn slices.
@@ -627,6 +627,12 @@ def test_a_multi_row_context_menu_leaves_only_the_set_actions_live(
     # either end of its group.
     _pick(panel, a, c)
     panel._show_menu(tree.visualItemRect(panel._items[a]).center())
+    # A collection now, rather than whenever the suite's allocations happen to
+    # trigger one: a submenu left owned by a Python wrapper dies here, every run
+    # (``docs/py-qt-reference/pyside6-pitfalls.md``).
+    import gc
+
+    gc.collect()
     live = {
         action.text()
         for action in opened_menus[-1].actions()
@@ -641,6 +647,8 @@ def test_a_multi_row_context_menu_leaves_only_the_set_actions_live(
     }
     # New Composite View opens the dialog with the selection already listed,
     # one whole run per row, in list order.
+    from PySide6.QtWidgets import QMenu
+
     from celpix.ui.composite_dialog import CompositeDialog
 
     asked: list[dict] = []
@@ -656,7 +664,11 @@ def test_a_multi_row_context_menu_leaves_only_the_set_actions_live(
     ).trigger()
     assert [p.entry for p in asked[0]["pieces"]] == [a, c]
     assert [p.extent for p in asked[0]["pieces"]] == [32 * 8, 32 * 8]
-    export = next(a.menu() for a in opened_menus[-1].actions() if a.text() == "E&xport")
+    # By title among the children, not through ``QAction.menu()``
+    # (``docs/py-qt-reference/pyside6-pitfalls.md``).
+    export = next(
+        m for m in opened_menus[-1].findChildren(QMenu) if m.title() == "E&xport"
+    )
     assert [a.text() for a in export.actions() if a.isEnabled()] == [
         "2 Entries as &PNGs…",
         "2 Entries as &Raw…",
@@ -4252,3 +4264,253 @@ def test_a_failed_reread_of_the_open_map_leaves_it_working_and_unmarked(
     window._activate_entry(bank)
     window._activate_entry(screen)
     assert window._doc is kept and len(captured_alerts) == 1
+
+
+def test_a_nested_slice_is_a_row_under_its_parent_slice_and_goes_with_it(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """A slice of a slice nests under that slice's row, any depth down; removing
+    the parent slice removes the lot, and one undo puts every row back under the
+    same parent, still linked to it."""
+    from PySide6.QtWidgets import QMessageBox
+
+    window, a, _b, cut = _two_roms(qtbot, tmp_path)
+    ws, panel = window._workspace, window._files_panel
+    inner = ws.add_slice_under(cut, "inner", 0x10, 0x20)
+    deeper = ws.add_slice_under(inner, "deeper", 0x00, 0x10)
+    assert panel._items[inner].parent() is panel._items[cut]
+    assert panel._items[deeper].parent() is panel._items[inner]
+    assert panel._items[cut].parent() is panel._items[a]
+
+    asked: list[str] = []
+
+    def answer(_parent, _title, text, *_a, **_k):  # noqa: ANN202
+        asked.append(text)
+        return QMessageBox.StandardButton.Yes
+
+    monkeypatch.setattr(QMessageBox, "question", answer)
+    window._remove_entries([cut, deeper])  # one removal: deeper goes with cut
+    assert "2 slice(s)" in asked[-1]
+    assert ws.entries == [a, _b] and inner not in panel._items
+
+    window._undo_stack.undo()
+    assert ws.descendants_of(a) == [cut, inner, deeper]
+    assert inner.parent_entry is cut and deeper.parent_entry is inner
+    assert panel._items[deeper].parent() is panel._items[inner]
+
+
+def test_moving_a_row_keeps_the_expansion_of_everything_nested_under_it(
+    qtbot, tmp_path
+) -> None:
+    """A reorder takes the row's item out of the tree, and Qt keeps expansion in
+    the view: every level under the moved row has to come back folded as it was,
+    open rows open and a row the user collapsed still collapsed."""
+    window, a, b, cut = _two_roms(qtbot, tmp_path)
+    ws, panel = window._workspace, window._files_panel
+    inner = ws.add_slice_under(cut, "inner", 0x10, 0x20)
+    ws.add_slice_under(inner, "deeper", 0x00, 0x10)
+    folded = ws.add_slice(str(a.path), "folded", 128, 64)
+    ws.add_slice_under(folded, "hidden", 0x00, 0x10)
+    panel._items[folded].setExpanded(False)
+    assert panel._items[cut].isExpanded() and panel._items[inner].isExpanded()
+
+    window._reorder_entry(a, None)  # the file, past its sibling
+    assert ws.entries[0] is b
+
+    assert panel._items[a].isExpanded()
+    assert panel._items[cut].isExpanded() and panel._items[inner].isExpanded()
+    assert not panel._items[folded].isExpanded()
+
+
+def test_a_copied_slice_takes_its_nested_slices_and_keeps_them_nested(
+    qtbot, tmp_path
+) -> None:
+    """Copying a slice copies what is nested in it; pasted onto another file the
+    copies stay nested in the pasted copy, not in the original. A nested slice
+    pasted onto another ROM's copy of its parent nests in that copy; duplicated,
+    a slice lands beside the original with its own nested copy."""
+    window, a, b, cut = _two_roms(qtbot, tmp_path)
+    ws = window._workspace
+    inner = ws.add_slice_under(cut, "inner", 0x10, 0x20)
+
+    window._copy_entry(cut)
+    window._paste_entries(b)
+    pasted = ws.slices_of(b)
+    assert [e.name for e in pasted] == ["sprites"]
+    copies = ws.children_of(pasted[0])
+    assert [e.name for e in copies] == ["inner"] and copies[0] is not inner
+    assert copies[0].parent_entry is pasted[0] and copies[0].path == b.path
+    assert ws.children_of(cut) == [inner]
+
+    window._copy_entry(inner)
+    window._paste_entries(pasted[0])  # a parent one level down: nested in it
+    assert [e.name for e in ws.children_of(pasted[0])] == ["inner", "inner copy"]
+
+    window._duplicate_entry(cut)
+    twin = ws.slices_of(a)[-1]
+    assert twin.name == "sprites copy" and twin.parent_entry is None
+    assert [e.parent_entry for e in ws.children_of(twin)] == [twin]
+
+
+def test_a_pasted_slice_lands_at_the_depth_it_was_copied_from(qtbot, tmp_path) -> None:
+    """A paste keeps a slice at the depth it was copied from, so its kept offset
+    still counts from the same kind of buffer: a file-level slice pasted onto a
+    slice row, itself included, lands beside it under the file, and a nested one
+    pasted onto itself or a sibling lands under its own parent. One undo takes
+    each paste back."""
+    from celpix.project.workspace import EntryKind
+
+    window, a, _b, cut = _two_roms(qtbot, tmp_path)  # "sprites", 64 bytes at 64
+    ws = window._workspace
+    inner = ws.add_slice_under(cut, "inner", 0x10, 0x20)
+    sib = ws.add_slice_under(cut, "sib", 0x30, 0x10)
+    before = list(ws.entries)
+
+    for target in (cut, inner):  # the commonest flow: Ctrl+C, Ctrl+V in place
+        window._copy_entry(cut)
+        window._paste_entries(target)
+        copy = ws.slices_of(a)[-1]
+        assert copy is not cut and copy.name == "sprites copy"
+        assert (copy.parent_kind, copy.parent_entry) == (EntryKind.FILE, None)
+        assert copy.slice_offset == 64
+        assert [e.name for e in ws.children_of(copy)] == ["inner", "sib"]
+        window._undo_stack.undo()
+        assert ws.entries == before
+
+    for target in (inner, sib, None):  # None: a duplicate, aimed at its parent
+        if target is None:
+            window._duplicate_entry(inner)
+        else:
+            window._copy_entry(inner)
+            window._paste_entries(target)
+        assert [e.name for e in ws.children_of(cut)] == ["inner", "sib", "inner copy"]
+        assert ws.children_of(cut)[-1].slice_offset == 0x10
+        window._undo_stack.undo()
+        assert ws.entries == before
+
+    other = ws.add_slice(a.path, "other", 128, 64)
+    window._cut_entry(other)
+    window._paste_entries(cut)
+    moved = ws.slices_of(a)[-1]
+    assert (moved.name, moved.slice_offset, moved.parent_entry) == ("other", 128, None)
+    window._undo_stack.undo()
+    assert ws.entries == before
+
+
+def test_a_nested_slice_aimed_at_a_file_is_refused_saying_why(qtbot, tmp_path) -> None:
+    """A nested slice's offset counts into a slice's unpacked bytes, so a file row
+    has nowhere to put it — except the one its live parent is cut from, where it
+    goes back into that parent — and a map slice holds no slices at all. A
+    refused row adds nothing and the status bar names it."""
+    from celpix.core.capabilities import ContentKind
+
+    window, a, b, cut = _two_roms(qtbot, tmp_path)
+    ws = window._workspace
+    inner = ws.add_slice_under(cut, "inner", 0x10, 0x20)
+    screen = ws.add_slice(b.path, "screen", 0, 64)
+    screen.content_kind = ContentKind.TILEMAP
+    before = list(ws.entries)
+
+    window._copy_entry(inner)
+    for target, why in ((b, "not onto a file"), (screen, '"screen" is a map')):
+        window._paste_entries(target)
+        assert ws.entries == before
+        message = window.statusBar().currentMessage()
+        assert message.startswith('"inner" is cut from') and why in message
+
+    window._paste_entries(a)  # its own ROM: back into the stream it came from
+    back = ws.children_of(cut)[-1]
+    assert (back.name, back.slice_offset) == ("inner copy", 0x10)
+    assert back.parent_entry is cut
+
+
+def test_a_nested_slice_from_another_session_keeps_its_depth(qtbot, tmp_path) -> None:
+    """Out of the session it was copied in, a nested slice has no live parent to
+    fall back on, yet the depth it carries still finds one: aimed anywhere under
+    the other ROM's copy of its stream, it lands in that copy."""
+    from celpix.project import projectfile
+    from celpix.ui import clipboard
+
+    window, _a, b, cut = _two_roms(qtbot, tmp_path)
+    ws = window._workspace
+    inner = ws.add_slice_under(cut, "inner", 0x10, 0x20)
+    twin = ws.add_slice(b.path, "sprites", 64, 64)
+    tiles = ws.add_slice_under(twin, "tiles", 0, 0x10)
+
+    payload = projectfile.entries_payload([inner], ws.entries, "some-other-window")
+    clipboard.put_entries(payload, [inner.path], {})
+    window._paste_entries(tiles)
+    assert [e.name for e in ws.children_of(twin)] == ["tiles", "inner"]
+    pasted = ws.children_of(twin)[-1]
+    assert pasted.parent_entry is twin and pasted.path == b.path
+    assert pasted.slice_offset == 0x10
+    assert ws.children_of(tiles) == []
+
+
+def test_new_slice_on_a_slice_nests_it_in_the_slices_own_bytes(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """File ▸ New Slice… with a slice on screen cuts the new one from that slice:
+    prefilled at the view position counted from the slice's first byte, bounded
+    by the slice's own length rather than the file's, and one undo away."""
+    from celpix.ui.slice_dialog import SliceDialog, SliceParams
+
+    window, _a, _b, cut = _two_roms(qtbot, tmp_path)  # 64 bytes at 64
+    window._activate_entry(cut)
+    offered: dict = {}
+
+    def dialog(*_a, **kw):  # noqa: ANN202
+        offered.update(kw)
+        return SliceParams("inner", 0x20, 0x20, "compression.none")
+
+    monkeypatch.setattr(SliceDialog, "get_slice", staticmethod(dialog))
+    window._new_slice_current()
+    assert (offered["offset"], offered["extent"]) == (0, 64)
+    inner = window._workspace.current
+    assert inner.parent_entry is cut and window._workspace.children_of(cut) == [inner]
+    assert bytes(inner.doc.pixel_data) == bytes(cut.doc.pixel_data[0x20:0x40])
+
+    window._undo_stack.undo()
+    assert window._workspace.children_of(cut) == []
+
+
+def test_a_nested_slice_its_parent_no_longer_reaches_opens_inert_saying_why(
+    qtbot, tmp_path, captured_alerts
+) -> None:
+    """A parent slice re-pointed shorter leaves a nested slice's window past the
+    end of its bytes. Cutting a buffer there is an empty window rather than an
+    error, so the load has to refuse it — and open again once the parent reaches."""
+    window, _a, _b, cut = _two_roms(qtbot, tmp_path)  # 64 bytes at 64
+    ws = window._workspace
+    inner = ws.add_slice_under(cut, "inner", 0x20, 0x20)
+    short = ws.add_slice_under(cut, "short", 0x10, 0x20)
+
+    cut.slice_length = 0x30  # inner's end is now past it; short still fits
+    window._activate_entry(inner)
+    assert ws.current is inner and inner.doc is None
+    assert "outside sprites" in inner.load_failure.summary
+    assert "outside sprites" in captured_alerts[-1][1]
+    window._activate_entry(short)
+    assert len(short.doc.pixel_data) == 0x20
+
+    cut.slice_length = 64
+    ws.drop_document(inner)
+    window._activate_entry(inner)
+    assert inner.load_failure is None and len(inner.doc.pixel_data) == 0x20
+
+
+def test_a_nested_slice_with_no_parent_slice_opens_inert_saying_why(
+    qtbot, tmp_path, captured_alerts
+) -> None:
+    """A nested slice whose parent slice is gone has nothing to read: it becomes
+    current but inert, its failure names the missing parent, and it never reads
+    the file at its offset — which is no file offset at all."""
+    window, _a, _b, cut = _two_roms(qtbot, tmp_path)
+    ws = window._workspace
+    inner = ws.add_slice_under(cut, "inner", 0x10, 0x20)
+    ws.close(cut, with_children=False)  # the broken chain a hand-edit leaves
+
+    window._activate_entry(inner)
+    assert ws.current is inner and inner.doc is None
+    assert "not open" in inner.load_failure.summary
+    assert "not open" in captured_alerts[-1][1]

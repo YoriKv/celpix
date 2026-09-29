@@ -475,15 +475,16 @@ class TileBytesMixin:
             self._load_entry(entry, quiet=True)
         if entry.doc is None:
             return []
-        # Any fold this region owes is paid **before** the new bytes land: the
-        # file's own edit drops every slice document below (`_propagate_pixel_edit`),
+        # Any fold owed *to this entry* is paid **before** the new bytes land:
+        # its own edit drops every slice document below (`_propagate_pixel_edit`),
         # and a debt still pending at that point names documents that no longer
         # exist — it was discharged empty, and the slice edits it stood for were
         # gone from the buffer and from the next write. Settling on load cannot
         # cover this, since a load settles before it has a buffer to fold into.
         # Before rather than after the splice, so an older slice edit over the
-        # same bytes does not come back over the stroke just made.
-        self._settle_region(entry)
+        # same bytes does not come back over the stroke just made. Only its own:
+        # what it owes the links above is paid where they are next read.
+        self._settle_own(entry)
         self._land_splices(entry.doc, splices)
         # A **composite** is never stamped: it owns no bytes, so it has no
         # unsaved state of its own to record and nothing to write that would
@@ -531,10 +532,12 @@ class TileBytesMixin:
         boundaries produce them, and they compose:
 
         - a **slice**'s bytes live inside its parent's region, so the file has
-          unsaved changes too (``docs/design/slices-and-parents.md`` §3);
+          unsaved changes too (``docs/design/slices-and-parents.md`` §3) — and a
+          **nested** slice's live inside every link of its chain, so each of
+          them does, up to the file;
         - a **composite** owns nothing at all, so every piece under the edited
           regions is an owner — and a piece that is itself a slice brings its
-          parent along, which is the composing case.
+          chain along, which is the composing case.
 
         Deliberately the entries an edit *lands* in rather than every entry that
         can see it: a map drawing from a source shows the change but has no
@@ -547,7 +550,8 @@ class TileBytesMixin:
                 out.append(candidate)
 
         if entry.kind is EntryKind.SLICE:
-            add(self._workspace.parent_of(entry))
+            for ancestor in self._workspace.ancestors_of(entry):
+                add(ancestor)
         elif entry.kind is EntryKind.COMPOSITE:
             for start, data in splices:
                 for owner, _at, _first, _last in self._composite_runs(
@@ -555,7 +559,8 @@ class TileBytesMixin:
                 ):
                     add(owner)
                     if owner.kind is EntryKind.SLICE:
-                        add(self._workspace.parent_of(owner))
+                        for ancestor in self._workspace.ancestors_of(owner):
+                            add(ancestor)
         return tuple(out)
 
     def _composite_runs(
@@ -647,9 +652,9 @@ class TileBytesMixin:
             for owner, at, first, last in self._composite_runs(entry, start, len(data)):
                 cut = data[first - start : last - start]
                 # The same settle `_apply_pixel_bytes` makes before its own
-                # splice, for the same reason: a FILE piece loaded here as an
-                # owner has folds pending that the drop below would discard.
-                self._settle_region(owner)
+                # splice, for the same reason: a piece loaded here as an owner
+                # has folds pending that the drop below would discard.
+                self._settle_own(owner)
                 self._land_splices(owner.doc, [(at, cut)])
                 self._propagate_pixel_edit(owner, keep)
                 self._resync_tile_bindings(owner, [(at, cut)])

@@ -105,7 +105,7 @@ Keys that name another entry: `current`, `tile_source.entry_index`,
 | 2 → 3 | None. Adds `inputs` |
 | 3 → 4 | None. Adds `palette_mode: "entry"` with `palette.entry`; `offset` palettes on composites; new plugin input keys |
 | 4 → 5 | None. Adds `session`/`view` on `palette` entries, `parent` on slices and bookmarks, `current` naming a `palette` entry |
-| 5 → 6 | None. Adds the choice binding shape (§5.10) |
+| 5 → 6 | None. Adds the choice binding shape (§5.10); nested slices: `parent: "slice"` with `parent_index` (§5.5) |
 
 ## 4. Top level
 
@@ -124,15 +124,15 @@ Key order as written: `version`, `current`, `entries`, `hidden_pixel_presets`, `
 ### 5.1 Order
 
 - `entries` order is the display order and is restored exactly. No sorting is applied on load.
-- A `slice` or `bookmark` must follow the entry its `path` names. One written before its parent loads as a top-level row.
-- Hierarchy depth is two: `file`/`palette` → `slice`/`bookmark`. A slice is never a parent.
+- A `slice` or `bookmark` of a file must follow the entry its `path` names. A nested `slice` must follow the slice its `parent_index` names. One written before its parent loads as a top-level row.
+- Hierarchy: `file`/`palette` → `slice`/`bookmark`; `slice` → nested `slice`, to any depth. A `bookmark` is never nested.
 
 ### 5.2 Kinds
 
 | `kind` | Is | `path` names | Can be `current` |
 |---|---|---|---|
 | `file` | A whole file (or multi-file region) | The file | yes |
-| `slice` | A byte range of a parent | The **parent's** file | yes |
+| `slice` | A byte range of a parent: a file, a palette, or (nested) another slice's decoded bytes | The **root** file its chain ends at | yes |
 | `bookmark` | A saved position in a parent | The **parent's** file | no |
 | `palette` | A registered external palette file | The palette file | yes |
 | `composite` | A view assembled from other entries | — (no `path`) | yes |
@@ -152,6 +152,7 @@ Unknown or missing `kind` reads as `file`.
 | `container_id` | ○ | – | – | ○ | – |
 | `reshape_id` | ○ | ○ | – | – | – |
 | `parent` | – | ○ | ○ | – | – |
+| `parent_index` | – | ○ | – | – | – |
 | `slice_offset` | – | ● | – | – | – |
 | `slice_length` | – | ● | – | – | – |
 | `compression_id` | – | ● | – | – | – |
@@ -192,7 +193,7 @@ Required keys: an entry without them is skipped (`path`) or opens on defaults.
 | `kind` | string | `"file"` | always | §5.2 |
 | `name` | string | basename of `path`; `"composite"` for a composite | always | Display name. Free text |
 | `path` | path | — | always (not on composite) | Non-empty. Missing, empty or non-string: entry skipped |
-| `extra_paths` | array of path | `[]` | omitted when empty | Further files joined after `path`, in join order, forming one region. On a slice/bookmark: the parent's list. Offsets are into the joined bytes |
+| `extra_paths` | array of path | `[]` | omitted when empty | Further files joined after `path`, in join order, forming one region. On a slice/bookmark: the parent's list; on a nested slice: the root file's. Offsets are into the joined bytes |
 | `container_id` | id | `container.raw-file` | omitted at default | Container the bytes are read and written through |
 | `reshape_id` | id | `reshape.none` | omitted at default | Byte reordering of the region |
 | `content_kind` | string | `"pixels"` | omitted at default | `"pixels"` \| `"tilemap"` \| `"palette"`. Unknown reads as `"pixels"` |
@@ -207,18 +208,22 @@ Required keys: an entry without them is skipped (`path`) or opens on defaults.
 
 | Key | Type | Default | Written | Meaning |
 |---|---|---|---|---|
-| `slice_offset` | int | `0` | always | Start, in bytes, absolute from byte 0 of the parent region. Not relative to any container header |
+| `slice_offset` | int | `0` | always | Start, in bytes, absolute from byte 0 of the parent region. Not relative to any container header. Nested slice: from byte 0 of the parent slice's decoded bytes (after its reshape and decompression) |
 | `slice_length` | int \| `null` | `null` | always | Length in bytes. `null` = determined by decompression on first load. Always an int when `reshape_id` is set |
 | `compression_id` | id | `compression.none` | always | Codec the slice is decompressed and recompressed with |
 | `slot_fill` | string | `"ff"` | omitted at default | Padding after a recompressed stream shorter than its slot: `"ff"` (pad `$FF`), `"zero"` (pad `$00`), `"keep"` (leave old bytes). Unknown reads as `"ff"` |
-| `parent` | string | `"file"` | omitted when `"file"` | Kind of row `path` names: `"file"` \| `"palette"`. Other values read as `"file"` |
+| `parent` | string | `"file"` | omitted when `"file"` | Kind of row the slice is cut from: `"file"` \| `"palette"` \| `"slice"` (nested). Other values read as `"file"` |
+| `parent_index` | entry ref | — | when `parent` is `"slice"` | Position in `entries` of the parent slice. Read only when `parent` is `"slice"`. Written `-1` when the parent is not in the list |
+
+- Nested slice: `path`/`extra_paths` are the root file's; bytes are read from the parent slice, never from the file.
+- `parent_index` out of range, not a `slice`, the entry itself, or on a loop: the chain is broken. The entry stays nested with no parent and opens inert (no bytes, not writable).
 
 ### 5.6 `bookmark`
 
 | Key | Type | Default | Written | Meaning |
 |---|---|---|---|---|
 | `offset` | int | `0` | always | Position, in bytes, absolute from byte 0 of the parent region |
-| `parent` | string | `"file"` | omitted when `"file"` | As for `slice` |
+| `parent` | string | `"file"` | omitted when `"file"` | `"file"` \| `"palette"`. Other values, `"slice"` included, read as `"file"` |
 
 - `session`, `view`, `palette`: snapshot of the parent's settings, applied to the parent when the bookmark is opened.
 - `view.offset` and `view.byte_nudge` are written as `0`.
@@ -320,7 +325,7 @@ Binding shapes (determined by type and keys present):
 | Region | `{"offset": int, "length": int}` | `offset` ≥ 0, `length` ≥ 0 |
 | Integer from bytes | `{"offset": int, "width": int, "endian": "big" \| "little"}` | `offset` ≥ 0, `width` ≥ 1. A `width` over 8 loads, but the input fails to resolve and the entry opens degraded. `endian` other than `"little"` reads as big. Presence of `width` selects this shape |
 
-- Region and integer-from-bytes: `offset` is absolute from byte 0 of the entry's own file.
+- Region and integer-from-bytes: `offset` is absolute from byte 0 of the entry's own file (a nested slice: the root file).
 - Optional `entry_index` (entry ref) on either: offset is into that entry's resolved data instead.
 - `entry_index` naming nothing: the binding is removed on load.
 - Malformed bindings are skipped.
@@ -374,7 +379,7 @@ Shape selected by `session.palette_mode`:
 | `default` | absent | Built-in fallback palette |
 | `custom` | `{"colors": [string, ...]}` | Colors stored in the project. Each `"#AARRGGBB"`: 32-bit hex, uppercase when written. `#` optional on read; fewer than 8 digits zero-fill from the top (alpha `00`) |
 | `file` | `{"path": path, "offset": int}` | External palette file; `offset` in bytes |
-| `offset` | `{"offset": int}` | The entry's own bytes at `offset`. Slice: into its parent. Composite: into the file of its first piece that names an entry |
+| `offset` | `{"offset": int}` | The entry's own bytes at `offset`. Slice: into its parent file; nested slice: into the root file. Composite: into the file of its first piece that names an entry |
 | `entry` | `{"entry": entry ref, "offset": int}` | Another entry's resolved data at `offset` |
 | `emulator` | `{"path": path, "offset": int}` | Emulator save state. `offset` is written but ignored: the palette location and console codec are re-detected on load |
 
@@ -431,6 +436,7 @@ Copying entries places the same Entry records on the clipboard.
 | `session` | Token identifying the editor process that copied |
 | Paths | Absolute, `/` separators |
 | Extra key per Entry | `source_index`: the record's position in the list it was copied from |
+| Extra key per `slice` / `bookmark` | `parent_depth`: 0 = cut from a `file` / `palette`; *n* = its parent slice is *n* slices below the file. Missing: 1 when `parent` is `"slice"`, else 0 |
 | Entry refs | Positions in the source list. Resolved against other records of the same payload via `source_index`; in the same process, against the still-open entry; otherwise dropped |
 
 ## 8. Example

@@ -81,6 +81,20 @@ class KnownIds:
             return True
         return plugin_id in self.local.get(stage, ())
 
+    def has_plugin(self, stage: str, plugin_id: str) -> bool:
+        """Whether ``stage`` has a **code plugin** ``plugin_id``, preset or not.
+
+        :meth:`has` answers in the id space a project names at each stage, and
+        at an interpret stage that is a *preset*. An ``inputs`` block is keyed by
+        the engine behind the preset instead (``codec.tilemap.sprite-table``,
+        never ``preset.tilemap.…``), because an engine declares inputs and a
+        preset is data — so it is checked against the engines here.
+        """
+        bucket = self.plugins.get(stage, {})
+        if plugin_id in bucket or self.current_id(plugin_id) in bucket:
+            return True
+        return plugin_id in self.local.get(stage, ())
+
     def is_local(self, stage: str, plugin_id: str) -> bool:
         """Whether only the project's own plugin folder provides ``plugin_id``."""
         return plugin_id in self.local.get(stage, ()) and plugin_id not in self._bucket(

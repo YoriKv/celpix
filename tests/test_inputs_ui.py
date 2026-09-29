@@ -118,6 +118,31 @@ def test_use_selection_binds_the_parents_selection_and_go_to_shows_it(
     assert start <= 0x120 < start + page
 
 
+def test_use_selection_on_a_nested_slice_names_no_file_position(
+    qtbot, tmp_path
+) -> None:
+    """A raw nested slice's positions count in its parent slice's buffer, while
+    *This file* resolves against the root file — so its own selection has no
+    this-file offset to give, however raw it reads."""
+    window, rom = _open(qtbot, tmp_path)
+    outer = window._workspace.add_slice(rom.path, "outer", 0x80, 0x200)
+    inner = window._workspace.add_slice_under(outer, "inner", 0x80, 0x100)
+
+    window._activate_entry(inner)
+    window._select_tiles(0, 0)
+    assert window._selection_as_binding(inner) is None
+    # Its parent slice on screen is an entry it may read; the root file on
+    # screen is its own file, at the file's own offset.
+    window._activate_entry(outer)
+    window._select_tiles(0, 0)
+    assert window._selection_as_binding(inner) == RegionBinding(
+        entry=outer, offset=0, length=32
+    )
+    window._activate_entry(rom)
+    window._select_tiles(8, 8)
+    assert window._selection_as_binding(inner) == RegionBinding(offset=0x100, length=32)
+
+
 def test_jump_to_source_carries_the_slices_bindings_to_the_preview(
     qtbot, tmp_path
 ) -> None:

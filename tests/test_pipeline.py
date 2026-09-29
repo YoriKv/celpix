@@ -522,6 +522,64 @@ def test_a_broken_optional_probe_degrades_instead_of_failing_the_load(
     assert not notices(good.ctx)
 
 
+def test_a_code_formats_settle_is_handed_its_inputs_not_params(tmp_path) -> None:
+    """A format's ``settle_cells(cells, inputs)`` gets the entry's resolved inputs.
+
+    The host asks the engine surface ``settle_cells(cells, params, inputs)``, and
+    the format adapter has to drop ``params`` from the *middle*: stripping the
+    last argument instead hands the format ``params`` where its inputs belong, so
+    a field derived from a side array re-derives from the wrong dict.
+    """
+    from dataclasses import replace
+
+    from celpix.core.notices import notices
+    from celpix.core.tilemap import Cell
+    from celpix.plugins import FormatInfo
+    from celpix.plugins.base import InputKind, InputSpec
+    from celpix.plugins.formats import adapt_format
+
+    path = tmp_path / "cells.bin"
+    path.write_bytes(bytes([0, 1]))
+
+    class _Rowed:
+        info = FormatInfo(
+            id="format.tilemap.rowed",
+            name="rowed",
+            inputs=(InputSpec("rows", "Rows", InputKind.REGION),),
+        )
+
+        def decode(self, data, ctx):
+            return [Cell(index=byte) for byte in data]
+
+        def encode(self, cells, ctx):
+            return bytes(cell.index & 0xFF for cell in cells)
+
+        def bytes_per_cell(self):
+            return 1
+
+        def cell_tiles(self):
+            return (1, 1)
+
+        def settle_cells(self, cells, inputs):
+            rows = inputs["rows"]
+            return [replace(c, palette_row=rows[c.index]) for c in cells]
+
+    reg = default_registry()
+    engine, preset = adapt_format(_Rowed(), Stage.INTERPRET_TILEMAP)
+    reg.register(engine)
+    reg.register_preset(preset)
+    cfg = PathwayConfig(
+        source=FileRef(str(path)),
+        interpret_preset_id=preset.id,
+        inputs={Stage.INTERPRET_TILEMAP: {"rows": bytes([5, 7])}},
+    )
+    data = pipeline.load_tilemap_data(cfg, reg)
+
+    settled = data.settler([Cell(index=1), Cell(index=0)])
+    assert [c.palette_row for c in settled] == [7, 5]
+    assert not notices(data.ctx)
+
+
 def test_missing_source_file_hard_stops(tmp_path) -> None:
     reg = default_registry()
     pixel_cfg = PathwayConfig(

@@ -1,0 +1,30 @@
+# A table of 2x2 stamps whose four one-byte tile numbers are stored **across
+# each row**: upper-left, upper-right, lower-left, lower-right. Four bytes a
+# record, each a bare tile index — `preset.tilemap.index-8bit`'s cell. Final
+# Fantasy VI's world metatile table is this shape: its loader copies a record's
+# first two bytes to one Mode 7 map row and the next two to the row below, and
+# its one-byte world maps are indices into it.
+#
+# The row-order sibling of `stamp-table-8bit-column`, and a stamp source for the
+# same reason (docs/design/tilemap-entry.md §3.1): one coordinate names a 2x2 of
+# its cells, and because a row's two cells are adjacent, the stamp's second
+# *row* sits two cells on. `stamp_order` stays at its default, which is the only
+# difference between the two. The referring map is an indirect-record preset —
+# `metatile-index` plus whatever the game's record numbering needs — which turns
+# record k into its first cell, 4k.
+#
+# Its records are contiguous, so the table draws each metatile whole, as many
+# across as Cols holds (docs/design/tilemap-entry.md §6, records). It has no
+# palette field, so on its own it draws in the view's palette row; the map
+# drawn through it gets each record's colours.
+id = "preset.tilemap.stamp-table-8bit-row"
+name = "Stamp table (2x2 bytes, across each row)"
+engine_id = "codec.tilemap.packed"
+category = "Generic"
+
+[params]
+bytes = 1
+endian = "little"
+fields = "iiii iiii"
+stamp_cells = [2, 2]
+stamp_stride = 2

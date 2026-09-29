@@ -80,6 +80,11 @@ def _one_reference(
 def _bounds(ctx: Context, view: EntryView) -> None:
     if view.kind not in ("slice", "bookmark"):
         return
+    if view.kind == "slice" and view.raw.get("parent") == "slice":
+        # A nested slice's offset counts in its parent slice's *decoded* bytes,
+        # whose length only a decompression could tell — the file's size bounds
+        # nothing here, and checking against it would report the wrong thing.
+        return
     key = "offset" if view.kind == "bookmark" else "slice_offset"
     offset = view.raw.get(key)
     if not is_int(offset) or offset < 0:

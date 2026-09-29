@@ -190,9 +190,10 @@ def _silence_modals() -> list[tuple[str, str]]:
 
 
 def _label(workspace, entry) -> str:  # noqa: ANN001 - Workspace, Entry
-    """``parent/child`` for a slice or bookmark, the bare name otherwise."""
-    parent = workspace.parent_of(entry)
-    return f"{parent.name}/{entry.name}" if parent is not None else entry.name
+    """``parent/child`` for a slice or bookmark — ``file/slice/nested`` down a
+    chain of nested slices — the bare name otherwise."""
+    chain = [e.name for e in reversed(workspace.ancestors_of(entry))]
+    return "/".join([*chain, entry.name])
 
 
 def _list_entries(workspace) -> None:  # noqa: ANN001 - Workspace

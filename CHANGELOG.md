@@ -3,7 +3,12 @@
 ## v1.1.7 - unreleased
 
 - Added LZW compression with input parameters for lzw variants
+- Added GBDK LZ, GBDK RLE and ZX0 compression (Game Boy, Master System and Z80 homebrew)
+- Added GBA/NDS BIOS RLE, Huffman and 8/16-bit diff filter compression
 - Added enum/choice inputs to plugin input types
+- Added nested slices, a decompressed slice can be further sliced
+- Added a row-order one-byte stamp table preset (`stamp-table-8bit-row`)
+- Lots of fixes
 
 ## v1.1.6 - 2026-09-27
 

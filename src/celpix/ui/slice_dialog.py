@@ -136,6 +136,8 @@ class SliceDialog(QDialog):
         edit_inputs: Callable[[SliceDialog, str], None] | None = None,
         units: int | None = None,
         codec_id: str = "",
+        extent: int | None = None,
+        source: str = "",
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -146,11 +148,18 @@ class SliceDialog(QDialog):
         # inputs line read-only, which is what a dialog with no window behind it
         # (a bare construction in a test) gets.
         self._edit_inputs = edit_inputs
-        self.setWindowTitle(f"{title} - {basename(paths[0])}")
+        self.setWindowTitle(f"{title} - {source or basename(paths[0])}")
         # Every file of the parent's region: offsets address the concatenation
         # (:class:`~celpix.plugins.base.FileRef`), so bounding them against the
         # first chip alone would put most of a several-chip region out of reach.
         self._paths = paths
+        # A **nested** slice's offsets count in its parent slice's decoded bytes
+        # rather than in any file, so the files' size bounds nothing: ``extent``
+        # is that buffer's length, and what the offsets are checked against in
+        # its place. ``source`` names the parent slice where the title would
+        # otherwise name the file its chain ends at.
+        self._extent = extent
+        self._source = source
         self._params: SliceParams | None = None
         self._registry = registry
         # The size row's baseline: what the slice unpacks to now, under the
@@ -474,16 +483,17 @@ class SliceDialog(QDialog):
             # require the bound that makes it a slice (and its writes slot-safe).
             self._fail("A raw slice needs a length (compressed ones can discover it).")
             return
-        try:
-            size = sum(getsize(path) for path in self._paths)
-        except OSError as exc:
-            self._fail(f"Cannot stat the file: {exc}")
-            return
+        if self._extent is not None:
+            size, noun = self._extent, f"{self._source or 'parent slice'}'s"
+        else:
+            try:
+                size = sum(getsize(path) for path in self._paths)
+            except OSError as exc:
+                self._fail(f"Cannot stat the file: {exc}")
+                return
+            noun = "the region's" if len(self._paths) > 1 else "the file's"
         if offset >= size or (length is not None and offset + length > size):
-            noun = "region's" if len(self._paths) > 1 else "file's"
-            self._fail(
-                f"Region runs past the {noun} end ({format_hex(size, None)} bytes)."
-            )
+            self._fail(f"Region runs past {noun} end ({format_hex(size, None)} bytes).")
             return
         # Default name from the *validated* values, not the placeholder text.
         name = self._name.text().strip() or default_slice_name(
@@ -532,12 +542,18 @@ class SliceDialog(QDialog):
         edit_inputs: Callable[[SliceDialog, str], None] | None = None,
         units: int | None = None,
         codec_id: str = "",
+        extent: int | None = None,
+        source: str = "",
     ) -> SliceParams | None:
         """Run the dialog modally; the validated parameters, or None on cancel.
 
         ``units`` (with the ``codec_id`` that measures it) offers the Size row:
         what a compressed slice unpacks to now. Its answer comes back as
         :attr:`SliceParams.units`, ``None`` unless a different size was asked for.
+
+        ``extent`` and ``source`` are for a slice **nested** in another: the
+        length of that slice's decoded bytes, which bounds the offsets in place
+        of the files' size, and its name.
         """
         dialog = SliceDialog(
             registry,
@@ -555,6 +571,8 @@ class SliceDialog(QDialog):
             edit_inputs=edit_inputs,
             units=units,
             codec_id=codec_id,
+            extent=extent,
+            source=source,
             parent=parent,
         )
         dialog.exec()

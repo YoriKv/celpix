@@ -30,7 +30,12 @@ from celpix.plugins.builtins import (
     capcom_mask8,
     comper,
     enigma,
+    gba_diff,
+    gba_huffman,
     gba_lz77,
+    gba_rle,
+    gbdk_lz,
+    gbdk_rle,
     koei_lz,
     konami_lz,
     konami_rle,
@@ -53,9 +58,11 @@ from celpix.plugins.builtins import (
     slz,
     snes_rle,
     sonic2_tiles,
+    zx0,
 )
 from celpix.plugins.builtins._lz import MatchFinder
 from celpix.plugins.builtins.capcom_mask8 import CapcomMask8Compression
+from celpix.plugins.builtins.gba_huffman import GbaHuffmanCompression
 from celpix.plugins.builtins.gba_lz77 import GbaLz77Compression
 from celpix.plugins.builtins.konami_rle import KonamiNesRle
 from celpix.plugins.builtins.lz16 import (
@@ -1213,6 +1220,278 @@ def test_gba_lz77_plugin_records_the_structures_extent() -> None:
     assert 0 < len(prefix) < len(payload)
     assert payload.startswith(prefix)
     assert cut.get(KEY_DECOMPRESS_COMPLETE) is False
+
+
+# -- GBA/NDS BIOS RLE, Huffman and difference filter -------------------------
+
+
+@pytest.mark.parametrize(
+    ("stream", "expected"),
+    # Hand-assembled from the RLUnComp layout: flag bit 7 = run, stored length
+    # biased by 3 for a run and by 1 for a literal block.
+    [
+        # 0x82 -> run of 2+3 = 5 'A'; 0x04 -> literal block of 4+1 = 5 bytes.
+        ("300a0000" + "8241" + "044243444546", b"AAAAABCDEF"),
+        # 0xff -> the longest run, 130; 0x7f -> the longest literal block, 128.
+        ("30020100" + "ff5a" + "7f" + "00" * 128, b"Z" * 130 + bytes(128)),
+    ],
+)
+def test_gba_rle_decode_known_vector(stream: str, expected: bytes) -> None:
+    raw = bytes.fromhex(stream)
+    out, consumed, complete = gba_rle.decompress(raw + b"\xee" * 4)
+    assert out == expected
+    assert complete and consumed == len(raw)
+
+
+def test_gba_rle_declared_size_cuts_a_literal_block_short() -> None:
+    # Size 7: the run gives 5, the literal block is cut after 2 of its 5 bytes,
+    # and the BIOS never reads the rest of it - so neither does the extent.
+    out, consumed, complete = gba_rle.decompress(
+        bytes.fromhex("30070000" + "8241" + "044243444546")
+    )
+    assert out == b"AAAAABC"
+    assert complete and consumed == 4 + 2 + 1 + 2
+
+
+def test_gba_rle_rejects_other_headers_sizes_and_truncation() -> None:
+    with pytest.raises(ValueError, match="not an RLE header"):
+        gba_rle.decompress(bytes.fromhex("10040000" + "00" + "41424344"))
+    with pytest.raises(ValueError, match="reserved"):
+        gba_rle.decompress(bytes.fromhex("31040000" + "03" + "41424344"))
+    # 16 MiB from 8 bytes of packets: refused before a byte is decoded, which is
+    # what keeps a scan over a ROM full of stray 0x30s fast.
+    with pytest.raises(ValueError, match="cannot fit"):
+        gba_rle.decompress(bytes.fromhex("30ffffff" + "ff00" * 4))
+    cut = bytes.fromhex("300a0000" + "8241" + "044243")
+    with pytest.raises(ValueError, match="source ended"):
+        gba_rle.decompress(cut)
+    assert gba_rle.decompress(cut, partial=True) == (b"AAAAABC", len(cut), False)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [b"A", b"AB", b"AAA", b"A" * 131, b"A" * 300 + bytes(range(200))],
+)
+def test_gba_rle_round_trips(data: bytes) -> None:
+    stream = gba_rle.compress(data)
+    assert gba_rle.decompress(stream + b"\x00" * 4) == (data, len(stream), True)
+
+
+# The worked example of the HuffUnComp layout: "Huff" in 6 bits, 10-11-0-0,
+# root.0 -> 'f' and root.1 -> a node whose children are 'H' and 'u'. The tree is
+# pair-aligned: size byte + root, ('f', node), ('H', 'u'), then a padding pair so
+# the bitstream is word-aligned (size byte 3 = 8 table bytes). The root's bit 7
+# marks node0 as data; the inner node (odd address 7) points at pair
+# (7 & ~1) + 0*2 + 2 = 8.
+_HUFF_8BIT = "28040000" + "03" + "80" + "66" + "c0" + "48" + "75" + "0000" + "000000b0"
+# 4-bit: codes 1 = 0, 2 = 10, 3 = 110, 4 = 111; nibbles 1,2,1,1,1,1,1,1 fill the
+# output low nibble first -> 0x21 0x11 0x11 0x11. The chain node at odd address
+# 9 points at (9 & ~1) + 2 = 10.
+_HUFF_4BIT = "24040000" + "03" + "80" + "01" + "80" + "02" + "c0" + "03" + "04"
+_HUFF_4BIT += "00000040"
+
+
+@pytest.mark.parametrize(
+    ("stream", "expected"),
+    [(_HUFF_8BIT, b"Huff"), (_HUFF_4BIT, bytes.fromhex("21111111"))],
+)
+def test_gba_huffman_decode_known_vector(stream: str, expected: bytes) -> None:
+    raw = bytes.fromhex(stream)
+    out, consumed, complete = gba_huffman.decompress(raw + b"\xff" * 8)
+    assert out == expected
+    assert complete and consumed == len(raw)
+
+
+def test_gba_huffman_reads_whole_output_words_like_the_bios() -> None:
+    # Declared size 1 ('H'), but the BIOS writes 32-bit blocks: it decodes four
+    # symbols and so reads the whole first word. The output is still one byte.
+    raw = bytes.fromhex("28010000" + _HUFF_8BIT[8:])
+    assert gba_huffman.decompress(raw) == (b"H", len(raw), True)
+
+
+def test_gba_huffman_rejects_bad_headers_trees_and_sizes() -> None:
+    with pytest.raises(ValueError, match="not a Huffman header"):
+        gba_huffman.decompress(bytes.fromhex("22040000" + _HUFF_8BIT[8:]))
+    # Tree size 0x7f claims 256 table bytes the buffer does not have.
+    with pytest.raises(ValueError, match="tree table"):
+        gba_huffman.decompress(bytes.fromhex("28040000" + "7f" + "80"))
+    # Root offset 5 points far past the 8-byte table.
+    with pytest.raises(ValueError, match="outside the tree"):
+        gba_huffman.decompress(
+            bytes.fromhex("28040000" + "03" + "85" + _HUFF_8BIT[12:])
+        )
+    # A symbol costs at least a bit, so 16 MiB cannot come from one word.
+    with pytest.raises(ValueError, match="cannot fit"):
+        gba_huffman.decompress(bytes.fromhex("28ffffff" + _HUFF_8BIT[8:]))
+
+
+def test_gba_huffman_truncated_bitstream_needs_the_partial_flag() -> None:
+    data = bytes(range(64)) * 8
+    cut = gba_huffman.compress(data)[:-100]
+    with pytest.raises(ValueError, match="source ended"):
+        gba_huffman.decompress(cut)
+    out, consumed, complete = gba_huffman.decompress(cut, partial=True)
+    assert not complete and consumed <= len(cut)
+    assert data.startswith(out) and out
+
+
+def _huffman_payloads() -> list[bytes]:
+    rng = random.Random(0x13)
+    skewed = bytearray()
+    for symbol in range(256):
+        skewed += bytes([symbol]) * max(1, int(300 * 0.96**symbol))
+    rng.shuffle(skewed)
+    return [
+        b"A",
+        b"xyz" * 7,
+        bytes(range(256)) * 2,  # a complete 256-leaf tree: the widest layout
+        bytes(skewed),
+        bytes(rng.randrange(256) for _ in range(1001)),
+    ]
+
+
+@pytest.mark.parametrize("bits", [4, 8])
+@pytest.mark.parametrize("data", _huffman_payloads(), ids=lambda d: f"{len(d)}B")
+def test_gba_huffman_round_trips_with_offsets_in_range(data: bytes, bits: int) -> None:
+    stream = gba_huffman.compress(data, bits=bits)
+    assert stream[0] == 0x20 | bits
+    # Word-aligned bitstream, as the BIOS's 32-bit loads need.
+    assert (gba_huffman.HEADER_SIZE + (stream[4] + 1) * 2) % 4 == 0
+    assert gba_huffman.decompress(stream + b"\xff" * 8) == (data, len(stream), True)
+
+
+def test_gba_huffman_layout_survives_arbitrary_tree_shapes() -> None:
+    """Any binary tree over 256 leaves must fit the 6-bit child offsets, which a
+    breadth-first layout does not: a complete tree already needs ~127."""
+    rng = random.Random(6)
+    for trial in range(40):
+        nodes = [gba_huffman._Node(symbol) for symbol in range(256)]
+        while len(nodes) > 1:
+            if trial % 2:
+                i, j = rng.sample(range(len(nodes)), 2)
+            else:  # grow one spine: a deep, lopsided tree
+                i, j = len(nodes) - 1, rng.randrange(len(nodes) - 1)
+            a, b = nodes[i], nodes[j]
+            for k in sorted((i, j), reverse=True):
+                nodes.pop(k)
+            nodes.append(gba_huffman._Node(left=a, right=b))
+        table = gba_huffman._layout(nodes[0])
+        assert len(table) == 512 and table[0] == 255
+
+
+def test_gba_huffman_plugin_saves_whichever_width_is_smaller() -> None:
+    """The BIOS reads the width from the header, so the plugin is free to pick.
+    Sixteen colours in every combination need a 512-byte tree as bytes and a
+    32-byte one as nibbles; a few byte values that recur whole code tighter as
+    bytes, each pair of nibbles then costing one short code."""
+    plugin = GbaHuffmanCompression()
+    rng = random.Random(4)
+    every_pair = bytes(rng.randrange(256) for _ in range(512))
+    few_bytes = bytes(rng.choice((0x00, 0x11, 0x12, 0x21)) for _ in range(512))
+    for data, width in ((every_pair, 4), (few_bytes, 8)):
+        stream = plugin.compress(data, PipelineContext())
+        assert stream[0] == 0x20 | width
+        assert len(stream) == min(
+            len(gba_huffman.compress(data, bits=b)) for b in (4, 8)
+        )
+        assert plugin.decompress(stream, PipelineContext()) == data
+
+
+@pytest.mark.parametrize(
+    ("stream", "width", "expected"),
+    [
+        # Unit 0 as is, then deltas; 0xFF is -1, and the sum wraps.
+        ("81040000" + "0a0101ff", 1, bytes.fromhex("0a0b0c0b")),
+        ("81030000" + "fe0101", 1, bytes.fromhex("feff00")),
+        # 16-bit little-endian units: 0x0100, then +0xFFFF (-1) -> 0x00FF.
+        ("82040000" + "0001ffff", 2, bytes.fromhex("0001ff00")),
+        # An odd size still reads whole halfwords, and returns just the size.
+        ("82030000" + "0001ffff", 2, bytes.fromhex("0001ff")),
+    ],
+)
+def test_gba_diff_decode_known_vector(stream: str, width: int, expected: bytes) -> None:
+    raw = bytes.fromhex(stream)
+    out, consumed, complete = gba_diff.decompress(raw + b"\x55" * 4, width=width)
+    assert out == expected
+    assert complete and consumed == len(raw)
+
+
+def test_gba_diff_header_names_the_unit_width() -> None:
+    with pytest.raises(ValueError, match="8-bit diff header"):
+        gba_diff.decompress(bytes.fromhex("82020000" + "0102"), width=1)
+    with pytest.raises(ValueError, match="16-bit diff header"):
+        gba_diff.decompress(bytes.fromhex("81020000" + "0102"), width=2)
+    short = bytes.fromhex("81080000" + "0102")
+    with pytest.raises(ValueError, match="source ended"):
+        gba_diff.decompress(short)
+    assert gba_diff.decompress(short, partial=True) == (b"\x01\x03", 6, False)
+
+
+@pytest.mark.parametrize("width", [1, 2])
+def test_gba_diff_round_trips(width: int) -> None:
+    rng = random.Random(width)
+    ramp = bytes(i & 0xFF for i in range(512))
+    noise = bytes(rng.randrange(256) for _ in range(1000))
+    for data in (ramp, noise, b"\xff\x00"):
+        stream = gba_diff.compress(data, width=width)
+        assert gba_diff.decompress(stream, width=width) == (data, len(stream), True)
+    if width == 1:
+        # A ramp filters to a constant: the point of the filter.
+        assert set(gba_diff.compress(ramp)[5:]) == {1}
+    with pytest.raises(ValueError, match="whole number"):
+        gba_diff.compress(b"abc", width=2)
+
+
+@pytest.mark.parametrize(
+    "plugin_id",
+    [
+        "compression.gba-rle",
+        "compression.gba-huffman",
+        "compression.gba-diff8",
+        "compression.gba-diff16",
+    ],
+)
+def test_gba_bios_plugins_record_extent_and_decode_a_cut_stream_partially(
+    plugin_id: str,
+) -> None:
+    plugin = default_registry().plugin(Stage.COMPRESSION, plugin_id)
+    assert plugin.info.alignment == 4 and plugin.info.self_delimiting
+    payload = bytes((i * 97) & 0xFF for i in range(3000))
+    stream = plugin.compress(payload, PipelineContext())
+
+    ctx = PipelineContext()
+    assert plugin.decompress(stream + b"\xff" * 64, ctx) == payload
+    assert ctx.get(KEY_COMPRESSED_SIZE) == len(stream)
+    assert ctx.get(KEY_DECOMPRESS_COMPLETE) is True
+
+    cut = stream[: len(stream) // 2]
+    with pytest.raises(ValueError):
+        plugin.decompress(cut, PipelineContext())
+    partial = PipelineContext()
+    partial.set(KEY_DECOMPRESS_PARTIAL, True)
+    prefix = plugin.decompress(cut, partial)
+    assert prefix and payload.startswith(prefix)
+    assert partial.get(KEY_DECOMPRESS_COMPLETE) is False
+
+
+def test_gba_bios_streams_scan_back_to_back() -> None:
+    """Streams packed one after another, each padded to the next word: probing
+    aligned offsets only, the scan lands on each start."""
+    reg = default_registry()
+    rle = reg.plugin(Stage.COMPRESSION, "compression.gba-rle")
+    huff = reg.plugin(Stage.COMPRESSION, "compression.gba-huffman")
+    a = gba_rle.compress(b"\x00" * 200 + bytes(range(100)))
+    a += b"\x00" * (-len(a) % 4)  # the next BIOS stream must start word-aligned
+    b = gba_huffman.compress(bytes(range(16)) * 32, bits=4)
+    rom = b"\xff" * 64 + a + b + b"\xff" * 16
+
+    def scan(plugin, start: int) -> int | None:
+        return pipeline.find_next_structure(
+            rom, plugin, 4096, start, alignment=plugin.info.alignment
+        ).found
+
+    assert scan(rle, 0) == 64
+    assert scan(huff, 0) == 64 + len(a)
 
 
 # -- SLZ ---------------------------------------------------------------------
@@ -3072,3 +3351,114 @@ def test_nes_ppu_list_replays_into_a_page_and_saves_into_its_own_records() -> No
         codec.compress(bytes(edited), ctx)
     with pytest.raises(ValueError, match="not a PPU address"):
         codec.decompress(bytes([0x55, 0x00, 0x01, 0x00, 0x00]), PipelineContext())
+
+
+# -- GBDK's three packers: GBDK LZ, GBDK RLE and ZX0 ---------------------------
+
+# One 56-byte payload as GBDK-2020's gbcompress packed it with each algorithm, so
+# the vectors are the reference tool's streams and not ours.
+_GBDK_PLAIN = b"ABCD" * 4 + b"hello hello hello\x00" + bytes(10) + b"\x12\x34" * 6
+_GBDK_LZ = bytes.fromhex(
+    "c341424344 83fcff 87f8ff c568656c6c6f20 85faff 84f4ff"
+    " 0a00 441234 c11234 00".replace(" ", "")
+)
+_GBDK_RLE = bytes.fromhex(
+    "21 41424344414243444142434441424344 68656c6c6f2068656c6c6f2068656c6c6f"
+    " f500 0c 123412341234123412341234 00".replace(" ", "")
+)
+_ZX0 = bytes.fromhex("0e41424344f8593968656c6c6f20f42e00fe18e11234fcd55560")
+
+
+@pytest.mark.parametrize(
+    ("codec", "stream"),
+    [
+        pytest.param(gbdk_lz, _GBDK_LZ, id="lz"),
+        pytest.param(gbdk_rle, _GBDK_RLE, id="rle"),
+        pytest.param(zx0, _ZX0, id="zx0"),
+    ],
+)
+def test_gbdk_packers_decode_the_reference_streams(codec, stream: bytes) -> None:
+    """The LZ vector holds every command kind - literal, back-reference, byte
+    run and word run; the ZX0 one literals, rep and new-offset matches."""
+    assert codec.decompress(stream + b"\xff" * 4) == (
+        _GBDK_PLAIN,
+        len(stream),
+        True,
+    )
+
+
+def test_gbdk_lz_back_reference_overlaps_and_must_stay_in_the_output() -> None:
+    # 'AB' then 5 bytes from 2 back, reading what it writes.
+    assert gbdk_lz.decompress(bytes.fromhex("c14142 84feff 00"))[0] == b"ABABABA"
+    with pytest.raises(ValueError, match="reaches 3 bytes back"):
+        gbdk_lz.decompress(bytes.fromhex("c14142 80fdff 00"))
+
+
+def test_gbdk_rle_0x80_is_a_128_byte_run_as_on_the_console() -> None:
+    assert gbdk_rle.decompress(bytes((0x80, 0x07, 0x00)))[0] == b"\x07" * 128
+
+
+def test_zx0_rep_match_after_the_first_literals_starts_at_offset_1() -> None:
+    """Literal 'A' (gamma 1), rep flag 0, rep length 3 (gamma "01 1"), then the
+    end: flag 1 and the inverted gamma of 256. Bits run MSB first, and the byte
+    of bits is fetched before the literal it precedes."""
+    bits = "1" + "0" + "011" + "1" + "01" * 8 + "1"
+    bits += "0" * (-len(bits) % 8)
+    packed = [int(bits[k : k + 8], 2) for k in range(0, len(bits), 8)]
+    stream = bytes((packed[0], 0x41, *packed[1:]))
+    assert zx0.decompress(stream) == (b"AAAA", len(stream), True)
+
+
+_GBDK_CODECS = [
+    pytest.param(gbdk_lz, id="lz"),
+    pytest.param(gbdk_rle, id="rle"),
+    pytest.param(zx0, id="zx0"),
+]
+
+
+@pytest.mark.parametrize("codec", _GBDK_CODECS)
+def test_gbdk_packers_need_the_partial_flag_when_cut(codec) -> None:
+    stream = codec.compress(_GBDK_PLAIN)
+    cut = stream[:-3]
+    with pytest.raises(ValueError, match="source ended"):
+        codec.decompress(cut)
+    prefix, consumed, complete = codec.decompress(cut, partial=True)
+    assert _GBDK_PLAIN.startswith(prefix) and not complete
+    assert consumed == len(cut)
+
+
+_GBDK_CORPUS = [
+    pytest.param(b"A", id="one"),
+    pytest.param(bytes(3000), id="fill"),
+    pytest.param(b"\x12\x34" * 200 + b"\x12", id="pairs"),
+    pytest.param(bytes(range(256)) * 3, id="ramp"),
+    pytest.param(
+        bytes(random.Random(3).randrange(256) for _ in range(2000)), id="noise"
+    ),
+    pytest.param(
+        bytes(random.Random(4).choice(b"\x00\x11\x22\x33") for _ in range(4001)),
+        id="tiles",
+    ),
+    # Past ZX0's one-bit offsets and the 64-byte GBDK LZ count.
+    pytest.param(
+        (tail := bytes(random.Random(5).randrange(256) for _ in range(300)))
+        + bytes(1300)
+        + tail,
+        id="far",
+    ),
+]
+
+
+@pytest.mark.parametrize("data", _GBDK_CORPUS)
+@pytest.mark.parametrize("codec", _GBDK_CODECS)
+def test_gbdk_packers_round_trip(codec, data: bytes) -> None:
+    packed = codec.compress(data)
+    assert codec.decompress(packed) == (data, len(packed), True)
+
+
+def test_gbdk_packers_empty_payload() -> None:
+    """The two terminated byte formats spell nothing as their end byte; ZX0
+    always opens with a literal and has no encoding for it."""
+    assert gbdk_lz.compress(b"") == gbdk_rle.compress(b"") == b"\x00"
+    with pytest.raises(ValueError, match="empty payload"):
+        zx0.compress(b"")

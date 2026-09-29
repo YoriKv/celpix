@@ -514,7 +514,9 @@ class FileListPanel(QWidget):
     def add_entry(
         self, entry: Entry, parent: Entry | None = None, before: Entry | None = None
     ) -> None:
-        """Add ``entry``; a slice or bookmark nests under ``parent``'s item.
+        """Add ``entry``; a slice or bookmark nests under ``parent``'s item —
+        a file's or a palette's, or another slice's for a nested slice, to any
+        depth.
 
         A top-level entry goes under the section header for what it *holds* —
         Pixels, Tilemaps or Palettes (``docs/design/tilemap-entry.md`` §2) — so
@@ -564,7 +566,10 @@ class FileListPanel(QWidget):
         A file's row carries its nested slices and bookmarks with it, since they
         are its item's children. Expansion and the *selection* live in the view
         rather than on the item, so a row taken out comes back collapsed and
-        unpicked — both are put back explicitly. The selection is restored whole,
+        unpicked, and so does every row nested under it — both are put back
+        explicitly. Expansion is restored for the whole subtree, to any depth,
+        each row as it was: a slice holding slices of its own stays open or
+        folded as the user left it. The selection is restored whole,
         and to whatever it was on, which need not be the moved row itself:
         reordering a file while one of its slices is the shown entry takes that
         row out of the tree too, and it must come back current; and a Move Up over
@@ -592,17 +597,33 @@ class FileListPanel(QWidget):
             return
         was_current = self._tree.currentItem()
         was_selected = self._tree.selectedItems()
-        was_expanded = item.isExpanded()
+        was_expanded = self._subtree_expansion(item)
         with signals_blocked(self._tree):  # a take/re-insert must not re-activate
             parent_item.takeChild(index)
             parent_item.insertChild(target, item)
-            item.setExpanded(was_expanded)
+            for row, expanded in was_expanded:
+                row.setExpanded(expanded)
             # Current first: setting it clears the selection down to that one row
             # (the tree selects extended), so the rest go back after it.
             if was_current is not None:
                 self._tree.setCurrentItem(was_current)
             for picked in was_selected:
                 picked.setSelected(True)
+
+    @staticmethod
+    def _subtree_expansion(
+        item: QTreeWidgetItem,
+    ) -> list[tuple[QTreeWidgetItem, bool]]:
+        """``item`` and every item nested under it, each with whether it is
+        expanded — read while they are still in the tree, since taking them out
+        of it forgets the lot."""
+        found: list[tuple[QTreeWidgetItem, bool]] = []
+        pending = [item]
+        while pending:
+            row = pending.pop()
+            found.append((row, row.isExpanded()))
+            pending += [row.child(i) for i in range(row.childCount())]
+        return found
 
     def _section_root(self, kind: ContentKind) -> QTreeWidgetItem:
         """The section header for ``kind``, created on first use.
@@ -667,11 +688,15 @@ class FileListPanel(QWidget):
         item = self._items.pop(entry, None)
         if item is None:
             return  # its item already went down with its parent file's
-        # A file's item takes its nested slice items with it — drop them from
-        # the map now, so the slices' own removal notifications (the workspace
-        # removes a file's slices with it) don't touch the deleted items.
-        for i in range(item.childCount()):
-            self._items.pop(item.child(i).data(0, Qt.ItemDataRole.UserRole), None)
+        # A row's item takes every item nested under it along, to any depth —
+        # drop them from the map now, so their own removal notifications (the
+        # workspace removes a row's whole subtree with it) don't touch the
+        # deleted items.
+        below = [item.child(i) for i in range(item.childCount())]
+        while below:
+            child = below.pop()
+            self._items.pop(child.data(0, Qt.ItemDataRole.UserRole), None)
+            below += [child.child(i) for i in range(child.childCount())]
         with signals_blocked(self._tree):  # removal must not emit an activation
             parent = item.parent()
             if parent is not None:
@@ -1141,7 +1166,15 @@ class FileListPanel(QWidget):
         if what:
             tip += f"\n{what}"
         if entry.kind is EntryKind.SLICE:
-            tip += f"\nOffset {format_hex(entry.slice_offset)}\nLength " + (
+            # A nested slice's offset counts in its parent slice's decoded bytes,
+            # not in the file the path above names — said, or the number reads
+            # as a file position.
+            within = (
+                f" in {entry.parent_entry.name}"
+                if entry.parent_entry is not None
+                else ""
+            )
+            tip += f"\nOffset {format_hex(entry.slice_offset)}{within}\nLength " + (
                 format_hex(entry.slice_length, None)
                 if entry.slice_length is not None
                 else "to be discovered"
@@ -1196,6 +1229,16 @@ class FileListPanel(QWidget):
             wash = _MISSING_HIGHLIGHT
         elif (failure := load_failed(entry)) is not None:
             tip += self._failure_lines(failure)
+            status = self._failed_icon()
+            wash = _FAILED_HIGHLIGHT
+        elif entry.parent_kind is EntryKind.SLICE and entry.parent_entry is None:
+            # A nested slice that lost its parent slice has nothing to read, which
+            # is a failure it will have the first time it is opened — said now,
+            # before a click, since nothing about it can change until then.
+            tip += (
+                "\nIts parent slice is not in the project,"
+                "\nso there are no bytes to read it from"
+            )
             status = self._failed_icon()
             wash = _FAILED_HIGHLIGHT
         else:
@@ -1751,13 +1794,14 @@ class FileListPanel(QWidget):
             self._entry_action(menu, "Open Swatc&hes", self.entry_activated.emit, entry)
 
     def _add_slice_actions(self, menu: QMenu, entry: Entry) -> bool:
-        """New Slice…, from View and from Selection, on a file's or a palette's
-        row; True when the row is on screen, which is what the last two need.
+        """New Slice…, from View and from Selection, on a file's, a palette's or
+        a slice's row; True when the row is on screen, which is what the last
+        two need.
 
-        Only whole files spawn slices (they never nest), so the menu shows these
-        on those rows alone. All but the plain dialog additionally need the file
-        on screen — the viewport, selection and settings snapshot live only
-        there.
+        The new slice is always cut from the row the menu was opened on — a
+        slice's row makes a **nested** slice, in that slice's decoded
+        coordinates. All but the plain dialog additionally need the row on
+        screen — the viewport, selection and settings snapshot live only there.
         """
         sliceable = entry is self._current and entry.doc is not None
         self._entry_action(menu, "New &Slice…", self.new_slice_requested.emit, entry)
@@ -1995,11 +2039,18 @@ class FileListPanel(QWidget):
         :meth:`_add_order_actions` draws between an absent row and a dead one. A
         submenu goes dead as a whole, its rows with it, so the user is not invited
         to open something with nothing live inside.
+
+        Submenus are reached as the menu's **children**, never through
+        ``QAction.menu()``: ``live`` holds a submenu's ``menuAction()``, and asking
+        that action for its menu leaves the submenu owned by a Python wrapper, so
+        the next garbage collection deletes it — Export vanishing from a menu
+        that is still open (``docs/py-qt-reference/pyside6-pitfalls.md``).
         """
+        for submenu in menu.findChildren(
+            QMenu, options=Qt.FindChildOption.FindDirectChildrenOnly
+        ):
+            FileListPanel._only_these_live(submenu, live)
         for action in menu.actions():
-            submenu = action.menu()
-            if submenu is not None:
-                FileListPanel._only_these_live(submenu, live)
             if not any(action is spared for spared in live):
                 action.setEnabled(False)
 
@@ -2079,6 +2130,9 @@ class FileListPanel(QWidget):
             )
             self._add_use_as_palette_action(menu, entry)
             menu.addSeparator()
+            # A slice is cut from like a file: the new one windows into this
+            # slice's decoded bytes (``docs/design/slices-and-parents.md``).
+            self._add_slice_actions(menu, entry)
             new_composite = self._add_new_composite_action(menu, entry, acting)
             menu.addSeparator()
             self._entry_action(menu, "Re&name…", lambda: self._begin_rename(entry))

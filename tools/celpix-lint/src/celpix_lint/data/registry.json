@@ -203,7 +203,31 @@
         "pixels",
         "tilemap"
       ],
+      "compression.gba-diff16": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.gba-diff8": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.gba-huffman": [
+        "pixels",
+        "tilemap"
+      ],
       "compression.gba-lz77": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.gba-rle": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.gbdk-lz": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.gbdk-rle": [
         "pixels",
         "tilemap"
       ],
@@ -356,6 +380,10 @@
         "tilemap"
       ],
       "compression.strike-lz": [
+        "pixels",
+        "tilemap"
+      ],
+      "compression.zx0": [
         "pixels",
         "tilemap"
       ]
@@ -742,6 +770,7 @@
       "preset.tilemap.sonic2-mappings",
       "preset.tilemap.sonic3k-mappings",
       "preset.tilemap.stamp-table-8bit-column",
+      "preset.tilemap.stamp-table-8bit-row",
       "preset.tilemap.text-16bit",
       "preset.tilemap.text-16bit-be",
       "preset.tilemap.text-8bit",

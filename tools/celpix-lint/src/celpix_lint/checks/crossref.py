@@ -13,6 +13,7 @@ from __future__ import annotations
 from celpix_lint.context import Context, EntryView
 from celpix_lint.schema import (
     KINDS_WITH_DOCUMENT,
+    PARENT_KINDS,
     PIECE_KEYS,
     TILE_MODES,
     TILE_SOURCE_KEYS,
@@ -22,6 +23,7 @@ from celpix_lint.schema import (
 
 def check(ctx: Context) -> None:
     _parents(ctx)
+    _nested_parents(ctx)
     for view in ctx.entries:
         if not view.raw:
             continue
@@ -44,6 +46,19 @@ def _parents(ctx: Context) -> None:
     for view in ctx.entries:
         if view.kind not in ("slice", "bookmark") or not view.raw:
             continue
+        said = view.raw.get("parent", "file")
+        if said not in PARENT_KINDS or (said == "slice" and view.kind != "slice"):
+            ctx.error(
+                "E505",
+                f"`parent` is {said!r} — the {view.kind} reads as cut from a file",
+                pointer=view.at("parent"),
+                entry=view,
+                detail='One of "palette" (a registered palette file) or, on a slice '
+                'alone, "slice" (nested in the slice `parent_index` names); absent '
+                "for a graphics file.",
+            )
+        if said == "slice" and view.kind == "slice":
+            continue  # a nested slice's parent is an entry: `_nested_parents`
         path = view.raw.get("path")
         if not (isinstance(path, str) and path):
             continue
@@ -96,6 +111,104 @@ def _parents(ctx: Context) -> None:
                 "exists, so it opens as a top-level row instead. Move the parent "
                 "above it — but remember every stored entry_index counts positions.",
             )
+
+
+def _nested_parents(ctx: Context) -> None:
+    """A nested slice names its parent slice **by position**, and has to name a
+    real, earlier slice over the same files — or it opens with nothing to read.
+
+    The reader never falls back to the file for one: its offset counts in the
+    parent slice's decoded bytes, so a missing parent leaves it inert rather than
+    reading the file at an offset that was never a file offset.
+    """
+    by_index = {view.index: view for view in ctx.entries}
+    parents: dict[int, int] = {}
+    for view in ctx.entries:
+        if view.kind != "slice" or not view.raw:
+            continue
+        nested = view.raw.get("parent") == "slice"
+        if not nested:
+            if "parent_index" in view.raw:
+                ctx.warn(
+                    "W509",
+                    '`parent_index` without `parent: "slice"` is never read',
+                    pointer=view.at("parent_index"),
+                    entry=view,
+                    detail="Only a nested slice names its parent by position; any "
+                    "other slice is found under the file its `path` names.",
+                )
+            continue
+        at = view.raw.get("parent_index")
+        target = by_index.get(at) if is_int(at) else None
+        if target is None or not target.raw:
+            ctx.error(
+                "E506",
+                f"`parent_index` is {at!r}, which names no entry — this nested slice "
+                "opens with nothing to read",
+                pointer=view.at("parent_index"),
+                entry=view,
+                detail="A nested slice windows into its parent slice's decoded bytes, "
+                "and without one it opens inert: its offset is no file offset to "
+                "fall back on. Point it at the slice it was cut from.",
+            )
+            continue
+        if target.kind != "slice" or target is view:
+            ctx.error(
+                "E507",
+                f"`parent_index` names entry {at}, "
+                + ("itself" if target is view else f"a {target.kind}")
+                + " — only another slice can be a nested slice's parent",
+                pointer=view.at("parent_index"),
+                entry=view,
+                detail="It opens inert. A slice of a file says so by leaving out "
+                "`parent` and `parent_index`, and is found by its `path`.",
+            )
+            continue
+        parents[view.index] = target.index
+        if _identity(ctx, target) != _identity(ctx, view) or _join_mismatch(
+            target, view
+        ):
+            ctx.error(
+                "E508",
+                f"this nested slice names other files than its parent (entry "
+                f"{target.index})",
+                pointer=view.at("path"),
+                entry=view,
+                detail="A nested slice carries the `path` and `extra_paths` its chain "
+                "ends at — that is what a missing-file scan, a relocate and a save "
+                "key on — while its bytes come from the parent. Copy the parent's.",
+            )
+        elif target.index > view.index:
+            ctx.error(
+                "E503",
+                f"this nested slice is written before its parent (entry "
+                f"{target.index})",
+                pointer=view.pointer,
+                entry=view,
+                detail="The panel can only nest a row under one that already exists, "
+                "so it opens as a top-level row instead. Move the parent above it — "
+                "but remember every stored index counts positions.",
+            )
+    for start in parents:
+        seen: set[int] = set()
+        at = parents[start]
+        while at != start and at in parents and at not in seen:
+            seen.add(at)
+            at = parents[at]
+        if at == start:
+            ctx.error(
+                "E510",
+                "this nested slice's chain of parents loops back on itself",
+                pointer=by_index[start].at("parent_index"),
+                entry=by_index[start],
+                detail="A chain has to end at a slice of a file. Every slice on the "
+                "loop opens inert.",
+            )
+
+
+def _identity(ctx: Context, view: EntryView) -> object:
+    path = view.raw.get("path")
+    return ctx.doc.identity(path) if isinstance(path, str) and path else None
 
 
 def _join_mismatch(parent: EntryView, child: EntryView) -> bool:

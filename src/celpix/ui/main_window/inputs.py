@@ -341,7 +341,10 @@ class InputsMixin:
         the binding is *This file* at the selection's absolute offset, the
         coordinates a slice offset is written in — or some entry ``target`` may
         read under the one-hop rule, then an entry binding into its resolved
-        bytes. Anything else, or no selection, is ``None``.
+        bytes. Anything else, or no selection, is ``None`` — ``target`` itself on
+        screen included, when the view has no file coordinates: a decompressed
+        slice, or a nested one, whose own positions are stream positions. (Its
+        parent slice on screen still gives an entry binding.)
         """
         shown = self._workspace.current
         if shown is None or self._doc is None:
@@ -357,8 +360,8 @@ class InputsMixin:
             == self._workspace.path_key(target.path)
         )
         if own_file:
-            if not self._doc.pixel_config.positions_are_slice_offsets:
-                return None  # a decompressed view names no file position
+            if not self._view_has_file_coordinates():
+                return None  # a decompressed or nested view names no file position
             return RegionBinding(offset=self._anchor_base() + start, length=length)
         if can_supply_input(target, shown):
             return RegionBinding(entry=shown, offset=start, length=length)
