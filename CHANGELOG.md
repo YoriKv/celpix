@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.1.7 - unreleased
+## v1.1.7 - 2026-09-29
 
 - Added LZW compression with input parameters for lzw variants
 - Added GBDK LZ, GBDK RLE and ZX0 compression (Game Boy, Master System and Z80 homebrew)
