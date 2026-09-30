@@ -370,7 +370,7 @@ class DiskWatchMixin:
         self._put_current_back(tally.reloaded)
         self._report_reload(paths, tally)
 
-    def _reload_region(self, file: Entry, tally: _Reload) -> None:
+    def _reload_region(self, file: Entry, tally: _Reload, *, root: bool = True) -> None:
         """Reload ``file`` and everything derived from its bytes.
 
         Its buffer is the authority for the region, so the unsaved edits its
@@ -386,6 +386,12 @@ class DiskWatchMixin:
         through it for itself, and is reloaded as a region of its own — the same
         rule one level down, since a slice's buffer is the authority for the
         slices nested in it.
+
+        ``root`` is False for that nested call only. The region root — a file,
+        or a slice whose file is not open — is what tells everything decoded
+        out of the region's bytes to read them again, once, for the whole
+        region: its own ``loaded`` list already names every slice a nested call
+        re-reads.
         """
         ws = self._workspace
         loaded = [
@@ -396,8 +402,8 @@ class DiskWatchMixin:
         if file.doc is None:
             for child in ws.children_of(file):
                 if child.kind is EntryKind.SLICE:
-                    self._reload_region(child, tally)
-            if file.kind is not EntryKind.SLICE:
+                    self._reload_region(child, tally, root=False)
+            if root:
                 self._bytes_moved([file, *loaded], tally)
                 # A rewrite may have resized the file: the slices matching its
                 # size are re-measured, the ones nobody has open included.
@@ -409,7 +415,7 @@ class DiskWatchMixin:
             return  # unreadable now: it keeps its bytes, and so do its slices
         tally.add(merge)
         self._drop_reloaded_slices(file, tally)
-        if file.kind is not EntryKind.SLICE:
+        if root:
             self._bytes_moved([file, *loaded], tally)
             self._refit_to_parents(ws.descendants_of(file))
 

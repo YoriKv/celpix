@@ -185,6 +185,31 @@ def test_a_slice_edit_rides_its_parent_through_the_reload(
     assert piece.pixel_dirty and parent.pixel_dirty
 
 
+def test_a_slice_whose_file_is_closed_redraws_the_map_bound_to_it(
+    qtbot, tmp_path, monkeypatch, disk_reload_answer
+) -> None:
+    """With its file closed the slice is its own region root, so it is the one
+    that has to send the map drawing from it back to the new bytes."""
+    from uihelpers import _bound_to_slice
+
+    window, tilemap, sliced = _bound_to_slice(qtbot, tmp_path, monkeypatch, [])
+    monkeypatch.setattr(QApplication, "activeWindow", staticmethod(lambda: window))
+    rom = tmp_path / "art.bin"
+    # The row alone, as an undo of its add closes it: the slice stays open.
+    parent = window._workspace.find_file(str(rom))
+    window._apply_close_entry(parent, with_children=False)
+    window._activate_entry(sliced)
+    window._activate_entry(tilemap)
+
+    art = bytes((i * 3 + 9) & 0xFF for i in range(64 * 32))
+    _rewrite(rom, bytes(0x400) + art)
+    disk_reload_answer.reload = True
+    window._check_disk_changes()
+
+    assert sliced.doc.pixel_data == art
+    assert tilemap.doc.pixel_data == art
+
+
 def test_a_reload_keeps_unsaved_colours_of_a_palette_file(
     qtbot, tmp_path, monkeypatch, disk_reload_answer
 ) -> None:

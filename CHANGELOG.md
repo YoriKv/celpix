@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.2.3 - unreleased
+
+- Lots of fixes
+
 ## v1.2.2 - 2026-09-30
 
 - Import from PNG works on tilemaps

@@ -266,6 +266,10 @@ def compress(data: bytes, *, bits: int = 8) -> bytes:
     if bits not in SYMBOL_BITS:
         raise ValueError(f"symbol size must be 4 or 8 bits, not {bits}")
     n = len(data)
+    if n == 0:
+        # A zero size is what decompress refuses, so writing one would save a
+        # stream this plugin cannot open again.
+        raise ValueError("GBA BIOS Huffman has no encoding for an empty payload")
     if n > MAX_DECOMPRESSED:
         raise ValueError(
             f"input is {n:,} bytes; the 24-bit size field holds {MAX_DECOMPRESSED:,}"
@@ -274,7 +278,7 @@ def compress(data: bytes, *, bits: int = 8) -> bytes:
         symbols = list(data)
     else:
         symbols = [s for byte in data for s in (byte & 0x0F, byte >> 4)]
-    counts = Counter(symbols) or Counter({0: 1})
+    counts = Counter(symbols)
     # The BIOS decodes whole 32-bit output blocks; write the padding symbols so it
     # never reads bits past the stream. The most frequent symbol is the cheapest.
     per_byte = 8 // bits

@@ -1438,8 +1438,24 @@ def test_gba_diff_round_trips(width: int) -> None:
     if width == 1:
         # A ramp filters to a constant: the point of the filter.
         assert set(gba_diff.compress(ramp)[5:]) == {1}
-    with pytest.raises(ValueError, match="whole number"):
-        gba_diff.compress(b"abc", width=2)
+    else:
+        # An odd size loads as whole halfwords cut to the size; it has to save
+        # back to the same stream, the last halfword's high byte a zero.
+        stream = bytes.fromhex("82030000" + "0100" + "0200")
+        out, _, _ = gba_diff.decompress(stream, width=2)
+        assert out == b"\x01\x00\x03"
+        assert gba_diff.compress(out, width=2) == stream
+
+
+@pytest.mark.parametrize(
+    "compress",
+    [gba_lz77.compress, gba_rle.compress, gba_huffman.compress, gba_diff.compress],
+)
+def test_gba_bios_codecs_refuse_an_empty_payload(compress) -> None:
+    """Each decoder refuses a zero declared size, so the encoder must refuse to
+    write one — at save time, with a reason — not save an unopenable stream."""
+    with pytest.raises(ValueError, match="empty payload"):
+        compress(b"")
 
 
 @pytest.mark.parametrize(

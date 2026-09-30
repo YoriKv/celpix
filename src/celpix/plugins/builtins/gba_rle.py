@@ -120,6 +120,10 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
 def compress(data: bytes) -> bytes:
     """Encode raw bytes as a BIOS RLE stream (header + packets, no padding)."""
     n = len(data)
+    if n == 0:
+        # A zero size is what decompress refuses, so writing one would save a
+        # stream this plugin cannot open again.
+        raise ValueError("GBA BIOS RLE has no encoding for an empty payload")
     if n > MAX_DECOMPRESSED:
         raise ValueError(
             f"input is {n:,} bytes; the 24-bit size field holds {MAX_DECOMPRESSED:,}"

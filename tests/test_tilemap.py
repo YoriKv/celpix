@@ -2728,6 +2728,39 @@ def test_a_map_of_2x2_cells_over_a_tilemap_stamps_it_as_the_source_lays_out(
     assert stamp(2) == [(18, *v), (19, *v), (2, *v), (3, *v)]
 
 
+def test_a_stamp_through_a_dense_stamped_map_strides_by_its_entries(
+    tmp_path,
+) -> None:
+    """A map stamped through a dense 2x2 map that states no width steps a
+    stamp's second row by the entries the middle map lays across, not by its
+    Cols, which counts the positions those entries draw: at Cols 8 that is 4
+    entries, and a stride of 8 reads past its eight entries into nothing."""
+    from celpix.project.documents import load_document
+
+    registry, workspace, preset, entry = _headless(tmp_path)
+    preset("t.tiles", fields="iiii iiii")
+    preset("t.cells", fields="iiii iiii", cell_tiles=[2, 2])
+    preset(
+        "t.blocks", fields="iiii iiii", indirect=True, stamp_cells=[2, 2],
+        stamp_dense=True,
+    )  # fmt: skip
+    tiles = entry("c.bin", bytes(range(100, 164)), "t.tiles", entry("a", bytes(2048)))
+    # Two across, so each entry of the middle map is four consecutive tiles.
+    load_document(tiles, registry, workspace).doc.view.columns = 2
+    cells = entry("b.bin", bytes(range(0, 32, 4)), "t.cells", tiles)
+    load_document(cells, registry, workspace).doc.view.columns = 8
+    top = entry("a.bin", bytes(1), "t.blocks", cells)
+    doc = load_document(top, registry, workspace).doc
+    across = doc.drawn_columns
+    drawn = [cell.index for cell in doc.drawn_cells]
+    assert [drawn[row * across : row * across + 4] for row in range(4)] == [
+        [100, 101, 104, 105],
+        [102, 103, 106, 107],
+        [116, 117, 120, 121],
+        [118, 119, 122, 123],
+    ]
+
+
 def test_a_chain_that_loops_or_draws_through_a_sparse_map_is_refused(
     tmp_path,
 ) -> None:
@@ -5106,10 +5139,11 @@ def test_a_record_header_moves_every_stamp_past_it() -> None:
 def test_a_version_6_record_map_keeps_its_picture_with_its_base_in_records(
     tmp_path,
 ) -> None:
-    """A version-6 base counted cells even where the byte counted records. On
-    the load path a whole number of records becomes that count and the map
-    draws the same cells; one partway into a record becomes the record it falls
-    in, and a line says how far the picture moved."""
+    """A version-6 base counted cells even where the byte counted records. Once
+    the registry is final a whole number of records becomes that count and the
+    map draws the same cells; one partway into a record becomes the record it
+    falls in, and a line says how far the picture moved. Only once: a second
+    call would divide a base already in records again."""
     from celpix.project import projectfile
     from celpix.project.documents import count_bases_in_units, load_document
     from celpix.project.workspace import Workspace
@@ -5128,7 +5162,9 @@ def test_a_version_6_record_map_keeps_its_picture_with_its_base_in_records(
 
     loaded = projectfile.load_project(str(path))
     assert loaded.bases_count_elements
-    notes = count_bases_in_units(registry, loaded.entries)
+    notes = count_bases_in_units(registry, loaded)
+    assert not loaded.bases_count_elements
+    assert count_bases_in_units(registry, loaded) == []
     reopened = Workspace()
     reopened.replace(loaded.entries, loaded.current)
     area, odd = loaded.entries[1:]

@@ -446,6 +446,11 @@ class TransferMixin:
                 return  # load failed; _activate_entry has already reported it
         if self._doc is None:
             return
+        # Refused before the file chooser: the files list offers this row whether
+        # or not the entry can take an image, and a refusal that waits until a
+        # file has been picked wastes the picking.
+        if self._refuse_import():
+            return
         path = self._choose_import_png()
         if path is None:
             return
@@ -474,7 +479,7 @@ class TransferMixin:
 
     def _import_png_here(self) -> None:
         """Canvas ▸ Import from PNG…: an image over the selection's anchor."""
-        if self._doc is None:
+        if self._doc is None or self._refuse_import():
             return
         path = self._choose_import_png()
         if path is None:
@@ -533,7 +538,9 @@ class TransferMixin:
 
         The check every import passes through, here rather than on the actions
         alone: **a drop is a gesture without a control**, so disabling
-        ``_import_png_action`` leaves it ungated.
+        ``_import_png_action`` leaves it ungated. The menu routes ask it before
+        the file chooser as well as after; it reads only the document's state,
+        which the chooser doesn't change, so a refusal is never shown twice.
         """
         if self._import_available():
             return False

@@ -70,7 +70,11 @@ END_HIGH = 256
 # so a corrupt one can ask for anything. Far past any cartridge asset.
 OUTPUT_CAP = 16 * 1024 * 1024
 # A literal block's count and every length the encoder writes are gamma values,
-# so at most MAX_VALUE, which is 16 gamma widths.
+# so at most MAX_VALUE, which is 16 gamma widths. The stream could spell more,
+# but the decoders it ships with (Z80, SM83) build a gamma value in a 16-bit
+# register pair and wrap past it — and their whole address space is 64 KiB — so
+# a longer count is a stream the target unpacks wrong. The encoder refuses the
+# payload instead.
 _WIDTHS = MAX_VALUE.bit_length()
 
 _INF = float("inf")

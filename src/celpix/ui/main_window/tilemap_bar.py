@@ -480,7 +480,11 @@ class TilemapBarMixin:
         ):
             return after
         was = before if before is not None else entry.tile_source
-        base = self._tile_base.value()
+        # Off the binding, never off the Base spin: the spin shows whichever
+        # entry is *current*, and on the from-file route that is the file just
+        # opened - a tilemap there would hand this map its own base. The spin
+        # commits on every keystroke, so on the combo route the two agree.
+        base = was.base_index if was is not None else 0
         doc = entry.doc
         if bound is not None and doc is not None and was is not None and was.is_bound:
             reading = documents.rebound_reading(self._registry, entry, bound)

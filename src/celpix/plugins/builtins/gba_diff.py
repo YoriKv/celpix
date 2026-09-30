@@ -38,8 +38,12 @@ Traps:
 - **Wrap-around is the arithmetic, not an error.** A delta of 0xFF is −1.
 - **An odd size under the 16-bit filter** still reads whole halfwords; this
   decoder reads ``ceil(size / 2)`` units and returns exactly the declared size.
-  The encoder refuses an odd length rather than invent the high byte of a last
-  halfword the data does not have.
+  The encoder writes the same shape back — the odd size in the header and a
+  zero high byte completing the last halfword — so a stream that loads also
+  saves.
+- **A declared size of zero is refused both ways**: there is nothing to
+  produce, and accepting it would make any aligned 0x81/0x82 followed by three
+  zeros a structure.
 - **Scanning for it is almost meaningless**: any aligned 0x81/0x82 byte with a
   size that fits the buffer "decodes cleanly", and the output is never smaller
   than the input. Recognise filtered data by what it decodes to.
@@ -108,17 +112,23 @@ def compress(data: bytes, *, width: int = 1) -> bytes:
     """Delta-filter ``data`` into ``width``-byte units behind the BIOS header."""
     _check_width(width)
     n = len(data)
+    if n == 0:
+        # A zero size is what decompress refuses, so writing one would save a
+        # stream this plugin cannot open again.
+        raise ValueError(
+            "the GBA BIOS diff filter has no encoding for an empty payload"
+        )
     if n > MAX_DECOMPRESSED:
         raise ValueError(
             f"input is {n:,} bytes; the 24-bit size field holds {MAX_DECOMPRESSED:,}"
         )
-    if n % width:
-        raise ValueError(
-            f"input is {n:,} bytes, not a whole number of {width}-byte units"
-        )
     out = bytearray([DIFF_TYPE | width])
     out += n.to_bytes(3, "little")
-    out += difference_units(data, width)
+    # An odd length under the 16-bit filter keeps its odd size in the header,
+    # which decompress honours, but the units are whole halfwords: complete the
+    # last one with a zero high byte. The decoder drops that byte, and a BIOS
+    # call working in whole halfwords writes a zero there rather than noise.
+    out += difference_units(data + bytes(-n % width), width)
     return bytes(out)
 
 

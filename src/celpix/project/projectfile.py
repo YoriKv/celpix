@@ -140,18 +140,14 @@ class LoadedProject:
     #: :attr:`~celpix.project.workspace.Workspace.pixel_aspect` for why the two
     #: are different answers.
     pixel_aspect: PixelAspect | None = None
-
-    @property
-    def bases_count_elements(self) -> bool:
-        """Whether this file's tile bases count cells or tiles whatever its
-        maps' indices count — every file from before version 7.
-
-        Its bases are re-counted in the index's unit on the load path, which has
-        the registry the geometry needs
-        (:func:`~celpix.project.documents.count_bases_in_units`); the migration
-        that walks the file forward has none (:func:`_migrate_6_to_7`).
-        """
-        return self.migrated_from is not None and self.migrated_from < 7
+    #: Whether the entries' tile bases still count cells or tiles whatever
+    #: their maps' indices count — true of every file from before version 7
+    #: until :func:`~celpix.project.documents.count_bases_in_units` re-counts
+    #: them in the index's unit. That needs the registry the migration has not
+    #: got (:func:`_migrate_6_to_7`), so whoever opens the project calls it once
+    #: its registry is final; it clears this, because a base already re-counted
+    #: would be re-counted again as if it were still elements.
+    bases_count_elements: bool = False
 
 
 # -- migrations -----------------------------------------------------------
@@ -274,9 +270,10 @@ def _migrate_6_to_7(data: dict[str, object]) -> dict[str, object]:
     counted cells or tiles even where the index counted records, and a v7 base
     counts records there. Which maps those are, and how many cells a record
     is, is a question for the registry, which a migration does not have — so
-    the load path re-counts them
-    (:attr:`LoadedProject.bases_count_elements`,
-    :func:`~celpix.project.documents.count_bases_in_units`).
+    :func:`load_project` only flags them
+    (:attr:`LoadedProject.bases_count_elements`), and whoever opens the project
+    re-counts them once its registry is final
+    (:func:`~celpix.project.documents.count_bases_in_units`).
 
     The bump also serves the other direction, as 5 → 6's did. A v6 build
     ignores ``addressing``, so a map whose binding overrides its format's
@@ -946,6 +943,7 @@ def load_project(path: str) -> LoadedProject:
         entries=[entry for entry in parsed if entry is not None],
         current=current,
         migrated_from=migrated_from,
+        bases_count_elements=migrated_from is not None and migrated_from < 7,
         hidden_pixel_presets=hidden,
         # None for a missing or malformed ratio, which is the same state a
         # project that has never been asked is in: the hint gets to answer.

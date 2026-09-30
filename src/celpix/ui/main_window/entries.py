@@ -526,10 +526,9 @@ class EntriesMixin:
         # Also before the replace, and after the repair: a base re-counted in the
         # unit its index counts reads the format the entry now names, and the
         # replace draws the restored entry with the base in force.
-        if loaded.bases_count_elements:
-            self._alert_recounted_bases(
-                documents.count_bases_in_units(self._registry, loaded.entries)
-            )
+        self._alert_recounted_bases(
+            documents.count_bases_in_units(self._registry, loaded)
+        )
         # Seed the pixel-format filter before the replace: showing the restored
         # current entry rebuilds the dropdown, which must already read the
         # project's filter. A rebuild also happens explicitly below for a project

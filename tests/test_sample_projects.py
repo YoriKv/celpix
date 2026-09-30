@@ -37,6 +37,7 @@ from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import FileRef
 from celpix.plugins.discovery import load_user_plugins, project_plugin_dir
 from celpix.plugins.registry import default_registry
+from celpix.project.documents import count_bases_in_units
 from celpix.project.projectfile import load_project
 from celpix.project.workspace import (
     EntryKind,
@@ -75,6 +76,9 @@ def _open(name: str):
     load_user_plugins(
         registry, [plugins] if plugins else [], confirm=lambda *a, **k: True
     )
+    # The window's step once its registry is final: an older file's bases are
+    # re-counted in the unit their maps' indices count.
+    count_bases_in_units(registry, workspace)
     return workspace, registry
 
 

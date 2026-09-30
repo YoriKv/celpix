@@ -23,7 +23,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 from celpix.core.arrangement import BlockLayout
 from celpix.core.capabilities import ContentKind
@@ -81,6 +81,9 @@ from celpix.project.workspace import (
     swatch_session_for,
     tilemap_config_for,
 )
+
+if TYPE_CHECKING:
+    from celpix.project.projectfile import LoadedProject
 
 #: What a tilemap entry falls back to when nothing else named a cell codec — a
 #: container normally supplies one (``detect.tilemap_preset_for``), so this is
@@ -339,16 +342,18 @@ def chain_source_columns(through: Document) -> int:
     First what it publishes for its records
     (:data:`~celpix.core.context.KEY_TILEMAP_STAMP_STRIDE`): a table of packed
     records stamps at the record's width whatever it is displayed at. Else the
-    width its format states; otherwise the width its cells are laid at is the
-    view's, and file order is drawn order there. A stride of 1 in that case
-    would walk a stamp's second row along the same source row instead of down
-    one.
+    width its **entries** are laid at (:attr:`~celpix.core.document.Document.
+    entry_columns`) — its format's stated width, or the view's Cols, where file
+    order is drawn order. A stride of 1 in that case would walk a stamp's second
+    row along the same source row instead of down one.
+
+    Entries, not drawn positions, because the hop's source list is the
+    source's entries (``through.cells``). They are the same width until the
+    source is itself densely stamped: then Cols counts the positions its stamps
+    draw, a stamp's width times its entries, and striding by it would put a
+    stamp's second row that many stamps too far along.
     """
-    return (
-        _published_stride(through)
-        or through.stated_columns
-        or max(1, through.view.columns)
-    )
+    return _published_stride(through) or through.entry_columns
 
 
 def chain_width_is_stated(through: Document) -> bool:
@@ -760,7 +765,7 @@ def fit_tile_base(
         entry.tile_source = replace(source, base_index=-low)
 
 
-def count_bases_in_units(registry, entries: list[Entry]) -> list[str]:  # noqa: ANN001
+def count_bases_in_units(registry, loaded: LoadedProject) -> list[str]:  # noqa: ANN001
     """Re-count, in units, every base a project from before format version 7
     counted in elements; a line for each map that could not keep its picture.
 
@@ -774,15 +779,25 @@ def count_bases_in_units(registry, entries: list[Entry]) -> list[str]:  # noqa: 
     document. :func:`reads_record_keys` and an ordinal stated by the format are
     that map exactly; any other kept its base in elements then and now.
 
-    Called on the load path once the registry is final, since the migration
-    that walks the file forward has no registry to ask. A base that is a whole
+    The migration that walks the file forward has no registry to ask, so this
+    is for whoever opens the project to call once its registry is final — the
+    window before it shows an entry, a script before its first
+    :func:`load_document` — and nothing else calls it. A base that is a whole
     number of units and shifts every index alike becomes that number, and the
     map draws what it drew. One that is not cannot be said in units: it becomes
     the unit its old start falls inside, and the line says how far the picture
     moved, for the user to check before saving.
+
+    Does nothing for a project whose bases already count units — a current
+    file, or one this has been called on
+    (:attr:`~celpix.project.projectfile.LoadedProject.bases_count_elements`):
+    a base in units read as elements would be divided a second time.
     """
     notes: list[str] = []
-    for entry in entries:
+    if not loaded.bases_count_elements:
+        return notes
+    loaded.bases_count_elements = False
+    for entry in loaded.entries:
         source = entry.tile_source
         if source is None or not source.base_index:
             continue
@@ -1595,6 +1610,11 @@ def load_document(entry: Entry, registry, workspace: Workspace) -> Loaded:  # no
     them, so the document carries the entry's columns, palette row and colours.
     What differs is only what has no headless meaning: nothing is settled (there
     are no unsaved edits), and a problem is collected instead of alerted.
+
+    A project from before format version 7 is opened with one more step first,
+    which needs the whole project rather than an entry:
+    :func:`count_bases_in_units`, as the window does, or a map whose index
+    counts records draws its base as that many records rather than cells.
 
     Sets ``entry.doc``, since that is where a bound map finds its source's live
     buffer, and returns it with the problems met on the way. Raises

@@ -1781,6 +1781,41 @@ def test_binding_from_a_file_whose_own_source_is_a_tilemap_is_refused(
     assert "other.SCR" not in labels
 
 
+def test_binding_from_a_tilemap_file_carries_the_maps_own_base(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """Panel to panel is cells to cells, so the layout's base carries across. The
+    open activates the picked panel, and the Base spin then shows *its* base (0):
+    the carried number has to come off the layout's binding, not the widget."""
+    from PySide6.QtWidgets import QFileDialog
+
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    bank = window._workspace.current
+    cells = [Cell(index=i) for i in range(8)]
+    window._load_pixel(str(_pnl_file(tmp_path, cells, name="p1.PNL")))
+    panel = window._workspace.current
+    window._rebind_tiles(panel, TileSource(mode=TileMode.ENTRY, entry=bank))
+    window._load_pixel(str(_map_file(tmp_path, [Cell(index=1), Cell(index=0)])))
+    layout = window._workspace.current
+    window._rebind_tiles(
+        layout, TileSource(mode=TileMode.ENTRY, entry=panel, base_index=3)
+    )
+    other = _pnl_file(tmp_path, cells, name="p2.PNL")
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(other), ""))
+    )
+
+    window._bind_tiles_from_file(layout)
+
+    assert layout.tile_source.entry is window._workspace.find_file(str(other))
+    assert layout.tile_source.base_index == 3
+
+
 def test_the_bottom_bar_swaps_to_the_binding_controls_for_a_tilemap(
     qtbot, tmp_path
 ) -> None:
@@ -2191,6 +2226,38 @@ def test_selecting_a_cell_does_not_hand_back_import_from_png(qtbot, tmp_path) ->
     assert not window._import_png_action.isEnabled()
     window._select_tiles(0, 0)
     assert not window._import_png_action.isEnabled()
+
+
+def test_import_on_an_unbound_map_refuses_before_asking_for_a_file(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """The files list offers Import from PNG… on any entry, so the refusal has to
+    come before the file chooser - not after the user has gone and picked one -
+    and once, although the float path it would lead to checks again."""
+    from PySide6.QtWidgets import QFileDialog, QStatusBar
+
+    from celpix.core.tilemap import Cell
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
+    asked, shown = [], []
+    monkeypatch.setattr(
+        QFileDialog,
+        "getOpenFileName",
+        staticmethod(lambda *a, **k: asked.append(a) or (str(tmp_path / "x.png"), "")),
+    )
+    # Counted on the class: a repeat of the same text is swallowed by Qt, so
+    # messageChanged can't see a double refusal, and a patch on the instance
+    # is restored after the window is gone - a crash at teardown.
+    monkeypatch.setattr(
+        QStatusBar, "showMessage", lambda _bar, text, *_: shown.append(text)
+    )
+
+    window._import_png_into(window._workspace.current)  # the files list
+    assert not asked and len(shown) == 1 and "no tile source" in shown[0]
+    window._import_png_here()  # the canvas menu, for when it's reached ungated
+    assert not asked and len(shown) == 2
 
 
 def test_new_slice_from_view_is_refused_where_there_is_no_view(

@@ -107,7 +107,7 @@ Keys that name another entry: `current`, `parent_index`,
 | 3 → 4 | None. Adds `palette_mode: "entry"` with `palette.entry`; `offset` palettes on composites; new plugin input keys |
 | 4 → 5 | None. Adds `session`/`view` on `palette` entries, `parent` on slices and bookmarks, `current` naming a `palette` entry |
 | 5 → 6 | None. Adds the choice binding shape (§5.10); nested slices: `parent: "slice"` with `parent_index` (§5.5) |
-| 6 → 7 | No key rewritten. Adds `tile_source.addressing` (§5.14); `inputs` on `palette` entries (§5.10); `match_parent` on slices (§5.5). `base_index` changes unit (§5.14): on load, a map whose format's engine counts records and states their shape by its record keys has its base re-counted from cells to records — exact where it is whole records that shift every index alike; otherwise the record its old start falls in, with a warning |
+| 6 → 7 | No key rewritten. Adds `tile_source.addressing` (§5.14); `inputs` on `palette` entries (§5.10); `match_parent` on slices (§5.5). `base_index` changes unit (§5.14): once the project's plugins are registered, a map whose format's engine counts records and states their shape by its record keys has its base re-counted from cells to records — exact where it is whole records that shift every index alike; otherwise the record its old start falls in, with a warning. Done once, by whatever opens the project, not by the migration itself |
 
 ## 4. Top level
 
