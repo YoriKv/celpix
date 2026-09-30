@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from celpix.core.errors import Stage
-from celpix.plugins.aliases import RENAMED, current_id
+from celpix.plugins.aliases import RENAMED, RENAMED_PARAMS, current_id
 from celpix.plugins.base import PluginInfo
 from celpix.plugins.registry import default_registry
 
@@ -57,6 +57,9 @@ def test_the_rename_table_stays_honest() -> None:
     # only because `current_id` walks, and reads as the pattern to copy for the
     # next twice-rename.
     midway = {old: new for old, new in RENAMED.items() if new in RENAMED}
+    assert not midway, midway
+    # The parameter table keeps the same flat shape.
+    midway = {old: new for old, new in RENAMED_PARAMS.items() if new in RENAMED_PARAMS}
     assert not midway, midway
 
 

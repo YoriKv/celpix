@@ -315,3 +315,41 @@ def test_a_nested_edit_held_in_a_slice_that_will_not_open_stays_dirty_and_is_sai
     assert packed.fold_refused is None
     assert not any(e.pixel_dirty for e in (tiles, packed, file))
     assert _unpacked(rom, b"\x22" + image[1:])[:0x80] == painted
+
+
+def test_a_nested_slices_own_stages_run_over_its_parents_output(
+    qtbot, tmp_path
+) -> None:
+    """The second pass a loader runs after unpacking is a nested slice's own
+    stage: a difference filter as its compression, a running sum as its reshape.
+    Each reads the parent's decoded bytes through it, and an edit goes back
+    through both — filtered or differenced, then re-packed by the parent."""
+    from celpix.plugins.builtins import gba_diff
+    from celpix.plugins.builtins.running_sum import difference_units, sum_units
+
+    art = bytes((at * 5) & 0xFF for at in range(32 * 4))
+    filtered = gba_diff.compress(art)
+    inner = filtered + difference_units(art, 1)
+    window, rom, _file, packed, image = _packed(qtbot, tmp_path, inner)
+    ws = window._workspace
+    behind_filter = ws.add_slice_under(
+        packed, "filtered", 0, len(filtered), "compression.gba-diff8"
+    )
+    summed = ws.add_slice_under(
+        packed, "summed", len(filtered), len(art), reshape_id="reshape.running-sum"
+    )
+
+    # Kept as painted: a sibling's write drops the document it was painted in.
+    painted = {}
+    for entry in (behind_filter, summed):
+        window._activate_entry(entry)
+        assert bytes(entry.doc.pixel_data) == art, entry.name
+        _paint(window, 1)
+        painted[entry.name] = bytes(entry.doc.pixel_data)
+        assert painted[entry.name] != art
+        assert window._write_entry(entry), entry.name
+
+    unpacked = _unpacked(rom, image)
+    head, tail = unpacked[: len(filtered)], unpacked[len(filtered) :]
+    assert gba_diff.decompress(head)[0] == painted["filtered"]
+    assert sum_units(tail, 1) == painted["summed"]

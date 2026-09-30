@@ -46,7 +46,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
-from os.path import abspath, basename, exists, normcase, splitext
+from os.path import abspath, basename, exists, getsize, normcase, splitext
 
 from celpix.core import ceil_div
 from celpix.core.address import format_hex
@@ -339,8 +339,11 @@ class TileSource:
     tiles 0x100-0x1EE bound to a slice holding exactly those, where cell
     0x100 must draw the slice's tile 0. A cell that lands outside the source
     renders blank, so a wrong base is visible rather than corrupting anything.
-    The base counts cells or tiles whichever way the index is addressed: it is
-    added after an ordinal is turned into its unit's corner.
+    The base counts what the index counts — cells or tiles in corner
+    addressing, whole stamps or metatiles in ordinal — and is added to the index
+    before either becomes a place (:func:`~celpix.core.tilemap.index_corner`),
+    so ``addressing`` changing re-counts it (:func:`~celpix.core.tilemap.
+    rebased`).
 
     ``addressing`` is the binding's word on how an index numbers what it draws
     — its unit's corner, or a count of units
@@ -483,6 +486,10 @@ class SliceParams:
     # reaches the undo command — a resize is an edit to the parent's bytes and
     # goes on the stack as one (``docs/design/slices-and-parents.md`` §5).
     units: int | None = None
+    # Whether ``length`` is the parent's to decide (:attr:`Entry.match_parent`).
+    # ``length`` is still carried, as what the parent measured when the dialog
+    # was answered, so the pair compares on the value the slice will read with.
+    match_parent: bool = False
 
 
 @dataclass
@@ -637,6 +644,14 @@ class Entry:
     # whether those spare bytes are really its own — the slice dialog asks, and
     # only where a compression scheme is chosen, since nothing else can shrink.
     slot_fill: SlotFill = DEFAULT_SLOT_FILL
+    # SLICE entries only: the length is **the parent's**, not the user's — the
+    # slice runs from its offset to the end of whatever its parent holds, and
+    # follows it when the parent is resized. ``slice_length`` stays the one
+    # field everything reads; it is re-measured wherever a config is built
+    # (:func:`_fit_to_parent`), which is every read, so a parent that grew or
+    # shrank is picked up by the next re-read of the slice with nothing to
+    # notify. What is stored is only the last measurement.
+    match_parent: bool = False
     # The region-scoped byte reordering the entry's bytes go through, between
     # container and decompressor. Unlike ``container_id`` this lives on **both
     # FILE and SLICE** entries: a reshape is a property of the region, and a
@@ -2087,6 +2102,7 @@ def pixel_config_for(
             missing_plugins=missing,
         )
     read = _parent_read(entry, registry, preset_id, workspace)
+    _fit_to_parent(entry, read)
     # What the scheme needs from outside the slice — a shared code table, an
     # output size — resolved here because only the host can reach the parent's
     # buffer and the other entries a binding names. A scheme whose inputs do not
@@ -2152,12 +2168,15 @@ def pixel_config_for(
 class _ParentRead:
     """What a slice's config takes from its parent: the bytes it reads, their
     base, whether the parent can carry a write out, and whether one is routed
-    through it at all."""
+    through it at all — and, for a slice that matches its parent's size, where
+    the parent ends in the coordinates the slice's offset counts in (``None``
+    for every other slice, or where nothing could say)."""
 
     data: bytes | None
     base: int
     writable: bool
     through: bool
+    extent: int | None = None
 
 
 def _parent_read(
@@ -2190,14 +2209,54 @@ def _parent_read(
             parent is None
             or pixel_config_for(parent, preset_id, registry).write_enabled
         )
-        return _ParentRead(data, base, writable, parent is not None)
+        extent = None
+        if entry.match_parent:
+            # Under a reordering parent the offset counts in its buffer, which
+            # ends where the buffer does; anywhere else it is a file position,
+            # and the region ends with the files — the bound the slice dialog
+            # checks a typed length against.
+            extent = (
+                base + len(data)
+                if reordered and data is not None
+                else _region_size(entry.paths)
+            )
+        return _ParentRead(data, base, writable, parent is not None, extent)
     if parent is None or workspace is None or workspace.chain_broken(entry):
         return _ParentRead(b"", 0, False, True)
     parent_cfg = pixel_config_for(parent, preset_id, registry, workspace)
     data = own_bytes(parent)
     if data is None:
         data = pipeline.read_region(parent_cfg, registry)[0]
-    return _ParentRead(data, 0, parent_cfg.write_enabled, True)
+    return _ParentRead(data, 0, parent_cfg.write_enabled, True, len(data))
+
+
+def _region_size(paths: tuple[str, ...]) -> int | None:
+    """The joined size of ``paths`` on disk, or ``None`` where one cannot be
+    stat'ed — a missing file, which the read reports in its own words."""
+    try:
+        return sum(getsize(path) for path in paths)
+    except OSError:
+        return None
+
+
+def _fit_to_parent(entry: Entry, read: _ParentRead) -> None:
+    """Re-measure a slice that matches its parent's size (:attr:`Entry.match_parent`).
+
+    Run by both config factories on the parent half they just built, so the
+    length is re-derived on every read rather than kept in step by whoever
+    resized the parent: a file grown by the container dialog, a parent slice
+    re-pointed or re-packed, a file rewritten on disk — each re-reads the slice
+    through here, and there is no list of such events to fall behind.
+
+    A parent that ends at or before the offset leaves the length alone: there is
+    no positive length to give, and the reads that follow refuse the window in
+    their own words (:func:`outside_parent`, ``pipeline._check_window``) rather
+    than this inventing an empty slice.
+    """
+    extent = read.extent
+    if not entry.match_parent or extent is None or extent <= entry.slice_offset:
+        return
+    entry.slice_length = extent - entry.slice_offset
 
 
 def _slice_dest(entry: Entry, source: FileRef, read: _ParentRead) -> FileRef:
@@ -2302,6 +2361,7 @@ def tilemap_config_for(
             input_problems=problems,
         )
     read = _parent_read(entry, registry, preset_id, workspace)
+    _fit_to_parent(entry, read)
     if entry.parent_kind is EntryKind.SLICE:
         # A map nested in a slice is written through that slice and then up the
         # chain, so it can write only where every link can.
@@ -3248,7 +3308,7 @@ def _refusal_notices(doc: Document) -> tuple[Notice, ...]:
         )
     why = doc.addressing_refusal
     if why is not None:
-        unit = "stamp" if chain is not None else "metatile"
+        unit = doc.ordinal_unit
         found.append(
             Notice(
                 NoticeLevel.WARNING,

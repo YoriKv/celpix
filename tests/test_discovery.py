@@ -463,6 +463,64 @@ def test_a_preset_parameterising_a_code_format_is_refused(tmp_path) -> None:
     assert reg.preset("preset.tilemap.object-alias")
 
 
+def _record_preset(name: str, params: str) -> str:
+    return (
+        f'id = "preset.tilemap.{name}"\n'
+        f'name = "{name}"\n'
+        'engine_id = "codec.tilemap.indirect-record"\n'
+        f"[params]\n{params}"
+    )
+
+
+def test_a_preset_naming_record_keys_by_retired_names_reads_the_same(tmp_path) -> None:
+    """A user's own preset still says what the release it was written for said.
+    It has to read as the table it always did, and nothing downstream may see
+    the retired spelling — the host looks each key up by its current name."""
+    from celpix.core.tilemap import record_geometry
+
+    _drop(
+        tmp_path,
+        "tilemap",
+        "old.toml",
+        _record_preset(
+            "old", "record_cells = 6\nrecord_columns = 3\nrecords_across = 8\n"
+        ),
+    )
+    _drop(
+        tmp_path,
+        "tilemap",
+        "new.toml",
+        _record_preset(
+            "new", "record_cells = 6\nrecord_width = 3\nrecords_per_row = 8\n"
+        ),
+    )
+    reg = default_registry()
+    assert discovery.load_directory(reg, str(tmp_path)) == []
+
+    old, new = reg.preset("preset.tilemap.old"), reg.preset("preset.tilemap.new")
+    assert old.params == new.params
+    assert record_geometry(old.params) == (6, 3, 8, 0)
+
+
+def test_a_preset_stating_a_param_under_both_names_is_refused(tmp_path) -> None:
+    """Either answer would be a guess at which line its author edited last, so
+    the file is reported, naming both, rather than loaded on one of them."""
+    _drop(
+        tmp_path,
+        "tilemap",
+        "both.toml",
+        _record_preset("both", "records_across = 8\nrecords_per_row = 4\n"),
+    )
+    reg = default_registry()
+
+    issues = discovery.load_directory(reg, str(tmp_path))
+    assert len(issues) == 1
+    assert "both.toml" in issues[0].path
+    assert "records_across and records_per_row" in issues[0].message
+    with pytest.raises(KeyError):
+        reg.preset("preset.tilemap.both")
+
+
 def test_underscore_files_are_ignored(tmp_path) -> None:
     # Inert-by-convention: _-prefixed files load nothing and report nothing,
     # even when their content is broken (that is what makes them safe examples).

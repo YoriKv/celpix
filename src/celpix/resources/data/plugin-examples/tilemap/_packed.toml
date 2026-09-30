@@ -185,3 +185,10 @@ endian = "little"
 # a whole number of records. record_order: "row" (default) or "column".
 # record_shape = [2, 4]
 # record_order = "row"
+
+# Cells at the start of each record that come before its stamp -- a 17-cell
+# record holding a collision word and then a 4x4 block states 1. A plain count
+# (nothing is read out of it, unlike a sprite table's frame_header). A map
+# counting this table's stamps starts stamp k that many cells into record k.
+# From 0 (default) to one less than the record's cells.
+# record_header = 1

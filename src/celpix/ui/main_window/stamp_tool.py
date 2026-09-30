@@ -283,11 +283,10 @@ class StampToolMixin:
         held = self._source_tile_id
         if doc is None or held is None:
             return None
-        return (
-            held
-            if held in pipeline.tile_source_span(doc, self._cell_index_limit())
-            else None
+        span = pipeline.tile_source_span(
+            doc, self._cell_index_limit(), self._cell_index_runs()
         )
+        return held if held in span else None
 
     def _on_stamp_pressed(self, slot: int, button) -> None:  # noqa: ANN001 — Qt button
         if button == Qt.MouseButton.RightButton:
@@ -584,7 +583,10 @@ class StampToolMixin:
         if doc is None or doc.cells is None or at is None:
             return
         index = doc.cells[at].index
-        if index not in pipeline.tile_source_span(doc, self._cell_index_limit()):
+        span = pipeline.tile_source_span(
+            doc, self._cell_index_limit(), self._cell_index_runs()
+        )
+        if index not in span:
             self._clear_source_tile()
             self.statusBar().showMessage(
                 f"Tile ${index:X} is not in the tile source - nothing picked."

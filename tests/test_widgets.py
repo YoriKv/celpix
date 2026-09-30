@@ -292,6 +292,44 @@ def test_the_slice_dialogs_spare_room_row_follows_the_compression_choice(
     assert dialog._params.slot_fill is SlotFill.ZERO
 
 
+def test_match_parent_greys_length_and_fills_it_from_the_parent(
+    qtbot, tmp_path
+) -> None:
+    # Ticked, Length is the parent's end less the offset and follows the offset;
+    # unticked, whatever was typed comes back. A nested slice is bounded by its
+    # parent's decoded bytes (``extent``) rather than the file.
+    from celpix.core.address import parse_hex
+    from celpix.plugins.registry import default_registry
+    from celpix.ui.slice_dialog import SliceDialog
+
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(bytes(0x100))
+    dialog = SliceDialog(
+        default_registry(), paths=(str(rom),), offset=0x40, length=0x10
+    )
+    qtbot.addWidget(dialog)
+    dialog._match_parent.setChecked(True)
+    assert not dialog._length.isEnabled()
+    assert parse_hex(dialog._length.text()) == 0xC0
+    dialog._offset.setText("80")
+    assert parse_hex(dialog._length.text()) == 0x80
+    dialog._validate_and_accept()
+    assert (dialog._params.length, dialog._params.match_parent) == (0x80, True)
+
+    dialog._match_parent.setChecked(False)
+    assert dialog._length.isEnabled() and parse_hex(dialog._length.text()) == 0x10
+
+    nested = SliceDialog(
+        default_registry(),
+        paths=(str(rom),),
+        offset=0x8,
+        match_parent=True,
+        extent=0x20,
+    )
+    qtbot.addWidget(nested)
+    assert parse_hex(nested._length.text()) == 0x18
+
+
 def test_the_slice_dialogs_pickers_keep_their_stated_widths(qtbot, tmp_path) -> None:
     # A CompactComboBox only states a *hint*, and a QFormLayout's field column
     # stretches: dropped in bare, every picker here is pulled to whatever the

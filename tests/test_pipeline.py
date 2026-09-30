@@ -161,6 +161,33 @@ def test_slice_round_trip_touches_only_the_slice(tmp_path) -> None:
     assert px.read_bytes() == pixel_bytes
 
 
+def test_a_window_past_the_end_of_the_file_says_so_or_is_refused(tmp_path) -> None:
+    """Cutting a buffer past its end is a short window rather than an error, so
+    a slice of a file that shrank has to be told apart from one that fits — on
+    whichever pathway it is — and one starting past the end has nothing to show."""
+    from celpix.core.notices import notices
+
+    reg = default_registry()
+    px, pl, *_ = _make_files(tmp_path)  # 128 pixel bytes, 32 palette
+
+    def summaries(pixel, palette):
+        doc = pipeline.load(pixel, palette, reg)
+        return [n.summary for n in notices(doc.pixel_ctx) + notices(doc.palette_ctx)]
+
+    pixel, palette = _slice_configs(px, pl, offset=96, length=64)
+    palette.source = FileRef(str(pl), offset=16, length=32)
+    assert summaries(pixel, palette) == [
+        "Slice runs 32 bytes past the end of the file",
+        "Slice runs 16 bytes past the end of the file",
+    ]
+    # A window inside the file, and one left open to run to its end, are quiet.
+    assert summaries(*_slice_configs(px, pl, offset=32, length=96)) == []
+    assert summaries(*_slice_configs(px, pl, offset=96, length=None)) == []
+
+    with pytest.raises(PipelineError, match="nothing to read"):
+        pipeline.load(*_slice_configs(px, pl, offset=128, length=32), reg)
+
+
 class _StubCompression:
     """Compression scheme whose *packed* size is dictated by the test.
 

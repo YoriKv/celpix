@@ -325,6 +325,41 @@ def test_backfill_slice_length_requires_a_complete_decompress(tmp_path) -> None:
     assert not backfill_slice_length(s, complete)  # already bounded: no-op
 
 
+def test_a_matched_slice_is_re_measured_against_its_parent_on_every_read(
+    tmp_path,
+) -> None:
+    """A slice matching its parent's size runs from its offset to the parent's
+    end, re-measured wherever its config is built — so a file that grew, or a
+    parent slice re-pointed longer, is picked up by the next read with nothing
+    having told the slice. A parent now ending at or before the offset leaves
+    the length alone, for the read's own refusal to report."""
+    preset = "preset.pixel.snes-4bpp"
+    rom = tmp_path / "rom.sfc"
+    rom.write_bytes(bytes(0x100))
+    reg = default_registry()
+    ws = Workspace()
+    ws.open_file(str(rom))
+    tail = ws.add_slice(str(rom), "tail", 0x40, 0x10)
+    tail.match_parent = True
+    outer = ws.add_slice(str(rom), "outer", 0, 0x80)
+    inner = ws.add_slice_under(outer, "inner", 0x20, 0x10)
+    inner.match_parent = True
+
+    def length(entry: Entry) -> int | None:
+        return pixel_config_for(entry, preset, reg, ws).source.length
+
+    assert length(tail) == 0xC0
+    rom.write_bytes(bytes(0x200))  # the file grew under it
+    assert length(tail) == 0x1C0
+    assert tail.slice_length == 0x1C0  # and the entry says so, for the row
+
+    assert length(inner) == 0x60
+    outer.slice_length = 0x40  # the parent slice re-pointed shorter
+    assert length(inner) == 0x20
+    outer.slice_length = 0x10  # now ends before the nested slice starts
+    assert length(inner) == 0x20
+
+
 def test_data_missing_tracks_the_entrys_file_or_parent(tmp_path) -> None:
     rom = tmp_path / "rom.sfc"
     rom.write_bytes(b"\x00" * 32)

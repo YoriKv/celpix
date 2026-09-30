@@ -5,7 +5,9 @@ VRAM) and ``Diff16bitUnFilter`` (`SWI 0x18`) undo a delta encoding, so the outpu
 is exactly as long as the payload. A game filters smooth data (a ramp, a wave
 form, a gradient bitmap) and then usually compresses the result with one of the
 real codecs, so a filtered block is typically found *inside* an LZ77 or Huffman
-output rather than loose in the ROM. Stream shape::
+output rather than loose in the ROM — read as a **nested slice** of that stream
+with this filter as its compression (``docs/rom-mapping/console-gba.md`` §5).
+Stream shape::
 
     byte0        0x81 / 0x82  high nibble 8 = difference filter;
                               low nibble = unit size in bytes (1 = 8-bit, 2 = 16-bit)

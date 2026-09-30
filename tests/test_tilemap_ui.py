@@ -2688,7 +2688,7 @@ def _register_corner_stamps(window) -> str:
 
 
 def _count_indices_as(window, row: int) -> None:
-    """Pick row ``row`` of Index counts the way a click does."""
+    """Pick row ``row`` of Index unit the way a click does."""
     window._index_addressing.setCurrentIndex(row)
     window._on_index_addressing_change(row)
 
@@ -2702,8 +2702,8 @@ def _third_stamps_corner(doc) -> int:
 def test_counting_stamps_rereads_the_map_as_one_undoable_step(qtbot, tmp_path) -> None:
     """Choosing Stamps on a corner-counting map re-resolves every index through
     the source's stamp grid, and the tile source panel offers stamp numbers
-    rather than corner cells. The base stays in cells, and the held pick stays
-    on the stamp it named. One step, which undoes and redoes with the combo
+    rather than corner cells. A base of 0 stays 0, and the held pick stays on
+    the stamp it named. One step, which undoes and redoes with the combo
     following — it is filled from the entry, not from the gesture."""
     from celpix.core.tilemap import IndexAddressing
     from celpix.pipeline import pipeline
@@ -2711,7 +2711,7 @@ def test_counting_stamps_rereads_the_map_as_one_undoable_step(qtbot, tmp_path) -
     window, _source, table = _table_over_raw_map(qtbot, tmp_path)
     combo = window._index_addressing
     assert [combo.itemText(i) for i in range(3)] == [
-        "Format (Cells)",
+        "From format (Cells)",
         "Cells",
         "Stamps",
     ]
@@ -2739,6 +2739,123 @@ def test_counting_stamps_rereads_the_map_as_one_undoable_step(qtbot, tmp_path) -
     assert _third_stamps_corner(window._doc) == 4
 
 
+def _select_entry(window, index: int) -> None:
+    """Select the drawn position of the table's entry ``index``'s corner."""
+    doc = window._doc
+    at = next(i for i in range(len(doc.drawn_cells)) if doc.cell_at(i) == index)
+    window._on_slots_selected(at, at)
+
+
+def test_index_unit_recounts_the_base_and_renames_both_numbers_in_one_step(
+    qtbot, tmp_path
+) -> None:
+    """The base counts what the index counts, so choosing Stamps re-counts it in
+    the same step: cell 4, the third stamp's corner, becomes stamp 2 and the
+    map still starts there; a base partway into a stamp has no count and goes
+    to 0. The undo text says which, and the base, the cell's number, their
+    tooltips and the panel's button all name the unit."""
+    window, _source, table = _table_over_raw_map(qtbot, tmp_path)
+    window._tile_base.setValue(4)
+    _select_entry(window, 0)
+    assert window._tile_base_label.text() == "Base cell "
+    assert window._cell_index_label.text() == "Cell "
+    steps = window._undo_stack.count()
+
+    _count_indices_as(window, 2)
+    assert table.tile_source.base_index == 2
+    assert window._doc.chain.source_cell(0) == 4  # the same place in the source
+    assert window._undo_stack.count() == steps + 1
+    assert window._undo_stack.undoText() == (
+        "count indices as stamps and move the base to stamp $2"
+    )
+    assert window._tile_base_label.text() == "Base stamp "
+    assert window._cell_index_label.text() == "Stamp "
+    assert "by whole stamps" in window._tile_base.toolTip()
+    window._sync_set_base_tile()  # the dock converges when shown; it is hidden
+    assert window._set_base_tile_button.text() == "Set Base Stamp"
+
+    window._undo_stack.undo()
+    assert (table.tile_source.base_index, table.tile_source.addressing) == (4, None)
+    assert window._tile_base_label.text() == "Base cell "
+
+    window._tile_base.setValue(3)
+    _count_indices_as(window, 2)
+    assert table.tile_source.base_index == 0
+    assert window._undo_stack.undoText() == "count indices as stamps and reset the base"
+
+
+def test_the_cell_spin_reads_and_writes_the_unit_the_index_counts(
+    qtbot, tmp_path
+) -> None:
+    """Counting stamps, the spin shows the selected entry's stamp number — the
+    file's own — and typing one points the entry at that whole stamp. Its range
+    is the field's, in the same count. Index unit changed with the selection
+    held re-labels the spin and its tooltip; the number stays the file's."""
+    window, _source, table = _table_over_raw_map(qtbot, tmp_path)
+    _count_indices_as(window, 2)
+    _select_entry(window, 2)
+    spin = window._cell_index
+    assert spin.value() == 2
+    assert (spin.minimum(), spin.maximum()) == (0, 0xFF)
+    assert window._cell_index_label.text() == "Stamp "
+    assert "The stamp the selected cells name" in spin.toolTip()
+
+    spin.setValue(5)
+    assert table.doc.cells[2].index == 5
+    # stamp 5, the second of the second row of four, starts at cell 10: tile 2
+    assert window._doc.chain.source_cell(5) == 10
+    assert _third_stamps_corner(window._doc) == 10 % 8
+
+    _count_indices_as(window, 1)
+    assert window._cell_index_label.text() == "Cell "
+    assert "The source cell the selected cells name" in spin.toolTip()
+    assert spin.value() == 5
+    assert (spin.minimum(), spin.maximum()) == (0, 0xFF)
+
+
+def test_an_older_project_re_counts_a_record_maps_base_on_open(
+    qtbot, tmp_path, captured_alerts
+) -> None:
+    """A version-6 file counted a record map's base in cells. Opening it re-counts
+    the base in records once the registry is final; a base partway into a
+    record is moved to the record it falls in, and a dialog names the map,
+    since saving writes the moved picture."""
+    import json
+
+    from celpix.core.capabilities import ContentKind
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    raw = _tilemap_file(tmp_path, [Cell(index=i % 8) for i in range(32)])
+    window._load_pixel(str(raw), content_kind=ContentKind.TILEMAP)
+    table = window._workspace.current
+    table.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
+    path = tmp_path / "records.bin"
+    path.write_bytes(bytes([0, 1]))
+    window._load_pixel(str(path), content_kind=ContentKind.TILEMAP)
+    area = window._workspace.current
+    area.tilemap_preset_id = "preset.tilemap.metatile-index"
+    area.tile_source = TileSource(mode=TileMode.ENTRY, entry=table, base_index=5)
+    project = tmp_path / "old.celpix"
+    window._save_project_to(str(project))
+    saved = json.loads(project.read_text())
+    saved["version"] = 6
+    project.write_text(json.dumps(saved))
+
+    other = MainWindow()
+    qtbot.addWidget(other)
+    other._load_project(str(project))
+    reopened = next(e for e in other._workspace.entries if e.name == area.name)
+    assert reopened.tile_source.base_index == 1
+    title, message = captured_alerts[-1]
+    assert "base re-counted" in title and "1 map(s)" in message
+
+
 def test_index_counts_is_off_where_a_unit_is_one_element(qtbot, tmp_path) -> None:
     """A screen's cells over a bank are one tile each, so a metatile's number
     and its corner are the same number: the choice would change nothing, and
@@ -2748,7 +2865,7 @@ def test_index_counts_is_off_where_a_unit_is_one_element(qtbot, tmp_path) -> Non
     window, _entry = _bound_tilemap(qtbot, tmp_path, [Cell(index=1)])
     combo = window._index_addressing
     assert [combo.itemText(i) for i in range(3)] == [
-        "Format (Tiles)",
+        "From format (Tiles)",
         "Tiles",
         "Metatiles",
     ]
@@ -2822,6 +2939,132 @@ def test_cols_on_a_source_viewed_at_its_width_repoints_the_maps_above(
     window._undo_stack.undo()
     assert table.doc.chain.source_columns == 16
     assert table.doc.chain.source_cell(5) == 10
+
+
+def test_rebinding_keeps_what_the_indices_count_while_the_unit_does(
+    qtbot, tmp_path
+) -> None:
+    """Index unit is the binding's setting, like the base: unbinding and
+    binding the map again keeps it counting stamps rather than silently reading
+    every index as a corner. Bound to art instead, a stamp count means nothing,
+    and the choice goes back to the format's."""
+    from celpix.core.tilemap import IndexAddressing
+
+    window, source, table = _table_over_raw_map(qtbot, tmp_path)
+    _count_indices_as(window, 2)
+    combo = window._tile_binding
+    for target in (None, source):
+        at = 0 if target is None else combo.findData(target)
+        combo.setCurrentIndex(at)
+        window._on_tile_binding_change(at)
+        assert table.tile_source.addressing is IndexAddressing.ORDINAL
+    assert _third_stamps_corner(window._doc) == 4
+
+    at = combo.findData(window._workspace.entries[0])  # the bank
+    combo.setCurrentIndex(at)
+    window._on_tile_binding_change(at)
+    assert table.tile_source.addressing is None
+
+
+def _map_over_metatile_table(qtbot, tmp_path):
+    """A map of source cells over a table of 2x2 metatiles over a bank.
+
+    The table's cell N holds N; its metatiles are a VRAM-style 2x2 (row stride
+    4), so counted as metatiles, cell 1 starts at tile 2 rather than tile 1.
+    Returns (window, table, map), the map on screen.
+    """
+    from celpix.core.capabilities import ContentKind
+    from celpix.core.errors import Stage
+    from celpix.core.tilemap import Cell
+    from celpix.plugins import FormatInfo
+    from celpix.plugins.base import Preset
+    from celpix.plugins.formats import adapt_format
+    from celpix.project.workspace import TileMode, TileSource
+
+    class _Metatiles:
+        info = FormatInfo(
+            id="format.tilemap.vram-metatiles",
+            name="2x2 metatiles, a VRAM row apart",
+            declares={"cell_row_stride": 4, "cell_column_stride": 1},
+        )
+
+        def decode(self, data, ctx):
+            return [Cell(index=byte) for byte in data]
+
+        def encode(self, cells, ctx):
+            return bytes(cell.index & 0xFF for cell in cells)
+
+        def bytes_per_cell(self):
+            return 1
+
+        def cell_tiles(self):
+            return (2, 2)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    engine, preset = adapt_format(_Metatiles(), Stage.INTERPRET_TILEMAP)
+    window._registry.register(engine)
+    window._registry.register_preset(preset)
+    indirect = Preset(
+        id="preset.tilemap.byte-coordinates",
+        name="One byte per source cell",
+        stage=Stage.INTERPRET_TILEMAP,
+        engine_id="codec.tilemap.packed",
+        params={"bytes": 1, "fields": "iiii iiii", "indirect": True},
+    )
+    window._registry.register_preset(indirect)
+    bound = window._workspace.entries[0]
+    for name, data, preset_id in (
+        ("table.bin", bytes(range(16)), preset.id),
+        ("map.bin", bytes(range(8)), indirect.id),
+    ):
+        path = tmp_path / name
+        path.write_bytes(data)
+        window._load_pixel(str(path), content_kind=ContentKind.TILEMAP)
+        entry = window._workspace.current
+        entry.tilemap_preset_id = preset_id
+        entry.tile_source = TileSource(mode=TileMode.ENTRY, entry=bound)
+        window._reload_tilemap(entry)
+        bound = entry
+    return window, window._workspace.entries[1], bound
+
+
+def test_a_map_over_a_table_follows_what_the_tables_indices_count(
+    qtbot, tmp_path
+) -> None:
+    """A map drawing through a table draws the table's cells as the table
+    numbers them, so choosing Metatiles on the table redraws the map above it
+    too — not at its next unrelated re-read."""
+    window, table, above = _map_over_metatile_table(qtbot, tmp_path)
+    assert above.doc.cell_tile_indices(above.doc.drawn_cells[1]) == [1, 2, 5, 6]
+
+    window._activate_entry(table)
+    _count_indices_as(window, 2)
+    assert table.doc.index_geometry is not None
+    assert above.doc.index_geometry == table.doc.index_geometry
+    assert above.doc.cell_tile_indices(above.doc.drawn_cells[1]) == [2, 3, 6, 7]
+
+
+def test_the_readout_names_a_counted_metatile_and_asks_the_base_itself(
+    qtbot, tmp_path
+) -> None:
+    """Counting metatiles, an ID is not a tile number: the readout calls it a
+    metatile and says where it starts even with no base. Whether there is an
+    offset is the base's own answer, and the base counts metatiles too: -1
+    lands ID 1 on metatile 0."""
+    window, table, _above = _map_over_metatile_table(qtbot, tmp_path)
+    window._activate_entry(table)
+    assert window._tile_source_line(5) == "Tile $5 - no base offset - used by 1 cell."
+    _count_indices_as(window, 2)
+    # Metatile 5 is the second of the third row of two: tile row 4, column 2.
+    assert window._tile_source_line(5) == (
+        "Metatile $5 - bank tile $12, no base offset - used by 1 cell."
+    )
+    window._on_tile_base_change(-1)
+    assert window._tile_source_line(1) == (
+        "Metatile $1 - bank tile $0 - used by 1 cell."
+    )
 
 
 def test_a_refusal_marks_the_maps_row_for_as_long_as_it_holds(qtbot, tmp_path) -> None:
@@ -3319,3 +3562,72 @@ def test_a_crashing_optional_codec_method_is_warned_about_once(
     assert len(captured_alerts) == 2
     assert "index_limit() raised ZeroDivisionError" in captured_alerts[1][1]
     assert "in index_limit" in captured_alerts[1][1]
+
+
+def test_a_grouped_map_offers_and_takes_only_the_records_a_byte_names(
+    qtbot, tmp_path
+) -> None:
+    """A byte whose top three bits pick a table starting at record 4 or record
+    40, each reaching 32 records, names 4-35 and 40-71 though the table holds
+    0-71. The panel offers only those; the Cell spin starts at 4 and steps over
+    the gap; a typed record in the gap is never committed; and one reaching the
+    edit anyway — held for a stamp, or set directly — is refused with the reason
+    rather than written as the byte its low bits make."""
+    from PySide6.QtGui import QValidator
+
+    from celpix.core.capabilities import ContentKind
+    from celpix.core.errors import Stage
+    from celpix.plugins.base import Preset
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    table = {"bytes": 1, "fields": "iiii iiii", "stamp_cells": [2, 2]}
+    table["stamp_stride"] = 2
+    field = {"indirect": True, "stamp_cells": [2, 2], "stamp_dense": True}
+    field |= {"group_bits": 3, "group_starts": [4, *[40] * 7]}
+    source = window._workspace.current
+    for name, data, engine, params in (
+        ("table.bin", bytes(72 * 4), "packed", table),
+        ("field.bin", bytes([0x00, 0x20]), "indirect-record", field),
+    ):
+        window._registry.register_preset(
+            Preset(
+                id=f"t.{name}",
+                name=name,
+                stage=Stage.INTERPRET_TILEMAP,
+                engine_id=f"codec.tilemap.{engine}",
+                params=params,
+            )
+        )
+        path = tmp_path / name
+        path.write_bytes(data)
+        window._load_pixel(str(path), content_kind=ContentKind.TILEMAP)
+        source_entry = window._workspace.current
+        source_entry.tilemap_preset_id = f"t.{name}"
+        source_entry.tile_source = TileSource(mode=TileMode.ENTRY, entry=source)
+        window._reload_tilemap(source_entry)
+        source = source_entry
+    doc = window._doc
+    assert [cell.index for cell in doc.cells] == [4, 40]
+
+    window.show()
+    window._tile_source_dock.setVisible(True)
+    window._tile_source_dock.raise_()
+    window._refresh_tile_source()
+    assert list(window._tile_source_panel._ids) == [*range(4, 36), *range(40, 72)]
+
+    spin = window._cell_index
+    window._select_tiles(0, 0)
+    assert (spin.minimum(), spin.maximum()) == (4, 71)
+    spin.setValue(35)
+    spin.stepBy(1)
+    assert doc.cells[0].index == spin.value() == 40
+    assert spin.validate("26", 2)[0] == QValidator.State.Intermediate
+
+    window._set_source_tile(37)
+    assert window._held_tile_id() is None
+    window._set_cell_index(37)
+    assert doc.cells[0].index == 40
+    assert "cannot store stamp $25" in window.statusBar().currentMessage()

@@ -40,6 +40,7 @@ from celpix.core import ceil_div
 from celpix.core.arrangement import BlockLayout, compose_window, split_grid
 from celpix.core.capabilities import Capability, ContentKind
 from celpix.core.errors import PipelineError
+from celpix.core.notices import Notice, notices
 from celpix.core.tilemap import Cell, CellGrid, CellOp
 from celpix.pipeline import pipeline
 from celpix.project.workspace import Entry, EntryKind
@@ -244,6 +245,72 @@ class TilemapEditMixin:
             self._codec_fault(preset.id, "index_limit", exc)
             return None
         return top if top and top > 0 else None
+
+    def _cell_index_runs(self) -> tuple[range, ...] | None:
+        """The references this entry's cells can hold, as ascending runs, or None.
+
+        :meth:`_cell_index_limit` with what no stored cell can name taken out
+        (:meth:`~celpix.plugins.base.TilemapCodecPlugin.index_runs`): the one
+        answer every place a reference is chosen reads — the tile source panel's
+        offer, the stamp tool's pick, the Cell spin's range, and the check every
+        edit passes on its way in (:meth:`_unnameable_reference`). A format that
+        does not answer names every index up to its limit, as a field holding a
+        plain number does; one that cannot answer is read the same way, with the
+        fault noticed. None where there is no limit, and so no reference at all.
+        """
+        limit = self._cell_index_limit()
+        found = self._tilemap_engine()
+        if limit is None or found is None:
+            return None
+        whole = (range(limit + 1),)
+        engine, preset = found
+        ask = getattr(engine, "index_runs", None)
+        if ask is None:
+            return whole
+        try:
+            # Cut to the limit so the runs can bound the spin on their own.
+            runs = tuple(
+                cut
+                for run in ask(preset.params)
+                if (cut := range(max(0, run.start), min(limit + 1, run.stop)))
+            )
+        except Exception as exc:  # noqa: BLE001 — a probe must not break the bar
+            self._codec_fault(preset.id, "index_runs", exc)
+            return whole
+        # An empty answer names nothing and bounds nothing; read as no answer.
+        return runs or whole
+
+    def _unnameable_reference(self, cells: list[Cell]) -> str | None:
+        """Why ``cells`` cannot be committed, or None where every reference fits.
+
+        **The one check every cell edit passes** — the stamp, the Cell spin, a
+        paste, a clear, typed text — made in :meth:`_apply_cells`, so no gesture
+        has to remember it. A reference outside :meth:`_cell_index_runs` would be
+        written as a stored value that names something else, and the save would
+        report success over it; the gestures that choose a reference offer only
+        these already, and this catches the rest (a paste from another map, a
+        clear writing 0 on a map whose records start higher).
+
+        Only a reference the edit **changes** is asked about, so a cell already
+        holding an unnameable one does not block an edit elsewhere on the map.
+        """
+        doc = self._doc
+        runs = self._cell_index_runs()
+        if doc is None or doc.cells is None or runs is None:
+            return None
+        before = doc.cells
+        for at, cell in enumerate(cells):
+            index = cell.index
+            if at < len(before) and before[at].index == index:
+                continue
+            if not any(index in run for run in runs):
+                what = "stamp" if doc.is_indirect else "tile"
+                named = ", ".join(f"${run.start:X}-${run.stop - 1:X}" for run in runs)
+                return (
+                    f"{self._tilemap_format_name()} cannot store {what} ${index:X}"
+                    f" - its cells name {named}. Nothing changed."
+                )
+        return None
 
     def _cell_reference_settable(self) -> bool:
         """Whether this entry has a cell reference to point somewhere at all.
@@ -507,6 +574,8 @@ class TilemapEditMixin:
 
         Clamped to what the format can hold rather than left for :meth:`encode` to
         mask down later, so the cell that lands is the one that was asked for.
+        A value inside that range no stored cell can name is refused on the way
+        in (:meth:`_unnameable_reference`); the spin does not offer one.
         """
         doc = self._doc
         indices = self._selected_cells()
@@ -848,6 +917,10 @@ class TilemapEditMixin:
         here rather than in each gesture is what keeps the coarse formats from
         being a special case in the paste, the stamp, the clear and the fill
         alike — every one of them arrives through this method.
+
+        For the same reason it is where an edit landing a **reference the format
+        cannot store** is refused, with the reason on the status bar
+        (:meth:`_unnameable_reference`).
         """
         doc = self._doc
         entry = self._workspace.current
@@ -855,8 +928,14 @@ class TilemapEditMixin:
             return False
         if doc is None or doc.cells is None or entry is None:
             return False
+        said = notices(doc.tilemap_ctx)
         cells = doc.settle_cells(cells)
+        self._show_new_notices(entry, said)
         if cells == doc.cells and caret is None:
+            return False
+        refused = self._unnameable_reference(cells)
+        if refused is not None:
+            self.statusBar().showMessage(refused)
             return False
         self._push_command(
             TilemapCellsCommand(
@@ -925,6 +1004,7 @@ class TilemapEditMixin:
         """
         if entry.doc is None and not self._load_entry(entry, quiet=True):
             return
+        said = notices(entry.doc.tilemap_ctx)
         entry.doc.cells = list(cells)
         entry.doc.resolve()
         self._reencode_cells(entry.doc)
@@ -934,12 +1014,28 @@ class TilemapEditMixin:
             # undo back to the saved cells still has to take the edited ones back
             # out of the parent (``docs/design/slices-and-parents.md`` §2).
             self._propagate_pixel_edit(entry)
+        self._show_new_notices(entry, said)
         touched = self._rechain_dependents(entry)
         self._workspace.set_pixel_revision(entry, revision)
         for owner, owner_revision in owners:
             self._workspace.set_pixel_revision(owner, owner_revision)
         if entry is self._workspace.current or touched:
             self._refresh_view()
+
+    def _show_new_notices(self, entry: Entry, said: tuple[Notice, ...]) -> None:
+        """Repaint ``entry``'s row if its cells' context has recorded a notice
+        since ``said`` was taken.
+
+        A format's settle runs per edit rather than per load
+        (:func:`~celpix.pipeline._stage._cell_settler`), so the notice it leaves
+        when it crashes and is stood down arrives with no load behind it to
+        repaint the row. The dirty marker's repaint happens to catch it on the
+        first edit after a save, and on no other. Compared rather than repainted
+        unconditionally, because this runs on every committed edit.
+        """
+        doc = entry.doc
+        if doc is not None and notices(doc.tilemap_ctx) != said:
+            self._files_panel.refresh_entry(entry)
 
     def _reencode_cells(self, doc) -> None:  # noqa: ANN001 — a Document
         """Bring ``doc.tilemap_data`` back in step with the cells above it.

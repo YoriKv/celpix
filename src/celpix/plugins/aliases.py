@@ -1,4 +1,4 @@
-"""Ids a plugin or preset used to be called, and what it is called now.
+"""Names a plugin, preset or preset parameter used to have, and what each is now.
 
 A plugin id is a **compatibility surface**, not an implementation detail. Three
 things outside this codebase hold one: a saved project names the container,
@@ -33,9 +33,20 @@ Project files are also rewritten as they are re-saved
 (:func:`celpix.project.projectfile.current_ids`), so a project touched after an
 upgrade stops depending on this table. One that is never re-saved keeps working
 through it indefinitely, which is the point.
+
+**Preset parameters** are the same kind of surface one level down: a user's own
+preset TOML states them by name, so renaming a key the host reads needs a
+forwarding address too (:data:`RENAMED_PARAMS`). A parameter has no registry to
+look it up in, so the forwarding happens where a preset is built instead —
+:class:`~celpix.plugins.base.Preset` passes its ``params`` through
+:func:`current_params`, and nothing downstream ever sees a retired key. The same
+rules hold: rows are permanent, and the table is flat.
 """
 
 from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any
 
 # old id -> the id that behaviour has now. Grouped by the change that caused it,
 # newest last, because the reason is the only thing that makes a row reviewable.
@@ -138,3 +149,42 @@ def current_id(plugin_id: str) -> str:
         plugin_id = nxt
         seen.add(nxt)
     return plugin_id
+
+
+# old preset parameter -> the name the host reads it by now. A separate table from
+# RENAMED because a parameter and an id are different namespaces: a param name
+# forwarded as an id (or the reverse) would be a lookup nobody asked for.
+RENAMED_PARAMS: dict[str, str] = {
+    # v1.1.8 — the two record keys that shape a definition table said *which*
+    # count rather than *of what*. `record_columns` read as the table's columns
+    # but is the cells across one record; `records_across` is how many records
+    # sit side by side on the source, and shared its name with the view's own
+    # records across (`Document.records_across`), a different number.
+    "record_columns": "record_width",
+    "records_across": "records_per_row",
+}
+
+
+def current_params(params: Mapping[str, Any]) -> Mapping[str, Any]:
+    """``params`` with every retired key under the name it has now.
+
+    Returned as it came when nothing in it is retired, which is every preset
+    written since, so the common case copies nothing. Raises ``ValueError`` for
+    a preset stating one parameter under both its old and its current name:
+    picking either would be a guess about which one its author last edited, and
+    the loader reports the refusal against the preset file.
+    """
+    if not any(key in RENAMED_PARAMS for key in params):
+        return params
+    both = [
+        old for old, new in RENAMED_PARAMS.items() if old in params and new in params
+    ]
+    if both:
+        raise ValueError(
+            "; ".join(
+                f"{old} and {RENAMED_PARAMS[old]} are one parameter under its old "
+                f"and current name — state it once, as {RENAMED_PARAMS[old]}"
+                for old in both
+            )
+        )
+    return {RENAMED_PARAMS.get(key, key): value for key, value in params.items()}

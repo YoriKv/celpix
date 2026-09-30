@@ -278,11 +278,16 @@ def test_closing_the_source_degrades_and_undo_restores(qtbot, tmp_path) -> None:
     assert window._palette_mode is PaletteMode.ENTRY  # the mode is kept
     assert palette_missing(parent)
     assert parent.doc.palette.colors != colours
+    # The row names the entry, and sends no one looking for a file: nothing moved.
+    row = window._files_panel._items[parent]
+    assert "Palette is read from CGRAM, which is not open" in row.toolTip(0)
+    assert "missing" not in row.toolTip(0) and "None" not in row.toolTip(0)
 
     window._undo_stack.undo()
 
     assert not palette_missing(parent)
     assert parent.doc.palette.colors == colours
+    assert "not open" not in window._files_panel._items[parent].toolTip(0)
 
 
 # -- where a swatch composite is filed, and what a click on it means ---------

@@ -301,8 +301,10 @@ def _tile_source(ctx: Context, view: EntryView) -> None:
             f"`tile_source.base_index` is {base!r}, not an integer — it reads as 0",
             pointer=view.at("tile_source", "base_index"),
             entry=view,
-            detail="Cell N draws source tile base_index + N. It is signed: negative "
-            "shifts the map's numbering back onto a slice that starts at its tiles.",
+            detail="It counts what the map's index counts: cell N draws source tile "
+            "base_index + N, or under ordinal addressing unit base_index + N. It is "
+            "signed: negative shifts the map's numbering back onto a slice that "
+            "starts at its tiles.",
         )
     at = source.get("entry_index")
     if not is_int(at):

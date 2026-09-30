@@ -343,6 +343,29 @@ def test_growing_asks_nothing(qtbot, tmp_path, monkeypatch, confirmations) -> No
     assert px.stat().st_size == 16 * 32
 
 
+def test_a_slice_matching_the_files_size_follows_a_resize(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """A resize leaves the file's other slices alone, but one whose length is
+    the file's is re-read at the new size — open or not."""
+    px = _make_snes_file(tmp_path)  # 8 tiles = 256 bytes
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    entry = window._workspace.find_file(str(px))
+    tail = window._workspace.add_slice(str(px), "tail", 64, 192)
+    tail.match_parent = True
+    window._activate_entry(tail)
+    window._activate_entry(entry)
+    assert len(tail.doc.pixel_data) == 192
+
+    _answer(monkeypatch, ContainerEdit(RAW_CONTAINER, (str(px),), units=12))
+    window._change_container_for(entry)
+    assert tail.slice_length == 12 * 32 - 64
+    window._activate_entry(tail)
+    assert len(tail.doc.pixel_data) == 12 * 32 - 64
+
+
 def test_shrink_prompt_names_the_slices_it_would_orphan(
     qtbot, tmp_path, monkeypatch, confirmations
 ) -> None:

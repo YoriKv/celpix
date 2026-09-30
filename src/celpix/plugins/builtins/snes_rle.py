@@ -44,9 +44,8 @@ RLE2 there is no terminator and no cap.
 rectangles** — SMW's Layer 2 backgrounds are screens of 16x27 laid side by side,
 its overworld 32x32 pages in the quartering the SNES applies to a 64x64 tilemap.
 That walk is a property of the *structure*, not of the codec, and belongs to a
-plugin that knows which structure it is reading; nothing here reorders a byte.
-``sample-projects/smw/plugins/compression/smw_rle.py`` is the worked example,
-layering each walk over these two functions.
+reshape that knows which structure it is reading, run over this codec's output
+(``docs/design/reshape-stage.md`` §4); nothing here reorders a byte.
 
 **Compressor.** A run for every stretch of two or more equal bytes, everything
 else packed into literals, both capped at 128. That threshold is the original

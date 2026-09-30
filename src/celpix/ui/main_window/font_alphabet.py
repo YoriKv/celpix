@@ -198,7 +198,12 @@ class FontAlphabetMixin:
         if doc.is_fontmap:
             row = self._tile_source_row()
             source = pipeline.tile_source_image(
-                doc, self._registry, FONT_SHEET_COLUMNS, self._cell_index_limit(), row
+                doc,
+                self._registry,
+                FONT_SHEET_COLUMNS,
+                self._cell_index_limit(),
+                row,
+                self._cell_index_runs(),
             )
             if not source.ids:
                 return None

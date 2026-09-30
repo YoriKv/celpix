@@ -525,9 +525,9 @@ def test_the_alex_kidd_sample_project_reads_its_strings_and_stamps_its_maps(
             14,
             None,
         ),
-        # ordinal, the geometry read off the table: packed, a base of 1 past a
-        # 17-cell record, a grid eight across, and bytes whose top bits pick a
-        # table
+        # ordinal, the geometry read off the table: packed, a 17-cell record
+        # whose stamp starts past a one-cell header, a grid eight across, and
+        # bytes whose top bits pick a table
         (
             "ferias-frustradas-sms/ferias-frustradas-sms.celpix",
             "fase 1/room 2 — room map",
@@ -541,7 +541,7 @@ def test_the_alex_kidd_sample_project_reads_its_strings_and_stamps_its_maps(
             "Map — LandenWorld, plane B",
             0x55,
             0x55,
-            1445,
+            1446,
             None,
         ),
         (
@@ -562,8 +562,9 @@ def test_a_chained_sample_map_names_the_corner_cell_it_always_has(
 ) -> None:
     """Each stored value lands on the source cell it drew before the model
     knew ordinals from corners — the corner the hop's **resolution** reads, not
-    only the number the cell holds. The base is added after the conversion. A
-    grouped byte keeps itself in ``flags`` and its record in the index."""
+    only the number the cell holds, base and all: the base counts what the
+    index counts and is added before the conversion. A grouped byte keeps
+    itself in ``flags`` and its record in the index."""
     from dataclasses import replace
 
     from celpix.core.document import resolve_chain
@@ -581,7 +582,7 @@ def test_a_chained_sample_map_names_the_corner_cell_it_always_has(
     )
     if row is not None:
         assert held.palette_row == row
-    assert chain.source_cell(index) == corner + chain.base
+    assert chain.source_cell(index) == corner
     first = resolve_chain(
         [Cell(index=index)],
         replace(chain, through=None),
@@ -590,4 +591,4 @@ def test_a_chained_sample_map_names_the_corner_cell_it_always_has(
         carry_rows=False,
         dense=True,
     )[0]
-    assert first == chain.source[corner + chain.base]
+    assert first == chain.source[corner]

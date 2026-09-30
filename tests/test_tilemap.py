@@ -8,6 +8,7 @@ corrupted file rather than a missing feature.
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 
 import pytest
@@ -2162,7 +2163,7 @@ def test_an_ordinal_index_sharing_its_word_with_flips_names_its_units_corner(
         (9, True, False),
         (0, True, True),
     ]
-    assert doc.chain.geometry == (4, 2, 8)
+    assert doc.chain.geometry == (4, 2, 8, 0)
     doc.view.columns = 6  # the three entries side by side
     drawn = doc.drawn_cells
 
@@ -2266,6 +2267,42 @@ def test_a_grouped_record_edit_settles_the_row_it_moved_to() -> None:
     plain = codec.decode(bytes([0x28]), {"record_cells": 4}, ctx)
     assert codec.settle_cells(plain, {"record_cells": 4}) is plain
     assert codec.settle_cells(cells, {**grouped, "group_rows": False}) is cells
+
+
+def test_grouped_records_name_only_what_a_byte_reaches_and_refuse_the_rest() -> None:
+    """A group reaches ``2 ** low`` records from its start, so the records a
+    byte names are the union of those reaches: all of them ungrouped, a floor
+    where the first table starts late (Final Fantasy II's set-B field maps), one
+    run where tables overlap (Super Mario Bros.), and a gap where one table's
+    reach ends short of the next one's start. Every one of them round-trips;
+    any other is refused by name, where masking it would write record 7 as the
+    byte that reads back as record 71."""
+    from celpix.plugins.builtins.indirect_record import IndirectRecordCodec
+
+    codec = IndirectRecordCodec()
+    ctx = PipelineContext()
+    floor = {"group_bits": 2, "group_starts": [64, 128, 192, 192]}
+    overlap = {"group_bits": 2, "group_starts": [0, 39, 85, 95]}
+    gap = {"group_bits": 1, "group_starts": [0, 200]}
+    assert codec.index_runs({}) == (range(0, 256),)
+    assert codec.index_runs(floor) == (range(64, 256),)
+    assert codec.index_runs(overlap) == (range(0, 159),)
+    assert codec.index_runs(gap) == (range(0, 128), range(200, 328))
+    assert codec.index_limit(gap) == 327
+    for params in ({}, floor, overlap, gap):
+        named = [record for run in codec.index_runs(params) for record in run]
+        cells = [Cell(index=record) for record in named]
+        back = codec.decode(codec.encode(cells, params, ctx), params, ctx)
+        assert [cell.index for cell in back] == named
+
+    with pytest.raises(ValueError, match=r"cell 1 names record \$7, .* \$40-\$FF"):
+        codec.encode([Cell(index=64), Cell(index=7)], floor, ctx)
+    with pytest.raises(ValueError, match=r"record \$96, .* \$0-\$7F, \$C8-\$147"):
+        codec.encode([Cell(index=150)], gap, ctx)
+    # No byte, so no group to take a row from: the settle leaves it for the
+    # encode to refuse rather than deriving a row from a byte it would not write.
+    stray = [Cell(index=7)]
+    assert codec.settle_cells(stray, {**floor, "group_rows": True}) is stray
 
 
 def test_a_dense_stamped_map_fixes_its_own_width_and_restamps_by_the_stamp() -> None:
@@ -3454,6 +3491,56 @@ def test_a_metatile_sheet_offers_whole_units_and_not_every_window() -> None:
     assert list(tile_source_ids(doc))[:4] == [1, 3, 5, 7]
 
 
+def test_the_tile_source_offers_only_what_the_format_can_name(tmp_path) -> None:
+    """The panel's promise is that what is on offer is what will land, so an ID
+    that resolves but no stored cell can name is not on offer: the span is cut
+    to the format's runs — after the base and the ordinal reading have said which
+    records land in the table — and comes back a list where that leaves a gap.
+    A metatile sheet walks what is left."""
+    from celpix.pipeline.pipeline import tile_source_ids, tile_source_span
+    from celpix.plugins.base import Preset
+    from celpix.project.documents import load_document
+
+    registry, workspace, preset, entry = _headless(tmp_path)
+    preset("t.table", fields="iiii iiii", stamp_cells=[2, 2], stamp_stride=2)
+    params = {"indirect": True, "stamp_cells": [2, 2], "stamp_dense": True}
+    params |= {"group_bits": 2, "group_starts": [64, 128, 192, 192]}
+    registry.register_preset(
+        Preset(
+            id="t.field",
+            name="t.field",
+            stage=Stage.INTERPRET_TILEMAP,
+            engine_id="codec.tilemap.indirect-record",
+            params=params,
+        )
+    )
+    engine, field = registry.engine_for("t.field")
+    runs = engine.index_runs(field.params)
+    table = entry("table.bin", bytes(192 * 4), "t.table")  # records 0-191
+    area = entry("area.bin", bytes([0]), "t.field", table)
+    doc = load_document(area, registry, workspace).doc
+    assert doc.chain.geometry == (4, 2, 0, 0)
+    assert tile_source_span(doc, 255) == range(0, 192)
+    assert tile_source_span(doc, 255, runs) == range(64, 192)
+    assert tile_source_ids(doc, 255, runs) == range(64, 192)
+    # A base counts records too, and moves which of them land; the runs cut
+    # what is left.
+    area.tile_source = replace(area.tile_source, base_index=64)
+    area.doc = None
+    doc = load_document(area, registry, workspace).doc
+    assert tile_source_ids(doc, 255, runs) == range(64, 128)
+    gapped = (range(0, 3), range(100, 103))
+    assert tile_source_ids(doc, 255, gapped) == [0, 1, 2, 100, 101, 102]
+    assert 50 not in tile_source_span(doc, 255, gapped)
+
+    bank = _bank_doc(bytes(32 * 64), [Cell(index=0)])
+    bank.cell_tiles, bank.cell_row_stride = (2, 2), 16
+    assert list(tile_source_ids(bank, None, (range(0, 8), range(36, 64)))) == [
+        *range(0, 8, 2),
+        *range(36, 48, 2),
+    ]
+
+
 def test_a_sheet_tile_is_the_same_pixels_the_map_draws_for_that_cell() -> None:
     """The point of the panel: what is on offer has to be what will land.
 
@@ -4511,27 +4598,28 @@ def test_the_units_an_ordinal_counts_are_cut_the_way_the_source_lays_them_out() 
     A shape the geometry cannot number is refused with a reason, not guessed."""
     from celpix.core.tilemap import metatile_geometry, stamp_geometry
 
-    assert stamp_geometry((2, 2), 2) == ((4, 2, 0), None)
-    assert stamp_geometry((2, 2), 2, column_major=True) == ((4, 2, 0), None)
+    assert stamp_geometry((2, 2), 2) == ((4, 2, 0, 0), None)
+    assert stamp_geometry((2, 2), 2, column_major=True) == ((4, 2, 0, 0), None)
     # a published record holding more than the stamp draws is the step between
-    assert stamp_geometry((4, 4), 4, pitch=17) == ((17, 4, 0), None)
+    assert stamp_geometry((4, 4), 4, pitch=17) == ((17, 4, 0, 0), None)
     # a sheet 16 cells wide holds eight 2x2 stamps to a row
-    assert stamp_geometry((2, 2), 16) == ((4, 2, 8), None)
+    assert stamp_geometry((2, 2), 16) == ((4, 2, 8, 0), None)
     # one cell counts as its own corner; the refusals say why
     assert stamp_geometry((1, 1), 16) == (None, None)
     assert stamp_geometry((2, 2), 16, column_major=True)[1] is not None
     assert stamp_geometry((2, 2), 15)[1] is not None
     # over a bank: consecutive or column-filled tiles are packed metatiles
-    assert metatile_geometry((2, 2), 2) == ((4, 2, 0), None)
-    assert metatile_geometry((2, 2), 1, 2) == ((4, 2, 0), None)
+    assert metatile_geometry((2, 2), 2) == ((4, 2, 0, 0), None)
+    assert metatile_geometry((2, 2), 1, 2) == ((4, 2, 0, 0), None)
 
 
 def test_an_ordinal_over_a_tile_bank_counts_metatiles_in_the_vram_grid() -> None:
     """Over a bank an ordinal counts metatiles laid out as the cell's strides lay
     them: a 16x16 cell stepping a 16-tile VRAM row is eight to a row, so
-    metatile 9 starts at tile 34. The base counts tiles and is added after, the
-    index mask — the field's width — never wraps a corner, and every ordinal
-    whose metatile lands in the bank is a whole one to offer."""
+    metatile 9 starts at tile 34. The base counts metatiles too and is added
+    before the conversion, the index mask — the field's width — never wraps a
+    corner, and every ordinal whose metatile lands in the bank is a whole one
+    to offer."""
     from celpix.core.tilemap import metatile_geometry
     from celpix.pipeline.pipeline import tile_source_ids, tile_source_span
 
@@ -4542,9 +4630,10 @@ def test_an_ordinal_over_a_tile_bank_counts_metatiles_in_the_vram_grid() -> None
     assert doc.cell_tile_indices(Cell(index=9, flip_h=True)) == [35, 34, 51, 50]
     assert tile_source_span(doc) == range(0, 16)
     assert tile_source_ids(doc) == range(0, 16)
-    doc.tile_base_index = 1
-    assert doc.cell_tile_indices(Cell(index=9)) == [35, 36, 51, 52]
-    assert doc.index_origin(9) == 35
+    doc.tile_base_index = 1  # one whole metatile: 9 draws metatile 10
+    assert doc.cell_tile_indices(Cell(index=9)) == [36, 37, 52, 53]
+    assert doc.index_origin(9) == 36
+    assert tile_source_span(doc) == range(0, 15)
 
 
 def test_an_ordinal_sparse_map_reads_each_corner_and_degrades_to_its_corner() -> None:
@@ -4604,7 +4693,7 @@ def test_a_preset_can_say_its_index_counts_the_stamps_of_its_source(
 
     doc = load_document(area, registry, workspace).doc
     assert [c.index for c in doc.cells] == [300, 0]
-    assert doc.chain.geometry == (17, 4, 0)
+    assert doc.chain.geometry == (17, 4, 0, 0)
     drawn = doc.drawn_cells
     width = doc.drawn_columns
     assert [c.index for c in drawn[:4]] == [5100, 5101, 5102, 5103]
@@ -4628,24 +4717,323 @@ def test_a_preset_can_say_its_index_counts_the_stamps_of_its_source(
         load_document(entry("typo.bin", data, "t.typo", table), registry, workspace)
 
 
-def test_a_preset_stating_a_record_geometry_is_read_as_ordinal() -> None:
-    """The alias every preset written before ``index_addressing`` relies on."""
-    from celpix.core.tilemap import IndexAddressing
-    from celpix.project.documents import stated_addressing
-    from celpix.project.workspace import Entry, EntryKind
+def _record_map(registry, preset_id: str, engine_id: str, **params) -> None:  # noqa: ANN001, ANN003
+    """A one-byte map of dense 2x2 stamps on ``engine_id``, stating ``params``."""
+    from celpix.plugins.base import Preset
 
-    def addressing(preset_id: str) -> tuple:
-        entry = Entry(
-            name="m",
-            kind=EntryKind.FILE,
-            path="m",
-            content_kind=ContentKind.TILEMAP,
-            tilemap_preset_id=preset_id,
+    registry.register_preset(
+        Preset(
+            id=preset_id,
+            name=preset_id,
+            stage=Stage.INTERPRET_TILEMAP,
+            engine_id=engine_id,
+            params={
+                "fields": "iiii iiii",
+                "indirect": True,
+                "stamp_cells": [2, 2],
+                "stamp_dense": True,
+                **params,
+            },
         )
-        return stated_addressing(default_registry(), entry)
-
-    assert addressing("preset.tilemap.metatile-index") == (
-        IndexAddressing.ORDINAL,
-        "record keys",
     )
-    assert addressing(SNES_BG) == (IndexAddressing.CORNER, "default")
+
+
+def _five_cell_table(preset, entry):  # noqa: ANN001, ANN202
+    """A table of 2x2 stamps in 5-cell records, so a count in the table's own
+    shape (record 20 at cell 100) differs from one in the record keys' default
+    (cell 80)."""
+    preset(
+        "t.table",
+        fields="iiii iiii",
+        stamp_cells=[2, 2],
+        stamp_stride=2,
+        record_shape=[5, 1],
+    )
+    return entry("table.bin", bytes(range(200)), "t.table")
+
+
+def _first_stamp(doc) -> list[int]:  # noqa: ANN001
+    """The cells the map's first stamp draws: its top row, then below it."""
+    drawn, width = doc.drawn_cells, doc.drawn_columns
+    return [drawn[0].index, drawn[1].index, drawn[width].index]
+
+
+def test_an_indirect_record_map_counts_in_its_record_keys_or_else_its_table(
+    tmp_path,
+) -> None:
+    """On the indirect-record engine the byte is a record number, counted in the
+    record keys — stated, or at their defaults where the preset states neither
+    them nor ``index_addressing``: record 20 of a packed 2x2 table is cell 80,
+    not cell 20. A preset stating ``index_addressing`` and no key has handed
+    the shape to the table (5-cell records: cell 100), one stating both keeps
+    its keys, and ``"corner"`` reads corners until a binding asks for records,
+    which are then the keys' again."""
+    from celpix.core.tilemap import IndexAddressing
+    from celpix.project.documents import load_document, stated_addressing
+
+    registry, workspace, preset, entry = _headless(tmp_path)
+    table = _five_cell_table(preset, entry)
+    ordinal, corner = IndexAddressing.ORDINAL, IndexAddressing.CORNER
+    cases = [
+        ({}, (ordinal, "engine"), (4, 2, 0, 0), 80),
+        ({"record_cells": 8}, (ordinal, "engine"), (8, 2, 0, 0), 160),
+        (
+            {"index_addressing": "ordinal", "record_cells": 8},
+            (ordinal, "preset"),
+            (8, 2, 0, 0),
+            160,
+        ),
+        ({"index_addressing": "ordinal"}, (ordinal, "preset"), (5, 2, 0, 0), 100),
+        (
+            {"index_addressing": "corner", "record_cells": 8},
+            (corner, "preset"),
+            None,
+            20,
+        ),
+    ]
+    for at, (params, stated, geometry, first) in enumerate(cases):
+        _record_map(registry, f"t.map{at}", "codec.tilemap.indirect-record", **params)
+        area = entry(f"area{at}.bin", bytes([20]), f"t.map{at}", table)
+        assert stated_addressing(registry, area) == stated, params
+        doc = load_document(area, registry, workspace).doc
+        assert doc.cells[0].index == 20
+        assert doc.chain.geometry == geometry, params
+        assert _first_stamp(doc) == [first, first + 1, first + 2], params
+
+    area.tile_source = replace(area.tile_source, addressing=ordinal)
+    area.doc = None
+    doc = load_document(area, registry, workspace).doc
+    assert doc.chain.geometry == (8, 2, 0, 0)
+
+
+def test_record_keys_are_read_only_over_an_engine_that_counts_records(
+    tmp_path,
+) -> None:
+    """The gate is the engine's own ``counts_records``, not its id: a project
+    engine answering it has the keys read. Over the packed engine they state
+    nothing — the map opens corner-addressed, or with ``index_addressing``
+    counts in its table's shape — and the load warns on the map's own tilemap
+    context, never the pixel context it shares with what it draws from."""
+    from celpix.core.notices import notices
+    from celpix.core.tilemap import IndexAddressing
+    from celpix.plugins.base import PluginInfo
+    from celpix.project.documents import load_document, stated_addressing
+
+    class CountingCodec(TilemapCodec):
+        info = PluginInfo(
+            id="codec.tilemap.test-counting",
+            name="Counting",
+            stage=Stage.INTERPRET_TILEMAP,
+        )
+
+        def counts_records(self, params: dict) -> bool:
+            return True
+
+    registry, workspace, preset, entry = _headless(tmp_path)
+    registry.register(CountingCodec())
+    table = _five_cell_table(preset, entry)
+
+    def opened(preset_id: str) -> tuple:  # noqa: ANN202
+        area = entry(f"{preset_id}.bin", bytes([20]), preset_id, table)
+        doc = load_document(area, registry, workspace).doc
+        said = [note.summary for note in notices(doc.tilemap_ctx)]
+        assert notices(doc.pixel_ctx) == ()
+        return stated_addressing(registry, area), doc.chain.geometry, said, doc
+
+    _record_map(registry, "t.counting", "codec.tilemap.test-counting", record_cells=8)
+    stated, geometry, said, doc = opened("t.counting")
+    assert (stated, geometry, said) == (
+        (IndexAddressing.ORDINAL, "engine"),
+        (8, 2, 0, 0),
+        [],
+    )
+    assert _first_stamp(doc) == [160, 161, 162]
+
+    _record_map(registry, "t.packed", "codec.tilemap.packed", record_cells=8)
+    stated, geometry, said, doc = opened("t.packed")
+    assert (stated, geometry, said) == (
+        (IndexAddressing.CORNER, "default"),
+        None,
+        ["record_cells is not read by this format"],
+    )
+    assert _first_stamp(doc) == [20, 21, 22]
+
+    _record_map(
+        registry,
+        "t.packed-ordinal",
+        "codec.tilemap.packed",
+        index_addressing="ordinal",
+        record_cells=8,
+        records_per_row=4,
+    )
+    stated, geometry, said, _ = opened("t.packed-ordinal")
+    assert (stated, geometry, said) == (
+        (IndexAddressing.ORDINAL, "preset"),
+        (5, 2, 0, 0),
+        ["record_cells and records_per_row are not read by this format"],
+    )
+
+
+def test_the_base_fit_filters_and_measures_an_ordinal_by_its_corner() -> None:
+    """A named code whose ordinal is short of the bank but whose corner is past
+    it is left out of the fit like any other named code past the end — tested
+    in tiles, the unit the bank is measured in — and the shift is a number of
+    metatiles, the unit the base counts in."""
+    from celpix.project.documents import BoundTiles, fit_tile_base
+    from celpix.project.workspace import Entry, EntryKind, TileMode, TileSource
+
+    bank = Entry(name="bank", kind=EntryKind.FILE, path="bank")
+    area = Entry(name="area", kind=EntryKind.FILE, path="area")
+    area.tile_source = TileSource(mode=TileMode.ENTRY, entry=bank)
+    # a 100-tile bank; the fit reads only its bytes, never the config
+    tiles = BoundTiles(bytes(100), 1, 8, 8, PipelineContext(), None)  # type: ignore[arg-type]
+    # metatiles 26 and 27 start at tiles 104 and 108; 60 (at 240) is named
+    cells = [Cell(index=26), Cell(index=27), Cell(index=60)]
+    fit_tile_base(area, cells, tiles, (1, 1), frozenset({60}), (4, 2, 0, 0))
+    assert area.tile_source.base_index == -26
+
+
+def test_a_grid_record_that_is_not_whole_rows_of_its_width_is_refused() -> None:
+    """Such a record overlaps its neighbour and numbers corners out of order
+    (record 3 past record 4), which the bisection in ``index_span`` and the
+    inverse ``containing_at`` both rely on never happening."""
+    from celpix.core.tilemap import index_span, record_geometry
+
+    def shape(cells: int, per_row: int = 4) -> dict:
+        return {"records_per_row": per_row, "record_width": 2, "record_cells": cells}
+
+    for cells in (1, 3):
+        with pytest.raises(ValueError, match="whole rows of record_width"):
+            record_geometry(shape(cells))
+    # packed, the width is never read, so any cell count stands
+    assert record_geometry(shape(3, per_row=0)) == (3, 2, 0, 0)
+    assert index_span(0, 16, record_geometry(shape(4))) == range(0, 4)
+
+
+def test_an_ordinal_base_counts_whole_units_over_art_and_through_a_chain() -> None:
+    """The base counts what the index counts and is added before the
+    conversion: over a bank counting metatiles eight to a VRAM row, base 1 is
+    the next metatile and base 8 the next row of them; through a table of
+    packed 2x2 stamps, base 1 is the next whole stamp — degraded to one cell
+    or not — and the sheet offers one ID fewer."""
+    from celpix.core.document import CellChain, resolve_chain
+    from celpix.core.tilemap import index_span, metatile_geometry
+
+    doc = _bank_doc(bytes(32 * 64), [Cell(index=0)])
+    doc.cell_tiles, doc.cell_row_stride = (2, 2), 16
+    doc.index_geometry, _ = metatile_geometry((2, 2), 16)
+    doc.tile_base_index = 1
+    assert doc.cell_tile_indices(Cell(index=0)) == [2, 3, 18, 19]
+    doc.tile_base_index = 8
+    assert doc.cell_tile_indices(Cell(index=0)) == [32, 33, 48, 49]
+
+    source = [Cell(index=i) for i in range(16)]
+    chain = CellChain(
+        source,
+        stamp=(2, 2),
+        source_columns=2,
+        dense=True,
+        base=1,
+        geometry=(4, 2, 0, 0),
+    )
+    drawn = resolve_chain([Cell(index=0)], chain, 1)
+    assert [cell.index for cell in drawn] == [4, 5, 6, 7]
+    assert chain.source_cell(2) == 12
+    one = resolve_chain([Cell(index=0)], chain, 1, stamped=False)
+    assert [cell.index for cell in one] == [4]
+    assert index_span(0, 16, chain.geometry, 1) == range(0, 3)
+
+
+def test_a_record_header_moves_every_stamp_past_it() -> None:
+    """A record whose stamp comes after header cells has its corner past them,
+    packed and on a grid (in whole rows there). A header cell falls inside its
+    record when snapping and is no record's corner exactly. A header the
+    record has no room for is refused where it is stated, and one a table
+    states of its own records is published for the maps above — unless the
+    engine counts records, where it is the referrer's own record key."""
+    from celpix.core.context import KEY_TILEMAP_RECORD_HEADER, PipelineContext
+    from celpix.core.tilemap import (
+        containing_at,
+        corner_at,
+        record_geometry,
+        stamp_geometry,
+        unit_at,
+    )
+
+    packed = record_geometry({"record_cells": 17, "record_header": 1})
+    assert packed == (17, 2, 0, 1)
+    assert [corner_at(n, packed) for n in range(3)] == [1, 18, 35]
+    assert (containing_at(17, packed), unit_at(17, packed), unit_at(18, packed)) == (
+        1,
+        None,
+        1,
+    )
+    grid = record_geometry(
+        {"record_cells": 6, "record_width": 2, "records_per_row": 4, "record_header": 2}
+    )
+    # a row of records is three source rows of 8; the header is the first
+    assert [corner_at(n, grid) for n in (0, 1, 4)] == [8, 10, 32]
+    assert (containing_at(2, grid), unit_at(2, grid), unit_at(32, grid)) == (1, None, 4)
+    # a header filling its record, and one that is not whole rows of a grid's
+    for bad in (
+        {"record_cells": 17, "record_header": 17},
+        {
+            "record_cells": 6,
+            "record_width": 2,
+            "records_per_row": 4,
+            "record_header": 1,
+        },
+    ):
+        with pytest.raises(ValueError, match="record_header"):
+            record_geometry(bad)
+    assert stamp_geometry((4, 4), 4, pitch=17, header=1) == ((17, 4, 0, 1), None)
+
+    ctx = PipelineContext()
+    publish_table_layout(34, {"record_shape": [17, 1], "record_header": 1}, ctx)
+    assert ctx.get(KEY_TILEMAP_RECORD_HEADER) == 1
+    with pytest.raises(ValueError, match="record_header"):
+        publish_table_layout(
+            34, {"record_shape": [17, 1], "record_header": 17}, PipelineContext()
+        )
+    referrer = PipelineContext()
+    params = {"record_shape": [17, 1], "record_header": 1}
+    publish_table_layout(34, params, referrer, counts_records=True)
+    assert referrer.get(KEY_TILEMAP_RECORD_HEADER) is None
+
+
+def test_a_version_6_record_map_keeps_its_picture_with_its_base_in_records(
+    tmp_path,
+) -> None:
+    """A version-6 base counted cells even where the byte counted records. On
+    the load path a whole number of records becomes that count and the map
+    draws the same cells; one partway into a record becomes the record it falls
+    in, and a line says how far the picture moved."""
+    from celpix.project import projectfile
+    from celpix.project.documents import count_bases_in_units, load_document
+    from celpix.project.workspace import Workspace
+
+    registry, workspace, preset, entry = _headless(tmp_path)
+    preset("t.table", fields="iiii iiii", stamp_cells=[2, 2], stamp_stride=2)
+    table = entry("table.bin", bytes(range(64)), "t.table")
+    for name, base in (("area.bin", 8), ("odd.bin", 5)):
+        area = entry(name, bytes([0, 1]), "preset.tilemap.metatile-index", table)
+        area.tile_source = replace(area.tile_source, base_index=base)
+    path = tmp_path / "old.celpix"
+    projectfile.save_project(workspace, str(path))
+    raw = json.loads(path.read_text())
+    raw["version"] = 6
+    path.write_text(json.dumps(raw))
+
+    loaded = projectfile.load_project(str(path))
+    assert loaded.bases_count_elements
+    notes = count_bases_in_units(registry, loaded.entries)
+    reopened = Workspace()
+    reopened.replace(loaded.entries, loaded.current)
+    area, odd = loaded.entries[1:]
+    assert (area.tile_source.base_index, odd.tile_source.base_index) == (2, 1)
+    assert notes == [
+        "odd.bin: base cell $5 is not a whole number of stamps, so it is now "
+        "base stamp $1 and the map starts 1 cell earlier than it did."
+    ]
+    doc = load_document(area, registry, reopened).doc
+    assert _first_stamp(doc) == [8, 9, 10]  # record 0 + 8 cells, as v6 drew it

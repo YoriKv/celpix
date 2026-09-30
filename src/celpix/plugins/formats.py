@@ -127,7 +127,7 @@ class TilemapFormat(Protocol):
     May also define the optional methods
     :class:`~celpix.plugins.base.TilemapCodecPlugin` carries, each minus
     ``params``: ``transform_cell(cell, op)``, ``index_limit()``,
-    ``palette_row_limit()``, ``has_palette_rows()``,
+    ``index_runs()``, ``palette_row_limit()``, ``has_palette_rows()``,
     ``palette_row_granularity()``, ``settle_cells(cells)`` (or
     ``settle_cells(cells, inputs)`` for a format that declares inputs),
     ``has_line_flag()``, ``has_visibility()`` and ``cell_fields()`` — plus the
@@ -190,6 +190,7 @@ _OPTIONAL: dict[Stage, dict[str, Any]] = {
     Stage.INTERPRET_TILEMAP: {
         "transform_cell": _params_last,
         "index_limit": _params_last,
+        "index_runs": _params_last,
         "palette_row_limit": _params_last,
         "has_palette_rows": _params_last,
         "palette_row_granularity": _params_last,

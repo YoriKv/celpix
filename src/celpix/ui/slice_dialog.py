@@ -43,6 +43,13 @@ whose reading is about to change underneath it. The slot itself stays the
 Length above: a stream that no longer fits is refused at OK time by the
 caller, and widening Length over free space after the slice is how it gets
 room (``docs/design/slices-and-parents.md`` §5).
+
+**Match parent size** hands the Length to the parent: the slice runs from its
+offset to the end of whatever it was cut from, and follows it when that is
+resized (:attr:`~celpix.project.workspace.Entry.match_parent`). Length is greyed
+while it is ticked and shows what the parent measures now, tracking the offset,
+so the box always says what the slice will read; unticking gives back whatever
+was typed there before.
 """
 
 from __future__ import annotations
@@ -52,6 +59,7 @@ from os.path import basename, getsize
 
 from PySide6.QtCore import QEvent
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -128,6 +136,7 @@ class SliceDialog(QDialog):
         compression_id: str = NO_COMPRESSION,
         reshape_id: str = NO_RESHAPE,
         slot_fill: SlotFill = DEFAULT_SLOT_FILL,
+        match_parent: bool = False,
         name: str = "",
         title: str = "New Slice",
         content_kind: ContentKind = ContentKind.PIXELS,
@@ -198,6 +207,16 @@ class SliceDialog(QDialog):
         self._length.setToolTip(
             "Byte length (hex); blank lets a decompressor find the end"
         )
+        self._match_parent = QCheckBox("Match parent size")
+        self._match_parent.setToolTip(
+            "Run to the end of what the slice is cut from,\n"
+            "and follow it when that is resized\n"
+            "Length is measured from the parent, not typed"
+        )
+        self._match_parent.setChecked(match_parent)
+        # What Length held before the box took it over, handed back on untick —
+        # ``None`` while the typed value is the one showing.
+        self._typed_length: str | None = None
 
         self._reshape = SearchableComboBox(PRESET_COMBO_WIDTH)
         self._reshape.setToolTip(
@@ -304,6 +323,7 @@ class SliceDialog(QDialog):
         form.addRow("Name:", self._name)
         form.addRow("Offset:", self._offset)
         form.addRow("Length:", self._length)
+        form.addRow("", self._match_parent)
         form.addRow("Reshape:", reshape_row)
         form.addRow("Compression:", codec_row)
         form.addRow("Inputs:", self._inputs)
@@ -319,6 +339,9 @@ class SliceDialog(QDialog):
         self._sync_slot_fill_row()
         self._sync_inputs_row()
         self._refresh_size()
+        self._match_parent.toggled.connect(self._sync_length)
+        self._offset.textChanged.connect(self._sync_length)
+        self._sync_length()
         # QFormLayout builds the caption widgets itself, so copy each field's
         # tooltip onto its caption - hovering either half then answers the same.
         for field in (
@@ -340,6 +363,39 @@ class SliceDialog(QDialog):
         buttons.accepted.connect(self._validate_and_accept)
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
+
+    def _region_size(self) -> int:
+        """How many bytes the slice's offsets count in: the parent slice's
+        decoded buffer for a nested slice, the files' joined size otherwise.
+        Raises ``OSError`` where a file cannot be stat'ed."""
+        if self._extent is not None:
+            return self._extent
+        return sum(getsize(path) for path in self._paths)
+
+    def _sync_length(self, *_args: object) -> None:
+        """Grey Length under Match parent size and show what the parent gives.
+
+        Blank while the offset is not a position inside the parent: there is no
+        length to show, and OK says why.
+        """
+        matched = self._match_parent.isChecked()
+        self._length.setEnabled(not matched)
+        if not matched:
+            if self._typed_length is not None:
+                self._length.setText(self._typed_length)
+                self._typed_length = None
+            return
+        if self._typed_length is None:
+            self._typed_length = self._length.text()
+        offset = parse_hex(self._offset.text())
+        try:
+            size = self._region_size()
+        except OSError:
+            size = None  # OK says so, in the stat's own words
+        if offset is None or size is None or not 0 <= offset < size:
+            self._length.setText("")
+            return
+        self._length.setText(format_hex(size - offset, prefix=False))
 
     def _sync_inputs_row(self) -> None:
         """Show the inputs line, and the badge that edits it, only under a codec
@@ -465,9 +521,24 @@ class SliceDialog(QDialog):
             return
         compression_id = self._decompress.currentData()
         reshape_id = self._reshape.currentData()
+        if self._extent is not None:
+            noun = f"{self._source or 'parent slice'}'s"
+        else:
+            noun = "the region's" if len(self._paths) > 1 else "the file's"
+        try:
+            size = self._region_size()
+        except OSError as exc:
+            self._fail(f"Cannot stat the file: {exc}")
+            return
+        matched = self._match_parent.isChecked()
         length_text = self._length.text().strip()
         length: int | None = None
-        if length_text:
+        if matched:
+            # The parent's answer, not the box's: the box shows it, but it is
+            # measured again here so a file that changed while the dialog was
+            # open cannot hand back a length it no longer has.
+            length = size - offset if offset < size else None
+        elif length_text:
             length = parse_hex(length_text)
             if length is None or length <= 0:
                 self._fail("Length is not a valid byte count.")
@@ -486,15 +557,6 @@ class SliceDialog(QDialog):
             # require the bound that makes it a slice (and its writes slot-safe).
             self._fail("A raw slice needs a length (compressed ones can discover it).")
             return
-        if self._extent is not None:
-            size, noun = self._extent, f"{self._source or 'parent slice'}'s"
-        else:
-            try:
-                size = sum(getsize(path) for path in self._paths)
-            except OSError as exc:
-                self._fail(f"Cannot stat the file: {exc}")
-                return
-            noun = "the region's" if len(self._paths) > 1 else "the file's"
         if offset >= size or (length is not None and offset + length > size):
             self._fail(f"Region runs past {noun} end ({format_hex(size, None)} bytes).")
             return
@@ -523,6 +585,7 @@ class SliceDialog(QDialog):
             # equal to the member and fails every ``is`` test.
             SlotFill(self._slot_fill.currentData()),
             self.resize_units(),
+            matched,
         )
         self.accept()
 
@@ -537,6 +600,7 @@ class SliceDialog(QDialog):
         compression_id: str = NO_COMPRESSION,
         reshape_id: str = NO_RESHAPE,
         slot_fill: SlotFill = DEFAULT_SLOT_FILL,
+        match_parent: bool = False,
         name: str = "",
         title: str = "New Slice",
         content_kind: ContentKind = ContentKind.PIXELS,
@@ -566,6 +630,7 @@ class SliceDialog(QDialog):
             compression_id=compression_id,
             reshape_id=reshape_id,
             slot_fill=slot_fill,
+            match_parent=match_parent,
             name=name,
             title=title,
             content_kind=content_kind,

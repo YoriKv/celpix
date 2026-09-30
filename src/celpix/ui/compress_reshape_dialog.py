@@ -1,8 +1,9 @@
 """The New Compress & Reshape Plugin dialog: pair a scheme with a second pass.
 
 A game that runs a pass over what its unpacker produced — a running sum over a map
-stored as differences is the ordinary one — needs two transforms where a slice has
-one Compression slot. The pair is a five-line TOML preset
+stored as differences is the ordinary one — needs two transforms, and where the
+stream is one structure a pair keeps it one row (a nested slice is the other way
+to say it, ``docs/design/reshape-stage.md`` §4). The pair is a five-line TOML preset
 (:mod:`celpix.plugins.compress_reshape`), and this dialog is what writes it, so the
 user picks two rows from the pickers they already know rather than typing two ids.
 

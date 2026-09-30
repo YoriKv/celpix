@@ -1788,6 +1788,26 @@ class MainWindow(
             detail=detail,
         )
 
+    def _alert_recounted_bases(self, notes: list[str]) -> None:
+        """Modal naming the maps an older project's base could not follow into
+        the unit its index counts (:func:`~celpix.project.documents.
+        count_bases_in_units`).
+
+        A dialog rather than the status line for :meth:`_alert_missing_presets`'
+        reason: the new base is already on the entry, so the next save writes a
+        picture that moved, and the user has a map to check before it does.
+        """
+        if not notes:
+            return
+        self._alert(
+            f"{len(notes)} map(s) in this project count their index in whole "
+            "stamps or metatiles, and a base now counts in the same unit. Their "
+            "bases were not whole units, so each was moved to the nearest one "
+            "and draws shifted. Check Base on each before saving.",
+            title="celPix - base re-counted",
+            detail="\n".join(f"• {note}" for note in notes),
+        )
+
     def _alert_plugin_issues(self) -> None:
         """Say what in the plugins folder did not load - at startup, after a
         refresh, and again from File ▸ Open plugins folder.

@@ -1179,6 +1179,8 @@ class FileListPanel(QWidget):
                 if entry.slice_length is not None
                 else "to be discovered"
             )
+            if entry.match_parent:
+                tip += ", matching its parent"
         elif entry.kind is EntryKind.BOOKMARK:
             tip += (
                 f"\nBookmark at {format_hex(entry.slice_offset)}\nDouble-click to jump"
@@ -1244,8 +1246,12 @@ class FileListPanel(QWidget):
         else:
             # Every notice, not only the warnings that earn the icon: an info one
             # raises no marker of its own but is still worth reading once here.
-            tip += "".join(self._notice_lines(n) for n in notes)
-            if warnings:
+            # A closed palette source ranks with them — the entry works, on the
+            # default palette — so it wears their mark rather than the
+            # missing-file one.
+            closed = self._closed_palette_lines(entry)
+            tip += closed + "".join(self._notice_lines(n) for n in notes)
+            if warnings or closed:
                 status = self._notice_icon()
                 wash = _MISSING_HIGHLIGHT
         # Which row the canvas is showing, kept visible after the *selection*
@@ -1305,9 +1311,34 @@ class FileListPanel(QWidget):
                     EntryKind.BOOKMARK: "Parent file is missing",
                 }.get(entry.kind, "File is missing")
             )
-        if palette_missing(entry):
-            lines.append(f"Palette file is missing:\n  {entry_palette_path(entry)}")
+        # Only a palette with a file behind it: one read from another entry that
+        # has been closed is not a missing file, and Locate cannot find it
+        # (:meth:`_closed_palette_lines`).
+        path = entry_palette_path(entry)
+        if path is not None and palette_missing(entry):
+            lines.append(f"Palette file is missing:\n  {path}")
         return "".join(f"\n{line}" for line in lines)
+
+    @staticmethod
+    def _closed_palette_lines(entry: Entry) -> str:
+        """The tooltip lines for a palette read from an entry that has been
+        closed; ``""`` otherwise.
+
+        Worded as a notice rather than a missing file, because that is what it
+        is: the graphic still opens and draws, on the default palette, exactly as
+        a map bound to a closed bank does, and what brings the colours back is
+        reopening the entry (an undo of the close) or picking another source —
+        no file went anywhere. The name is the one thing still to hand: the
+        degraded source keeps the closed entry, which is what an undo restores.
+        """
+        source = entry.missing_palette
+        if source is None or source.entry is None:
+            return ""
+        return (
+            f"\nPalette is read from {source.entry.name}, which is not open"
+            "\n  The default palette is shown until it is reopened,"
+            "\n  or another source is picked in the Palette dock."
+        )
 
     @staticmethod
     def _failure_lines(failure: LoadFailure) -> str:

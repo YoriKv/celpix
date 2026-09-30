@@ -8,22 +8,34 @@ filler, naming an entry of a table that holds four tile numbers per metatile.
 **The cell holds the record number, as the byte states it.** A record number
 is an *ordinal* — record 20 of a packed 2x2 table is cell 80, not cell 20 — and
 turning it into the record's corner cell is the host's, where the chain hop
-resolves it (:class:`~celpix.core.tilemap.IndexAddressing`). The table's shape
-rides on the preset beside this engine's own parameters and is read by the host
-for every engine alike, which is also what makes a preset stating any of these
-ordinal-addressed:
+resolves it (:class:`~celpix.core.tilemap.IndexAddressing`). The engine says
+so itself (``counts_records``), so a preset stating nothing about its addressing
+reads its byte as a record. What the host reads the record's corner by is this
+engine's **record keys** — the host's arithmetic, but read over an engine that
+counts records and no other (``project/documents.py``, ``reads_record_keys``).
+Each is at its default where unset, so a preset stating none of them counts
+records of a packed 2x2 table; one stating ``index_addressing`` and none of them
+takes the shape from the table it is bound to instead, its stride and records:
 
 ``record_cells``
     cells per record (4 for a 2x2 metatile). A **packed** table — records end
-    to end, stated ``record_columns`` cells wide so a record is a square of
+    to end, stated ``record_width`` cells wide so a record is a square of
     consecutive cells — puts record *k*'s first cell at ``k * record_cells``.
-``record_columns``
+``record_width``
     cells across one record (2 for a 2x2). Only read when the table is laid out
     as a grid.
-``records_across``
+``records_per_row``
     0 (the default) for a packed table. *N* when a reshape has laid the table
-    out as a grid *N* records across, so the table reads as a sheet: record
-    *k*'s corner is then ``(k // N) * N * record_cells + (k % N) * record_columns``.
+    out as a grid *N* records to a row, so the table reads as a sheet: record
+    *k*'s corner is then ``(k // N) * N * record_cells + (k % N) * record_width``.
+``record_header``
+    0 (the default), or how many of a record's cells come **before** what it
+    draws — a record opening with a word of its own. Record *k*'s corner moves
+    that many cells in (on a grid, that many cells' worth of whole rows). A
+    plain count, since nothing is read out of it; a sprite table's
+    ``frame_header`` is the same idea with fields in it. A table can state it
+    of its own records instead (:mod:`celpix.pipeline.table_layout`), and a
+    preset taking its shape from the table reads it there.
 
 The arithmetic is :func:`~celpix.core.tilemap.corner_at`, re-exported here with
 the rest of it for the project plugins that walk a table by hand.
@@ -35,7 +47,13 @@ What this engine reads is how a byte names a record:
     (0, the default, for none) name one of ``2 ** group_bits`` groups, the bits
     below them a record within it, and ``group_starts`` lists the record each
     group begins at in the bound table — so the four tables a byte of
-    ``PPRRRRRR`` reaches can sit end to end at whatever sizes they have. With
+    ``PPRRRRRR`` reaches can sit end to end at whatever sizes they have. **Not
+    every record is then a byte**: one below the first start, or past one
+    group's reach and short of the next group's start, is in the table but no
+    byte says it. ``index_runs`` names the records a byte can, which is what the
+    host offers and accepts, and ``encode`` refuses a cell holding any other
+    rather than writing the byte its low bits make, which names a different
+    record. With
     ``group_rows`` the group is also the cell's **palette row**, which is how a
     metatile carries its colour where the attribute plane is filled from it: the
     table a record is in *is* its row. The row is then the record's consequence
@@ -118,8 +136,9 @@ def _record_at(byte: int, low: int, starts: Sequence[int]) -> tuple[int, int]:
     return starts[group] + (byte & ((1 << low) - 1)), group
 
 
-def _byte_at(record: int, low: int, starts: Sequence[int], stored: int) -> int:
-    """The byte to store for ``record`` — :func:`_record_at`'s inverse.
+def _byte_at(record: int, low: int, starts: Sequence[int], stored: int) -> int | None:
+    """The byte to store for ``record`` — :func:`_record_at`'s inverse — or
+    **None** where no byte names it (:func:`_runs_at`).
 
     **The one place that choice is made.** ``encode`` writes this byte,
     ``settle_cells`` takes the cell's palette row from its group, and ``decode``
@@ -142,16 +161,20 @@ def _byte_at(record: int, low: int, starts: Sequence[int], stored: int) -> int:
     stored &= MAX_RECORD
     if low < 8 and _record_at(stored, low, starts)[0] == record:
         return stored
+    if record < starts[0]:
+        return None
     # Bisected rather than scanned: this runs per cell, and the starts are
     # ascending by construction (:func:`_groups`). ``bisect_right`` lands past the
     # last group starting *at* the record, which is the group that owns it where
-    # two tables start together.
-    group = bisect_right(starts, max(record, starts[0])) - 1
-    # Masked rather than checked, as the packed engine masks a too-wide field:
-    # a record past the byte costs its high bits, not the whole save. With the
-    # group in its own high bits the result is always a byte, which is what lets
-    # every caller hand it straight to ``bytes()``.
-    return (group << low) | ((record - starts[group]) & ((1 << low) - 1))
+    # two tables start together. Only that group needs asking: every earlier one
+    # starts no later and is as wide, so none reaches further.
+    group = bisect_right(starts, record) - 1
+    within = record - starts[group]
+    # Checked, not masked: the record's low bits are a *different* record, which
+    # a save would write while reporting success (the module docstring).
+    if within >> low:
+        return None
+    return (group << low) | within
 
 
 def record_of(byte: int, params: dict[str, Any]) -> tuple[int, int]:
@@ -160,20 +183,47 @@ def record_of(byte: int, params: dict[str, Any]) -> tuple[int, int]:
     return _record_at(byte, low, starts)
 
 
-def byte_of(record: int, params: dict[str, Any], stored: int = 0) -> int:
-    """The byte naming ``record``, ``stored`` being the byte it was read as
-    (:func:`_byte_at`)."""
+def byte_of(record: int, params: dict[str, Any], stored: int = 0) -> int | None:
+    """The byte naming ``record``, ``stored`` being the byte it was read as, or
+    None where no byte names it (:func:`_byte_at`)."""
     low, starts = _groups(params)
     return _byte_at(record, low, starts, stored)
 
 
+def _runs_at(low: int, starts: Sequence[int]) -> tuple[range, ...]:
+    """The records some byte names, as ascending disjoint runs.
+
+    Each group reaches ``2 ** low`` records from its start, and the reaches are
+    merged where they touch or overlap — Super Mario Bros.' four tables at
+    ``[0, 39, 85, 95]`` reach one run, ``0``-``158``. What is left out is what
+    no byte can say: everything below the first start (Final Fantasy II's set-B
+    field maps start at 64), and a gap wherever one group's reach ends short of
+    the next group's start.
+    """
+    runs: list[range] = []
+    for start in starts:
+        stop = start + (1 << low)
+        if runs and start <= runs[-1].stop:
+            runs[-1] = range(runs[-1].start, max(runs[-1].stop, stop))
+        else:
+            runs.append(range(start, stop))
+    return tuple(runs)
+
+
+def _said(runs: Sequence[range]) -> str:
+    """``runs`` written the way a status line or an error names records."""
+    return ", ".join(f"${run.start:X}-${run.stop - 1:X}" for run in runs)
+
+
 def corner(record: int, params: dict[str, Any]) -> int:
-    """The source cell a record's first (upper-left) cell sits at."""
+    """The source cell a record's first (upper-left) drawn cell sits at, past
+    its header."""
     return corner_at(record, record_geometry(params))
 
 
 def containing_record(cell: int, params: dict[str, Any]) -> int:
-    """The record a source cell falls inside — ``corner``'s inverse, snapping."""
+    """The record a source cell falls inside — ``corner``'s inverse, snapping.
+    A cell of a record's header falls inside that record."""
     return containing_at(cell, record_geometry(params))
 
 
@@ -238,7 +288,22 @@ class IndirectRecordCodec:
         self, cells: list[Cell], params: dict[str, Any], ctx: PipelineContext
     ) -> bytes:
         low, starts = _groups(params)
-        return bytes(_byte_at(cell.index, low, starts, cell.flags) for cell in cells)
+        out = bytearray(len(cells))
+        for at, cell in enumerate(cells):
+            byte = _byte_at(cell.index, low, starts, cell.flags)
+            if byte is None:
+                # Refused, not masked or dropped: an attribute a format cannot
+                # store can be left out, but a byte always names *some* record,
+                # so any byte written here is a different one. The host offers
+                # only what `index_runs` names; this is for a cell that got
+                # here some other way.
+                raise ValueError(
+                    f"cell {at} names record ${cell.index:X}, which no byte of "
+                    f"this map can hold - it names records "
+                    f"{_said(_runs_at(low, starts))}"
+                )
+            out[at] = byte
+        return bytes(out)
 
     def settle_cells(self, cells: list[Cell], params: dict[str, Any]) -> list[Cell]:
         """``cells`` with every palette row back in step with the byte it will be.
@@ -276,6 +341,10 @@ class IndirectRecordCodec:
             # the carried byte does not name. Measured the long way, and it may
             # still turn out to agree.
             byte = _byte_at(index, low, starts, stored)
+            if byte is None:
+                # No byte names the record, so it has no group to take a row
+                # from; left as it is, for `encode` to refuse by name.
+                continue
             row = rows[byte]
             if cell.palette_row == row and stored == byte:
                 continue
@@ -292,9 +361,20 @@ class IndirectRecordCodec:
         # stamp's answer and then the source's, neither of which is this format's.
         return (1, 1)
 
+    def counts_records(self, params: dict[str, Any]) -> bool:
+        # A byte here has no reading but a record number, so a preset that says
+        # nothing of its addressing still counts records, and the record keys
+        # are read as this engine's parameters (the module docstring).
+        return True
+
     def index_limit(self, params: dict[str, Any]) -> int:
         """The highest record a stored byte can name — the top group's last."""
         return record_of(MAX_RECORD, params)[0]
+
+    def index_runs(self, params: dict[str, Any]) -> tuple[range, ...]:
+        """The records some byte names (:func:`_runs_at`) — all of 0-255 for an
+        ungrouped byte, and a floor or gaps where the groups leave them."""
+        return _runs_at(*_groups(params))
 
     def palette_row_limit(self, params: dict[str, Any]) -> int | None:
         # None even with `group_rows`: the row follows the record (the module

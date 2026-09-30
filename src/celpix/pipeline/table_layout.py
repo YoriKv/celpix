@@ -27,6 +27,16 @@ engine alike, so no engine has to know that chains exist:
     The record the table's cells come in, so each draws as its own rectangle.
     Stated outright for a table nothing stamps from (a sprite frame); otherwise
     it follows from an offered stamp whose rows sit one stamp apart.
+``record_header``
+    How many of a record's cells come **before** its stamp — a table of
+    17-cell records opening with a collision word ahead of a 4x4 block states
+    1. A plain count, since nothing is read out of it: the stamp a map above
+    counts starts that many cells into the record
+    (:data:`~celpix.core.tilemap.Geometry`). The same word as a referring
+    preset's record key, and one family with a sprite table's ``frame_header``
+    (the same idea, with fields in it). Published only beside a record, and
+    from 0 to one less than the record's size: a header filling the record
+    leaves nothing to stamp, so a value out of range refuses the load.
 
 **What the file states wins.** A container that reads the stamp from a header
 (an S-CG-CAD panel) or a code format that works it out while decoding has
@@ -51,6 +61,7 @@ from typing import Any
 from celpix.core.context import (
     KEY_TILEMAP_PAGE_ROWS,
     KEY_TILEMAP_RECORD_COLUMN_MAJOR,
+    KEY_TILEMAP_RECORD_HEADER,
     KEY_TILEMAP_RECORD_SHAPE,
     KEY_TILEMAP_STAMP_CELLS,
     KEY_TILEMAP_STAMP_COLUMN_MAJOR,
@@ -61,6 +72,8 @@ from celpix.core.notices import warn
 
 #: The preset parameter naming the stamp a table offers the maps above it.
 OFFERED_STAMP = "offered_stamp_cells"
+#: The preset parameter naming how many of a record's cells precede its stamp.
+RECORD_HEADER = "record_header"
 
 
 class _Malformed(ValueError):
@@ -102,7 +115,12 @@ def _unset(ctx: PipelineContext, key: str) -> bool:
 
 
 def publish_table_layout(
-    cells: int, params: dict[str, Any], ctx: PipelineContext, source: str = ""
+    cells: int,
+    params: dict[str, Any],
+    ctx: PipelineContext,
+    source: str = "",
+    *,
+    counts_records: bool = False,
 ) -> None:
     """Put what ``params`` states about the table's layout on ``ctx``.
 
@@ -111,6 +129,12 @@ def publish_table_layout(
     and kept (the module docstring). A malformed number is left unpublished
     with a warning on ``ctx`` attributed to ``source``, the preset's id; raises
     ``ValueError`` on a closed-set word the readers would otherwise misread.
+
+    ``counts_records`` is the engine's answer to whether its index counts
+    records. There ``record_header`` is one of the referrer's own record keys —
+    the shape of the table *it* counts in
+    (:func:`~celpix.core.tilemap.record_geometry`) — and says nothing about
+    this table's records, so it is not published.
     """
     dropped: list[str] = []
     stamp: tuple[int, int] | None = None
@@ -148,6 +172,11 @@ def publish_table_layout(
             _publish_records(cells, params, stamp, stride, order, ctx)
         except _Malformed as exc:
             dropped.append(str(exc))
+    try:
+        if not counts_records:
+            _publish_header(params, ctx)
+    except _Malformed as exc:
+        dropped.append(str(exc))
 
     for problem in dropped:
         warn(
@@ -202,3 +231,42 @@ def _publish_records(
         return
     ctx.set(KEY_TILEMAP_RECORD_SHAPE, (across, down))
     ctx.set(KEY_TILEMAP_RECORD_COLUMN_MAJOR, record_order == "column")
+
+
+def _publish_header(params: dict[str, Any], ctx: PipelineContext) -> None:
+    """State how many of a record's cells precede its stamp (``record_header``).
+
+    Measured against the record on ``ctx`` whoever published it — this preset,
+    or a code format that states its records itself — since a header is only
+    ever a part of one. A header with no record to be part of says nothing a
+    map above could use, and is dropped with the notice.
+
+    Refused (``ValueError``) rather than dropped out of range: a header as
+    long as the record would start every stamp inside the next record, a
+    picture made of real cells in the wrong places, where a dropped number
+    would quietly draw the header as the stamp's first cell instead. A value
+    that is not a number is :class:`_Malformed`, like the other numbers here.
+    """
+    stated = params.get(RECORD_HEADER)
+    if stated is None or not _unset(ctx, KEY_TILEMAP_RECORD_HEADER):
+        return
+    try:
+        header = int(stated)
+    except (TypeError, ValueError):
+        raise _Malformed(f"{RECORD_HEADER} must be a number, got {stated!r}") from None
+    shape = ctx.get(KEY_TILEMAP_RECORD_SHAPE)
+    if not shape:
+        if header:
+            raise _Malformed(
+                f"{RECORD_HEADER} = {header} is the header of a record this "
+                "table does not come in"
+            )
+        return
+    size = int(shape[0]) * int(shape[1])
+    if not 0 <= header < size:
+        raise ValueError(
+            f"{RECORD_HEADER} must be from 0 to one less than the record's "
+            f"{size} cells, got {header}"
+        )
+    if header:
+        ctx.set(KEY_TILEMAP_RECORD_HEADER, header)

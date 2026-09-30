@@ -22,7 +22,7 @@ from __future__ import annotations
 
 #: The reader's own :data:`celpix.project.projectfile.PROJECT_VERSION`. A file
 #: claiming more than this is one a newer celPix wrote.
-KNOWN_PROJECT_VERSION = 6
+KNOWN_PROJECT_VERSION = 7
 
 # -- enumerations (celpix.project.workspace, celpix.core) ------------------
 #: ``EntryKind`` — how an entry is *bounded*.
@@ -80,6 +80,7 @@ ENTRY_KEYS = frozenset(
         "reshape_id",
         "slice_offset",
         "slice_length",
+        "match_parent",
         "compression_id",
         "slot_fill",
         "offset",
@@ -115,15 +116,16 @@ KIND_ONLY = {
     "reshape_id": ("file", "slice"),
     "slice_offset": ("slice",),
     "slice_length": ("slice",),
+    "match_parent": ("slice",),
     "compression_id": ("slice",),
     "slot_fill": ("slice",),
     "offset": ("bookmark",),
     "palette_preset_id": ("palette",),
     "pieces": ("composite",),
     # What a slice's or a tilemap's codecs need from outside its bytes, and on a
-    # file the compression preview's bindings; a composite reads no byte stage,
-    # and a palette or bookmark decodes through nothing that could declare one.
-    "inputs": ("file", "slice"),
+    # file or a palette the compression preview's bindings; a composite reads no
+    # byte stage, and a bookmark decodes through nothing that could declare one.
+    "inputs": ("file", "slice", "palette"),
     # A palette entry opens as a sheet of swatches, so it has a session and a
     # view like anything shown — but no palette source: its colours are its own
     # bytes. Every kind carries a session and a view, so neither is listed.
@@ -219,7 +221,7 @@ VIEW_BOOL_KEYS = (
 
 FONT_KEYS = frozenset({"use", "base", "prepend", "append", "chars", "codes"})
 GLYPH_KEYS = frozenset({"code", "text", "name", "role", "description", "params"})
-TILE_SOURCE_KEYS = frozenset({"mode", "entry_index", "base_index"})
+TILE_SOURCE_KEYS = frozenset({"mode", "entry_index", "base_index", "addressing"})
 PIECE_KEYS = frozenset({"entry_index", "offset", "length", "measured"})
 PALETTE_KEYS = frozenset({"colors", "path", "offset", "entry"})
 

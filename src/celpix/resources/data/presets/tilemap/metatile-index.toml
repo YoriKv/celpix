@@ -5,8 +5,8 @@
 # indexes. Read as a dense stamped chain (docs/design/tilemap-entry.md §3.1):
 # `indirect` says the cell is a coordinate into the bound table, `stamp_cells`
 # that one names a 2x2 of its cells, `stamp_dense` that there is one entry per
-# stamp, and the record keys that the byte counts records: record k starts at
-# the table's cell 4k.
+# stamp, and the record keys the shape of the records the byte counts: record k
+# starts at the table's cell 4k.
 #
 # A map stored down each column — the shape a stream cut one part per row
 # decodes to — is this preset plus `column_major = true`, which is what a
@@ -19,8 +19,8 @@ category = "Generic"
 
 [params]
 record_cells = 4
-record_columns = 2
-records_across = 0
+record_width = 2
+records_per_row = 0
 indirect = true
 stamp_cells = [2, 2]
 stamp_dense = true

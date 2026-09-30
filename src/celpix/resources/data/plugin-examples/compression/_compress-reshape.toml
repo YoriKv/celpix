@@ -17,6 +17,12 @@
 #   one scheme. It is self-delimiting if its compression half is, writes back if
 #   both halves do, and takes the inputs its compression half declares.
 #
+#   Try a nested slice first: a slice cut from the unpacked stream, with the
+#   reshape as its own Reshape. It needs no plugin, can take part of the stream
+#   rather than all of it, and several can share one stream. Use a pair where
+#   the stream is one structure and should stay one row whose length the
+#   decoder finds.
+#
 #   Typical case: a tilemap stored as differences. The loader unpacks the stream
 #   and sums it (Z80: XOR A / loop: ADD A,(HL) / LD (HL+),A). Symptom: the
 #   unpacked map is mostly $00 and $01 and draws as noise.

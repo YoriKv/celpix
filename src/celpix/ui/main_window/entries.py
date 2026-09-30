@@ -53,7 +53,7 @@ from celpix.plugins.detect import (
     detect_container,
     tilemap_preset_for,
 )
-from celpix.project import projectfile
+from celpix.project import documents, projectfile
 from celpix.project.inputs import (
     IntegerFromBytes,
     RegionBinding,
@@ -523,6 +523,13 @@ class EntriesMixin:
         # decodes it. An entry naming a format this build hasn't got would
         # otherwise fail its first decode with nothing on screen to say why.
         self._alert_missing_presets(repair_presets(loaded.entries, self._registry))
+        # Also before the replace, and after the repair: a base re-counted in the
+        # unit its index counts reads the format the entry now names, and the
+        # replace draws the restored entry with the base in force.
+        if loaded.bases_count_elements:
+            self._alert_recounted_bases(
+                documents.count_bases_in_units(self._registry, loaded.entries)
+            )
         # Seed the pixel-format filter before the replace: showing the restored
         # current entry rebuilds the dropdown, which must already read the
         # project's filter. A rebuild also happens explicitly below for a project
@@ -1366,6 +1373,7 @@ class EntriesMixin:
             compression_id=entry.compression_id,
             reshape_id=entry.reshape_id,
             slot_fill=entry.slot_fill,
+            match_parent=entry.match_parent,
             name=entry.name,
             title="Edit Slice",
             # Carried in and back out untouched: an edit re-points a live entry's
@@ -1393,6 +1401,7 @@ class EntriesMixin:
             entry.reshape_id,
             entry.content_kind,
             entry.slot_fill,
+            match_parent=entry.match_parent,
         )
         moved = params != before
         if not moved and resize is None:
@@ -1527,6 +1536,10 @@ class EntriesMixin:
             f"resize {entry.name} to {units:,} {noun}",
             through=entry,
         )
+        # The edit dropped every document under the parent, so the slices cut
+        # from this one re-read at their next showing; a matched one is also
+        # re-measured now, so its row says what it will read.
+        self._refit_to_parents(self._workspace.descendants_of(entry))
         self.statusBar().showMessage(
             f"Resized {entry.name} to {units:,} {noun}; write {parent.name} to keep it"
         )
@@ -1580,6 +1593,7 @@ class EntriesMixin:
         entry.compression_id = params.compression_id
         entry.reshape_id = params.reshape_id
         entry.slot_fill = params.slot_fill
+        entry.match_parent = params.match_parent
         # How the region is *read* and *laid out* belongs to the entry, not to
         # the coordinates: re-pointing changes which bytes arrive, not the
         # format or arrangement they arrive in. The session snapshot only
@@ -1616,6 +1630,7 @@ class EntriesMixin:
             self._workspace.mark_saved(entry)
             self._workspace.drop_document(entry)
             self._files_panel.refresh_entry(entry)
+        self._refit_to_parents(entries)
         current = self._workspace.current
         if current in entries:
             self._on_current_entry_changed(current)  # re-read the new bytes now
@@ -1644,6 +1659,27 @@ class EntriesMixin:
                 self._refresh_view()
             else:
                 self._reload_palette_consumers(entry)
+
+    def _refit_to_parents(self, entries: list[Entry]) -> None:
+        """Re-measure every slice in ``entries`` that matches its parent's size.
+
+        Every read re-measures one anyway (``workspace._fit_to_parent``), so
+        this is not what keeps the bytes right — it is what keeps the *row*
+        right for a slice nobody re-opens: its tooltip and the length a save
+        writes would otherwise describe the parent as it was. In list order,
+        which puts a parent before the slices cut from it, so a chain of
+        matched slices is measured link by link from the top.
+        """
+        for entry in entries:
+            if entry.kind is not EntryKind.SLICE or not entry.match_parent:
+                continue
+            before = entry.slice_length
+            try:
+                self._slice_config(entry, self._slice_codec_id(entry))
+            except (PipelineError, OSError):
+                continue  # its own load says why, when it is opened
+            if entry.slice_length != before:
+                self._files_panel.refresh_entry(entry)
 
     def _reload_palette_consumers(self, entry: Entry) -> None:
         """Re-read a PALETTE entry and push its colors back onto every graphic.
@@ -1764,6 +1800,10 @@ class EntriesMixin:
         # it, so their edits are on the table too. A resize is the same story
         # told about the file rather than the reading of it, so it joins the gate.
         family = [entry, *self._workspace.descendants_of(entry)] if moved else [entry]
+        # A slice matching the file's size is re-measured by whatever changed
+        # it — a resize, or a container that frames the bytes differently —
+        # so it is re-read with the file, and its edits are on the table too.
+        family += self._size_followers(entry, family)
         if not self._confirm_container_discard(family):
             return
         # Before the command, and outside it: this one writes the file, and a
@@ -1964,6 +2004,7 @@ class EntriesMixin:
         """
         moved = edit.paths != entry.paths
         family = [entry, *self._workspace.descendants_of(entry)] if moved else [entry]
+        family += self._size_followers(entry, family)
         entry.container_id = edit.container_id
         entry.reshape_id = edit.reshape_id
         # Format, arrangement and view survive the re-read for the same reason
@@ -1977,6 +2018,23 @@ class EntriesMixin:
             self._sync_disk_watch()
         self._sync_locate_action()  # the new list may name a file that isn't there
         self._reread_entries(family)
+
+    def _size_followers(self, entry: Entry, family: list[Entry]) -> list[Entry]:
+        """The slices whose length follows ``entry``'s size, with everything cut
+        from them, less any already in ``family``.
+
+        Only the children that match: one with a length of its own keeps it
+        whatever the parent does, and so does everything under it. What is cut
+        from a matched child comes along whether it matches or not, since its
+        parent's bytes are about to be re-read under it.
+        """
+        followers = [
+            e
+            for child in self._workspace.slices_of(entry)
+            if child.match_parent
+            for e in (child, *self._workspace.descendants_of(child))
+        ]
+        return [e for e in followers if not any(e is f for f in family)]
 
     def _retarget_allowed(self, entry: Entry, first: str) -> bool:
         """Whether ``entry`` may take ``first`` as its file — i.e. its identity.
@@ -2513,6 +2571,7 @@ class EntriesMixin:
         # user's word over it, and is the parent's own value when unchanged.
         entry.content_kind = params.content_kind
         entry.slot_fill = params.slot_fill
+        entry.match_parent = params.match_parent
         self._seed_slice_from_parent(entry)
         self._push_command(AddEntryCommand(self, entry, f'new slice "{entry.name}"'))
 

@@ -341,7 +341,7 @@ def test_a_nested_slice_round_trips_its_parent_by_position(tmp_path) -> None:
     project = tmp_path / "hack.celpix"
     save_project(ws, str(project))
     raw = json.loads(project.read_text(encoding="utf-8"))
-    assert raw["version"] == PROJECT_VERSION == 6
+    assert raw["version"] == PROJECT_VERSION
     names = [e["name"] for e in raw["entries"]]
     assert names == ["rom.bin", "other", "packed", "tiles", "deep"]
     assert raw["entries"][3]["parent"] == "slice"
@@ -1158,6 +1158,25 @@ def test_slot_fill_round_trips_and_the_default_is_omitted(tmp_path) -> None:
     loaded = load_project(str(project)).entries
     assert loaded[1].slot_fill is SlotFill.KEEP
     assert loaded[2].slot_fill is DEFAULT_SLOT_FILL
+
+
+def test_match_parent_round_trips_and_is_omitted_when_unset(tmp_path) -> None:
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(b"\x00" * 64)
+    ws = Workspace()
+    ws.open_file(str(rom))
+    ws.add_slice(str(rom), "matched", 16, 48).match_parent = True
+    ws.add_slice(str(rom), "fixed", 0, 16)
+
+    project = tmp_path / "p.celpix"
+    save_project(ws, str(project))
+    raw = json.loads(project.read_text(encoding="utf-8"))
+    assert raw["entries"][2]["match_parent"] is True
+    assert raw["entries"][2]["slice_length"] == 48  # the last measurement, kept
+    assert "match_parent" not in raw["entries"][1]
+
+    loaded = load_project(str(project)).entries
+    assert [e.match_parent for e in loaded] == [False, False, True]
 
 
 def test_palette_regions_round_trip_and_an_unpinned_view_omits_them(tmp_path) -> None:

@@ -183,8 +183,16 @@ class DiskWatchMixin:
         moment is right. Every tracked file is asked, not only the ones
         signalled — the check is a stat each, and the activation path below
         has no signal to go by. A touch that left the bytes as they were is not
-        a change (:meth:`~celpix.project.diskchanges.DiskState.changed`)."""
-        self._rewatch()
+        a change (:meth:`~celpix.project.diskchanges.DiskState.changed`).
+
+        The set is re-derived from the workspace first, not only re-subscribed:
+        an addition tracks just its own files, so a path moved in place under
+        an entry already in the list is followed only where the mover syncs
+        it. Here, once per look, is where any mover that did not is caught —
+        before a file no entry reads any more can be offered, and before a
+        file that one does is left unasked. The cost is one pass over the
+        entries per look, which already stats every tracked file."""
+        self._sync_disk_watch()
         for path in self._disk_state.changed():
             key = self._workspace.path_key(path)
             if not any(
@@ -391,6 +399,9 @@ class DiskWatchMixin:
                     self._reload_region(child, tally)
             if file.kind is not EntryKind.SLICE:
                 self._bytes_moved([file, *loaded], tally)
+                # A rewrite may have resized the file: the slices matching its
+                # size are re-measured, the ones nobody has open included.
+                self._refit_to_parents(ws.descendants_of(file))
             return
         self._settle_region(file)
         merge = self._reload_document(file, tally)
@@ -400,6 +411,7 @@ class DiskWatchMixin:
         self._drop_reloaded_slices(file, tally)
         if file.kind is not EntryKind.SLICE:
             self._bytes_moved([file, *loaded], tally)
+            self._refit_to_parents(ws.descendants_of(file))
 
     def _drop_reloaded_slices(self, entry: Entry, tally: _Reload) -> None:
         """Re-derive every loaded slice under ``entry`` from its merged buffer.

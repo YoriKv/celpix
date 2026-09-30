@@ -70,9 +70,8 @@ from PySide6.QtWidgets import (
 )
 
 from celpix.core.capabilities import Capability, ContentKind
-from celpix.core.document import Document
 from celpix.core.errors import Stage
-from celpix.core.tilemap import RECORD_KEYS, Geometry, IndexAddressing
+from celpix.core.tilemap import Geometry, IndexAddressing, rebased
 from celpix.project import documents
 from celpix.project.workspace import (
     Entry,
@@ -96,6 +95,7 @@ from celpix.ui.undo_commands import (
 )
 from celpix.ui.widgets import (
     CompactComboBox,
+    RunSpinBox,
     add_labelled,
     hex_spin,
     signals_blocked,
@@ -108,19 +108,27 @@ from celpix.ui.widgets import (
 _NONE = object()
 _FROM_FILE = object()
 
-# The Base spin's two readings. Over art a base shifts tile numbers; over another
-# tilemap the cells are coordinates, so it shifts which source cell they name
-# (`CellChain.base`). The label and the tip swap together on the binding.
-TILE_BASE_TIP = (
-    "Shifts every cell: cell N draws source tile base + N\n"
-    "Negative when the map starts partway into its source"
-)
-TILE_BASE_CHAINED_TIP = (
-    "Shifts every cell: cell N stamps source cell base + N\n"
-    "Negative when the map starts partway into its source"
-)
 
-# The Index counts combo's rows, in order: the format's own reading, then the
+def tile_base_tip(noun: str, chained: bool) -> str:
+    """The Base spin's tooltip for a base counting ``noun``.
+
+    The base counts what the index counts (``docs/design/terminology.md``), so
+    the sum it states is in that unit: a tile or a source cell, or a whole
+    metatile or stamp. Over another tilemap the cells are coordinates, so it
+    shifts which source cell or stamp they name (`CellChain.base`) rather than
+    which tile they draw.
+    """
+    verb = "stamps" if chained else "draws"
+    what = "source cell" if noun == "cell" else noun
+    whole = "" if noun in ("tile", "cell") else f" by whole {noun}s"
+    return (
+        f"Shifts every cell{whole}:\n"
+        f"cell N {verb} {what} base + N\n"
+        "Negative when the map starts partway into its source"
+    )
+
+
+# The Index unit combo's rows, in order: the format's own reading, then the
 # two the binding can state over it. Matched by position rather than carried as
 # item data, because a str-valued enum comes back out of a combo as a plain
 # string (``docs/py-qt-reference/pyside6-pitfalls.md``).
@@ -198,33 +206,36 @@ class TilemapBarMixin:
         self._tile_binding_jump.clicked.connect(self._jump_to_bound_tiles)
         row.addWidget(self._tile_binding_jump)
 
+        # Chosen before the base, and so placed before it: what an index counts
+        # is also what the base counts, so the base and the cell's number are
+        # both read in the unit picked here — and changing it re-counts the
+        # base (:meth:`_on_index_addressing_change`). The caption reads on into
+        # the item, "Index unit: Stamps", and the items are renamed per binding
+        # (:meth:`_sync_index_addressing`). The tooltip here is a placeholder the
+        # first sync replaces.
         row.addSpacing(12)
-        self._tile_base_label = QLabel("Base tile ")
-        row.addWidget(self._tile_base_label)
-        # Signed, because the useful direction for a slice is the negative one:
-        # a map numbering from 0x100 bound to a slice that starts there needs
-        # cell 0x100 to draw tile 0 (:class:`TileSource`).
-        self._tile_base = hex_spin(-0xFFFF, 0xFFFF, TILE_BASE_TIP)
-        self._tile_base.valueChanged.connect(self._on_tile_base_change)
-        row.addWidget(self._tile_base)
-
-        # Beside the base because the two are the halves of one sum — the index
-        # turned into its unit's corner, then the base added — and the base's
-        # unit does not move with this: it counts cells or tiles either way.
-        # The captions make a sentence with the item, "Index counts: Stamps",
-        # and the items are renamed per binding (:meth:`_sync_index_addressing`).
-        # The tooltip here is a placeholder the first sync replaces.
-        row.addSpacing(12)
-        self._index_addressing = CompactComboBox(130)
+        self._index_addressing = CompactComboBox(165)
         for _ in _ADDRESSING_CHOICES:
             self._index_addressing.addItem("")
         self._index_addressing.activated.connect(self._on_index_addressing_change)
         self._index_addressing_label = add_labelled(
             row,
-            "Index counts: ",
+            "Index unit: ",
             self._index_addressing,
             "What each index counts in the source it draws from",
         )
+
+        row.addSpacing(12)
+        # Named for what it counts — "Base stamp", "Base tile" — which the
+        # refresh keeps in step with the unit beside it (:meth:`_index_noun`).
+        self._tile_base_label = QLabel("Base tile ")
+        row.addWidget(self._tile_base_label)
+        # Signed, because the useful direction for a slice is the negative one:
+        # a map numbering from 0x100 bound to a slice that starts there needs
+        # cell 0x100 to draw tile 0 (:class:`TileSource`).
+        self._tile_base = hex_spin(-0xFFFF, 0xFFFF, tile_base_tip("tile", False))
+        self._tile_base.valueChanged.connect(self._on_tile_base_change)
+        row.addWidget(self._tile_base)
 
         row.addSpacing(12)
         # A **sprite map**'s one piece of geometry that no file records: the pair a
@@ -290,18 +301,18 @@ class TilemapBarMixin:
 
         row.addSpacing(12)
         # Reads the selected cell and writes it: the one gesture a tilemap has
-        # that no pixel control stands in for. It lives beside Base tile because
-        # both are "which tile", one for the whole map and one for a cell - and
-        # next to a canvas that can now label every cell with the number this
-        # sets (View > Show Tile IDs).
-        self._cell_index_label = QLabel("Cell ")
+        # that no pixel control stands in for. The same number the base shifts,
+        # in the same unit, one for the whole map and one for a cell - and it
+        # labels the canvas too (View > Show Tile IDs).
+        self._cell_index_label = QLabel("Tile ")
         row.addWidget(self._cell_index_label)
-        # Its tooltip names what the number counts, which moves with the
-        # document (:meth:`_cell_index_tip`); a tile until there is one.
+        # Its label and tooltip name what the number counts, which moves with
+        # the document (:meth:`_index_noun`); a tile until there is one.
         self._cell_index = hex_spin(
             0,
             0xFFFF,
             "The tile the selected cells name - set it to point\nthem somewhere else",
+            kind=RunSpinBox,
         )
         self._cell_index.valueChanged.connect(self._on_cell_index_change)
         row.addWidget(self._cell_index)
@@ -362,12 +373,12 @@ class TilemapBarMixin:
         with signals_blocked(self._tile_base):
             self._tile_base.setValue(source.base_index)
         # Cells that are coordinates into another tilemap still have a base: it
-        # shifts which source *cell* a coordinate names rather than which tile
-        # (`CellChain.base`), so the spin stays and says which it is.
-        chained = self._base_counts_cells(entry, source)
-        self._tile_base_label.setText(f"Base {self._base_noun(entry, source)} ")
+        # shifts which source cell or stamp a coordinate names rather than which
+        # tile (`CellChain.base`), so the spin stays and says which it counts.
+        noun = self._index_noun(entry)
+        self._tile_base_label.setText(f"Base {noun} ")
         self._tile_base.setToolTip(
-            f"{TILE_BASE_CHAINED_TIP if chained else TILE_BASE_TIP} (hex)"
+            f"{tile_base_tip(noun, self._base_counts_cells(entry, source))} (hex)"
         )
         self._sync_index_addressing(entry, source)
         self._sync_binding_jump(source)
@@ -381,17 +392,18 @@ class TilemapBarMixin:
     def _base_counts_cells(
         self, entry: Entry, source: TileSource | None = None
     ) -> bool:
-        """Whether ``entry``'s base index counts source **cells** rather than tiles.
+        """Whether ``entry``'s index counts in a source **map** — cells or
+        stamps — rather than in art, tiles or metatiles.
 
-        The one answer behind every place the base is named — this bar's label
-        and tooltip, the tile source panel's button, both undo texts — and behind
-        whether a rebind can carry the number across (:meth:`_carried_base`).
-        Read off the **binding**, not off whether the chain resolved: the number
-        belongs to the binding and is in the unit of whatever it names, so a map
-        bound to a tilemap that did not resolve still holds a cell offset, one
-        that takes effect the moment the chain does. Unbound, the format decides:
-        cells that are coordinates (``indirect``) name cells of the map they are
-        waiting for.
+        The kind half of what the base and the index count, behind every place
+        either is named (:meth:`_addressing_nouns`, :meth:`_index_noun`) and
+        behind whether a rebind can carry the base across at all
+        (:meth:`_rebound_source`). Read off the **binding**, not off whether the
+        chain resolved: the number belongs to the binding and is in the unit of
+        whatever it names, so a map bound to a tilemap that did not resolve
+        still holds a cell offset, one that takes effect the moment the chain
+        does. Unbound, the format decides: cells that are coordinates
+        (``indirect``) name cells of the map they are waiting for.
 
         ``source`` is the binding to ask about, where it is not the entry's own
         yet — the one a rebind is about to land.
@@ -402,22 +414,54 @@ class TilemapBarMixin:
             return bound.content_kind is ContentKind.TILEMAP
         return self._tilemap_is_indirect(entry)
 
-    def _base_noun(self, entry: Entry, source: TileSource | None = None) -> str:
-        """``"cell"`` or ``"tile"``: what the base counts
-        (:meth:`_base_counts_cells`)."""
-        return "cell" if self._base_counts_cells(entry, source) else "tile"
+    def _index_noun(self, entry: Entry) -> str:
+        """What ``entry``'s index counts, and so its base: ``"tile"``,
+        ``"metatile"``, ``"cell"`` or ``"stamp"``.
 
-    def _carried_base(
+        **The** noun behind every place either number is named — the Base and
+        Cell labels, their tooltips, both "set base" undo texts, the tile
+        source panel's button and readout — so no two of them can disagree.
+        The kind is the binding's (:meth:`_base_counts_cells`); whether it is
+        the element or the unit is the addressing **in force**, what the
+        document actually reads (:attr:`~celpix.core.document.Document.
+        index_addressing`), not what was asked: where counting units is
+        refused and each index read as a corner, the base counts elements too.
+        A fontmap's glyphs and a sprite object's subsprites never count units,
+        so they keep the element's word.
+        """
+        element, unit = self._addressing_nouns(entry)
+        doc = entry.doc
+        counted = (
+            doc is not None
+            and doc.is_tilemap
+            and doc.index_addressing is IndexAddressing.ORDINAL
+        )
+        return unit if counted else element
+
+    def _rebound_source(
         self, entry: Entry, bound: Entry | None, before: TileSource | None = None
-    ) -> int:
-        """The base a rebind of ``entry`` to ``bound`` (None: unbind) starts from.
+    ) -> TileSource:
+        """The binding a rebind of ``entry`` to ``bound`` (None: unbind) lands.
 
-        The spin's value where the unit stays the same, and 0 where it changes:
-        a tile offset is not a cell offset, and carrying 3 from a bank onto a
-        tilemap would silently start the map three stamps in — the other way, a
-        cell offset would start it three tiles into the art. Unbinding asks the
-        same question of the unbound state, so an indirect layout keeps its cell
-        offset for the next map it is pointed at.
+        The base and Index unit are the binding's own settings rather than the
+        source's, so they carry across — but only where the kind of thing they
+        count stays the same, and they start over where it changes: a tile
+        offset is not a cell offset, and carrying 3 from a bank onto a tilemap
+        would silently start the map three stamps in — the other way, a cell
+        offset would start it three tiles into the art. Counting stamps is
+        likewise not counting metatiles, so the choice goes back to the
+        format's. Kept, a re-pointed map goes on reading its indices the way
+        the user said, rather than every one of them silently turning back into
+        a corner. Unbinding asks the same question of the unbound state, so an
+        indirect layout keeps both for the next map it is pointed at.
+
+        Where the kind stays but the **unit** the base counts in changes — the
+        new source's stamps are cut differently, or cannot be counted at all —
+        the base is re-counted to start at the same place, or reset to 0 where
+        no whole unit starts there (:func:`~celpix.core.tilemap.rebased`, the
+        rule Index unit keeps). Only between two readings both known: an
+        unbound map, or a source not loaded, reads nothing to count in, so the
+        number is kept as it stands.
 
         ``before`` is the binding the rebind starts from, where the entry no
         longer holds it (:meth:`_bind_tiles_from_file`).
@@ -427,22 +471,33 @@ class TilemapBarMixin:
             if bound is not None
             else TileSource()
         )
-        was = self._base_counts_cells(entry, before)
-        if was != self._base_counts_cells(entry, after):
-            return 0
-        return self._tile_base.value()
+        if self._base_counts_cells(entry, before) != self._base_counts_cells(
+            entry, after
+        ):
+            return after
+        was = before if before is not None else entry.tile_source
+        base = self._tile_base.value()
+        doc = entry.doc
+        if bound is not None and doc is not None and was is not None and was.is_bound:
+            reading = documents.rebound_reading(self._registry, entry, bound)
+            if reading is not None:
+                base = rebased(base, doc.addressing_geometry, reading.geometry) or 0
+        return replace(
+            after,
+            base_index=base,
+            addressing=was.addressing if was is not None else None,
+        )
 
     # -- what an index counts ------------------------------------------------
     def _addressing_nouns(
         self, entry: Entry, source: TileSource | None = None
     ) -> tuple[str, str]:
-        """``(element, unit)``: what ``entry``'s indices count, singular.
+        """``(element, unit)``: what ``entry``'s indices can count, singular.
 
         ``("cell", "stamp")`` over another tilemap and ``("tile", "metatile")``
-        over art (``docs/design/terminology.md``). Asked of the base's own
-        predicate (:meth:`_base_counts_cells`), because the element is the unit
-        the base counts in, in both addressings — the two controls side by side
-        must not name it differently.
+        over art (``docs/design/terminology.md``), asked of the same predicate
+        as the base (:meth:`_base_counts_cells`), since the base counts
+        whichever of the two the index does (:meth:`_index_noun`).
         """
         if self._base_counts_cells(entry, source):
             return "cell", "stamp"
@@ -488,7 +543,7 @@ class TilemapBarMixin:
         return None, reading
 
     def _sync_index_addressing(self, entry: Entry, source: TileSource) -> None:
-        """Name the Index counts items for this binding, and show its choice.
+        """Name the Index unit items for this binding, and show its choice.
 
         The items are renamed rather than fixed because what an index counts
         is a fact about the pair: the same map bound to a tile bank counts
@@ -506,7 +561,7 @@ class TilemapBarMixin:
         said, _ = documents.format_addressing(self._registry, entry)
         combo = self._index_addressing
         format_noun = unit if said is IndexAddressing.ORDINAL else element
-        combo.setItemText(0, f"Format ({format_noun.capitalize()}s)")
+        combo.setItemText(0, f"From format ({format_noun.capitalize()}s)")
         combo.setItemText(1, f"{element.capitalize()}s")
         combo.setItemText(2, f"{unit.capitalize()}s")
         with signals_blocked(combo):
@@ -526,7 +581,7 @@ class TilemapBarMixin:
         moot: str | None,
         reading: documents.IndexReading | None,
     ) -> str:
-        """The Index counts tooltip: what the two readings are, then whatever
+        """The Index unit tooltip: what the two readings are, then whatever
         about this binding the user cannot see from the picture.
 
         That is three things. Why the control is off (``moot``). Why counting
@@ -541,11 +596,17 @@ class TilemapBarMixin:
         """
         element, unit = self._addressing_nouns(entry, source)
         where = "source map" if element == "cell" else "tile bank"
+        # The first row is the only one whose name does not say what it does:
+        # it states nothing itself, and the brackets are the format's answer.
         lines = [
             f"What each index counts in the {where}",
+            "From format: what the cell format says, shown in brackets",
+            "The other two override the format, for this map only",
             f"{element.capitalize()}s: the {unit}'s top-left {element}",
             f"{unit.capitalize()}s: the {unit}'s number, 0, 1, 2...",
-            f"Base {element} counts {element}s either way",
+            f"Base counts {element}s or {unit}s, as the index does;",
+            "changing this moves it to the same place, or to 0",
+            f"where no whole {unit} starts there",
         ]
         if moot is not None:
             lines.append(moot)
@@ -579,40 +640,24 @@ class TilemapBarMixin:
         width, or 0 where the numbering does not hang on it.
 
         Only a chained map counting stamps on a grid can: a packed table's
-        stamps follow one another whatever the width, a geometry the format
-        states in ``record_*`` keys is its own, and a source that publishes a
-        stride or states a width has said where its rows break.
+        stamps follow one another whatever the width, a geometry read off the
+        format's record keys is its own
+        (:func:`~celpix.project.documents.reads_record_keys`), and a source
+        that publishes a stride or states a width has said where its rows
+        break.
         """
         doc = entry.doc
         chain = doc.chain if doc is not None else None
         geometry = chain.geometry if chain is not None else None
         if geometry is None or not geometry[2]:
             return 0
-        if any(self._tilemap_declares(entry, key) is not None for key in RECORD_KEYS):
+        if documents.reads_record_keys(self._registry, entry):
             return 0
         bound = self._binding_target(source)
         through = bound.doc if bound is not None else None
         if through is None or documents.chain_width_is_stated(through):
             return 0
         return geometry[2]
-
-    def _addressing_refusal_note(self, doc: Document) -> str | None:
-        """The status line for a map whose units could not be counted, or None.
-
-        Said on load for the reason a stamp refusal is
-        (:meth:`~...session.SessionMixin._load_tilemap_entry`): the picture that
-        comes up reads every index as a corner, not the count that was asked
-        for. The unit is the document's own — it knows whether it counts stamps
-        of a chain or metatiles of a bank, and the refusal is its.
-        """
-        why = doc.addressing_refusal
-        if why is None:
-            return None
-        unit = "stamp" if doc.chain is not None else "metatile"
-        return (
-            f"Indices not counted as {unit}s - {why}; "
-            f"reading each as its {unit}'s corner."
-        )
 
     def _bake_binding_jump_icon(self) -> None:
         """Stamp the jump button's ring-and-dot in the theme's button-text color.
@@ -819,34 +864,33 @@ class TilemapBarMixin:
         blanket visibility would put the spin back on a sprite object
         (:mod:`~celpix.ui.main_window.capability_sync`).
         """
-        limit = self._cell_index_limit()
+        runs = self._cell_index_runs()
         usable = self._cell_reference_settable()
         self._cell_index_label.setVisible(usable)
         self._cell_index.setVisible(usable)
-        if not usable:
+        if not usable or runs is None:
             return
         selected = bool(self._selected_cells())
         self._cell_index.setEnabled(selected)
-        self._cell_index.setToolTip(f"{self._cell_index_tip()} (hex)")
+        entry = self._workspace.current
+        noun = self._index_noun(entry) if entry is not None else "tile"
+        self._cell_index_label.setText(f"{noun.capitalize()} ")
+        self._cell_index.setToolTip(f"{self._cell_index_tip(noun)} (hex)")
         with signals_blocked(self._cell_index):
-            self._cell_index.setMaximum(limit)
+            # Only what a stored cell can name: a floor, a top and any gap
+            # between (:class:`~celpix.ui.widgets.RunSpinBox`).
+            self._cell_index.set_runs(runs)
             self._cell_index.setValue(self._selected_cell_index())
 
-    def _cell_index_tip(self) -> str:
+    def _cell_index_tip(self, noun: str) -> str:
         """The Cell spin's tooltip, naming what the number counts here.
 
-        Per document because Index counts changes it: the same spin holds a
-        source cell or a stamp number on a chained map, and a tile or a
-        metatile number over art (:attr:`~celpix.core.document.Document.
-        index_addressing`).
+        ``noun`` is :meth:`_index_noun`'s, the label's own word, so the two
+        cannot disagree: the same spin holds a source cell or a stamp number on
+        a chained map, and a tile or a metatile number over art, as Index unit
+        and the addressing in force say.
         """
-        doc = self._doc
-        chained = doc is not None and doc.chain is not None
-        counted = doc is not None and doc.index_addressing is IndexAddressing.ORDINAL
-        if chained:
-            what = "stamp" if counted else "source cell"
-        else:
-            what = "metatile" if counted else "tile"
+        what = "source cell" if noun == "cell" else noun
         return (
             f"The {what} the selected cells name - set it to point\nthem somewhere else"
         )
@@ -1022,20 +1066,17 @@ class TilemapBarMixin:
         if data is _FROM_FILE:
             self._bind_tiles_from_file(entry)
             return
-        # The base rides in the same TileSource as the binding, so a reset of it
-        # lands, and comes back off, in the one step (:meth:`_carried_base`).
+        # The base and Index unit ride in the same TileSource as the binding,
+        # so a reset of them lands, and comes back off, in the one step
+        # (:meth:`_rebound_source`).
         if data is _NONE or data is None:
-            source = TileSource(base_index=self._carried_base(entry, None))
+            source = self._rebound_source(entry, None)
             text = "unbind tiles"
         else:
             if not self._settle_font_declaration(entry, data):
                 self._refresh_tilemap_bar()  # cancelled: put the combo back
                 return
-            source = TileSource(
-                mode=TileMode.ENTRY,
-                entry=data,
-                base_index=self._carried_base(entry, data),
-            )
+            source = self._rebound_source(entry, data)
             text = f"bind tiles to {self._tile_binding.currentText()}"
         self._rebind_tiles(entry, source, text)
 
@@ -1135,12 +1176,8 @@ class TilemapBarMixin:
             self._activate_entry(entry)
             self._refresh_tilemap_bar()
             return
-        source = TileSource(
-            mode=TileMode.ENTRY,
-            entry=bound,
-            # Asked of the binding as the user found it.
-            base_index=self._carried_base(entry, bound, before.tile_source),
-        )
+        # Asked of the binding as the user found it.
+        source = self._rebound_source(entry, bound, before.tile_source)
         entry.tile_source = source  # before the switch back, so the reload reads it
         self._activate_entry(entry)
         if self._workspace.current is not entry:
@@ -1187,7 +1224,7 @@ class TilemapBarMixin:
         self._rebind_tiles(
             entry,
             replace(source, base_index=value),
-            f"set base {self._base_noun(entry)} to ${value:X}",
+            f"set base {self._index_noun(entry)} to ${value:X}",
         )
 
     def _on_index_addressing_change(self, index: int) -> None:
@@ -1195,9 +1232,13 @@ class TilemapBarMixin:
 
         The base spin's route (:meth:`_rebind_tiles`): the choice rides in the
         binding, so it is one undo step, a re-read, and the bar and the tile
-        source panel follow from the refresh that ends it. The **base is left
-        alone** — it is added after an ordinal becomes its unit's corner, so it
-        counts cells or tiles whichever way the index is read.
+        source panel follow from the refresh that ends it. The **base moves
+        with it**, in the same step, since it counts what the index counts: it
+        is re-counted to start the map at the same place in the source where a
+        whole unit starts there, and reset to 0 where none does
+        (:func:`~celpix.core.tilemap.rebased`) — from the reading in force to
+        the one the choice will be read under, so a refused ordinal counts
+        elements on either side. The undo text says so when the base moved.
 
         The held pick is carried to the number that now names the same place
         (:meth:`~...tile_source_dock.TileSourceDockMixin._repoint_source_pick`):
@@ -1220,12 +1261,39 @@ class TilemapBarMixin:
             text = f"count indices as {element}s"
         else:
             text = f"count indices as {unit}s"
+        base, counted = self._recounted_base(entry, source, choice)
+        if base == 0 and source.base_index:
+            text += " and reset the base"
+        elif base != source.base_index:
+            text += f" and move the base to {unit if counted else element} ${base:X}"
         origin = self._source_pick_origin()
-        self._rebind_tiles(entry, replace(source, addressing=choice), text)
+        self._rebind_tiles(
+            entry, replace(source, addressing=choice, base_index=base), text
+        )
         # Only where the change landed: a re-read that failed put the entry back
         # as it was, and so is the sheet the pick addresses.
         if (entry.tile_source or TileSource()).addressing is choice:
             self._repoint_source_pick(origin)
+
+    def _recounted_base(
+        self, entry: Entry, source: TileSource, choice: IndexAddressing | None
+    ) -> tuple[int, bool]:
+        """``source``'s base counted the way ``choice`` will read ``entry``'s
+        indices — the same place in the source, or 0 where no whole unit starts
+        there — and whether that reading counts units.
+
+        Kept as it stands where either reading is unknown: nothing is loaded to
+        read the geometry off, so there is no place to carry it to.
+        """
+        doc = entry.doc
+        asked = choice or documents.format_addressing(self._registry, entry)[0]
+        reading = documents.document_index_reading(
+            self._registry, self._workspace, entry, asked
+        )
+        if doc is None or reading is None:
+            return source.base_index, asked is IndexAddressing.ORDINAL
+        base = rebased(source.base_index, doc.addressing_geometry, reading.geometry)
+        return base or 0, reading.geometry is not None
 
     def _on_tilemap_preset_change(self, _index: int) -> None:
         """A different cell format for this entry — re-read it under the new one.

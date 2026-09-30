@@ -751,7 +751,8 @@ def test_a_chain_of_any_depth_resolves_and_only_a_loop_is_refused(
     assert doc.stamp_cells == (4, 4) and doc.drawn_columns == 8
     assert _drawn(doc) == _nested(b"\x00\x01")
     assert doc.pixel_data == bank.doc.pixel_data  # the art at the far end
-    assert window._tile_base_label.text() == "Base cell "
+    # the field's byte counts the outer table's stamps, and so does its base
+    assert window._tile_base_label.text() == "Base stamp "
     assert window._tile_binding_note.text() == (
         "Stamped from outer.bin via inner.bin - edit them to change the stamps."
     )
@@ -904,7 +905,8 @@ def test_rebinding_to_another_kind_of_source_resets_the_base_in_one_step(
     window._undo_stack.undo()
     assert field.tile_source.entry is bank and field.tile_source.base_index == 3
     assert window._tile_base.value() == 3
-    assert window._tile_base_label.text() == "Base tile "
+    # over art the field's byte counts metatiles, and so does its base
+    assert window._tile_base_label.text() == "Base metatile "
 
 
 def test_a_slice_edit_of_a_table_restamps_the_map_above_it(qtbot, tmp_path) -> None:
@@ -1124,11 +1126,13 @@ def test_restamping_a_map_two_hops_up_goes_by_the_whole_stamp(qtbot, tmp_path) -
     window._write_current()
     assert Path(field.path).read_bytes() == b"\x01\x01"
 
-    # Set Base Cell takes the picked stamp's corner, in cells: outer stamp 1
-    # starts at cell 4 of the outer table, and that is where cell 0 then reads.
+    # Set Base Stamp counts in stamps, as the byte does: outer stamp 1 becomes
+    # the one entry 0 names, which starts at cell 4 of the outer table.
     window._source_tile_id = 1
     window._on_set_base_tile()
-    assert field.tile_source.base_index == 4
+    assert field.tile_source.base_index == 1
+    assert window._doc.chain.source_cell(0) == 4
+    assert window._undo_stack.undoText() == "set base stamp to $1"
 
 
 def test_editing_a_stamp_layout_is_refused(qtbot, tmp_path) -> None:
@@ -4200,6 +4204,38 @@ def test_a_map_slice_edit_is_the_files_edit_and_writes_through_it(
     assert not carved.pixel_dirty and not rom.pixel_dirty
     on_disk = Path(rom.path).read_bytes()
     assert on_disk[len(on_disk) - len(body) :] == carved.doc.tilemap_data != body
+
+
+def test_a_settle_that_crashes_mid_edit_marks_the_row_at_once(qtbot, tmp_path) -> None:
+    """A format's settle runs per edit, so its crash notice lands with no load to
+    repaint the row — and on a map already unsaved, no dirty-marker repaint
+    either. The row has to wear it from the edit that recorded it."""
+    from dataclasses import replace
+
+    from celpix.core.tilemap import Cell
+    from celpix.pipeline._stage import _cell_settler
+
+    class Crashing:
+        def settle_cells(self, cells, params):
+            raise ValueError("boom")
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)] * 2)))
+    screen = window._workspace.current
+    cells = list(screen.doc.cells)
+    cells[0] = replace(cells[0], index=2)
+    window._apply_cells(cells, "set cell reference")
+    assert screen.pixel_dirty  # the dirty repaint is spent
+
+    screen.doc.cell_settler = _cell_settler(
+        Crashing(), {}, ctx=screen.doc.tilemap_ctx, plugin="test.crashing"
+    )
+    cells[1] = replace(cells[1], index=3)
+    window._apply_cells(cells, "set cell reference")
+    assert "could not settle its cells" in (
+        window._files_panel._items[screen].toolTip(0)
+    )
 
 
 def test_a_banks_format_switch_reaches_the_maps_bound_to_it(qtbot, tmp_path) -> None:

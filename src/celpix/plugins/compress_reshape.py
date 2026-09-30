@@ -1,14 +1,22 @@
 """Compress & Reshape — a compression scheme with a reshape run over its output.
 
-A game that bolts a second pass onto a stock compressor needs two transforms where
-a slice has one Compression slot. The running sum is the case that built it: a
-title screen's map is packed as *differences*, so the loader unpacks the stream
-and then sums it, and neither step alone reads the map
-(:mod:`celpix.plugins.builtins.running_sum`). The Reshape stage cannot hold the
-second step, because it runs **before** decompression — over the packed bytes
-(``docs/design/reshape-stage.md`` §4).
+A game that bolts a second pass onto a stock compressor needs two transforms, and
+an entry's own Reshape stage cannot hold the second: it runs **before**
+decompression, over the packed bytes (``docs/design/reshape-stage.md`` §4). The
+running sum is the case that built this: a title screen's map is packed as
+*differences*, so the loader unpacks the stream and then sums it, and neither
+step alone reads the map (:mod:`celpix.plugins.builtins.running_sum`).
 
-So the pair is one plugin, in the Compression slot, described by a TOML preset:
+**A nested slice is the first thing to reach for**
+(``docs/design/slices-and-parents.md`` §6): a slice cut from the stream's
+decoded bytes runs its own reshape — and its own compression — over them, takes
+any part of the output rather than all of it, and folds its edits into a stream
+that is re-packed once. The pair is for where that costs more than it gives: a
+stream that is one structure and wants one row, bounded by what its decoder
+consumed rather than by a length written down, and found by the scan and the
+preview as a single scheme.
+
+The pair is one plugin, in the Compression slot, described by a TOML preset:
 
 ```toml
 id = "compression.rnc2-running-sum"

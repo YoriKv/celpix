@@ -319,3 +319,37 @@ def test_a_disk_reload_lifts_a_failed_entrys_mark_and_tries_it_again(
     assert entry.load_failure is None and entry.doc is not None
     assert window._doc is entry.doc and window._write_action.isEnabled()
     assert len(captured_alerts) == 1  # the original failure, nothing since
+
+
+def test_the_watch_follows_a_retargeted_file_through_undo_and_redo(
+    qtbot, tmp_path, monkeypatch, disk_reload_answer
+) -> None:
+    """Re-pointing a file moves its path in place, which no addition or removal
+    announces - and neither does its undo or redo. Whichever way the step last
+    went, the file read is the one asked about, and the one left is not."""
+    from celpix.ui.container_dialog import ContainerDialog, ContainerEdit
+
+    window, px = _window(qtbot, tmp_path, monkeypatch)
+    entry = window._workspace.current
+    other = tmp_path / "other.4bpp.sfc"
+    other.write_bytes(bytes(32 * 8))
+    edit = ContainerEdit(entry.container_id, (str(other),))
+    monkeypatch.setattr(
+        ContainerDialog, "edit_container", staticmethod(lambda *_a, **_k: edit)
+    )
+    window._change_container_for(entry)
+    assert entry.path == str(other)
+    assert window._fs_watcher.files() == [str(other)]
+
+    window._undo_stack.undo()
+    assert entry.path == str(px)
+    assert window._fs_watcher.files() == [str(px)]
+    window._undo_stack.redo()
+    assert window._fs_watcher.files() == [str(other)]
+
+    _rewrite(px, bytes(reversed(px.read_bytes())))  # the file left behind
+    window._check_disk_changes()
+    assert disk_reload_answer.asked == []
+    _rewrite(other, bytes(range(256)))  # the file read now
+    window._check_disk_changes()
+    assert disk_reload_answer.asked == [([str(other)], [])]

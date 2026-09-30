@@ -35,7 +35,12 @@ from PySide6.QtWidgets import (
 )
 
 from celpix.core.document import resolve_chain
-from celpix.core.tilemap import Cell, CellGrid, containing_at, corner_at
+from celpix.core.tilemap import (
+    Cell,
+    CellGrid,
+    IndexAddressing,
+    index_at,
+)
 from celpix.pipeline import pipeline
 from celpix.project.workspace import TileSource
 from celpix.ui import render_bridge
@@ -234,16 +239,16 @@ class TileSourceDockMixin:
     def _on_set_base_tile(self) -> None:
         """Make the picked tile the one a reference of 0 draws.
 
-        The base is stated in the **source's** tile numbers — it *is* the tile a
-        reference of 0 draws (:attr:`~celpix.core.document.Document.
-        tile_base_index`), a cell holding 0 on a map and a subsprite holding 0 on
-        an object — while the panel is addressed in the file's own IDs, so the
-        pick has to be resolved through the base in force before it can replace
-        it. That is the same arithmetic the readout above the button prints as
-        "bank tile $N", so the button does what the line says.
+        The base counts what the index counts — a tile, a source cell, a whole
+        metatile or stamp, a glyph (:func:`~celpix.core.tilemap.index_corner`)
+        — and the panel is addressed in the file's own IDs, which the base in
+        force has already shifted. So the pick's place is ID + base in the same
+        unit, and that sum is the base that lands it on a reference of 0: the
+        same arithmetic the readout above the button prints as "bank tile $N",
+        so the button does what the line says.
 
         Through :meth:`~...tilemap_bar.TilemapBarMixin._rebind_tiles`, so this is
-        the Base tile spin's own step: one undoable command, one re-read, and the
+        the Base spin's own step: one undoable command, one re-read, and the
         spin follows because both read the entry back.
 
         The pick then moves to **ID 0**, because that is where the tile the user
@@ -254,15 +259,16 @@ class TileSourceDockMixin:
         if not self._can_set_base_tile():
             return
         entry = self._workspace.current
-        assert entry is not None and self._doc is not None
+        tile_id = self._source_tile_id
+        assert entry is not None and tile_id is not None
         source = entry.tile_source or TileSource()
-        base = self._source_pick_origin()
-        if base is None or base == source.base_index:
+        base = source.base_index + tile_id
+        if base == source.base_index:
             return
         self._rebind_tiles(
             entry,
             replace(source, base_index=base),
-            f"set base {self._base_noun(entry)} to ${base:X}",
+            f"set base {self._index_noun(entry)} to ${base:X}",
         )
         # Only where the bind actually landed: a re-read that failed put the
         # entry back as it was, and so is the sheet the pick addresses.
@@ -273,10 +279,11 @@ class TileSourceDockMixin:
         """Where in the source the held pick starts, the base in force added —
         or None with nothing picked.
 
-        An ordinal ID counts units, and the base counts cells or tiles whichever
-        way the ID does, so this is the one number a pick means that survives
-        the IDs being re-counted or re-based: the source cell a chained map's
-        stamp starts at, or the bank tile a metatile does.
+        The one number a pick means that survives the IDs being re-counted or
+        re-based: the source cell a chained map's stamp starts at, or the bank
+        tile a metatile does, through the arithmetic every reader shares
+        (:meth:`~celpix.core.document.CellChain.source_cell`,
+        :meth:`~celpix.core.document.Document.index_origin`).
         """
         doc, tile_id = self._doc, self._source_tile_id
         if doc is None or tile_id is None or not doc.is_tilemap:
@@ -294,24 +301,21 @@ class TileSourceDockMixin:
 
         For a change of what the IDs count
         (:meth:`~...tilemap_bar.TilemapBarMixin._on_index_addressing_change`):
-        the pick is kept on the picture rather than on the number. Counting
-        units, a place inside a unit rather than at its corner has no ID, and the
-        pick is dropped rather than moved onto a neighbour the user did not
-        pick.
+        the pick is kept on the picture rather than on the number, under the
+        base as the change left it. Counting units, a place inside a unit
+        rather than at its corner has no ID, and the pick is dropped rather than
+        moved onto a neighbour the user did not pick.
         """
         doc = self._doc
         if origin is None or doc is None:
             return
         chain = doc.chain
-        offset = origin - (chain.base if chain is not None else doc.tile_base_index)
-        geometry = doc.addressing_geometry
-        if geometry is not None and offset >= 0:
-            unit = containing_at(offset, geometry)
-            offset = unit if corner_at(unit, geometry) == offset else -1
-        if offset < 0:
+        base = chain.base if chain is not None else doc.tile_base_index
+        at = index_at(origin, doc.addressing_geometry, base)
+        if at is None or at < 0:
             self._clear_source_tile()
-        elif offset != self._source_tile_id:
-            self._set_source_tile(offset)
+        elif at != self._source_tile_id:
+            self._set_source_tile(at)
 
     def _sync_set_base_tile(self) -> None:
         """Converge the button with the pick — and with what it would shift.
@@ -323,32 +327,22 @@ class TileSourceDockMixin:
         """
         self._set_base_tile_button.setEnabled(self._can_set_base_tile())
         doc, entry = self._doc, self._workspace.current
-        # The binding bar's own predicate for what the base counts, so the
-        # button and the spin beside the binding never name the number
-        # differently (:meth:`~...tilemap_bar.TilemapBarMixin._base_counts_cells`).
-        cells = (
-            doc is not None
-            and doc.is_tilemap
-            and entry is not None
-            and self._base_counts_cells(entry)
-        )
-        self._set_base_tile_button.setText(
-            "Set Base Cell" if cells else "Set Base Tile"
-        )
+        # The binding bar's own noun for what the base counts, so the button
+        # and the spin beside the binding never name the number differently
+        # (:meth:`~...tilemap_bar.TilemapBarMixin._index_noun`).
+        tilemap = doc is not None and doc.is_tilemap and entry is not None
+        noun = self._index_noun(entry) if tilemap else "tile"
+        cells = tilemap and self._base_counts_cells(entry)
+        self._set_base_tile_button.setText(f"Set Base {noun.capitalize()}")
         if doc is not None and doc.is_sprite:
             self._set_base_tile_button.setToolTip(
                 "Make the picked tile the one a subsprite holding $0 draws\n"
                 "Shifts every subsprite's tile by the same amount"
             )
             return
-        if cells:
-            self._set_base_tile_button.setToolTip(
-                "Make the picked stamp the one cell 0 names\n"
-                "Shifts every cell by the same amount"
-            )
-            return
+        verb = "names" if cells else "draws"
         self._set_base_tile_button.setToolTip(
-            "Make the picked tile the one cell 0 draws\n"
+            f"Make the picked {noun} the one cell 0 {verb}\n"
             "Shifts every cell by the same amount"
         )
 
@@ -569,6 +563,7 @@ class TileSourceDockMixin:
             self._tile_source_columns.value(),
             self._cell_index_limit(),
             row,
+            self._cell_index_runs(),
         )
         self._tile_source_row_shown = row
         if not sheet.ids:
@@ -764,9 +759,10 @@ class TileSourceDockMixin:
         a tile in the bound bank, and what is worth saying is where that tile
         actually sits once the base is applied — the two numbers differ exactly
         when the map and its art number from different places, which is when the
-        question gets asked. On a **chained** map it is a stamp: a position in
-        the map being drawn through, whose own cell supplies the tile and the
-        attributes, so the line resolves that hop.
+        question gets asked. On a **chained** map it names a stamp — by its
+        corner cell or by its number, as the map counts, and the line leads with
+        that word — a position in the map being drawn through, whose own cell
+        supplies the tile and the attributes, so the line resolves that hop.
 
         Both end with how many cells use it, which is the reverse question the
         panel is otherwise silent about: one scan over the cells, run on a click
@@ -809,11 +805,24 @@ class TileSourceDockMixin:
                 ),
                 "stamp" if doc.is_indirect else "cell",
             )
+        # What the ID counts, in the bar's own word for it
+        # (:meth:`~...tilemap_bar.TilemapBarMixin._index_noun`).
+        entry = self._workspace.current
+        noun = (self._index_noun(entry) if entry is not None else "tile").capitalize()
         chain = doc.chain
         if chain is None:
-            bank = doc.index_origin(tile_id)
-            where = f"bank tile ${bank:X}" if bank != tile_id else "no base offset"
-            return f"Tile ${tile_id:X} - {where} - used by {used}."
+            # Counting metatiles, the ID is not a tile number at all, so where its
+            # metatile starts is worth saying even with no base; and whether
+            # there is an offset is asked of the base itself, since an ordinal's
+            # corner can land back on the ID with a base set.
+            counts_units = doc.index_addressing is IndexAddressing.ORDINAL
+            based = doc.tile_base_index != 0
+            parts = []
+            if counts_units or based:
+                parts.append(f"bank tile ${doc.index_origin(tile_id):X}")
+            if not based:
+                parts.append("no base offset")
+            return f"{noun} ${tile_id:X} - {', '.join(parts)} - used by {used}."
         # A bare coordinate with no rows carried: the line describes the stamp
         # as the source authored it, and no real entry stands behind this ID —
         # a bare cell's row 0 let through would misreport the source's. Resolved
@@ -840,4 +849,4 @@ class TileSourceDockMixin:
             parts.append("H-flip")
         if stamp.flip_v:
             parts.append("V-flip")
-        return f"Stamp ${tile_id:X} - {', '.join(parts)} - used by {used}."
+        return f"{noun} ${tile_id:X} - {', '.join(parts)} - used by {used}."

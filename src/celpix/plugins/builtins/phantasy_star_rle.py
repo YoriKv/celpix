@@ -15,9 +15,11 @@ cut into **parts**, each run-length coded on its own::
 **The parts are the interleaved data taken apart.** The game's loader writes
 part *k*'s *i*-th byte at ``dest + k + parts * i``, so tiles (four parts) come
 out as ordinary interleaved 4bpp and a tilemap (two parts) as ordinary 2-byte
-cells. celPix's reshape stage runs before decompression and so cannot weave
-them back, and this codec does it itself: the output is what
-``preset.pixel.sms-4bpp`` or ``preset.tilemap.sms-bg`` reads directly.
+cells. The weave is the decode's own last step rather than a pass run over its
+output — one routine unpacks a part and places its bytes — and the part count
+it needs is the one that says how many terminators to read, so the codec does
+both: the output is what ``preset.pixel.sms-4bpp`` or ``preset.tilemap.sms-bg``
+reads directly.
 
 **How many parts is not in the bytes** — the same stream grammar is loaded by a
 tile routine that walks four and a tilemap routine that walks two. So it is a

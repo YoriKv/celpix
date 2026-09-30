@@ -4,6 +4,11 @@ The **Reshape** setting of a slice runs *before* decompression. Some games unpac
 data and *then* rearrange it. A **Compress & Reshape** plugin does the two steps
 in that order.
 
+Try a **nested slice** first: a slice cut from the unpacked data, with the
+reshape as its own **Reshape** setting. It needs no plugin, and it can take one
+part of the unpacked data. Use a Compress & Reshape plugin when the whole stream
+is one picture and you want it to stay one entry.
+
 Start from the project you made in [Getting Started](Getting-Started).
 
 ## 1. The problem

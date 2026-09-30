@@ -35,10 +35,11 @@ dimensions must be powers of two. A rectangle's aspect therefore changes the
 address map, not just its extent.
 
 **The LZSS wrapper is folded in.** A "CPR" texture is the same chunk behind the
-size-prefixed ring LZSS (:mod:`~celpix.plugins.builtins.lzss_ring`), and the host
-has one Compression slot per pathway, so the two cannot be stacked. The decode
-sniffs for the wrapper and unwraps it first; ``KEY_COMPRESSED_SIZE`` then reports
-the *compressed* member's length, which is the slot a save-back has to fit.
+size-prefixed ring LZSS (:mod:`~celpix.plugins.builtins.lzss_ring`), and reading
+it here keeps a wrapped texture one entry that the structure scan finds by the
+magic behind the wrapper. The decode sniffs for the wrapper and unwraps it
+first; ``KEY_COMPRESSED_SIZE`` then reports the *compressed* member's length,
+which is the slot a save-back has to fit.
 
 **What round-trips.** Twiddled, linear/stride and palettised (PAL4/PAL8)
 textures re-encode. VQ is decode-only for now — rebuilding a codebook is a

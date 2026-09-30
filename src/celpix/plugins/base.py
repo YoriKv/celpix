@@ -13,6 +13,7 @@ the escape hatch for behaviour data cannot express. Qt-free — these run headle
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
@@ -29,6 +30,7 @@ from celpix.core.errors import Stage
 from celpix.core.index_grid import IndexGrid
 from celpix.core.palette import Palette
 from celpix.core.tilemap import Cell, CellOp
+from celpix.plugins.aliases import current_params
 
 # The three pass-through ids the *host* knows by name: each names a condition
 # several behaviours key off, not merely one more plugin.
@@ -898,7 +900,9 @@ class TilemapCodecPlugin(Plugin, Protocol):
     save side: the attributes a cell carries may not all fit the format it is
     being written back to. A codec that cannot represent a field must say so by
     dropping it in ``encode`` rather than raising — the alternative is a file
-    that cannot be saved at all because one cell has a priority bit.
+    that cannot be saved at all because one cell has a priority bit. The
+    reference is the exception (:meth:`index_runs`): it has no dropped form, so
+    an index no stored value names is refused rather than written as another.
     """
 
     def decode(
@@ -972,6 +976,39 @@ class TilemapCodecPlugin(Plugin, Protocol):
         is the safe direction — a codec that was never asked where its index lives
         must not have one inferred for it. Returning None says the same thing for a
         format that genuinely has no index field to write.
+        """
+        ...
+
+    def index_runs(self, params: dict[str, Any]) -> Sequence[range]:
+        """The indices a stored value can name, as ascending, disjoint runs.
+
+        Optional, and the refinement of :meth:`index_limit` for a field whose
+        values do not map onto ``0`` .. limit one for one. An indirect-record
+        byte whose top bits choose a table names ``group_starts[group]`` plus
+        the bits below
+        (:mod:`celpix.plugins.builtins.indirect_record`): with tables starting
+        at 64 no byte names records 0-63, and tables spaced wider than their
+        reach leave a gap between one's last and the next one's first. Those
+        records are still in the table the map draws through, so the host
+        cannot tell them from the ones a byte reaches unless the format says.
+
+        What the host does with it is keep the unnameable out of every place a
+        reference is chosen: the tile source panel does not offer them, the
+        stamp tool does not place them, the Cell spin skips them, and an edit
+        that would land one is refused (``docs/design/tilemap-entry.md`` §4).
+        The answer is in the numbers the cell holds, the file's own, before any
+        base.
+
+        Runs rather than a predicate because every reader wants the shape: the
+        spin's minimum and maximum are the first run's start and the last one's
+        end, and the panel's span, itself a run, is narrowed by intersecting.
+
+        **A codec that omits this method names every index up to**
+        :meth:`index_limit`, which is exactly true of every field that is a
+        plain number. A codec that answers refuses a cell outside its runs in
+        ``encode`` (raises, naming the cell) rather than writing a value that
+        names something else — the one field it cannot drop, since every value
+        it could write is some other reference.
         """
         ...
 
@@ -1169,6 +1206,31 @@ class TilemapCodecPlugin(Plugin, Protocol):
         """
         ...
 
+    def counts_records(self, params: dict[str, Any]) -> bool:
+        """Whether an index this format decodes is a **record number** outright.
+
+        Optional, and the engine's own word on how its index is addressed
+        (:class:`~celpix.core.tilemap.IndexAddressing`), for a format whose
+        field has no other reading: a byte naming a record of a definition
+        table counts records whatever preset it is read through.
+
+        True does two things. It makes the index ordinal where the preset states
+        no ``index_addressing`` — a preset's word, and a binding's override,
+        outrank the engine's. And it makes the **record keys**
+        (:data:`~celpix.core.tilemap.RECORD_KEYS`) this engine's parameters:
+        the host reads them as the shape the ordinal counts in, each at its
+        default where unset (:func:`~celpix.core.tilemap.record_geometry`),
+        unless the preset states ``index_addressing`` and none of them, which
+        leaves the shape to the table it is bound to.
+
+        A plugin that omits this method is taken to count nothing, which is the
+        safe direction: the corner reading draws each index where it points,
+        where a count inferred onto a format that holds positions would
+        multiply every one of them. A preset over it stating record keys has
+        them left unread, and the load warns that they are.
+        """
+        ...
+
 
 @dataclass(frozen=True)
 class Preset:
@@ -1189,3 +1251,12 @@ class Preset:
     engine_id: str
     params: dict[str, Any] = field(default_factory=dict)
     category: str = ""
+
+    def __post_init__(self) -> None:
+        # Every route a preset takes into the registry builds one of these — a
+        # TOML file, a code format's declarations, a code plugin's own Preset —
+        # so this is the one place a parameter spelled as an older release spelled
+        # it becomes its current name, and nothing that reads params need know
+        # (:data:`~celpix.plugins.aliases.RENAMED_PARAMS`). Raises for a preset
+        # stating both spellings, which each loader reports against its source.
+        object.__setattr__(self, "params", current_params(self.params))

@@ -89,7 +89,7 @@ from celpix.project.workspace import (
 # detail: an id names what an entry was opened *with*, so a rename with no
 # forwarding address resets that entry to pass-through, which reads as data
 # loss. That mapping lives in `plugins/aliases.py`.
-PROJECT_VERSION = 6
+PROJECT_VERSION = 7
 PROJECT_EXTENSION = ".celpix"
 
 # The two alphabet presets celPix used to ship, by the id an older project names
@@ -141,12 +141,24 @@ class LoadedProject:
     #: are different answers.
     pixel_aspect: PixelAspect | None = None
 
+    @property
+    def bases_count_elements(self) -> bool:
+        """Whether this file's tile bases count cells or tiles whatever its
+        maps' indices count — every file from before version 7.
+
+        Its bases are re-counted in the index's unit on the load path, which has
+        the registry the geometry needs
+        (:func:`~celpix.project.documents.count_bases_in_units`); the migration
+        that walks the file forward has none (:func:`_migrate_6_to_7`).
+        """
+        return self.migrated_from is not None and self.migrated_from < 7
+
 
 # -- migrations -----------------------------------------------------------
 #
 # One entry per version bump, keyed by the version it *reads*: ``_MIGRATIONS[n]``
 # takes a document written at version ``n`` and returns it at ``n + 1``. They run
-# in sequence, so a version-1 file opened by a version-6 build is walked forward
+# in sequence, so a version-1 file opened by a version-7 build is walked forward
 # one step at a time and no migration ever has to know about more than the bump
 # it was written for.
 #
@@ -251,12 +263,39 @@ def _migrate_5_to_6(data: dict[str, object]) -> dict[str, object]:
     return data
 
 
+def _migrate_6_to_7(data: dict[str, object]) -> dict[str, object]:
+    """v6 → v7: a tile binding may say how its map's indices number what they
+    draw — ``tile_source.addressing``, ``"corner"`` or ``"ordinal"``
+    (:class:`~celpix.core.tilemap.IndexAddressing`) — its ``base_index``
+    counts in that unit, and a **palette** entry's ``inputs``, its compression
+    preview's bindings, are read back.
+
+    Nothing to rewrite here, though one number changes meaning: a v6 base
+    counted cells or tiles even where the index counted records, and a v7 base
+    counts records there. Which maps those are, and how many cells a record
+    is, is a question for the registry, which a migration does not have — so
+    the load path re-counts them
+    (:attr:`LoadedProject.bases_count_elements`,
+    :func:`~celpix.project.documents.count_bases_in_units`).
+
+    The bump also serves the other direction, as 5 → 6's did. A v6 build
+    ignores ``addressing``, so a map whose binding overrides its format's
+    reading counts every index the format's way and draws the wrong tiles,
+    reads a record base as cells, and never reads a palette entry's
+    ``inputs``, so its preview decodes with the codec's defaults — and **drops
+    both on its next save**. The number is what makes it warn before it does
+    (``docs/design/project-format.md`` §2).
+    """
+    return data
+
+
 _MIGRATIONS: dict[int, Callable[[dict[str, object]], dict[str, object]]] = {
     1: _migrate_1_to_2,
     2: _migrate_2_to_3,
     3: _migrate_3_to_4,
     4: _migrate_4_to_5,
     5: _migrate_5_to_6,
+    6: _migrate_6_to_7,
 }
 
 
@@ -405,6 +444,11 @@ def _entry_dict(
     if entry.kind is EntryKind.SLICE:
         data["slice_offset"] = entry.slice_offset
         data["slice_length"] = entry.slice_length
+        # Only when set, so every other slice is written exactly as before. The
+        # length above is still written: it is the last measurement, and what a
+        # reader that does not know the key reads the slice with.
+        if entry.match_parent:
+            data["match_parent"] = True
         data["compression_id"] = entry.compression_id
         # Only when it isn't what an unstated one means, so a slice left on the
         # default — and every slice in every project written before the choice
@@ -990,6 +1034,9 @@ def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
         # written before the choice existed — SlotFill.parse gives those the
         # default, which is what they get in the dialog too.
         slot_fill=SlotFill.parse(raw.get("slot_fill")),
+        # Only a literal ``true`` turns it on: a stray value must not take a
+        # slice's length out of the user's hands.
+        match_parent=kind is EntryKind.SLICE and raw.get("match_parent") is True,
         # Absent for every file nothing claimed — plain bytes, which is also what
         # an entry naming a container the registry no longer has falls back to.
         container_id=_plugin_id(raw.get("container_id"), RAW_CONTAINER),

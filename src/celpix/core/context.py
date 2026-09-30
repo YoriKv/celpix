@@ -200,6 +200,13 @@ KEY_TILEMAP_PAGES_ACROSS = "tilemap.pages-across"
 # from one stamp to the next where it holds more than the stamp draws
 # (``project/documents.py``, ``index_reading``).
 KEY_TILEMAP_RECORD_SHAPE = "tilemap.record-shape"
+# int: how many cells of the record above come **before** what a map drawn
+# through this table stamps from it — a collision word ahead of a 4x4 block.
+# Published by the host from the table preset's ``record_header``, beside the
+# record it belongs to; unset for none. A map counting this table's stamps
+# starts stamp *n* that many cells into record *n* (``project/documents.py``,
+# ``index_reading``).
+KEY_TILEMAP_RECORD_HEADER = "tilemap.record-header"
 # bool: the record above stores its cells **down each column** — upper-left,
 # lower-left, upper-right, lower-right for a 2x2 — rather than across each row.
 KEY_TILEMAP_RECORD_COLUMN_MAJOR = "tilemap.record-column-major"

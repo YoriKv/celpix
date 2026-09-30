@@ -22,6 +22,7 @@ dropped and re-read (see :meth:`~SessionMixin._load_entry`).
 
 from __future__ import annotations
 
+import weakref
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -43,7 +44,7 @@ from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import NO_COMPRESSION
 from celpix.project import documents
-from celpix.project.documents import BoundTiles
+from celpix.project.documents import BoundTiles, TileSourceUnavailable
 from celpix.project.workspace import (
     Entry,
     EntryKind,
@@ -75,6 +76,11 @@ class SessionMixin:
     ``_doc``. See the module docstring for what it owns, and the package
     docstring for why these are mixins.
     """
+
+    # The document whose unstated width the maps above it were last re-pointed
+    # at, and that width (:meth:`_resync_chain_widths`). Weak, so a closed
+    # entry's document is not kept alive by a render that has moved on.
+    _chain_width_synced: tuple[weakref.ref[Document], int] | None = None
 
     # -- entry switching -----------------------------------------------------
     def _activate_entry(self, entry: Entry) -> None:
@@ -142,7 +148,7 @@ class SessionMixin:
         note = self._partial_tile_note()
         # A tilemap's refusals ride along: this replaces whatever its load said,
         # and a first open is exactly when they are news.
-        notes = self._tilemap_load_notes(doc) if doc.is_tilemap else []
+        notes = doc.refusal_notes if doc.is_tilemap else ()
         return " ".join([f"{message} - {note}" if note else message, *notes])
 
     def _on_current_entry_changed(self, entry: Entry | None) -> None:
@@ -214,9 +220,15 @@ class SessionMixin:
             # built by the one loader every route to it shares
             # (``docs/design/palette-editing.md`` §2).
             return self._load_palette_entry(entry, quiet=quiet)
-        return self._attempt_load(
+        length = entry.slice_length
+        loaded = self._attempt_load(
             entry, lambda: self._read_entry(entry, quiet=quiet, live=live)
         )
+        if entry.slice_length != length:
+            # A slice matching its parent's size was re-measured by the read —
+            # the parent was resized since the row last said how long it is.
+            self._files_panel.refresh_entry(entry)
+        return loaded
 
     def _attempt_load(self, entry: Entry, read: Callable[[], bool]) -> bool:
         """One attempt to open ``entry`` through ``read``, bracketed.
@@ -404,41 +416,14 @@ class SessionMixin:
             self._say_load_notes(entry.doc)
         return True
 
-    def _tilemap_load_notes(self, doc: Document) -> list[str]:
-        """What a tilemap's load had to refuse, one status-line sentence each.
-
-        Said rather than left to the picture, which in both cases is not the
-        one the formats asked for, and silence would leave that a puzzle:
-
-        - A **stamp** was stated and the resolution cannot lay it out, so the
-          map degrades to one cell per entry everywhere at once
-          (:attr:`~celpix.core.document.Document.stamp_cells`). The size is what
-          one entry would have drawn, every hop composed; the reason is the
-          document's, which is the one place that knows which of the refusals
-          applied.
-        - The indices were to **count units** and the source's cannot be
-          numbered, so each is read as its unit's corner
-          (:meth:`~...tilemap_bar.TilemapBarMixin._addressing_refusal_note`).
-        """
-        notes: list[str] = []
-        why = doc.stamp_refusal
-        if why is not None and doc.chain is not None:
-            across, down = doc.chain.drawn_stamp
-            notes.append(
-                f"{across}x{down} stamps not resolved - {why}; "
-                "drawing one cell per entry."
-            )
-        note = self._addressing_refusal_note(doc)
-        if note is not None:
-            notes.append(note)
-        return notes
-
     def _say_load_notes(self, doc: Document) -> None:
-        """Put :meth:`_tilemap_load_notes` on the status line, as one line so
-        neither replaces the other before it is read."""
-        notes = self._tilemap_load_notes(doc)
-        if notes:
-            self.statusBar().showMessage(" ".join(notes))
+        """Put what a tilemap's load had to refuse
+        (:attr:`~celpix.core.document.Document.refusal_notes`) on the status
+        line — said rather than left to a picture that is not the one the
+        formats asked for — as one line so neither replaces the other before it
+        is read."""
+        if doc.refusal_notes:
+            self.statusBar().showMessage(" ".join(doc.refusal_notes))
 
     def _fail_load(self, entry: Entry, exc: Exception, *, quiet: bool) -> bool:
         """Record that ``entry`` would not open, say so if it is news, answer False.
@@ -1251,9 +1236,15 @@ class SessionMixin:
         (:func:`~celpix.project.documents.chain_source_columns`), so Cols on it
         is part of what every map above it draws: the step between a stamp's
         rows and, where indices count stamps on a sheet, which stamp each number
-        names. A dependent holds that width as a snapshot, which is compared
-        here rather than re-pointed on every refresh — the view is rebuilt far
-        more often than Cols moves.
+        names. A dependent holds that width as a snapshot.
+
+        Called on every refresh of the entry on screen, and the view is rebuilt
+        far more often than Cols moves — so the width last synced is remembered
+        and a refresh at the same one costs a comparison. A move re-points the
+        dependents outright, which also reaches the maps above one that has no
+        document to compare (:meth:`_rechain_dependents`). A document not seen
+        before is compared against its **direct** dependents only: each one
+        re-pointed re-points the maps above it in turn.
         """
         doc = entry.doc
         if doc is None or not doc.is_tilemap or doc.cells is None:
@@ -1261,6 +1252,12 @@ class SessionMixin:
         if documents.chain_width_is_stated(doc):
             return
         width = self._chain_source_columns(doc)
+        synced = self._chain_width_synced
+        self._chain_width_synced = (weakref.ref(doc), width)
+        if synced is not None and synced[0]() is doc:
+            if synced[1] != width:
+                self._rechain_dependents(entry)
+            return
         for other in self._workspace.entries:
             source = other.tile_source
             if source is None or source.entry is not entry or other.doc is None:
@@ -1376,7 +1373,7 @@ class SessionMixin:
         self._settle_region(source.entry)
         try:
             cfg = self._tile_source_config(entry, source)
-        except (PipelineError, KeyError) as exc:
+        except (PipelineError, KeyError, TileSourceUnavailable) as exc:
             return self._unreadable_tiles(exc)
         live = self._live_bound_tiles(source, cfg)
         if live is not None:
@@ -1431,9 +1428,11 @@ class SessionMixin:
         tiles = self._no_tiles()
         fault = exc.fault if isinstance(exc, PipelineError) else None
         if isinstance(exc, KeyError):
-            # A KeyError's str() is its key in quotes, which says nothing on a
-            # row; what was looked up and not found is a format id.
-            why = f"unknown format {exc.args[0]}" if exc.args else "unknown format"
+            # A registry miss: a format id this build has not got. Its str() is
+            # the message in quotes, so the message itself is taken, and said
+            # under the name the user knows the thing by. A binding that did not
+            # resolve is a TileSourceUnavailable, whose str() is its sentence.
+            why = f"unknown format: {exc.args[0]}" if exc.args else "unknown format"
         else:
             why = str(exc)
         warn(

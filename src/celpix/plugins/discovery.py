@@ -56,6 +56,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only on 3.9/3.10
 
 from celpix import resources
 from celpix.core.errors import Stage, fault_origin
+from celpix.plugins.aliases import current_params
 from celpix.plugins.base import (
     INPUT_STAGES,
     Plugin,
@@ -614,7 +615,10 @@ def check_engine_takes_params(reg: RegistryLike, preset: Preset) -> None:
     fmt = format_behind(engine)
     if fmt is None:
         return
-    declares = getattr(fmt.info, "declares", None) or {}
+    # Compared under current names, as the preset's params already are
+    # (:class:`~celpix.plugins.base.Preset`), so a key a format still declares
+    # under an older name counts as its own rather than as one it ignores.
+    declares = current_params(getattr(fmt.info, "declares", None) or {})
     ignored = sorted(set(preset.params) - set(declares))
     if ignored:
         raise ValueError(

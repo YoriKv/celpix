@@ -4233,6 +4233,30 @@ def test_unreadable_bound_tiles_are_a_notice_on_the_map_not_a_dialog(
     assert "Bound tiles could not be read" in tip and "boom" in tip
 
 
+def test_a_bank_that_is_not_open_is_named_on_the_map_not_called_a_format(
+    qtbot, tmp_path
+) -> None:
+    """A binding that does not resolve and a format id that is not installed are
+    different failures with different fixes, so the notice says which one."""
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource, entry_notices
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
+    bank, screen = window._workspace.entries
+    screen.tile_source = TileSource(mode=TileMode.ENTRY, entry=bank)
+    window._workspace.close(bank)  # still named by the binding, no longer open
+    window._workspace.drop_document(screen)
+    assert window._load_entry(screen)
+
+    [note] = [n for n in entry_notices(screen) if n.is_warning]
+    assert note.summary == "Bound tiles could not be read"
+    assert "bound to s.4bpp.sfc, which is not open" in note.detail
+    assert "unknown format" not in note.detail
+
+
 def test_a_failed_reread_of_the_open_map_leaves_it_working_and_unmarked(
     qtbot, tmp_path, monkeypatch, captured_alerts
 ) -> None:
@@ -4501,6 +4525,29 @@ def test_a_nested_slice_its_parent_no_longer_reaches_opens_inert_saying_why(
     ws.drop_document(inner)
     window._activate_entry(inner)
     assert inner.load_failure is None and len(inner.doc.pixel_data) == 0x20
+
+
+def test_editing_a_parent_slice_re_measures_a_nested_slice_matching_it(
+    qtbot, tmp_path
+) -> None:
+    """Re-pointing a slice re-reads what is nested in it; one matching its size
+    is re-measured there and then, so its row is right before anyone opens it,
+    and an undo measures it back."""
+    from dataclasses import replace
+
+    from celpix.project.workspace import SliceParams
+    from celpix.ui.undo_commands import SliceEditCommand
+
+    window, _a, _b, cut = _two_roms(qtbot, tmp_path)  # 64 bytes at 64
+    inner = window._workspace.add_slice_under(cut, "inner", 0x10, 0x30)
+    inner.match_parent = True
+    before = SliceParams(cut.name, 64, 64, cut.compression_id)
+    window._push_command(
+        SliceEditCommand(window, cut, before=before, after=replace(before, length=128))
+    )
+    assert inner.slice_length == 128 - 0x10
+    window._undo_stack.undo()
+    assert inner.slice_length == 64 - 0x10
 
 
 def test_a_nested_slice_with_no_parent_slice_opens_inert_saying_why(

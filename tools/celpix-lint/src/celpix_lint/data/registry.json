@@ -779,7 +779,7 @@
     ],
     "reshape": []
   },
-  "project_version": 6,
+  "project_version": 7,
   "renamed": {
     "codec.color-indexed": "codec.palette.indexed",
     "codec.color-mask": "codec.palette.mask",

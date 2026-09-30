@@ -9,7 +9,7 @@ import os
 import subprocess
 import sys
 import textwrap
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
@@ -36,6 +36,7 @@ from PySide6.QtGui import (
     QPainter,
     QPen,
     QPixmap,
+    QValidator,
 )
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -65,6 +66,7 @@ from celpix.ui.glyphs import Glyph
 from celpix.ui.theme import WARNING_INK, set_ink
 
 _EnumT = TypeVar("_EnumT", bound=Enum)
+_SpinT = TypeVar("_SpinT", bound=QSpinBox)
 
 # The canvas editing shortcuts (Cut/Copy/Paste/Select All/Delete). The main
 # window binds these window-wide (see ``SelectionMixin``), so they otherwise fire
@@ -1072,7 +1074,64 @@ def value_spin(low: int, high: int, value: int, on_change) -> QSpinBox:  # noqa:
     return spin
 
 
-def hex_spin(low: int, high: int, tip: str, value: int = 0) -> QSpinBox:
+class RunSpinBox(QSpinBox):
+    """A spin over **runs** of integers with gaps between them.
+
+    The Cell spin's: a reference field can have a floor and holes as well as a
+    top (:meth:`~celpix.plugins.base.TilemapCodecPlugin.index_runs`). The first
+    run's start and the last one's end are the ordinary minimum and maximum, and
+    a value between two runs is treated exactly as Qt treats one outside them —
+    typed, it is never committed and the box goes back to the value it held;
+    stepped, the arrows move over the gap to the next value there is, as they
+    stop at either end rather than going past it.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._runs: tuple[range, ...] = ()
+
+    def set_runs(self, runs: Sequence[range]) -> None:
+        """Range the spin over ``runs`` — ascending, disjoint, at least one."""
+        self._runs = tuple(runs)
+        self.setRange(self._runs[0].start, self._runs[-1].stop - 1)
+
+    def _holds(self, value: int) -> bool:
+        return not self._runs or any(value in run for run in self._runs)
+
+    def validate(self, text: str, pos: int) -> object:
+        state = super().validate(text, pos)
+        verdict = state[0] if isinstance(state, tuple) else state
+        if verdict == QValidator.State.Acceptable and not self._holds(
+            self.valueFromText(text)
+        ):
+            # Intermediate, as Qt answers a value below the minimum: still
+            # typeable on the way to one that fits, never committed as it is.
+            return (QValidator.State.Intermediate, text, pos)
+        return state
+
+    def stepBy(self, steps: int) -> None:
+        target = self.value() + steps
+        if steps > 0:
+            over = next((run.start for run in self._runs if run.start > target), None)
+        else:
+            over = next(
+                (run.stop - 1 for run in reversed(self._runs) if run.stop <= target),
+                None,
+            )
+        if self._holds(target) or over is None:
+            super().stepBy(steps)
+        else:
+            self.setValue(over)
+
+
+def hex_spin(
+    low: int,
+    high: int,
+    tip: str,
+    value: int = 0,
+    *,
+    kind: type[_SpinT] = QSpinBox,
+) -> _SpinT:
     """A hex spin — the toolbars' one way of showing an address.
 
     A spin rather than a free-text field so these numbers clamp and step like
@@ -1083,8 +1142,11 @@ def hex_spin(low: int, high: int, tip: str, value: int = 0) -> QSpinBox:
     once the reader knows which base it is in. No ``$`` prefix: like every
     address input, the box holds bare digits - the prefix belongs where a
     number is shown, not where it is typed.
+
+    ``kind`` is the spin class, for one that ranges differently
+    (:class:`RunSpinBox`).
     """
-    spin = QSpinBox()
+    spin = kind()
     spin.setRange(low, high)
     spin.setValue(value)
     spin.setDisplayIntegerBase(16)

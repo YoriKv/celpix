@@ -1,14 +1,14 @@
 # Changelog
 
-## v1.1.8 - unreleased
+## v1.2.0 - unreleased
 
+- Added tilemap *Index unit* that allows a tilemap to switch between indexing cells or whole records (stampes/metatiles/etc)
+- Reworked the entire tilemap pathway to support switching index types
+- Added `record_header`: allows skipping a header start of each record that come before its stamp
+- New and Edit Slice can Match parent size, slice sizes itself to its parent automatically
 - Fixed the Edit Slice dialog inputs display text
 - Fixed performance on big projects
-- A tilemap's index can count whole stamps or metatiles instead of naming their
-  corner, chosen per format (`index_addressing`) or per map with the tilemap
-  bar's Index counts
-- Fixed maps drawn through a table not following a change to the table's Cols until reloaded
-- A map whose stamps could not be resolved or counted wears a warning in the files panel, with the reason
+- Lots of other fixes and improvements to how/where warnings and errors show up
 
 ## v1.1.7 - 2026-09-29
 

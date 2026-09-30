@@ -608,10 +608,15 @@ def load_tilemap_data(
     if live is not None:
         data = live + data[len(live) :]
     engine, preset = reg.engine_for(cfg.interpret_preset_id, TilemapCodecPlugin)
+    counts_records = _probe(
+        engine, "counts_records", preset.params, bool, False, ctx=ctx, plugin=preset.id
+    )
     _run(
         Stage.INTERPRET_TILEMAP,
         Pathway.TILEMAP,
-        lambda: _check_declarations(preset.params),
+        lambda: _check_declarations(
+            preset.params, ctx, counts_records=counts_records, source=preset.id
+        ),
         plugin=preset.id,
     )
     # Seeded and **left** on the context, unlike the byte stages: this context
@@ -633,7 +638,9 @@ def load_tilemap_data(
     _run(
         Stage.INTERPRET_TILEMAP,
         Pathway.TILEMAP,
-        lambda: publish_table_layout(len(cells), preset.params, ctx, preset.id),
+        lambda: publish_table_layout(
+            len(cells), preset.params, ctx, preset.id, counts_records=counts_records
+        ),
         plugin=preset.id,
     )
     cell_bytes = _run(
@@ -784,8 +791,11 @@ def load_tilemap_data(
     )
 
 
-def _check_declarations(params: dict) -> None:
-    """Refuse a closed-set declaration the host would otherwise misread.
+def _check_declarations(
+    params: dict, ctx: PipelineContext, *, counts_records: bool, source: str = ""
+) -> None:
+    """Refuse a closed-set declaration the host would otherwise misread, and
+    say so of record keys it does not read.
 
     The host reads these off the preset by comparing against the one value it
     acts on, so a typo is not an error but the *other* reading: ``layout =
@@ -793,6 +803,15 @@ def _check_declarations(params: dict) -> None:
     (a string, so truthy) is dense. Checked with the load, where the engine's own
     parameters are, so the preset is named in the report
     (:mod:`celpix.plugins._params`).
+
+    The record keys are parameters of an engine whose index counts records
+    (``counts_records``, the engine's answer), and over any other the host
+    does not read them (``project/documents.py``, ``reads_record_keys``). They
+    are not misread there but unread, so the entry opens as its format reads
+    it and a warning naming the keys, attributed to ``source``, goes on
+    ``ctx`` — the rule a layout number the host cannot take keeps
+    (:mod:`celpix.pipeline.table_layout`). A refusal would close the entry over
+    keys that change nothing in it.
     """
     if "layout" in params:
         one_of(params, "layout", ("text", "sprite"), None)
@@ -805,10 +824,32 @@ def _check_declarations(params: dict) -> None:
             tuple(word.value for word in IndexAddressing),
             None,
         )
-    if any(key in params for key in RECORD_KEYS):
-        # Read by the host where it resolves an index, which has no preset to
-        # name in a report — so a shape no table has is refused here instead.
-        record_geometry(params)
+    stated = [key for key in RECORD_KEYS if key in params]
+    if counts_records:
+        if stated:
+            # Read by the host where it resolves an index, which has no preset
+            # to name in a report — so a shape no table has is refused here.
+            record_geometry(params)
+        unread = []
+    else:
+        # Over any other engine `record_header` is still read — as the header
+        # of the records this table offers a map above (`table_layout`).
+        unread = [key for key in stated if key != "record_header"]
+    if unread:
+        if len(unread) == 1:
+            named = f"{unread[0]} is"
+        else:
+            named = f"{', '.join(unread[:-1])} and {unread[-1]} are"
+        warn(
+            ctx,
+            f"{named} not read by this format",
+            "The record keys are read only for a format whose index\n"
+            "is always a record number, and this one's is not,\n"
+            "so its indices are read without them.\n"
+            'To count records, state index_addressing = "ordinal":\n'
+            "the table or bank it is bound to then gives their layout.",
+            source,
+        )
     for key in ("column_major", "indirect", "stamp_dense"):
         flag(params, key)
 
@@ -1496,6 +1537,62 @@ def _check_offsets_preserved(
     )
 
 
+def _check_window(
+    cfg: PathwayConfig, source: ReadSource, ctx: PipelineContext, pathway: Pathway
+) -> None:
+    """Say so when a slice's window runs past the end of the bytes it is cut
+    from, and refuse one that starts there.
+
+    Cutting a buffer past its end is a short or an empty window rather than an
+    error, so without this a slice of a file that shrank — or one given the
+    wrong length — opens on fewer bytes than it asked for and nothing says so.
+    A short window still opens, since what is there is the file's own bytes;
+    one with nothing in it is refused, because an empty slice is not a picture
+    to correct and a decompressor handed nothing fails with an error that names
+    the stream rather than the slice.
+
+    Only a **stated** length is checked: a window left open runs to the end of
+    whatever is there by design. And only for the raw container, which cuts
+    exactly this window — a framing container works out its own start and
+    ignores the offset. A nested slice outside its parent is refused by the
+    app's load funnel before it gets here (``workspace.outside_parent``), with
+    the parent named.
+
+    The refusal is only for a window cut straight from the files, where the
+    buffer's end *is* the file's. One cut from a buffer the host was handed —
+    a parent's live or reordered view, a parent slice's decode — is also read
+    to build other entries' configs, where a raise would be new and the empty
+    window is what those callers already take; it is warned about instead.
+    """
+    if source.length is None or source.length <= 0 or cfg.container_id != RAW_CONTAINER:
+        return
+    size = len(source.data)
+    start = source.start
+    if start >= size and cfg.source.data is None:
+        raise PipelineError(
+            Stage.CONTAINER,
+            pathway,
+            f"the slice starts at {format_hex(source.offset)}, but the file ends "
+            f"at {format_hex(source.base + size)}, so there is nothing to read. "
+            "Edit Slice to move it inside the file.",
+            "read",
+        )
+    short = min(source.length, start + source.length - size)
+    if short <= 0:
+        return
+    unit = "byte" if short == 1 else "bytes"
+    warn(
+        ctx,
+        f"Slice runs {short:,} {unit} past the end of the file",
+        "The file is shorter than this slice's window, so\n"
+        f"its last {short:,} {unit} are missing from what is\n"
+        "shown, and a save writes back only what is there.\n"
+        "Edit Slice to fit it, or repick the file with\n"
+        "Edit File Container if it is the wrong one.",
+        "slice",
+    )
+
+
 def _read_reshape_decompress(
     cfg: PathwayConfig, ctx: PipelineContext, reg: Registry, pathway: Pathway
 ) -> bytes:
@@ -1521,6 +1618,7 @@ def _read_reshape_decompress(
 
     def read() -> bytes:
         source, files = _acquire(cfg.source)
+        _check_window(cfg, source, ctx, pathway)
         held.append(source)
         # Provenance the host owns, because it is the host that knows where the
         # bytes came from; the container publishes only KEY_SOURCE_OFFSET, which

@@ -697,7 +697,9 @@ def tilemap_image(doc: Document, reg: Registry, columns: int) -> TilemapImage:
     return TilemapImage(grid, drawn, min(max(1, 256 // max(1, space)), top + 1), hidden)
 
 
-def tile_source_span(doc: Document, limit: int | None = None) -> range:
+def tile_source_span(
+    doc: Document, limit: int | None = None, runs: Sequence[range] | None = None
+) -> Sequence[int]:
     """Every tile ID a tilemap's cells can reach — the run that resolves.
 
     An **ID** is what a cell holds and what a hex editor shows at its bytes: the
@@ -735,17 +737,40 @@ def tile_source_span(doc: Document, limit: int | None = None) -> range:
       nothing here is placed into a grid, not what the numbers mean.
 
     Where the index is an **ordinal** — a count of stamps or metatiles
-    (:attr:`~celpix.core.document.Document.addressing_geometry`) — the IDs are
-    the counts whose unit's corner lands inside the source once the base is
-    added, which is the same question asked of the unit rather than the element
-    (:func:`~celpix.core.tilemap.index_span`).
+    (:attr:`~celpix.core.document.Document.addressing_geometry`) — the base
+    counts units too, and the IDs are the counts whose unit, the base added,
+    starts inside the source: the same question asked of the unit rather than
+    the element (:func:`~celpix.core.tilemap.index_span`).
 
     ``limit`` is the codec's index-field width
     (:meth:`~celpix.plugins.base.TilemapCodecPlugin.index_limit`), passed in
     because looking it up needs the registry's preset params. ``None`` means the
     format did not answer, and an unanswered field is left alone rather than
     clamped to a guess — the same protocol the flips follow.
+
+    ``runs`` is the format's word on which of those values a stored cell can
+    actually name (:meth:`~celpix.plugins.base.TilemapCodecPlugin.index_runs`),
+    ``None`` for every one. An ID outside them resolves but cannot be written —
+    a table's record 7 that no byte of a map says — so it is not reachable
+    either, and the span is cut to them. That is the one way the answer stops
+    being contiguous, and it comes back as a list then: the caller's question
+    is membership, which a list answers as a range does.
     """
+    span = _resolving_span(doc, limit)
+    if runs is None:
+        return span
+    kept = [
+        cut
+        for run in runs
+        if (cut := range(max(span.start, run.start), min(span.stop, run.stop)))
+    ]
+    if len(kept) <= 1:
+        return kept[0] if kept else range(0)
+    return [at for run in kept for at in run]
+
+
+def _resolving_span(doc: Document, limit: int | None) -> range:
+    """:func:`tile_source_span` before the format's ``runs`` cut it."""
     if not doc.is_tilemap:
         return range(0)
     if doc.chain is not None:
@@ -756,13 +781,15 @@ def tile_source_span(doc: Document, limit: int | None = None) -> range:
         # (:attr:`~celpix.core.document.Document.glyph_count`). Reading the
         # tile count there would offer twice the codes the sheet has letters.
         base, count = doc.tile_base_index, doc.glyph_count
-    span = index_span(-base, count - base, doc.addressing_geometry)
+    span = index_span(0, count, doc.addressing_geometry, base)
     if limit is not None:
         span = range(span.start, max(span.start, min(span.stop, limit + 1)))
     return span
 
 
-def tile_source_ids(doc: Document, limit: int | None = None) -> Sequence[int]:
+def tile_source_ids(
+    doc: Document, limit: int | None = None, runs: Sequence[range] | None = None
+) -> Sequence[int]:
     """Which tile IDs the tile source panel offers — one entry per whole unit.
 
     :func:`tile_source_span` for a cell that draws a single tile, which is most
@@ -796,10 +823,13 @@ def tile_source_ids(doc: Document, limit: int | None = None) -> Sequence[int]:
     An **ordinal** index counts whole units already, so every ID in the span is
     one and the span is the menu, as it is for a glyph.
 
+    ``limit`` and ``runs`` are the span's, so an ID no stored cell can name is
+    never on offer: the panel's promise is that what it offers is what lands.
+
     The sequence is in reading order and **not contiguous**, so a position in it
     is a slot and only the values are IDs: index it, do not do arithmetic on it.
     """
-    span = tile_source_span(doc, limit)
+    span = tile_source_span(doc, limit, runs)
     chain = doc.chain
     if doc.addressing_geometry is not None:
         return span
@@ -869,6 +899,7 @@ def tile_source_image(
     columns: int,
     limit: int | None = None,
     palette_row: int = 0,
+    runs: Sequence[range] | None = None,
 ) -> TileSheet:
     """The tiles ``doc`` can draw from, laid out as a sheet — the panel's picture.
 
@@ -898,8 +929,10 @@ def tile_source_image(
     palette. **Not applied to a chained map**, whose cells resolve to real source
     cells carrying rows of their own — a stamp is its tile *plus* its attributes,
     and recolouring the preview would show a picture the stamp does not make.
+
+    ``limit`` and ``runs`` are :func:`tile_source_span`'s.
     """
-    ids = tile_source_ids(doc, limit)
+    ids = tile_source_ids(doc, limit, runs)
     chain = doc.chain
     if chain is None:
         cells = [Cell(index=at, palette_row=palette_row) for at in ids]

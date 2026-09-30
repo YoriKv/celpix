@@ -1,6 +1,6 @@
 # Project File Format
 
-Specification of the `.celpix` project file. Schema version **6**.
+Specification of the `.celpix` project file. Schema version **7**.
 
 ## 1. Encoding
 
@@ -95,9 +95,9 @@ Keys that name another entry: `current`, `parent_index`,
 | Rule | |
 |---|---|
 | `version` | Top-level int. Missing reads as `1` |
-| Writer | Always writes the current version (`6`) |
+| Writer | Always writes the current version (`7`) |
 | Older file | Migrated forward one version at a time before any key is read |
-| Newer file | Opened with the tolerance rules of §2.2; the UI warns that saving rewrites it at version 6 and drops unknown keys |
+| Newer file | Opened with the tolerance rules of §2.2; the UI warns that saving rewrites it at version 7 and drops unknown keys |
 | Plugin id renames | Independent of `version` (§2.5) |
 
 | Migration | Change |
@@ -107,6 +107,7 @@ Keys that name another entry: `current`, `parent_index`,
 | 3 → 4 | None. Adds `palette_mode: "entry"` with `palette.entry`; `offset` palettes on composites; new plugin input keys |
 | 4 → 5 | None. Adds `session`/`view` on `palette` entries, `parent` on slices and bookmarks, `current` naming a `palette` entry |
 | 5 → 6 | None. Adds the choice binding shape (§5.10); nested slices: `parent: "slice"` with `parent_index` (§5.5) |
+| 6 → 7 | No key rewritten. Adds `tile_source.addressing` (§5.14); `inputs` on `palette` entries (§5.10); `match_parent` on slices (§5.5). `base_index` changes unit (§5.14): on load, a map whose format's engine counts records and states their shape by its record keys has its base re-counted from cells to records — exact where it is whole records that shift every index alike; otherwise the record its old start falls in, with a warning |
 
 ## 4. Top level
 
@@ -156,6 +157,7 @@ Unknown or missing `kind` reads as `file`.
 | `parent_index` | – | ○ | – | – | – |
 | `slice_offset` | – | ● | – | – | – |
 | `slice_length` | – | ● | – | – | – |
+| `match_parent` | – | ○ | – | – | – |
 | `compression_id` | – | ● | – | – | – |
 | `slot_fill` | – | ○ | – | – | – |
 | `offset` | – | – | ● | – | – |
@@ -211,6 +213,7 @@ Required keys: an entry without them is skipped (`path`) or opens on defaults.
 |---|---|---|---|---|
 | `slice_offset` | int | `0` | always | Start, in bytes, absolute from byte 0 of the parent region. Not relative to any container header. Nested slice: from byte 0 of the parent slice's decoded bytes (after its reshape and decompression) |
 | `slice_length` | int \| `null` | `null` | always | Length in bytes. `null` = determined by decompression on first load. Always an int when `reshape_id` is set |
+| `match_parent` | bool | `false` | omitted when `false` | `true`: the length is the parent's end less `slice_offset`, re-measured on every read; `slice_length` holds the last measurement. Parent's end: the file size (joined), the parent's buffer under a reordering container, or the parent slice's decoded length when nested. Only a literal `true` counts |
 | `compression_id` | id | `compression.none` | always | Codec the slice is decompressed and recompressed with |
 | `slot_fill` | string | `"ff"` | omitted at default | Padding after a recompressed stream shorter than its slot: `"ff"` (pad `$FF`), `"zero"` (pad `$00`), `"keep"` (leave old bytes). Unknown reads as `"ff"` |
 | `parent` | string | `"file"` | omitted when `"file"` | Kind of row the slice is cut from: `"file"` \| `"palette"` \| `"slice"` (nested). Other values read as `"file"` |
@@ -406,7 +409,7 @@ Written only when `content_kind` is `"tilemap"`. Read on any `file`/`slice` reco
 |---|---|---|---|---|
 | `mode` | string | — | always | `"entry"`. `"none"` or unknown = unbound |
 | `entry_index` | entry ref | `-1` | always | Tile source entry |
-| `base_index` | int | `0` | omitted at 0 | Added to the source tile (or cell) an index names: N, or under ordinal addressing the first of unit N. Signed |
+| `base_index` | int | `0` | omitted at 0 | Added to the index before it names anything, in the index's unit: index N draws tile (or cell) `base_index + N`; under ordinal addressing the first of unit `base_index + N` (a metatile or stamp). Signed. Version ≤ 6: counted tiles or cells in both addressings (§3) |
 | `addressing` | string | unset | omitted when unset | `"corner"`: an index names its unit's first tile or cell. `"ordinal"`: an index counts units. Overrides the cell format's. Unknown = unset |
 
 - Valid source: a `pixels` entry, or a `tilemap` entry whose own chain of `tile_source` bindings does not loop back. Never a `bookmark`, never itself.
@@ -445,7 +448,7 @@ Copying entries places the same Entry records on the clipboard.
 
 ```json
 {
-  "version": 6,
+  "version": 7,
   "current": 1,
   "entries": [
     {

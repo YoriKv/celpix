@@ -105,7 +105,11 @@ def _bounds(ctx: Context, view: EntryView) -> None:
         )
         return
     length = view.raw.get("slice_length")
-    if view.kind == "slice" and is_int(length) and length > 0:
+    # A slice matching its parent's size is re-measured on load, so a stored
+    # length past a file that has since shrunk is a stale measurement, not a
+    # window anything will read.
+    matched = view.raw.get("match_parent") is True
+    if view.kind == "slice" and not matched and is_int(length) and length > 0:
         end = offset + length
         if end > size:
             ctx.error(

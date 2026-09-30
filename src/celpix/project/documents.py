@@ -33,6 +33,7 @@ from celpix.core.context import (
     KEY_TILE_PALETTE_ROWS,
     KEY_TILEMAP_CELL_TILES,
     KEY_TILEMAP_PALETTE_ROW_BASE,
+    KEY_TILEMAP_RECORD_HEADER,
     KEY_TILEMAP_RECORD_SHAPE,
     KEY_TILEMAP_STAMP_CELLS,
     KEY_TILEMAP_STAMP_COLUMN_MAJOR,
@@ -49,14 +50,17 @@ from celpix.core.tilemap import (
     Cell,
     Geometry,
     IndexAddressing,
+    containing_at,
+    corner_at,
     index_corner,
     metatile_geometry,
     record_geometry,
     stamp_geometry,
+    unit_at,
 )
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
-from celpix.plugins.base import NO_RESHAPE, STAGE_DEFAULT_PRESET, FileRef
+from celpix.plugins.base import NO_RESHAPE, STAGE_DEFAULT_PRESET, FileRef, Preset
 from celpix.project.workspace import (
     Entry,
     EntryKind,
@@ -380,8 +384,8 @@ class IndexReading(NamedTuple):
 
     ``stated`` is the addressing asked for and ``stated_by`` whose word it was:
     ``"binding"`` (:attr:`~celpix.project.workspace.TileSource.addressing`),
-    ``"preset"`` (``index_addressing``), ``"record keys"`` (a preset stating
-    any of :data:`~celpix.core.tilemap.RECORD_KEYS`) or ``"default"``.
+    ``"preset"`` (``index_addressing``), ``"engine"`` (an engine whose index
+    counts records, :func:`engine_counts_records`) or ``"default"``.
 
     ``geometry`` is what is **in force**: None for corner addressing, a
     :data:`~celpix.core.tilemap.Geometry` for ordinal. An ordinal can still be
@@ -406,10 +410,9 @@ def stated_addressing(registry, entry: Entry) -> tuple[IndexAddressing, str]:  #
     """The addressing asked for of ``entry``'s indices, and whose word it is.
 
     Most specific first: the **binding**'s override, then the referring
-    format's ``index_addressing``, then a format stating a record geometry —
-    which says ordinal by stating what the ordinal counts in — and otherwise
-    corner (:class:`IndexReading` names the four). A word
-    ``index_addressing`` does not have refuses the load earlier
+    format's ``index_addressing``, then its engine where that engine's index
+    counts records, and otherwise corner (:class:`IndexReading` names the
+    four). A word ``index_addressing`` does not have refuses the load earlier
     (``pipeline._check_declarations``), so one reaching here reads as unset.
     """
     source = entry.tile_source
@@ -425,9 +428,72 @@ def format_addressing(registry, entry: Entry) -> tuple[IndexAddressing, str]:  #
     word = tilemap_declares(registry, entry, "index_addressing")
     if word in (IndexAddressing.CORNER.value, IndexAddressing.ORDINAL.value):
         return IndexAddressing(word), "preset"
-    if any(tilemap_declares(registry, entry, key) is not None for key in RECORD_KEYS):
-        return IndexAddressing.ORDINAL, "record keys"
+    if engine_counts_records(registry, _tilemap_preset(registry, entry)):
+        return IndexAddressing.ORDINAL, "engine"
     return IndexAddressing.CORNER, "default"
+
+
+def _tilemap_preset(registry, entry: Entry) -> Preset | None:  # noqa: ANN001
+    """The preset ``entry``'s cells are read under, or None where none is
+    registered under its id."""
+    try:
+        return registry.preset(tilemap_preset_id(entry))
+    except KeyError:
+        return None
+
+
+def engine_counts_records(registry, preset: Preset | None) -> bool:  # noqa: ANN001
+    """Whether ``preset``'s engine reads every index as a record number
+    (:meth:`~celpix.plugins.base.TilemapCodecPlugin.counts_records`).
+
+    The one question behind both things such an engine is owed: its preset is
+    ordinal where it states no ``index_addressing``, and its
+    :data:`~celpix.core.tilemap.RECORD_KEYS` are read at all
+    (:func:`reads_record_keys`). They are that engine's parameters, so over any
+    other they are no statement — the load says so
+    (``pipeline._check_declarations``). An engine that raises is read as one
+    that never answered, the rule every optional probe follows. False for no
+    preset, which has no engine to ask.
+    """
+    if preset is None:
+        return False
+    try:
+        engine = registry.plugin(Stage.INTERPRET_TILEMAP, preset.engine_id)
+    except KeyError:
+        return False
+    ask = getattr(engine, "counts_records", None)
+    try:
+        return bool(ask is not None and ask(preset.params))
+    except Exception:  # noqa: BLE001 — a plugin's crash reads as silence
+        return False
+
+
+def reads_record_keys(registry, entry: Entry) -> bool:  # noqa: ANN001
+    """Whether an ordinal of ``entry``'s counts in the shape its format's record
+    keys give (:func:`~celpix.core.tilemap.record_geometry`, each at its default
+    where unset) rather than one derived from its source.
+
+    Only over an engine counting records (:func:`engine_counts_records`), and
+    there unless the preset states ``index_addressing`` and no record key: that
+    preset has handed the shape to what the map is bound to, so defaults
+    standing in for keys it never wrote would overrule the table's own stride
+    and records. A binding that asks for ordinal is counted in the same shape,
+    since the keys describe the table the format was written against.
+    """
+    preset = _tilemap_preset(registry, entry)
+    if preset is None or not engine_counts_records(registry, preset):
+        return False
+    params = preset.params
+    return "index_addressing" not in params or any(key in params for key in RECORD_KEYS)
+
+
+def _published_header(through: Document) -> int:
+    """How many cells of the record ``through`` publishes come before its
+    stamp, or 0 for none (:data:`~celpix.core.context.KEY_TILEMAP_RECORD_HEADER`)."""
+    try:
+        return max(0, int(through.tilemap_ctx.get(KEY_TILEMAP_RECORD_HEADER) or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _published_pitch(through: Document) -> int:
@@ -460,12 +526,10 @@ def index_reading(
     would give before making it; left None, the binding's own is read.
 
     The addressing is :func:`stated_addressing`'s. The geometry an ordinal
-    counts in is the referring format's own where its preset states any
-    ``record_*`` key (:func:`~celpix.core.tilemap.record_geometry`), since that
-    is a statement about the table it was written against; otherwise it is
-    derived from how the source lays the units out
-    (:func:`~celpix.core.tilemap.stamp_geometry`, :func:`~celpix.core.tilemap.
-    metatile_geometry`).
+    counts in is the referring format's record keys where the host reads them
+    (:func:`reads_record_keys`); otherwise it is derived from how the source
+    lays the units out (:func:`~celpix.core.tilemap.stamp_geometry`,
+    :func:`~celpix.core.tilemap.metatile_geometry`).
     """
     if addressing is not None:
         stated, stated_by = addressing, "binding"
@@ -473,12 +537,9 @@ def index_reading(
         stated, stated_by = stated_addressing(registry, entry)
     if stated is IndexAddressing.CORNER:
         return IndexReading(stated, stated_by)
-    try:
-        preset = registry.preset(tilemap_preset_id(entry))
-    except KeyError:
-        preset = None
-    params = preset.params if preset is not None else {}
-    if any(key in params for key in RECORD_KEYS):
+    if reads_record_keys(registry, entry):
+        preset = _tilemap_preset(registry, entry)
+        params = preset.params if preset is not None else {}
         try:
             return IndexReading(stated, stated_by, record_geometry(params))
         except (TypeError, ValueError) as exc:
@@ -489,6 +550,7 @@ def index_reading(
             chain_source_columns(through),
             column_major=chain_stamp_column_major(through),
             pitch=_published_pitch(through),
+            header=_published_header(through),
         )
     else:
         geometry, refusal = metatile_geometry(
@@ -540,6 +602,38 @@ def document_index_reading(
         cell_row_stride=doc.cell_row_stride,
         cell_column_stride=doc.cell_column_stride,
         addressing=addressing,
+    )
+
+
+def rebound_reading(registry, entry: Entry, bound: Entry) -> IndexReading | None:  # noqa: ANN001
+    """:func:`index_reading` for ``entry`` as it will read once bound to
+    ``bound`` — asked before the rebind lands, for a base to be re-counted in
+    the unit it will count (:func:`~celpix.core.tilemap.rebased`).
+
+    Read off ``entry``'s loaded document for its own cell size and stamp, and
+    off ``bound``'s for how the source lays its units out, with the binding's
+    Index unit carried as it stands. None where either is not loaded, or where
+    a chained map would be bound to art — its document's cell size is its
+    source's, not its own — and so the reading is unknown.
+    """
+    doc, through = entry.doc, bound.doc
+    if doc is None or through is None or not doc.is_tilemap:
+        return None
+    if doc.is_sprite or doc.glyph_layout is not None:
+        return IndexReading(*stated_addressing(registry, entry))
+    if bound.content_kind is ContentKind.TILEMAP:
+        stamp = chain_stamp_cells(
+            registry, entry, through, cell_stamp(registry, entry, doc.tilemap_ctx)
+        )
+        return index_reading(registry, entry, through=through, stamp=stamp)
+    if doc.chain is not None:
+        return None
+    return index_reading(
+        registry,
+        entry,
+        cell_tiles=doc.cell_tiles,
+        cell_row_stride=doc.cell_row_stride,
+        cell_column_stride=doc.cell_column_stride,
     )
 
 
@@ -634,9 +728,10 @@ def fit_tile_base(
     over a base the user set. ``named`` is the codes a fontmap's font names past
     the end of its sheet (a terminator, a space with no glyph), which draw
     nothing by design and are not an overflow. ``geometry`` is the map's index
-    addressing (:attr:`~celpix.core.document.Document.index_geometry`): an
-    ordinal is measured by the tile its metatile starts at, since the base
-    counts tiles whichever way the index does.
+    addressing (:attr:`~celpix.core.document.Document.index_geometry`): the
+    base counts what the index counts, so under ordinal addressing the shift is
+    a number of metatiles, and whether a map fits is asked of the tiles each
+    metatile starts at (:func:`~celpix.core.tilemap.index_corner`).
     """
     source = entry.tile_source
     if source is None or not source.is_bound or source.base_index or not cells:
@@ -644,10 +739,13 @@ def fit_tile_base(
     count = len(tiles.data) // max(1, tiles.bytes_per_tile)
     if not count:
         return  # unreadable binding: nothing to fit against
+    # Filtered on the tile each cell's unit starts at: an ordinal short of the
+    # bank's length can still start past its end. Only the membership test
+    # reads the raw index, since `named` holds codes.
     indices = [
-        index_corner(cell.index, geometry)
+        cell.index
         for cell in cells
-        if cell.index < count or cell.index not in named
+        if index_corner(cell.index, geometry) < count or cell.index not in named
     ]
     if not indices:
         return
@@ -655,9 +753,78 @@ def fit_tile_base(
     # A cell covering several tiles reaches past its own index, so the span has
     # to allow for what the widest of them draws.
     across, down = max(1, cell_tiles[0]), max(1, cell_tiles[1])
-    reach = high + (down - 1) * VRAM_ROW_STRIDE + (across - 1)
-    if low and reach >= count and reach - low < count:
+    extra = (down - 1) * VRAM_ROW_STRIDE + (across - 1)
+    reach = index_corner(high, geometry) + extra
+    shifted = index_corner(high, geometry, -low) + extra
+    if low and reach >= count and shifted < count:
         entry.tile_source = replace(source, base_index=-low)
+
+
+def count_bases_in_units(registry, entries: list[Entry]) -> list[str]:  # noqa: ANN001
+    """Re-count, in units, every base a project from before format version 7
+    counted in elements; a line for each map that could not keep its picture.
+
+    A base counts what its map's index counts (:func:`~celpix.core.tilemap.
+    index_corner`). Until version 7 it counted cells or tiles whichever way the
+    index was read, and one kind of map read its index as units then: an
+    engine whose index is always a record number, which turned the record into
+    its corner by the record keys before the base was added. That is the one
+    map whose base changes meaning, and the record keys are all its geometry
+    was — so the conversion needs the registry and the entry's preset, and no
+    document. :func:`reads_record_keys` and an ordinal stated by the format are
+    that map exactly; any other kept its base in elements then and now.
+
+    Called on the load path once the registry is final, since the migration
+    that walks the file forward has no registry to ask. A base that is a whole
+    number of units and shifts every index alike becomes that number, and the
+    map draws what it drew. One that is not cannot be said in units: it becomes
+    the unit its old start falls inside, and the line says how far the picture
+    moved, for the user to check before saving.
+    """
+    notes: list[str] = []
+    for entry in entries:
+        source = entry.tile_source
+        if source is None or not source.base_index:
+            continue
+        if entry.content_kind is not ContentKind.TILEMAP:
+            continue
+        base = source.base_index
+        if not reads_record_keys(registry, entry):
+            continue
+        if stated_addressing(registry, entry)[0] is not IndexAddressing.ORDINAL:
+            continue
+        preset = _tilemap_preset(registry, entry)
+        try:
+            geometry = record_geometry(preset.params if preset is not None else {})
+        except (TypeError, ValueError):
+            continue  # refused: read as corners, where a base counts elements
+        units = unit_at(base, geometry)
+        across = geometry[2]
+        # Adding a whole number of units moves every corner alike only where a
+        # row of units does not wrap between them: always when packed, and on a
+        # grid in whole rows.
+        exact = units is not None and (not across or units % across == 0)
+        if units is None:
+            units = containing_at(abs(base), geometry) * (1 if base > 0 else -1)
+        entry.tile_source = replace(source, base_index=units)
+        if exact:
+            continue
+        over_map = source.entry is not None and (
+            source.entry.content_kind is ContentKind.TILEMAP
+        )
+        element, unit = ("cell", "stamp") if over_map else ("tile", "metatile")
+        moved = corner_at(units, geometry) - corner_at(0, geometry) - base
+        how = (
+            f"starts {abs(moved)} {element}{'s' if abs(moved) != 1 else ''} "
+            f"{'later' if moved > 0 else 'earlier'} than it did"
+            if moved
+            else f"moves some {unit}s, since {unit}s here wrap every {across}"
+        )
+        notes.append(
+            f"{entry.name}: base {element} ${base:X} is not a whole number of "
+            f"{unit}s, so it is now base {unit} ${units:X} and the map {how}."
+        )
+    return notes
 
 
 # ---------------------------------------------------------------------------
@@ -795,6 +962,19 @@ def no_tiles(registry, preset_id: str) -> BoundTiles:  # noqa: ANN001
     return BoundTiles(b"", per_tile, width, height, PipelineContext(), cfg)
 
 
+class TileSourceUnavailable(Exception):
+    """The entry a map's tiles are bound to cannot be read as art
+    (:func:`tile_source_config`): it is not open, it is a map the chain refused,
+    or it cannot supply tiles.
+
+    Its own exception rather than a ``KeyError``, which is what a registry miss
+    raises when a format id is not installed: the two call for different fixes
+    — re-point the binding, or install the format — and a reader told only the
+    type would have to guess which one it is holding. The message is a whole
+    sentence naming the entry.
+    """
+
+
 def tile_source_config(
     workspace: Workspace,
     entry: Entry,
@@ -816,13 +996,15 @@ def tile_source_config(
     bound = binding_target(workspace, source)
     if bound is None:
         name = source.entry.name if source.entry is not None else "nothing"
-        raise KeyError(f"the tiles are bound to {name}, which is not open")
+        raise TileSourceUnavailable(f"the tiles are bound to {name}, which is not open")
     if bound.content_kind is ContentKind.TILEMAP:
         if chain_loops(workspace, entry, bound):
-            raise KeyError(f"{bound.name}'s chain loops back on itself")
-        raise KeyError(f"{bound.name} is a tilemap that could not be drawn through")
+            raise TileSourceUnavailable(f"{bound.name}'s chain loops back on itself")
+        raise TileSourceUnavailable(
+            f"{bound.name} is a tilemap that could not be drawn through"
+        )
     if not can_supply_tiles(workspace, entry, bound):
-        raise KeyError(f"{bound.name} cannot supply tiles")
+        raise TileSourceUnavailable(f"{bound.name} cannot supply tiles")
     preset = (
         bound.session.pixel_preset_id if bound.session is not None else fallback_preset
     )
@@ -1532,27 +1714,14 @@ def _load_tilemap(entry, registry, workspace, problems, configure) -> None:  # n
     through = bound_tilemap(registry, workspace, entry, problems)
     if through is not None:
         entry.doc = chained_document(registry, entry, loaded, cfg, through)
-        why = entry.doc.stamp_refusal
-        if why is not None:
-            # The app's status line, collected: the picture is not the stamped
-            # one the chain states, and a script should hear why as a user does.
-            across, down = entry.doc.chain.drawn_stamp
-            problems.append(
-                f"{entry.name}: {across}x{down} stamps not resolved - {why}; "
-                "drawing one cell per entry."
-            )
     else:
         tiles = _bound_tiles(registry, workspace, entry, problems, configure)
         entry.doc = tilemap_document(registry, workspace, entry, loaded, cfg, tiles)
-    refusal = entry.doc.addressing_refusal
-    if refusal is not None:
-        # The status line's wording (``tilemap_bar._addressing_refusal_note``),
-        # so a headless load and the app report one refusal one way.
-        unit = "stamp" if entry.doc.chain is not None else "metatile"
-        problems.append(
-            f"{entry.name}: indices not counted as {unit}s - {refusal}; "
-            f"reading each as its {unit}'s corner."
-        )
+    # The app's status line, collected: the picture is not the one the formats
+    # asked for, and a script should hear why as a user does. Lower-cased after
+    # the name, like every other problem.
+    for note in entry.doc.refusal_notes:
+        problems.append(f"{entry.name}: {note[:1].lower()}{note[1:]}")
 
 
 def bound_tilemap(
@@ -1593,7 +1762,7 @@ def _bound_tiles(registry, workspace, entry, problems, configure) -> BoundTiles:
         return no_tiles(registry, fallback)
     try:
         cfg = tile_source_config(workspace, entry, source, configure, fallback)
-    except (PipelineError, KeyError) as exc:
+    except (PipelineError, KeyError, TileSourceUnavailable) as exc:
         problems.append(f"{entry.name}: could not read the tiles it is bound to: {exc}")
         return no_tiles(registry, fallback)
     live = live_bound_tiles(workspace, source, cfg)

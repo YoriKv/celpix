@@ -25,17 +25,31 @@ engine_id = "codec.tilemap.indirect-record"
 
 [params]
 
-# Read by celPix rather than the engine, and what makes the byte a record
-# number. Cells per record. Default 4. With records stored end to end, record k
-# starts at cell k * record_cells.
+# The record keys: the table's shape, which celPix reads to find record k's
+# first cell. Read on this engine only, since its byte is always a record
+# number; each is at its default where left out. A preset stating
+# index_addressing = "ordinal" and none of them takes the shape from the table
+# it is bound to instead (its stamp_stride, record_shape and record_header,
+# _packed.toml). The binding's base counts records too: base 64 starts the map
+# at record 64.
+#
+# Cells per record. Default 4. With records stored end to end, record k starts
+# at cell k * record_cells.
 record_cells = 4
 
-# For a table laid out as a grid N records across (0, the default: end to end).
-# Record k then starts at
-#   (k // N) * N * record_cells + (k % N) * record_columns
-# record_columns (default 2) is the record's width in cells.
-records_across = 0
-record_columns = 2
+# For a table laid out as a grid N records to a row (0, the default: end to
+# end). Record k then starts at
+#   (k // N) * N * record_cells + (k % N) * record_width
+# record_width (default 2) is the record's width in cells.
+records_per_row = 0
+record_width = 2
+
+# Cells at the start of each record that come before what it draws (default 0)
+# -- a record opening with a word of its own. Record k's first drawn cell moves
+# that many cells in; on a grid, whole rows of record_width. A plain count,
+# nothing read out of it. A table can state it of its own records instead
+# (_packed.toml), for a preset here that takes its shape from the table.
+record_header = 0
 
 # Read by the host, not the engine. `indirect`: cells are coordinates into
 # another map. `stamp_cells`: source cells one coordinate names, [across, down].
@@ -51,6 +65,9 @@ column_major = false
 # record within it. `group_starts`: each table's first record, 2^group_bits
 # ascending values. `group_rows` (default false): the table number is the
 # cell's palette row. Super Mario Bros.: two bits, tables of 39, 46, 10 and 6.
+# Each table reaches 2^(8 - group_bits) records from its start. A record no
+# table reaches - below the first start, or between one table's reach and the
+# next start - is not offered and cannot be placed or saved.
 # group_bits = 2
 # group_starts = [0, 39, 85, 95]
 # group_rows = true
