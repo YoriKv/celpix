@@ -12,6 +12,7 @@ time colors reach this class they are already normalised to ARGB.
 from __future__ import annotations
 
 import colorsys
+import re
 
 from celpix.core import ceil_div
 
@@ -110,6 +111,62 @@ def palette_row_count(colors: int, index_space: int) -> int:
     space = max(1, min(256, index_space))
     limit = 256 // space
     return limit if colors <= 0 else max(1, min(ceil_div(colors, space), limit))
+
+
+# A 6- or 8-digit hex run, optionally ``#``-prefixed, not embedded in a longer
+# hex string — how colours are recognised in text another program wrote.
+_HEX_COLOR = re.compile(
+    r"(?<![0-9A-Fa-f])#?([0-9A-Fa-f]{8}|[0-9A-Fa-f]{6})(?![0-9A-Fa-f])"
+)
+
+
+def format_argb(argb: int, *, alpha: bool | None = True) -> str:
+    """One colour as ``#AARRGGBB``, or ``#RRGGBB`` with its alpha left out.
+
+    ``alpha`` says when the alpha digits are written: always (True), never
+    (False — for a reader that has no alpha to show), or only when the colour is
+    not fully opaque (None — the shortest text :func:`parse_argb` reads back as
+    the same colour, which is what text meant for other programs wants).
+    """
+    argb &= 0xFFFFFFFF
+    if alpha is None:
+        alpha = (argb >> 24) != 0xFF
+    return f"#{argb:08X}" if alpha else f"#{argb & 0xFFFFFF:06X}"
+
+
+def parse_argb(text: str) -> int | None:
+    """``#AARRGGBB`` / ``#RRGGBB`` (``#`` optional) to an ARGB int, else None.
+
+    A 6-digit value is taken as opaque — the common case when typing a colour
+    copied from anywhere else — so alpha only has to be spelled when it matters.
+    The whole of ``text`` (bar surrounding space) must be the colour; to pick
+    colours out of a longer text, :func:`find_argb`.
+    """
+    cleaned = text.strip().lstrip("#")
+    if len(cleaned) not in (6, 8):
+        return None
+    try:
+        value = int(cleaned, 16)
+    except ValueError:
+        return None
+    return value | 0xFF000000 if len(cleaned) == 6 else value
+
+
+def find_argb(text: str) -> list[int]:
+    """Every ``#RRGGBB``/``#AARRGGBB`` token in ``text`` as ARGB (6-digit → opaque).
+
+    Tokens are hex runs of exactly 6 or 8 digits, ``#`` optional, standing apart
+    from any longer hex run — so a colour list another program wrote, in any
+    separator, reads as a run of colours, and a longer hex string reads as none.
+    """
+    colors = []
+    for match in _HEX_COLOR.finditer(text):
+        digits = match.group(1)
+        value = int(digits, 16)
+        if len(digits) == 6:
+            value |= 0xFF000000  # no alpha field means fully opaque
+        colors.append(value & 0xFFFFFFFF)
+    return colors
 
 
 class Palette:

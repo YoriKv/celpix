@@ -56,6 +56,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only on 3.9/3.10
 
 from celpix import resources
 from celpix.core.errors import Stage, fault_origin
+from celpix.plugins._params import preset_identity
 from celpix.plugins.aliases import current_params
 from celpix.plugins.base import (
     INPUT_STAGES,
@@ -145,13 +146,17 @@ def preset_from_spec(spec: dict, stage: Stage) -> Preset:
     authoritative (:func:`~celpix.plugins.base.check_declared_stage`).
     """
     check_declared_stage(spec, stage)
+    # The id is what a project stores and the name what a picker shows, so a
+    # number or a blank in either is refused here rather than registered under
+    # a key no project file can spell back.
+    plugin_id, name, category = preset_identity(spec)
     return Preset(
-        id=spec["id"],
-        name=spec["name"],
+        id=plugin_id,
+        name=name,
         stage=stage,
         engine_id=spec["engine_id"],
         params=spec.get("params", {}),
-        category=spec.get("category", ""),
+        category=category,
     )
 
 

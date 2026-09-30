@@ -4,11 +4,11 @@ A leaf module: it imports nothing from the ones that use it, which is what lets
 the load/save plumbing, the renderer, the container report and the codec queries
 all reach the same helpers without the package folding in on itself.
 
-Two kinds of thing live here. :func:`_run` is how a stage is executed at all —
+Two kinds of thing live here. :func:`run_stage` is how a stage is executed at all —
 every failure inside one is funnelled into a
 :class:`~celpix.core.errors.PipelineError` naming the stage, the direction and
 the pathway, so a stage that cannot proceed halts the pipeline instead of
-returning something partial. :func:`_acquire` is the host's half of the
+returning something partial. :func:`acquire_source` is the host's half of the
 container contract: the files behind a :class:`~celpix.plugins.base.FileRef` (or
 the in-memory buffer standing in for them) are opened once, here, and joined end
 to end, so every container is handed the same buffer and none has to know which
@@ -47,9 +47,10 @@ from celpix.plugins.base import FileRef, PixelCodecPlugin, ReadSource, SourceFil
 from celpix.plugins.registry import Registry
 
 T = TypeVar("T")
+R = TypeVar("R")
 
 
-def _run(
+def run_stage(
     stage: Stage,
     pathway: Pathway,
     fn: Callable[[], T],
@@ -78,7 +79,7 @@ def _run(
         raise PipelineError(stage, pathway, str(exc), action, plugin=plugin) from exc
 
 
-def _probe(
+def probe(
     engine,  # noqa: ANN001 — any stage plugin, reached by getattr
     name: str,
     params: dict,
@@ -90,8 +91,8 @@ def _probe(
 ) -> T:
     """Ask one **optional** codec method, so that a bad answer cannot cost the load.
 
-    The counterpart to :func:`_run`, and the two are the whole of how the host
-    calls into a plugin. ``_run`` is for the calls that *are* the result — a
+    The counterpart to :func:`run_stage`, and the two are the whole of how the host
+    calls into a plugin. ``run_stage`` is for the calls that *are* the result — a
     decode, an encode, a container's read — where a failure has no fallback and
     the honest end is a :class:`PipelineError` naming the plugin. This is for the
     optional half of a stage protocol, where **absence is already defined**: a
@@ -118,21 +119,90 @@ def _probe(
     try:
         return read(ask(params))
     except Exception as exc:  # noqa: BLE001 — a probe must not fail the load
-        origin = fault_origin(exc)
-        warn(
+        _fault_notice(
             ctx,
             f"The format could not answer {name}(), so its default was used",
-            f"{type(exc).__name__}: {exc}\n"
-            + (f"Raised at {origin}.\n" if origin else "")
-            + f"Read as if the format had not defined {name},\n"
-            f"which is what a format staying quiet means.",
-            source=plugin,
-            report=fault_report(exc),
+            name,
+            exc,
+            plugin=plugin,
+            disarmed=False,
         )
         return default
 
 
-def _cell_settler(
+def _fault_notice(
+    ctx: PipelineContext,
+    summary: str,
+    name: str,
+    exc: Exception,
+    *,
+    plugin: str,
+    disarmed: bool,
+) -> None:
+    """Record that optional method ``name`` faulted and was read as absent.
+
+    One wording for every guarded call, so a plugin author reads the same
+    account of a fault whichever method it was in. ``disarmed`` is whether the
+    method is also stood down for the document — a per-edit method is, a
+    one-shot probe has nothing further to stand down.
+    """
+    origin = fault_origin(exc)
+    warn(
+        ctx,
+        summary,
+        f"{type(exc).__name__}: {exc}\n"
+        + (f"Raised at {origin}.\n" if origin else "")
+        + f"Read as if the format had not defined {name},\n"
+        + (
+            "and not asked again for this document."
+            if disarmed
+            else "which is what a format staying quiet means."
+        ),
+        source=plugin,
+        report=fault_report(exc),
+    )
+
+
+def _guarded_cell_method(
+    name: str,
+    call: Callable[[list], R],
+    fallback: Callable[[list], R],
+    *,
+    ctx: PipelineContext,
+    plugin: str,
+    summary: str,
+) -> Callable[[list], R]:
+    """``call`` over a cell list, guarded and disarmed after its first fault.
+
+    The shared body of :func:`cell_settler` and :func:`cell_widths`: the
+    answer must be a list with one item per cell — the one promise the host
+    relies on, since a short answer would shift every cell after it — and
+    anything else, a raise included, records one notice, stands the method down
+    for the life of the document and answers ``fallback(cells)`` from then on.
+    """
+    live = [True]
+
+    def guarded(cells: list) -> R:
+        if not live[0]:
+            return fallback(cells)
+        try:
+            out = call(cells)
+            if not isinstance(out, list) or len(out) != len(cells):
+                raise TypeError(  # noqa: TRY301 — one report for both refusals
+                    f"{name} returned {type(out).__name__} of "
+                    f"{len(out) if isinstance(out, list) else '?'} "
+                    f"for {len(cells)} cells"
+                )
+        except Exception as exc:  # noqa: BLE001 — a cell method must not fail an edit
+            live[0] = False
+            _fault_notice(ctx, summary, name, exc, plugin=plugin, disarmed=True)
+            return fallback(cells)
+        return out
+
+    return guarded
+
+
+def cell_settler(
     engine,  # noqa: ANN001 — a tilemap codec, reached by getattr
     params: dict,
     *,
@@ -141,7 +211,7 @@ def _cell_settler(
 ) -> Callable[[list], list] | None:
     """``cells -> cells`` for a codec's own settle, or **None** where it has none.
 
-    :func:`_probe`'s shape for the one optional method that is not a question
+    :func:`probe`'s shape for the one optional method that is not a question
     about the format but a **transform of the cells**
     (:meth:`~celpix.plugins.base.TilemapCodecPlugin.settle_cells`), so it cannot
     be answered once at load and stored: it is applied per edit, and the model
@@ -165,44 +235,24 @@ def _cell_settler(
     ask = getattr(engine, "settle_cells", None)
     if ask is None:
         return None
-    live = [True]
     # The entry's resolved inputs, as the decode was handed them: data read at
     # load, not I/O, so a field derived from a side array can be re-derived per
     # edit. Passed only where there are any, so a settle written with two
     # parameters — every format that reads no inputs — is called as it was.
     inputs = dict(ctx.get(KEY_INPUTS) or {})
-
-    def settle(cells: list) -> list:
-        if not live[0]:
-            return cells
-        try:
-            out = ask(cells, params, inputs) if inputs else ask(cells, params)
-            if not isinstance(out, list) or len(out) != len(cells):
-                raise TypeError(  # noqa: TRY301 — one report for both refusals
-                    f"settle_cells returned {type(out).__name__} of "
-                    f"{len(out) if isinstance(out, list) else '?'} "
-                    f"for {len(cells)} cells"
-                )
-        except Exception as exc:  # noqa: BLE001 — a settle must not fail an edit
-            live[0] = False
-            origin = fault_origin(exc)
-            warn(
-                ctx,
-                "The format could not settle its cells, so they were left as they are",
-                f"{type(exc).__name__}: {exc}\n"
-                + (f"Raised at {origin}.\n" if origin else "")
-                + "Read as if the format had not defined settle_cells,\n"
-                "and not asked again for this document.",
-                source=plugin,
-                report=fault_report(exc),
-            )
-            return cells
-        return out
-
-    return settle
+    return _guarded_cell_method(
+        "settle_cells",
+        (lambda cells: ask(cells, params, inputs))
+        if inputs
+        else (lambda cells: ask(cells, params)),
+        lambda cells: cells,
+        ctx=ctx,
+        plugin=plugin,
+        summary="The format could not settle its cells, so they were left as they are",
+    )
 
 
-def _cell_widths(
+def cell_widths(
     engine,  # noqa: ANN001 — a tilemap codec, reached by getattr
     params: dict,
     *,
@@ -211,7 +261,7 @@ def _cell_widths(
 ) -> Callable[[list], list[int] | None] | None:
     """``cells -> widths`` for a mixed-width format, or **None** for a fixed one.
 
-    :func:`_cell_settler`'s shape for
+    :func:`cell_settler`'s shape for
     :meth:`~celpix.plugins.base.TilemapCodecPlugin.cell_widths`, and for the
     same reason: it is asked per keystroke of a text region, by a model that
     holds no registry. Asked once here with no cells, so a fixed-width answer —
@@ -225,47 +275,24 @@ def _cell_widths(
     ask = getattr(engine, "cell_widths", None)
     if ask is None:
         return None
-    live = [True]
-
-    def fault(exc: Exception) -> None:
-        live[0] = False
-        origin = fault_origin(exc)
-        warn(
-            ctx,
-            "The format could not say how wide its cells are, so each is taken "
-            "to be the same size",
-            f"{type(exc).__name__}: {exc}\n"
-            + (f"Raised at {origin}.\n" if origin else "")
-            + "Read as if the format had not defined cell_widths,\n"
-            "and not asked again for this document.",
-            source=plugin,
-            report=fault_report(exc),
-        )
-
+    summary = (
+        "The format could not say how wide its cells are, so each is taken "
+        "to be the same size"
+    )
     try:
         if ask([], params) is None:
             return None
     except Exception as exc:  # noqa: BLE001 — a probe must not fail the load
-        fault(exc)
+        _fault_notice(ctx, summary, "cell_widths", exc, plugin=plugin, disarmed=True)
         return None
-
-    def widths(cells: list) -> list[int] | None:
-        if not live[0]:
-            return None
-        try:
-            out = ask(cells, params)
-            if not isinstance(out, list) or len(out) != len(cells):
-                raise TypeError(  # noqa: TRY301 — one report for both refusals
-                    f"cell_widths returned {type(out).__name__} of "
-                    f"{len(out) if isinstance(out, list) else '?'} "
-                    f"for {len(cells)} cells"
-                )
-        except Exception as exc:  # noqa: BLE001 — a width must not fail an edit
-            fault(exc)
-            return None
-        return out
-
-    return widths
+    return _guarded_cell_method(
+        "cell_widths",
+        lambda cells: ask(cells, params),
+        lambda _cells: None,
+        ctx=ctx,
+        plugin=plugin,
+        summary=summary,
+    )
 
 
 def _with_tile_size(engine, params: dict, size: tuple[int, int]) -> dict:  # noqa: ANN001
@@ -315,7 +342,7 @@ def tile_params(doc: Document, engine, params: dict) -> dict:  # noqa: ANN001
     natural tiles, which is every format that has no tile-size parameter.
 
     The entry's own ``interpret_params`` are laid over the preset's first, here
-    and in :func:`_pixel_geometry`, which between them are every place a pixel
+    and in :func:`pixel_geometry`, which between them are every place a pixel
     engine is handed a document's params — so the geometry recorded at load and
     the params every later decode runs under cannot come from different sets.
     """
@@ -323,7 +350,7 @@ def tile_params(doc: Document, engine, params: dict) -> dict:  # noqa: ANN001
     return _with_tile_size(engine, params, (doc.tile_width, doc.tile_height))
 
 
-def _pixel_geometry(
+def pixel_geometry(
     cfg: PathwayConfig, reg: Registry, bitmap_width: int = 0
 ) -> tuple[int, int, int]:
     """``(bytes_per_tile, tile_width, tile_height)`` of ``cfg``'s pixel codec."""
@@ -331,7 +358,7 @@ def _pixel_geometry(
     params = bitmap_params(
         engine, {**preset.params, **cfg.interpret_params}, bitmap_width
     )
-    tile_bytes = _run(
+    tile_bytes = run_stage(
         Stage.INTERPRET_PIXEL,
         Pathway.PIXEL,
         lambda: engine.bytes_per_tile(params),
@@ -345,7 +372,7 @@ def _pixel_geometry(
     return (tile_bytes, *engine.tile_size(params))
 
 
-def _acquire(ref: FileRef) -> tuple[ReadSource, tuple[SourceFile, ...]]:
+def acquire_source(ref: FileRef) -> tuple[ReadSource, tuple[SourceFile, ...]]:
     """Resolve a :class:`FileRef` to the bytes a container is handed, plus the
     files those bytes came from.
 
@@ -375,3 +402,9 @@ def _acquire(ref: FileRef) -> tuple[ReadSource, tuple[SourceFile, ...]]:
         at += len(blob)
     joined = b"".join(blobs)
     return ReadSource(joined, ref.path, ref.offset, ref.length), tuple(spans)
+
+
+# The spellings tests outside this package still import; the names above are
+# the package's own.
+_run = run_stage
+_cell_settler = cell_settler

@@ -69,12 +69,12 @@ def test_render_bridge_transparent_zero_clears_every_rows_index_0(qtbot) -> None
     # Pinned at 16 colours a row: rows 0, 1 and 3's zeros all clear, and a
     # non-zero index inside a row keeps its colour.
     grid = IndexGrid(4, 1, bytearray([0, 16, 48, 17]))
-    image = render_bridge.render_pinned(grid, palette, 16, transparent_zero=True)
+    image = render_bridge.render(grid, palette, transparent_zero=True, row_stride=16)
     assert [image.pixel(x, 0) >> 24 for x in range(4)] == [0, 0, 0, 0xFF]
     assert image.pixel(3, 0) & 0xFFFFFF == 17
 
     # Off, nothing is cleared — the same call is the old behaviour exactly.
-    image = render_bridge.render_pinned(grid, palette, 16)
+    image = render_bridge.render(grid, palette, row_stride=16)
     assert all(image.pixel(x, 0) >> 24 == 0xFF for x in range(4))
 
 
@@ -531,6 +531,34 @@ def test_slice_from_view_bounds_a_stream_scheme_at_the_window_end(
     assert entry.kind is EntryKind.SLICE
     assert (entry.slice_offset, entry.slice_length) == (start, extent)
     assert entry.compression_id == "compression.packbits"
+
+
+def test_lzw_scan_gate_and_badge_follow_the_bound_end_code(qtbot, tmp_path) -> None:
+    """LZW's end marker is an input, so the scheme is stream-like until one is
+    bound: no scan (nothing could ever report complete) and the plain "end of
+    view window" badge. Binding an end code turns both around on the same
+    entry, with no re-open."""
+    from celpix.plugins.builtins import lzw
+
+    tiles = bytes((i * 29 + 5) & 0xFF for i in range(32 * 4))
+    px = tmp_path / "lzw.bin"
+    # A variant with no end code, so the stream simply runs out where it does.
+    px.write_bytes(lzw.compress(tiles, lzw.Params()))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    window._compression.setCurrentIndex(window._compression.findData("compression.lzw"))
+    assert window._overlay.isVisible()
+    assert not window._scan_button.isEnabled()
+    assert window._overlay._badge.text() == "end of view window"
+
+    # Bind an end code: now the scheme has an end to find, and a window that
+    # never reaches one was cut short.
+    window._workspace.current.inputs = {"compression.lzw": {lzw.INPUT_END_CODE: 257}}
+    window._refresh_overlay()
+    assert window._scan_button.isEnabled()
+    assert window._overlay._badge.text() == "end not in view"
 
 
 def test_copier_header_is_detected_and_skipped(qtbot, tmp_path) -> None:

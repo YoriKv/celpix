@@ -146,7 +146,7 @@ class PathwayConfig:
     # a preset, which no preset can carry because the choice is the user's each
     # time: the color format the palette-swatch view reads its bytes through
     # (``docs/design/plugin-system.md`` §5). Merged where tile geometry is
-    # resolved (``_stage.tile_params`` / ``_pixel_geometry``), so every decode
+    # resolved (``_stage.tile_params`` / ``pixel_geometry``), so every decode
     # and encode of the document sees one parameter set. Not a Read/Decompress
     # input, so changing it reinterprets the loaded bytes in place.
     interpret_params: dict[str, Any] = field(default_factory=dict)

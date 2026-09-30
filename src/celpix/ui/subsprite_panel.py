@@ -56,18 +56,13 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from PySide6.QtCore import QRect, Qt, Signal
-from PySide6.QtGui import QColor, QImage, QPainter
+from PySide6.QtGui import QImage, QPainter
 from PySide6.QtWidgets import QWidget
 
-from celpix.core import ceil_div
-from celpix.ui.canvas import (
-    CANVAS_BACKGROUND,
-    GRID_COARSE_ALPHA,
-    GRID_FINE_COLOR,
-    GRID_STRUCTURE_COLOR,
-)
-from celpix.ui.tile_source_panel import LABEL_COLOR, LABEL_MIN_PX, LABEL_PLATE
-from celpix.ui.widgets import PanZoomSurface, paint_selection_outline
+from celpix.ui.panzoom import PanOnlyMouse
+from celpix.ui.sheet_surface import SheetSurface
+from celpix.ui.theme import GRID_FINE_COLOR
+from celpix.ui.widgets import paint_mark_ring
 
 #: One record, as the sheet addresses it: ``(frame, subsprite)``.
 Record = tuple[int, int]
@@ -76,7 +71,7 @@ Record = tuple[int, int]
 Box = tuple[int, int, int, int]
 
 
-class SubspritePanel(PanZoomSurface, QWidget):
+class SubspritePanel(PanOnlyMouse, SheetSurface):
     """The composed subsprite sheet, drawn at this window's zoom."""
 
     zoom_requested = Signal(int, object)  # steps, QPointF cursor pos (widget)
@@ -84,12 +79,8 @@ class SubspritePanel(PanZoomSurface, QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._sheet = QImage()
         self._records: Sequence[Record] = ()
         self._boxes: Sequence[Box] = ()
-        self._cell_px = (8, 8)  # one square's size in image pixels
-        self._columns = 16
-        self._zoom = 2
         self._marked: Record | None = None
         self._captions = True
         # Focusable although nothing here is picked with the keyboard: the window
@@ -135,10 +126,8 @@ class SubspritePanel(PanZoomSurface, QWidget):
         """The records on show, one per square, in slot order."""
         return self._records
 
-    def set_zoom(self, zoom: int) -> None:
-        if zoom != self._zoom:
-            self._zoom = max(1, zoom)
-            self._update_size()
+    def _slot_count(self) -> int:
+        return len(self._records)
 
     def set_captions(self, on: bool) -> None:
         """Whether each square is captioned with the record it holds."""
@@ -158,25 +147,7 @@ class SubspritePanel(PanZoomSurface, QWidget):
         """Show nothing — no document, or one that is not a sprite map."""
         self.set_sheet(QImage(), (), (), self._cell_px, self._columns)
 
-    def _has_content(self) -> bool:
-        return not self._sheet.isNull()
-
     # -- geometry ------------------------------------------------------------
-    def _rows(self) -> int:
-        return max(1, ceil_div(len(self._records), self._columns))
-
-    def _update_size(self) -> None:
-        cw, ch = self._cell_px
-        self.setFixedSize(*self._scaled_size(self._columns * cw, self._rows() * ch))
-        self.update()
-
-    def _cell_rect(self, slot: int) -> QRect:
-        """Where the ``slot``-th square sits — the grid geometry, in one place."""
-        cw, ch = self._cell_px
-        return self._scaled_rect(
-            (slot % self._columns) * cw, (slot // self._columns) * ch, cw, ch
-        )
-
     def _piece_rect(self, slot: int) -> QRect:
         """Where the ``slot``-th record's *art* sits — what the ring goes round.
 
@@ -189,43 +160,16 @@ class SubspritePanel(PanZoomSurface, QWidget):
             return self._cell_rect(slot)
         return self._scaled_rect(*self._boxes[slot])
 
-    # -- interaction ---------------------------------------------------------
-    def mousePressEvent(self, event) -> None:  # noqa: ANN001 — Qt override
-        if self._pan_press(event):
-            return
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event) -> None:  # noqa: ANN001 — Qt override
-        if self._pan_move(event):
-            return
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event) -> None:  # noqa: ANN001 — Qt override
-        if self._pan_release(event):
-            return
-        super().mouseReleaseEvent(event)
-
     # -- painting ------------------------------------------------------------
     def paintEvent(self, event) -> None:  # noqa: ANN001 — Qt override
         painter = QPainter(self)
-        # The trailing squares of a partial last row are backing, not records:
-        # the neutral canvas colour says so, the same answer the canvas gives
-        # past the end of a file. Painted under the sheet rather than over it, so
-        # a full grid costs one fill and no clipping.
-        painter.fillRect(event.rect(), CANVAS_BACKGROUND)
+        self._paint_sheet(painter, event.rect())
         if not self._sheet.isNull():
-            # Nearest-neighbour: pixel art must stay crisp when magnified.
-            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
-            painter.scale(self._zoom_x, self._zoom_y)
-            painter.drawImage(0, 0, self._sheet)
-            painter.resetTransform()
             self._paint_grid(painter, event.rect())
             self._paint_captions(painter, event.rect())
         if self._marked is not None:
-            paint_selection_outline(
-                painter,
-                self._piece_rect(self._records.index(self._marked)),
-                color=GRID_STRUCTURE_COLOR,
+            paint_mark_ring(
+                painter, self._piece_rect(self._records.index(self._marked))
             )
         painter.end()
 
@@ -242,29 +186,10 @@ class SubspritePanel(PanZoomSurface, QWidget):
         Drawn over the art and under the ring, so a marked square on a boundary
         still reads as marked.
 
-        **Interior lines only** — a line at 0 would be a border around the widget
-        rather than a division of it, the rule the canvas's lattice follows too.
-        Lines outside the exposed band are skipped: a long object read at 8x is
-        mostly off screen.
+        Interior lines only, and only in the exposed band
+        (:meth:`~celpix.ui.sheet_surface.SheetSurface._paint_lattice`).
         """
-        # Stepped in the sheet's own pixels and scaled at the point of drawing —
-        # see the tile source panel's lattice for why a fractional device step
-        # cannot be walked directly.
-        step_x, step_y = self._cell_px
-        if step_x <= 0 or step_y <= 0:
-            return
-        img_w, img_h = self._columns * step_x, self._rows() * step_y
-        color = QColor(GRID_FINE_COLOR)
-        color.setAlpha(GRID_COARSE_ALPHA)
-        painter.setPen(color)
-        for gx in range(step_x, img_w, step_x):
-            x = round(gx * self._zoom_x)
-            if exposed.left() <= x <= exposed.right():
-                painter.drawLine(x, exposed.top(), x, exposed.bottom())
-        for gy in range(step_y, img_h, step_y):
-            y = round(gy * self._zoom_y)
-            if exposed.top() <= y <= exposed.bottom():
-                painter.drawLine(exposed.left(), y, exposed.right(), y)
+        self._paint_lattice(painter, exposed, 1, GRID_FINE_COLOR)
 
     def _paint_captions(self, painter: QPainter, exposed: QRect) -> None:
         """Write ``frame:subsprite`` across the bottom of each square.
@@ -277,40 +202,21 @@ class SubspritePanel(PanZoomSurface, QWidget):
         near-opaque plate, because a sprite is as often light on dark as dark on
         light and a single ink colour vanishes into half of them.
 
-        **Skipped entirely below** :data:`~celpix.ui.tile_source_panel.
-        LABEL_MIN_PX`, because a caption that does not fit is worse than none:
+        **Skipped entirely below** :data:`~celpix.ui.sheet_surface.LABEL_MIN_PX`,
+        because a caption that does not fit is worse than none:
         overflowing text spills onto the squares either side and claims to
         describe them.
         """
         if not self._captions:
             return
-        cw = self._cell_px[0] * self._zoom_x
-        ch = self._cell_px[1] * self._zoom_y
-        if min(cw, ch) < LABEL_MIN_PX:
+        height = self._caption_height(painter, 4, 4)
+        if height is None:
             return
-        font = painter.font()
-        font.setPixelSize(max(7, int(min(ch // 4, cw // 4))))
-        painter.setFont(font)
-        height = painter.fontMetrics().height()
         # The exposed rows only. An object runs to thousands of pieces and a
         # scrolled view shows a dozen rows of them, and a caption skipped by
-        # testing its square still costs the square (:meth:`~celpix.ui.widgets.
-        # PanZoomSurface._exposed_rows`).
-        first, stop = self._exposed_rows(exposed, self._cell_px[1])
-        count = len(self._records)
-        for slot in range(
-            min(first * self._columns, count), min(stop * self._columns, count)
-        ):
+        # testing its square still costs the square.
+        for slot in self._exposed_slots(exposed):
             at, index = self._records[slot]
             square = self._cell_rect(slot)
-            if not square.intersects(exposed):
-                continue
-            strip = QRect(
-                square.left(), square.bottom() - height, square.width(), height
-            )
-            painter.fillRect(strip, LABEL_PLATE)
-            painter.setPen(LABEL_COLOR)
-            painter.drawText(strip, Qt.AlignmentFlag.AlignCenter, f"{at}:{index}")
-
-    def sizeHint(self):  # noqa: ANN201 — Qt override
-        return self.size()
+            if square.intersects(exposed):
+                self._paint_caption(painter, square, height, f"{at}:{index}")

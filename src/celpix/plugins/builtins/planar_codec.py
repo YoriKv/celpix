@@ -38,6 +38,7 @@ from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.index_grid import IndexGrid
 from celpix.plugins._byteops import or_all, or_bytes
+from celpix.plugins._params import integer
 from celpix.plugins.base import PluginInfo
 from celpix.plugins.builtins._bits import (
     bit_expansion,
@@ -46,6 +47,7 @@ from celpix.plugins.builtins._bits import (
 from celpix.plugins.builtins._tile import (
     flatten_tiles,
     require_whole_tiles,
+    tile_dims,
     tiles_from_rows,
 )
 
@@ -79,23 +81,19 @@ class PlanarCodec:
         with one strided slice, which only describes the format while each tile's
         bytes stay its own.
         """
-        bpp = int(params["bpp"])
-        planes = params["planes"]
-        width = int(params.get("tile_width", cls.GROUP))
-        height = int(params.get("tile_height", cls.GROUP))
         # An index is one byte of the grid, so a ninth plane has nowhere to go.
-        if not 1 <= bpp <= 8:
-            raise ValueError(f"planar bpp must be 1 to 8: got {bpp}")
+        bpp = integer(params, "bpp", low=1, high=8)
+        planes = params["planes"]
+        width, height = tile_dims(
+            params,
+            default=cls.GROUP,
+            multiple_of=cls.GROUP,
+            why="a pixel is one bit of one byte",
+            engine="planar",
+        )
         if len(planes) != bpp:
             raise ValueError(
                 f"planar preset needs one plane per bit: bpp={bpp}, got {len(planes)}"
-            )
-        if width <= 0 or height <= 0:
-            raise ValueError(f"planar tile size must be positive: {width}x{height}")
-        if width % cls.GROUP:
-            raise ValueError(
-                f"planar tile_width must be a multiple of {cls.GROUP} "
-                f"(a pixel is one bit of one byte): got {width}"
             )
         groups = width // cls.GROUP
         tile_bytes = width * height * bpp // 8

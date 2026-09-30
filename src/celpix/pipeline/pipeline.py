@@ -7,9 +7,9 @@ with the palette's save optional. Any stage that cannot proceed raises
 :class:`PipelineError`, which halts the pipeline and names the stage + direction
 + pathway + reason; nothing partial is written (``docs/design/overview.md`` §2).
 
-Running the stages is all this module does. The three questions that are asked
-*around* a pipeline run rather than by one are its neighbours, and are
-re-exported here so that a caller keeps one import for the whole of it:
+Running the stages is all this module does. What is asked *around* a pipeline
+run rather than by one lives in its neighbours, re-exported here so that a
+caller keeps one import for the whole of it:
 
 - :mod:`celpix.pipeline.render` — decoded data laid out as a picture: tile
   windows, tilemaps, tile source sheets and sprite objects.
@@ -17,27 +17,28 @@ re-exported here so that a caller keeps one import for the whole of it:
   its own and reported rather than raised.
 - :mod:`celpix.pipeline.metrics` — scalar queries put to a resolved codec: entry
   sizes, capacities, bit depth, what a format can store.
+- :mod:`celpix.pipeline.newfile` — creating a blank file and resizing an
+  existing region, sized in tiles, cells or colors.
+- :mod:`celpix.pipeline.scan` — the forward scan for the next compressed
+  structure, and the smart scan's test that one holds graphics.
 
-What all four share — executing one stage, acquiring a source, resolving tile
+The fold-in of a fontmap's alphabet is :func:`celpix.core.font.font_alphabet`,
+kept reachable here as ``load_font_alphabet``.
+
+What they all share — executing one stage, acquiring a source, resolving tile
 geometry — is :mod:`celpix.pipeline._stage`.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NamedTuple
 
 from celpix.core.address import format_hex
-from celpix.core.capabilities import ContentKind
 from celpix.core.context import (
-    KEY_COMPRESSED_SIZE,
-    KEY_DECOMPRESS_COMPLETE,
     KEY_INPUTS,
-    KEY_PALETTE_PRESET,
-    KEY_PIXEL_PRESET,
     KEY_SOURCE_FILES,
     KEY_SOURCE_OFFSET,
     KEY_SOURCE_PATH,
@@ -49,23 +50,26 @@ from celpix.core.context import (
 )
 from celpix.core.document import Document
 from celpix.core.errors import Pathway, PipelineError, Stage
-from celpix.core.font import (
-    FontAlphabet,
-    Glyph,
-    sequential,
-)
+from celpix.core.font import font_alphabet
 from celpix.core.notices import warn
 from celpix.core.palette import Palette
 from celpix.core.sprite import DEFAULT_SUBSPRITE_TILES, Frame, frame_bounds
-from celpix.core.tilemap import RECORD_KEYS, Cell, IndexAddressing, record_geometry
+from celpix.core.tilemap import (
+    LAYOUT_SPRITE,
+    LAYOUT_TEXT,
+    RECORD_KEYS,
+    Cell,
+    IndexAddressing,
+    record_geometry,
+)
 from celpix.pipeline._stage import (
-    _acquire,
-    _cell_settler,
-    _cell_widths,
-    _pixel_geometry,
-    _probe,
-    _run,
+    acquire_source,
     bitmap_params,
+    cell_settler,
+    cell_widths,
+    pixel_geometry,
+    probe,
+    run_stage,
     tile_params,
 )
 from celpix.pipeline.inspection import ContainerReport, inspect_container
@@ -84,6 +88,15 @@ from celpix.pipeline.metrics import (
     shared_palette_entries,
     tilemap_cell_bytes,
 )
+from celpix.pipeline.newfile import (
+    blank_file_bytes,
+    blank_size,
+    blank_units,
+    create_file,
+    frames_new_file,
+    resize_file,
+    resized_slot_bytes,
+)
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.pipeline.render import (
     SPRITE_SHEET_PIXELS,
@@ -93,7 +106,7 @@ from celpix.pipeline.render import (
     TilemapImage,
     TileRegion,
     TileSheet,
-    _check_sprite_extent,
+    check_sprite_extent,
     compose_tiles,
     decode_and_compose,
     decode_tiles,
@@ -122,6 +135,7 @@ from celpix.pipeline.render import (
     tilemap_tiles,
     tiles_per_stripe,
 )
+from celpix.pipeline.scan import ScanResult, find_next_structure, looks_like_graphics
 from celpix.pipeline.table_layout import publish_table_layout
 from celpix.plugins._params import flag, one_of
 from celpix.plugins.base import (
@@ -180,6 +194,7 @@ __all__ = [
     "load_palette",
     "load_pixel_data",
     "load_tilemap_data",
+    "looks_like_graphics",
     "palette_entries_per_unit",
     "palette_entry_capacity",
     "palette_entry_size",
@@ -220,6 +235,12 @@ __all__ = [
     "tiles_per_stripe",
 ]
 
+# A fontmap's alphabet is read off the font entry's own data, not through any
+# stage, so it lives in :mod:`celpix.core.font`; this name keeps it reachable
+# beside the loads that use it, for the sample projects' verifiers and the
+# callers that already reach it through the pipeline.
+load_font_alphabet = font_alphabet
+
 
 def seed_inputs(ctx: PipelineContext, cfg: PathwayConfig, stage: Stage) -> None:
     """Put ``stage``'s resolved inputs on ``ctx`` as :data:`KEY_INPUTS`.
@@ -234,7 +255,7 @@ def seed_inputs(ctx: PipelineContext, cfg: PathwayConfig, stage: Stage) -> None:
 
 
 @contextmanager
-def _stage_inputs(
+def _seeded_inputs(
     ctx: PipelineContext, cfg: PathwayConfig, stage: Stage
 ) -> Iterator[None]:
     """:func:`seed_inputs` for the duration of one stage call, then put back.
@@ -299,129 +320,6 @@ def _surround_of(
     return source.data, source.start
 
 
-@dataclass(frozen=True)
-class ScanResult:
-    """Where a forward structure scan ended (:func:`find_next_structure`).
-
-    ``found`` is the hit offset or ``None``; ``end`` is where the scan stopped
-    (where the caller lands when there was no hit — ``len(data)`` once the whole
-    buffer is exhausted); ``stopped`` is True when the caller aborted the scan
-    via its tick callback rather than reaching the end.
-    """
-
-    found: int | None
-    end: int
-    stopped: bool
-
-
-def find_next_structure(
-    data: bytes,
-    plugin: CompressionPlugin,
-    probe_bytes: int,
-    start: int,
-    *,
-    progress_every: int = 64,
-    on_tick: Callable[[int], bool] | None = None,
-    inputs: dict[str, bytes | int | str] | None = None,
-    alignment: int = 1,
-    accept: Callable[[bytes, int], bool] | None = None,
-) -> ScanResult:
-    """The first offset ≥ ``start`` where ``plugin`` decodes a complete structure.
-
-    Walks ``data`` one byte at a time, trying a strict decompress of the
-    ``probe_bytes`` compressed bytes at each offset. A hit is a non-empty decode
-    that the plugin **reports complete** (:data:`KEY_DECOMPRESS_COMPLETE`): the
-    structure's own end — terminator or declared size — landed inside the probe.
-    Non-empty output alone is not enough, because a scheme with no end to find
-    (PackBits, RLE2) decodes *any* bytes to something and never reports
-    completion, and a hit on every byte is no scan at all. That is what makes
-    the scan meaningless for a non-self-delimiting scheme, and the UI keeps it
-    off for those. Every ``progress_every`` bytes ``on_tick(pos)`` is called if
-    given; returning True aborts the scan (the UI pumps its event loop and
-    reports a Stop there).
-
-    ``alignment`` is the plugin's declared start alignment
-    (:attr:`~celpix.plugins.base.PluginInfo.alignment`): only multiples of it
-    are probed, counted from ``data[0]``, so the caller hands in a buffer whose
-    start *is* aligned — a whole ROM image, for the one scheme that declares it.
-
-    ``accept(output, consumed)`` is a further test a complete structure has to
-    pass to count — the smart scan's :func:`looks_like_graphics` — and the
-    walk simply moves on past one that fails it. That is the one place the
-    scan applies a *heuristic*: everything above is the format's own word on
-    where a structure is.
-
-    ``inputs`` is what a scheme that needs a table declares
-    (:class:`~celpix.plugins.base.InputSpec`), already resolved: "find the next
-    stream that decodes with *this* table", which is the question a shared-table
-    format asks. Handed to every probe on a fresh context, so a hit means the
-    structure decodes with those inputs and nothing else.
-    """
-    alignment = max(1, alignment)
-    pos = -(-start // alignment) * alignment  # first aligned offset >= start
-    n = len(data)
-    while pos < n:
-        ctx = PipelineContext()
-        if inputs:
-            ctx.set(KEY_INPUTS, inputs)
-        # The probe is a window of `data`, and a scheme that copies from the
-        # bytes before its stream has to be told where in `data` the window
-        # sits, or it would resolve those copies against the window's own start.
-        ctx.set(KEY_SURROUND, data)
-        ctx.set(KEY_SURROUND_START, pos)
-        try:
-            out = plugin.decompress(data[pos : pos + probe_bytes], ctx)
-            if (
-                out
-                and ctx.get(KEY_DECOMPRESS_COMPLETE)
-                and (accept is None or accept(out, ctx.get(KEY_COMPRESSED_SIZE) or 0))
-            ):
-                return ScanResult(pos, pos, False)
-        except Exception:  # noqa: BLE001 — not a structure here; keep walking
-            pass
-        pos += alignment
-        if on_tick is not None and pos % progress_every == 0 and on_tick(pos):
-            return ScanResult(None, pos, True)
-    return ScanResult(None, pos, False)
-
-
-# The smart scan's plausibility rule, three thresholds measured rather than
-# guessed (``docs/rom-mapping/finding-data.md`` §1.3): over 575 known graphics
-# streams in four cartridges (SMW and Zelda 3 LZ, Yoshi's Island GBA LZ77, Alex
-# Kidd RLE) every one passes all three, while 97-99% of the complete decodes the
-# plain scan lands on fail at least one.
-#
-# Fewer compressed bytes than this is a single fill or literal command with its
-# terminator — a 3-byte "structure" that random bytes form every few dozen
-# offsets. The smallest real stream measured is 12 bytes.
-MIN_COMPRESSED = 8
-# Beyond this ratio the "structure" is one command producing hundreds of bytes
-# of one value. Real art tops out well under it (31:1 for a nearly blank tile
-# set, 8:1 elsewhere); an all-blank bank compresses 5:1 in the RLE that hit 31.
-MAX_RATIO = 32
-
-
-def looks_like_graphics(output: bytes, consumed: int, bytes_per_tile: int) -> bool:
-    """Whether a complete structure plausibly holds tiles of the current format.
-
-    The heuristic half of the smart scan, deliberately small: the output is a
-    whole number of tiles under the view's pixel preset and at least one, the
-    structure is more than a lone command, and it did not expand beyond what
-    graphics ever compress to. Anything about the *pixels* — how often
-    neighbours match, how many colours a tile uses, whether the palette's
-    colours sit close together — was measured and left out: it cost real
-    streams (a dithered Mode 7 backdrop, a 16-colour test sheet) for a few
-    fewer false hits, and the palette gave no separation at all.
-    """
-    if bytes_per_tile <= 0 or len(output) < bytes_per_tile:
-        return False
-    if len(output) % bytes_per_tile:
-        return False
-    if consumed < MIN_COMPRESSED:
-        return False
-    return len(output) <= MAX_RATIO * consumed
-
-
 class PixelData(NamedTuple):
     """The pixel pathway loaded up to (but not through) decode.
 
@@ -451,7 +349,7 @@ def load_pixel_data(
     """
     ctx = PipelineContext()
     data = _read_reshape_decompress(cfg, ctx, reg, Pathway.PIXEL)
-    return PixelData(data, *_pixel_geometry(cfg, reg, bitmap_width), ctx)
+    return PixelData(data, *pixel_geometry(cfg, reg, bitmap_width), ctx)
 
 
 def reinterpret_pixel_data(
@@ -469,7 +367,7 @@ def reinterpret_pixel_data(
     and re-running the pathway would pull the file's own bytes back over them.
     Raises the same :class:`PipelineError` a load would for an unusable preset.
     """
-    return PixelData(data, *_pixel_geometry(cfg, reg, bitmap_width), ctx)
+    return PixelData(data, *pixel_geometry(cfg, reg, bitmap_width), ctx)
 
 
 class PaletteData(NamedTuple):
@@ -490,7 +388,7 @@ def load_palette(cfg: PathwayConfig, reg: Registry) -> PaletteData:
     ctx = PipelineContext()
     data = _read_reshape_decompress(cfg, ctx, reg, Pathway.PALETTE)
     engine, preset = reg.engine_for(cfg.interpret_preset_id, ColorCodecPlugin)
-    colors = _run(
+    colors = run_stage(
         Stage.INTERPRET_PALETTE,
         Pathway.PALETTE,
         lambda: engine.decode(data, preset.params, ctx),
@@ -544,13 +442,13 @@ class TilemapData(NamedTuple):
 
     ``settler`` is the codec's own cell settle bound with its params, or None for
     a format with nothing to derive from another field
-    (:func:`~celpix.pipeline._stage._cell_settler`). A callable and not the engine,
+    (:func:`~celpix.pipeline._stage.cell_settler`). A callable and not the engine,
     because what reads it is the Qt-free model
     (:attr:`~celpix.core.document.Document.cell_settler`).
 
     ``widths`` and ``line_bytes`` are the two answers a **mixed-width** format
     gives beside :attr:`cell_bytes` — each cell's byte width, as a callable like
-    ``settler`` (:func:`~celpix.pipeline._stage._cell_widths`), and the fixed
+    ``settler`` (:func:`~celpix.pipeline._stage.cell_widths`), and the fixed
     record a name table stores each line in. None and 0 for every format whose
     cells are all ``cell_bytes`` and whose lines are free, which is every format
     but lead-code text (``docs/design/fontmap-entry.md`` §5).
@@ -619,10 +517,10 @@ def load_tilemap_data(
     if live is not None:
         data = live + data[len(live) :]
     engine, preset = reg.engine_for(cfg.interpret_preset_id, TilemapCodecPlugin)
-    counts_records = _probe(
+    counts_records = probe(
         engine, "counts_records", preset.params, bool, False, ctx=ctx, plugin=preset.id
     )
-    _run(
+    run_stage(
         Stage.INTERPRET_TILEMAP,
         Pathway.TILEMAP,
         lambda: _check_declarations(
@@ -634,7 +532,7 @@ def load_tilemap_data(
     # becomes the document's ``tilemap_ctx``, and every later cell encode — a
     # stamp, a save — reads its inputs from there (:func:`encode_cells`).
     seed_inputs(ctx, cfg, Stage.INTERPRET_TILEMAP)
-    cells = _run(
+    cells = run_stage(
         Stage.INTERPRET_TILEMAP,
         Pathway.TILEMAP,
         lambda: engine.decode(data, preset.params, ctx),
@@ -646,7 +544,7 @@ def load_tilemap_data(
     # malformed number in it is a notice rather than a failed load: the table
     # is still a table, and what it cannot offer is only what a map above it
     # would have stamped by.
-    _run(
+    run_stage(
         Stage.INTERPRET_TILEMAP,
         Pathway.TILEMAP,
         lambda: publish_table_layout(
@@ -654,7 +552,7 @@ def load_tilemap_data(
         ),
         plugin=preset.id,
     )
-    cell_bytes = _run(
+    cell_bytes = run_stage(
         Stage.INTERPRET_TILEMAP,
         Pathway.TILEMAP,
         lambda: engine.bytes_per_cell(preset.params),
@@ -666,7 +564,7 @@ def load_tilemap_data(
             Pathway.TILEMAP,
             f"bytes per cell ({cell_bytes}) is not positive",
         )
-    tiles = _run(
+    tiles = run_stage(
         Stage.INTERPRET_TILEMAP,
         Pathway.TILEMAP,
         lambda: engine.cell_tiles(preset.params),
@@ -695,7 +593,7 @@ def load_tilemap_data(
         # bar hides the spins. A probe rather than part of the `frames` call
         # below, whose answer *is* the picture.
         if hasattr(engine, "size_pair"):
-            pair = _probe(
+            pair = probe(
                 engine,
                 "size_pair",
                 preset.params,
@@ -707,7 +605,7 @@ def load_tilemap_data(
             if size_pair is not None and min(size_pair) >= 1:
                 pair = (int(size_pair[0]), int(size_pair[1]))
             ctx.set(KEY_TILEMAP_SUBSPRITE_TILES, pair)
-        frames = _run(
+        frames = run_stage(
             Stage.INTERPRET_TILEMAP,
             Pathway.TILEMAP,
             lambda: engine.frames(cells, preset.params, ctx),
@@ -721,21 +619,21 @@ def load_tilemap_data(
         # entry the map is bound to, and are not known until the document exists —
         # which is close enough for a limit the offsets, not the tiles, blow past.
         box = frame_bounds(frames)
-        _check_sprite_extent(
+        check_sprite_extent(
             len(frames) * box[2] * box[3],
             f"{len(frames)} frames of subsprites, {box[2]}x{box[3]} pixels each",
         )
     # The optional metadata methods, all asked the same way and for one reason:
     # each has a documented answer for a format that does not implement it, so a
     # format that cannot answer is read as one that stayed quiet rather than
-    # costing the entry its load (:func:`~celpix.pipeline._stage._probe`). The
+    # costing the entry its load (:func:`~celpix.pipeline._stage.probe`). The
     # fallback is a notice, not a silence.
     #
     # Whether the format has a palette row for a cell to name. **True when the
     # engine does not answer**, which is the safe direction — a format that does
     # carry rows and stayed quiet must not have a view-wide row added on top of
     # the ones its cells already state.
-    rows = _probe(
+    rows = probe(
         engine, "has_palette_rows", preset.params, bool, True, ctx=ctx, plugin=preset.id
     )
     # The index field's own width, straight off the codec
@@ -746,7 +644,7 @@ def load_tilemap_data(
     # the very bits a metatile's walk adds to find its other three tiles. The field
     # is as wide as that value's bits, so the mask is every bit up to its top one.
     # A format that cannot say leaves its references unbounded.
-    mask = _probe(
+    mask = probe(
         engine,
         "index_limit",
         preset.params,
@@ -775,7 +673,7 @@ def load_tilemap_data(
     # quiet — a format keeping a row per cell is every format but one, and
     # inferring a coarser group for a codec that was never asked would recolour
     # cells nobody selected.
-    grain = _probe(
+    grain = probe(
         engine,
         "palette_row_granularity",
         preset.params,
@@ -800,10 +698,10 @@ def load_tilemap_data(
         # Bound here beside the declarations because it is the same "what does
         # this format say about its cells" question, but it is a transform rather
         # than an answer, so it travels as a callable the model can apply per edit.
-        _cell_settler(engine, preset.params, ctx=ctx, plugin=preset.id),
+        cell_settler(engine, preset.params, ctx=ctx, plugin=preset.id),
         disk,
-        _cell_widths(engine, preset.params, ctx=ctx, plugin=preset.id),
-        _probe(
+        cell_widths(engine, preset.params, ctx=ctx, plugin=preset.id),
+        probe(
             engine,
             "line_bytes",
             preset.params,
@@ -838,7 +736,7 @@ def _check_declarations(
     keys that change nothing in it.
     """
     if "layout" in params:
-        one_of(params, "layout", ("text", "sprite"), None)
+        one_of(params, "layout", (LAYOUT_TEXT, LAYOUT_SPRITE), None)
     if "subsprite_size" in params:
         one_of(params, "subsprite_size", ("stated",), None)
     if "index_addressing" in params:
@@ -878,77 +776,6 @@ def _check_declarations(
         flag(params, key)
 
 
-def load_font_alphabet(
-    chars: str,
-    codes: Iterable[Glyph],
-    *,
-    code_digits: int = 2,
-    base: int = 0,
-    flag_break: bool = False,
-) -> FontAlphabet | None:
-    """The lookup a fontmap's codes are read through, from its two sources.
-
-    Both are the **font entry's own data**, and the second is laid over the first:
-
-    ==============================  ========================  =================
-    source                          stated by                 moved by ``base``
-    ==============================  ========================  =================
-    the positional run, ``chars``   the **font** sheet        yes
-    the named ``codes``             the **font**, absolutely  no
-    ==============================  ========================  =================
-
-    The run is the sheet read straight off: character *i* is what tile *i* draws,
-    which is legible the moment the art is. ``base`` moves it and only it,
-    because where the run *starts* is in the game's code and appears in neither
-    the sheet nor the string (``docs/graphics-formats-reference/text-formats.md``
-    §3.2) — while a named code was read at the value the stream actually holds,
-    so shifting one would move a terminator the user took straight out of the
-    file.
-
-    **The punctuation is in the named codes too**, which is the whole of where an
-    alphabet comes from: a line break, a terminator and a command worth a caption
-    are all ``codes`` carrying a role (``docs/design/fontmap-entry.md`` §3). A
-    cell format states no glyph table and no control of its own, so two streams
-    punctuated differently are two font entries over the same tiles rather than
-    one entry and two presets.
-
-    ``flag_break`` is the exception and stays the **cell format's**, because it
-    is not a code at all: it says lines end on a *bit the cell carries*, which is
-    a fact about how the bytes are laid out and has nowhere to live in a table of
-    codes (:attr:`~celpix.core.font.FontAlphabet.flag_break`).
-
-    **Both are stated by hand**, and nothing fills a font's table in from the
-    file. A container that stated one would be read whatever **Use as Font** said,
-    since that tick is what blanks ``chars`` and ``codes`` at the call site
-    (``docs/design/fontmap-entry.md`` §4) — so the one control over whether a
-    sheet's codes mean anything would stop deciding it.
-
-    Returns **None** rather than an empty alphabet where nothing says anything:
-    "no alphabet yet" and "an alphabet that maps nothing" are different states,
-    and only the first is worth telling the user about.
-
-    Never raises. An alphabet is a *reading* of cells that are already decoded,
-    so nothing here may take the document with it — the map still draws, and its
-    text reads as hex until the table is put right.
-    """
-    named = list(codes)
-    run = list(sequential(0, chars))
-    font = FontAlphabet(run, code_digits=code_digits, flag_break=flag_break).shifted(
-        base
-    )
-    # Asked of what the font *said*, not of what survived the shift: a run dialled
-    # clean off the end of the code space is still a run the user typed, and
-    # reporting "nothing here" would point them at the table they already filled
-    # in instead of at the spin they just moved.
-    if not run and not named:
-        return None
-    if not named:
-        return font
-    return font.merged(
-        FontAlphabet(named, code_digits=code_digits, flag_break=flag_break)
-    )
-
-
 def encode_cells(
     cells: list[Cell],
     preset_id: str,
@@ -973,7 +800,7 @@ def encode_cells(
     """
     engine, preset = reg.engine_for(preset_id, TilemapCodecPlugin)
     context = PipelineContext() if ctx is None else ctx
-    return _run(
+    return run_stage(
         Stage.INTERPRET_TILEMAP,
         Pathway.TILEMAP,
         lambda: engine.encode(cells, preset.params, context),
@@ -985,10 +812,12 @@ def encode_cells(
 def read_region(cfg: PathwayConfig, reg: Registry) -> tuple[bytes, PipelineContext]:
     """A pathway's Read alone: container -> reshape -> decompress, no decoding.
 
-    The front half of a load without a codec, for a caller that
-    needs an entry's **view buffer** rather than its picture — an Offset palette
-    resolving its coordinates against the file entry that owns them, when that
-    entry is closed and has no live document to borrow the bytes from
+    The front half of a load without a codec, for a caller that needs an
+    entry's **view buffer** rather than its picture and has no live document to
+    borrow it from: a slice reading the parent it is carved out of, a composite
+    reading its pieces, an input reading the array it is bound to, the size
+    dialogs measuring what a region holds, and an Offset palette resolving its
+    coordinates against the file entry that owns them
     (``docs/design/palette-editing.md`` §2). The context comes back because the
     buffer alone doesn't say where it starts: only the container knows that, and
     it reports it as ``KEY_SOURCE_OFFSET``.
@@ -1039,9 +868,8 @@ def save(
         raise PipelineError(
             Stage.CONTAINER,
             Pathway.TILEMAP if doc.is_tilemap else Pathway.PIXEL,
-            "this region is inside one its parent reorders, so its bytes "
-            "have no file position of their own; it must be written through "
-            "the parent",
+            "this region is a slice of a larger one, so its bytes are written "
+            "through the entry that owns them; nothing was written here",
             "write",
         )
     if pixel and doc.is_tilemap:
@@ -1076,7 +904,7 @@ def export_palette(
     engine, preset = reg.engine_for(
         preset_id or doc.palette_config.interpret_preset_id, ColorCodecPlugin
     )
-    data = _run(
+    data = run_stage(
         Stage.INTERPRET_PALETTE,
         Pathway.PALETTE,
         lambda: engine.encode(doc.palette, preset.params, doc.palette_ctx),
@@ -1087,370 +915,7 @@ def export_palette(
         container = reg.plugin(Stage.CONTAINER, RAW_CONTAINER, ContainerPlugin)
         _deposit(FileRef(path), lambda t: container.write(data, t, doc.palette_ctx))
 
-    _run(Stage.CONTAINER, Pathway.PALETTE, write, "write", plugin=RAW_CONTAINER)
-
-
-def _new_file_pathway(kind: ContentKind) -> Pathway:
-    """The pathway a new file's failures are reported under."""
-    if kind is ContentKind.PALETTE:
-        return Pathway.PALETTE
-    return Pathway.TILEMAP if kind is ContentKind.TILEMAP else Pathway.PIXEL
-
-
-def blank_size(kind: ContentKind, codec_id: str, units: int, reg: Registry) -> int:
-    """Bytes a blank file of ``units`` tiles, cells or colors needs.
-
-    The one arithmetic behind creating a file (``docs/design/new-file.md``): a
-    new file is stated in the units the user thinks in — tiles for a graphic,
-    cells for a map, colors for a palette — and only the codec knows what one of
-    them costs. Asked of the codec rather than of a document, because there is no
-    document until this answer has produced a file to open.
-
-    A palette rounds up to a whole read unit rather than multiplying, since a
-    packed format holds several colors in one (:func:`palette_read_bytes`).
-    """
-    if kind is ContentKind.PALETTE:
-        return palette_read_bytes(units, codec_id, reg)
-    if kind is ContentKind.TILEMAP:
-        return units * tilemap_cell_bytes(codec_id, reg)
-    return units * pixel_tile_bytes(codec_id, reg)
-
-
-def blank_file_bytes(
-    kind: ContentKind,
-    container_id: str,
-    codec_id: str,
-    units: int,
-    reg: Registry,
-) -> bytes:
-    """A whole new file's bytes: a blank payload with its container's framing on.
-
-    The payload is **zero bytes** — :func:`blank_size` of them. Zero is what an
-    empty region reads as for every codec celPix carries: index 0 in a tile (the
-    transparent entry by convention), cell 0 in a map, black in a palette. So it
-    is produced by arithmetic rather than by encoding a list of blank tiles,
-    which would need a decoded shape for a codec whose geometry the preset alone
-    does not fix.
-
-    The framing is the container's, which is what makes this more than
-    ``bytes(n)``: the tile-bank and screen formats build a header and a clear
-    table around a payload that is not theirs to invent, and hand back a file
-    their own reader recognises.
-
-    **The destination is treated as empty.** A container's write is normally
-    shown what is already there so it can keep what it did not decode; a new file
-    has nothing to keep, and showing it a file about to be replaced would splice
-    a blank payload into bytes the user asked to be rid of. So a container that
-    can only *preserve* its framing returns the bare payload here, and the result
-    being exactly ``blank_size`` long is how a caller can tell
-    (:func:`frames_new_file`) — behaviourally, without any container declaring it.
-
-    The context carries the codec the payload is in (:func:`_seed_codec`), for a
-    container whose header has to *state* it and that has no file to copy it
-    from.
-
-    **The file is read back before it is handed over.** A format fixes what a
-    payload may be — a screen is 0x2000 bytes, a copier image is whole 16 KiB
-    blocks — and a container handed a length it does not have quietly makes the
-    file it can: the screen padded or cut to its size, the copier image with the
-    partial block dropped. Neither is the file that was asked for, so the result
-    is read through the same container and refused when it does not hold
-    ``blank_size`` bytes of payload (:func:`_check_payload_held`).
-    """
-    size = blank_size(kind, codec_id, units, reg)
-    payload = bytes(size)
-    container = reg.plugin(Stage.CONTAINER, container_id, ContainerPlugin)
-    ctx = PipelineContext()
-    _seed_codec(ctx, kind, codec_id)
-
-    def build() -> bytes:
-        data = container.write(payload, WriteTarget(b""), ctx)
-        held = len(container.read(ReadSource(data), PipelineContext()))
-        _check_payload_held(container, kind, codec_id, held, size, reg, "would hold")
-        return data
-
-    return _run(
-        Stage.CONTAINER, _new_file_pathway(kind), build, "write", plugin=container_id
-    )
-
-
-# The unit each kind is counted in, for a refusal that has to say how many of
-# them a container would have framed: the byte count alone is the codec's
-# arithmetic, and the user typed tiles.
-_UNIT_NOUNS = {
-    ContentKind.PIXELS: "tiles",
-    ContentKind.TILEMAP: "cells",
-    ContentKind.PALETTE: "colors",
-}
-
-
-def _seed_codec(ctx: PipelineContext, kind: ContentKind, codec_id: str) -> None:
-    """Tell a container writing into nothing what the payload is encoded in.
-
-    The same two keys a container *publishes* when its format states the codec
-    (``KEY_PIXEL_PRESET``, ``KEY_PALETTE_PRESET``), set from the other side: a
-    container that has to write that statement into a header it is building
-    fresh — a TPL palette's format byte — has nowhere else to learn it, a blank
-    payload saying nothing about its own encoding. Advisory in this direction
-    too; a container whose header states no codec ignores it.
-    """
-    if kind is ContentKind.PALETTE:
-        ctx.set(KEY_PALETTE_PRESET, codec_id)
-    elif kind is ContentKind.PIXELS:
-        ctx.set(KEY_PIXEL_PRESET, codec_id)
-
-
-def _check_payload_held(
-    container: ContainerPlugin,
-    kind: ContentKind,
-    codec_id: str,
-    held: int,
-    size: int,
-    reg: Registry,
-    verb: str,
-) -> None:
-    """Refuse a write whose result reads back as ``held`` payload bytes, not
-    ``size``.
-
-    A container's write is a byte transform that keeps the file well-formed for
-    its format, and for a format with fixed lengths that means a payload of the
-    wrong length comes out cut, padded or partly dropped rather than as an
-    error — the right behaviour for a save, where the payload is whatever the
-    read produced, and silently the wrong file for a size the user just typed.
-    Reading the result back is the one check that holds for every container,
-    including a third-party one, without any of them declaring what sizes they
-    have.
-    """
-    if held == size:
-        return
-    noun = _UNIT_NOUNS[kind]
-    name = container.info.short_name or container.info.name
-    raise ValueError(
-        f"{name} {verb} {held:,} bytes of payload "
-        f"({blank_units(kind, codec_id, held, reg):,} {noun}) where {size:,} "
-        f"bytes ({blank_units(kind, codec_id, size, reg):,} {noun}) were asked "
-        "for; a file of this format cannot be that size"
-    )
-
-
-def frames_new_file(
-    kind: ContentKind,
-    container_id: str,
-    codec_id: str,
-    units: int,
-    reg: Registry,
-) -> bool:
-    """Whether ``container_id`` builds framing around a payload it is handed fresh.
-
-    Probed by running the write against an empty destination and seeing whether
-    anything came back beyond the payload — behavioural, for the same reason
-    :func:`~celpix.pipeline.metrics.palette_has_alpha` is: it then holds for a
-    third-party container too, with nothing new to declare, and it reports what
-    the container really does rather than what it claims.
-
-    It depends on the size as well as the container, and has to: a bank format
-    builds its header for the payload lengths its family has and passes anything
-    else through.
-    """
-    size = blank_size(kind, codec_id, units, reg)
-    return len(blank_file_bytes(kind, container_id, codec_id, units, reg)) != size
-
-
-def create_file(
-    path: str,
-    *,
-    kind: ContentKind,
-    container_id: str,
-    codec_id: str,
-    units: int,
-    reg: Registry,
-) -> int:
-    """Create a blank file at ``path``; returns how many payload bytes it holds.
-
-    :func:`blank_file_bytes` decides what goes in it — see there for the payload
-    and the framing. The file is written whole rather than spliced into, so
-    naming an existing path replaces it, which is what the picker's overwrite
-    prompt already asked about.
-    """
-    data = blank_file_bytes(kind, container_id, codec_id, units, reg)
-    # Outside :func:`_run`, unlike the framing above: a path that cannot be
-    # written is the operating system's answer about a filename, not a stage
-    # failing, and the caller has a better message for it than a pipeline report.
-    Path(path).write_bytes(data)
-    return blank_size(kind, codec_id, units, reg)
-
-
-def blank_units(kind: ContentKind, codec_id: str, nbytes: int, reg: Registry) -> int:
-    """How many whole tiles, cells or colors ``nbytes`` holds — :func:`blank_size`
-    read backwards.
-
-    What a caller that has to state an *existing* region's size in the units the
-    user thinks in needs: the file has a byte length, and the size row asks for
-    tiles (``docs/design/new-file.md`` §6). Creating a file goes the other way
-    and has :func:`blank_size`; resizing one needs both, because the number it
-    puts in the spins has to come back out as the same file.
-
-    **Floored**, because a partial trailing unit is not one any codec can read —
-    the same rounding :func:`palette_entry_capacity` already applies for a packed
-    format, which is why that is what answers for a palette rather than a
-    division here.
-    """
-    if kind is ContentKind.PALETTE:
-        return palette_entry_capacity(nbytes, codec_id, reg)
-    per_unit = (
-        tilemap_cell_bytes(codec_id, reg)
-        if kind is ContentKind.TILEMAP
-        else pixel_tile_bytes(codec_id, reg)
-    )
-    return max(0, nbytes) // per_unit if per_unit > 0 else 0
-
-
-def resize_file(
-    cfg: PathwayConfig,
-    *,
-    kind: ContentKind,
-    codec_id: str,
-    units: int,
-    reg: Registry,
-) -> int:
-    """Resize the region ``cfg`` reads so it holds ``units`` tiles/cells/colors.
-
-    The counterpart of :func:`create_file` for a file that already exists
-    (``docs/design/new-file.md`` §6). The **payload** is what is resized — the
-    bytes the container yields, after any reshape — so the framing is rebuilt
-    around the new length rather than being counted as part of it: growing a
-    tile bank by eight tiles adds eight tiles' worth of payload and lets the
-    container restate its own header, which is the only thing that keeps the
-    file readable as that format afterwards.
-
-    Read and write are the same two halves an ordinary load and save use, in
-    that order, so a resize goes through exactly the stages the entry does and
-    cannot disagree with them about what the region's bytes are.
-
-    **Growth is zero bytes** and shrinking is a plain truncation of the tail, for
-    the reason :func:`blank_file_bytes` gives: zero is what an empty region reads
-    as for every codec celPix carries, and the end of the region is the only
-    place a caller can add or remove units without moving the ones already there.
-
-    Two refusals, both before anything is read:
-
-    - A region of **several files** cannot change size. Its boundaries are the
-      lengths the files have on disk, and they are the only thing that says which
-      bytes belong to which chip — see :func:`_deposit`, which refuses the same
-      thing at the deposit for the same reason. Refused here as well so the
-      caller is told before a multi-megabyte read, and told what is wrong rather
-      than that some buffer was the wrong length.
-    - A **view-only** pathway has no write half to put the bytes back through,
-      which is the same reason :func:`save` skips it.
-
-    And one after the write has run but before it reaches disk: a container
-    whose format fixes the payload's length — a screen, a tile bank outside its
-    three sizes, a copier image short of a whole block — is handed the resized
-    bytes and answers with a file of the length it has. The result is read back
-    through the entry's own stages and refused unless it holds exactly ``units``
-    (:func:`_check_payload_held`), so a resize either happens or reports why
-    not; it never reports a size the file does not have.
-
-    Returns the payload's new length in bytes.
-    """
-    target = cfg.write_target()
-    if len(target.paths) > 1:
-        raise ValueError(
-            f"this region is {len(target.paths)} files joined, and resizing it "
-            "would move the boundaries between them; nothing was written"
-        )
-    if not cfg.write_enabled:
-        raise ValueError(
-            "this region is read-only, so its size cannot be changed; nothing "
-            "was written"
-        )
-    pathway = _new_file_pathway(kind)
-    ctx = PipelineContext()
-    current = _read_reshape_decompress(cfg, ctx, reg, pathway)
-    size = blank_size(kind, codec_id, units, reg)
-    if size == len(current):
-        return size
-    resized = (
-        current[:size] if size < len(current) else current + bytes(size - len(current))
-    )
-    shaped = _compress_unshape(cfg, resized, ctx, reg, pathway)
-    container = reg.plugin(Stage.CONTAINER, cfg.container_id, ContainerPlugin)
-
-    def produce(dest: WriteTarget) -> bytes:
-        result = container.write(shaped, dest, ctx)
-        # Read the result back through every stage the entry reads through,
-        # while it is still only bytes: a container whose format fixes the
-        # payload's length keeps the file at that length whatever it was handed
-        # (:func:`_check_payload_held`), and the only honest answers are the size
-        # that was asked for or nothing written.
-        preview = replace(cfg, source=replace(cfg.source, data=result, data_base=0))
-        held = len(_read_reshape_decompress(preview, PipelineContext(), reg, pathway))
-        _check_payload_held(container, kind, codec_id, held, size, reg, "keeps")
-        return result
-
-    _run(
-        Stage.CONTAINER,
-        pathway,
-        lambda: _deposit(target, produce),
-        "write",
-        plugin=cfg.container_id,
-    )
-    return size
-
-
-def resized_slot_bytes(
-    cfg: PathwayConfig,
-    *,
-    kind: ContentKind,
-    codec_id: str,
-    units: int,
-    reg: Registry,
-) -> bytes:
-    """The bytes a compressed slice's slot holds once it unpacks to ``units``.
-
-    :func:`resize_file` for a region that has **no file position of its own to
-    write at**: a slice is part of its parent's region, and its bytes reach the
-    disk only through the parent's write (``docs/design/slices-and-parents.md``
-    §4), which is what runs the container's own repairs — a ROM's checksums
-    among them. So nothing is written here. The payload is read, grown with
-    zeroes or cut at the tail exactly as :func:`resize_file` does it, and packed
-    back into the slot; the host splices the result into the parent's buffer at
-    the slice's offset, as an ordinary edit.
-
-    **The slot does not grow.** The re-packed stream must fit the slice's length
-    and raises the slot-overflow refusal when it does not — widening the slice
-    over free space after it is how a bigger stream gets room. A shorter stream
-    is padded per the slice's ``slot_fill``, as any save of it would be.
-
-    Read back before it is returned, like :func:`resize_file`'s result: the bytes
-    have to unpack to exactly the size asked for, or the resize is refused rather
-    than reported done.
-    """
-    pathway = _new_file_pathway(kind)
-    ctx = PipelineContext()
-    current = _read_reshape_decompress(cfg, ctx, reg, pathway)
-    size = blank_size(kind, codec_id, units, reg)
-    resized = (
-        current[:size] if size < len(current) else current + bytes(size - len(current))
-    )
-    shaped = _compress_unshape(cfg, resized, ctx, reg, pathway)
-    # A slot of these bytes and no others, where the slice's own offset still
-    # names its first byte — so what is read back is this stream, not the one
-    # still standing in the file past a short result.
-    start = cfg.source.offset
-    preview = replace(
-        cfg,
-        source=replace(cfg.source, length=len(shaped), data=shaped, data_base=start),
-    )
-    held = len(_read_reshape_decompress(preview, PipelineContext(), reg, pathway))
-    if held != size:
-        noun = _UNIT_NOUNS[kind]
-        raise ValueError(
-            f"the re-packed slot unpacks to {held:,} bytes "
-            f"({blank_units(kind, codec_id, held, reg):,} {noun}) where {size:,} "
-            f"({blank_units(kind, codec_id, size, reg):,} {noun}) were asked for"
-        )
-    return shaped
+    run_stage(Stage.CONTAINER, Pathway.PALETTE, write, "write", plugin=RAW_CONTAINER)
 
 
 def _existing(path: str) -> bytes:
@@ -1467,7 +932,7 @@ def _existing(path: str) -> bytes:
 def _deposit(ref: FileRef, produce: Callable[[WriteTarget], bytes]) -> None:
     """Hand ``ref``'s current bytes to ``produce`` and store what it returns.
 
-    The mirror of :func:`_acquire`, and the only place a pathway writes a file.
+    The mirror of :func:`acquire_source`, and the only place a pathway writes a file.
     The destination is read first because a container returns it *whole* — that is
     what lets it keep the framing and the surrounding bytes it never decoded — so
     it has to be shown what is there to keep.
@@ -1641,7 +1106,7 @@ def _read_reshape_decompress(
     held: list[ReadSource] = []
 
     def read() -> bytes:
-        source, files = _acquire(cfg.source)
+        source, files = acquire_source(cfg.source)
         _check_window(cfg, source, ctx, pathway)
         held.append(source)
         # Provenance the host owns, because it is the host that knows where the
@@ -1658,12 +1123,12 @@ def _read_reshape_decompress(
         _check_offsets_preserved(plugin, source, payload, ctx)
         return payload
 
-    raw = _run(Stage.CONTAINER, pathway, read, "read", plugin=cfg.container_id)
+    raw = run_stage(Stage.CONTAINER, pathway, read, "read", plugin=cfg.container_id)
     # The reshape sits between the container and the decompressor so that a
     # compressed structure inside an interleaved region is contiguous by the
     # time compression sees it. It is handed the container's whole payload —
     # a reshape is region-scoped, and the region is what Read produced.
-    shaped = _run(
+    shaped = run_stage(
         Stage.RESHAPE,
         pathway,
         lambda: reg.plugin(Stage.RESHAPE, cfg.reshape_id, ReshapePlugin).reshape(
@@ -1674,10 +1139,10 @@ def _read_reshape_decompress(
     )
     surround, start = _surround_of(cfg, reg, lambda: held[0] if held else None)
     with (
-        _stage_inputs(ctx, cfg, Stage.COMPRESSION),
+        _seeded_inputs(ctx, cfg, Stage.COMPRESSION),
         _stage_surround(ctx, surround, start),
     ):
-        return _run(
+        return run_stage(
             Stage.COMPRESSION,
             pathway,
             lambda: reg.plugin(
@@ -1729,28 +1194,14 @@ def _save_tilemap(doc: Document, reg: Registry) -> None:
     cfg = doc.tilemap_config
     if cfg is None or not cfg.write_enabled:
         return
-    data = _encode_tilemap(doc, reg)
+    data = encode_cells(
+        doc.settled_cells, cfg.interpret_preset_id, reg, doc.tilemap_ctx
+    )
     _compress_unshape_write(cfg, data, doc.tilemap_ctx, reg, Pathway.TILEMAP)
     # As :func:`_save_pixel`: the cells just written are the file's, spliced
     # over the tail the encode does not cover the way an edit is.
     doc.tilemap_data = data + doc.tilemap_data[len(data) :]
     doc.tilemap_base_bytes = doc.tilemap_data
-
-
-def _encode_tilemap(doc: Document, reg: Registry) -> bytes:
-    """``doc``'s settled cells through its own cell codec — the payload a save
-    writes, before compression and the container."""
-    cfg = doc.tilemap_config
-    assert cfg is not None
-    engine, preset = reg.engine_for(cfg.interpret_preset_id, TilemapCodecPlugin)
-    cells = doc.settled_cells
-    return _run(
-        Stage.INTERPRET_TILEMAP,
-        Pathway.TILEMAP,
-        lambda: engine.encode(cells, preset.params, doc.tilemap_ctx),
-        "encode",
-        plugin=preset.id,
-    )
 
 
 def encoded_tilemap_bytes(doc: Document, reg: Registry) -> bytes:
@@ -1773,22 +1224,23 @@ def encoded_tilemap_bytes(doc: Document, reg: Registry) -> bytes:
             "this map is view-only, so it has no bytes to write back",
             "encode",
         )
-    return _compress_unshape(
-        cfg, _encode_tilemap(doc, reg), doc.tilemap_ctx, reg, Pathway.TILEMAP
+    data = encode_cells(
+        doc.settled_cells, cfg.interpret_preset_id, reg, doc.tilemap_ctx
     )
+    return _compress_unshape(cfg, data, doc.tilemap_ctx, reg, Pathway.TILEMAP)
 
 
 def encoded_pixel_bytes(doc: Document, reg: Registry) -> bytes:
     """The pixel buffer as a save would lay it down: compressed and un-reshaped.
 
-    :func:`_save_pixel` without the deposit, for the entry whose bytes have no
-    file position to be deposited *at*: a slice inside a region its parent
-    reorders. Those bytes belong at an offset in the parent's buffer, and only
-    the parent's own write — which carries the whole region through ``unshape``
-    and the container — knows where that lands in the files. The host splices
-    this in and writes the parent (``docs/design/reshape-stage.md`` §3), exactly
-    as an Offset palette in the same position rides its owner
-    (:func:`spliced_palette_bytes`).
+    :func:`_save_pixel` without the deposit, for an entry that is not the
+    owner of its bytes: **every slice** (``writes_through_parent``). Those bytes
+    belong at an offset in the parent's buffer, and only the parent's own write —
+    which carries the whole region through ``unshape`` and the container, and
+    lets the container repair what the edit invalidated — knows where that lands
+    in the files. The host splices this in and writes the parent
+    (``docs/design/slices-and-parents.md`` §2 and §4), exactly as an Offset
+    palette in the same position rides its owner (:func:`spliced_palette_bytes`).
 
     The slot checks still apply and are still made here, against the slice's own
     bounds: what is produced has to fit the window it came from wherever it is
@@ -1835,7 +1287,7 @@ def spliced_palette_bytes(doc: Document, reg: Registry) -> bytes:
     """
     cfg = doc.palette_config
     engine, preset = reg.engine_for(cfg.interpret_preset_id, ColorCodecPlugin)
-    encoded = _run(
+    encoded = run_stage(
         Stage.INTERPRET_PALETTE,
         Pathway.PALETTE,
         lambda: engine.encode(doc.palette, preset.params, doc.palette_ctx),
@@ -1848,7 +1300,7 @@ def _splice_palette(doc: Document, encoded: bytes, engine, preset) -> bytes:  # 
     original = doc.palette_base_bytes
     if not original or len(original) != len(encoded):
         return encoded
-    size = _run(
+    size = run_stage(
         Stage.INTERPRET_PALETTE,
         Pathway.PALETTE,
         lambda: engine.bytes_per_entry(preset.params),
@@ -1884,7 +1336,7 @@ def _compress_unshape_write(
         container = reg.plugin(Stage.CONTAINER, cfg.container_id, ContainerPlugin)
         _deposit(target, lambda dest: container.write(shaped, dest, ctx))
 
-    _run(Stage.CONTAINER, pathway, write, "write", plugin=cfg.container_id)
+    run_stage(Stage.CONTAINER, pathway, write, "write", plugin=cfg.container_id)
 
 
 def _compress_unshape(
@@ -1926,16 +1378,16 @@ def _compress_unshape(
         # extra read of the file per save of a compressed entry, and none for a
         # destination that does not exist yet.
         try:
-            return _acquire(cfg.write_target())[0]
+            return acquire_source(cfg.write_target())[0]
         except OSError:
             return None
 
     surround, start = _surround_of(cfg, reg, destination)
     with (
-        _stage_inputs(ctx, cfg, Stage.COMPRESSION),
+        _seeded_inputs(ctx, cfg, Stage.COMPRESSION),
         _stage_surround(ctx, surround, start),
     ):
-        packed = _run(
+        packed = run_stage(
             Stage.COMPRESSION,
             pathway,
             lambda: reg.plugin(
@@ -1944,7 +1396,7 @@ def _compress_unshape(
             "compress",
             plugin=cfg.compression_id,
         )
-    shaped = _run(
+    shaped = run_stage(
         Stage.RESHAPE,
         pathway,
         lambda: reg.plugin(Stage.RESHAPE, cfg.reshape_id, ReshapePlugin).unshape(

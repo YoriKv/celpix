@@ -2051,7 +2051,8 @@ def test_project_swap_drops_the_whole_list_in_one_go(
     stats every referenced path and so probed the disk quadratically, freezing
     the UI for seconds on real paths.
     """
-    from celpix.project import workspace as workspace_module
+    # The module whose disk probe every missing-file question goes through.
+    from celpix.project import entrystate
 
     window = MainWindow()
     qtbot.addWidget(window)
@@ -2063,9 +2064,9 @@ def test_project_swap_drops_the_whole_list_in_one_go(
     assert window._history
 
     probes: list[str] = []
-    real_exists = workspace_module.exists
+    real_exists = entrystate.exists
     monkeypatch.setattr(
-        workspace_module,
+        entrystate,
         "exists",
         lambda path: (probes.append(path), real_exists(path))[1],
     )
@@ -2960,7 +2961,7 @@ def test_change_container_is_file_only(qtbot, tmp_path, monkeypatch) -> None:
 def test_container_dialog_edits_the_file_list(qtbot, tmp_path, monkeypatch) -> None:
     """The row buttons reorder, replace and drop files, and never drop the last."""
     from celpix.plugins.registry import default_registry
-    from celpix.ui import container_dialog
+    from celpix.ui import path_list_editor
     from celpix.ui.container_dialog import ContainerDialog
 
     chips = [str(tmp_path / f"chip{i}.bin") for i in range(3)]
@@ -2974,31 +2975,31 @@ def test_container_dialog_edits_the_file_list(qtbot, tmp_path, monkeypatch) -> N
     assert dialog.paths() == tuple(chips)
 
     # Moving is a swap with the neighbour, and the ends can't move past them.
-    dialog._rows[2].up.click()
+    dialog._files._rows[2].up.click()
     assert dialog.paths() == (chips[0], chips[2], chips[1])
-    assert not dialog._rows[0].up.isEnabled()
-    assert not dialog._rows[-1].down.isEnabled()
+    assert not dialog._files._rows[0].up.isEnabled()
+    assert not dialog._files._rows[-1].down.isEnabled()
 
     # Browse replaces one row in place; Append lands at the end, since the order
     # is what the join uses and only the user can state it.
     monkeypatch.setattr(
-        container_dialog.QFileDialog,
+        path_list_editor.QFileDialog,
         "getOpenFileName",
         staticmethod(lambda *_a, **_k: (spare, "")),
     )
-    dialog._rows[0].browse.click()
+    dialog._files._rows[0].browse.click()
     assert dialog.paths() == (spare, chips[2], chips[1])
-    dialog._append.click()
+    dialog._files._append.click()
     assert dialog.paths() == (spare, chips[2], chips[1], spare)
 
-    dialog._rows[3].remove.click()
+    dialog._files._rows[3].remove.click()
     assert dialog.paths() == (spare, chips[2], chips[1])
     # A region is at least one file: emptying the list stops one short, with the
     # last row's Remove disabled — and a no-op even if it is reached anyway.
     for _ in range(2):
-        dialog._rows[-1].remove.click()
-    assert not dialog._rows[0].remove.isEnabled()
-    dialog._remove(0)
+        dialog._files._rows[-1].remove.click()
+    assert not dialog._files._rows[0].remove.isEnabled()
+    dialog._files._remove(0)
     assert dialog.paths() == (spare,)
 
 
@@ -3024,7 +3025,7 @@ def test_container_dialog_marks_detection_for_the_first_file(qtbot, tmp_path) ->
 
     # Swap the plain file to the front: detection now says plain bytes, and the
     # marker has to move with it or it recommends the old file's answer.
-    dialog._rows[1].up.click()
+    dialog._files._rows[1].up.click()
     marked = dialog._container.itemData(
         next(
             i

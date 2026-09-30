@@ -631,7 +631,7 @@ class TileBytesMixin:
         tile window is an ordinary thing to want, and splicing into the owner
         leaves the *other* run on screen showing the bytes it had. So each landed
         edit is mirrored into every other run of the same owner that covers it —
-        the composite's twin of :meth:`~...session.SessionMixin.
+        the composite's twin of :meth:`~...bindings.BindingsMixin.
         _resync_tile_bindings`, which does this for the maps drawing from it.
 
         The revisions are not stamped here: they came off the command
@@ -715,7 +715,7 @@ class TileBytesMixin:
         no-op on a document with no bank.
 
         One method because the same two steps are owed to every *other* document
-        holding a copy of these bytes as well (:meth:`~...session.SessionMixin.
+        holding a copy of these bytes as well (:meth:`~...bindings.BindingsMixin.
         _resync_tile_bindings`), and a third thing derived from a buffer would
         otherwise have to be found in two places.
         """

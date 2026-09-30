@@ -70,6 +70,8 @@ from celpix.plugins.base import (
     splice,
 )
 
+from ._container_fields import fixed_text
+
 PROTECT_FIELD = 0x1A
 MEDIA_FIELD = 0x1B
 SIZE_FIELD = 0x1C
@@ -223,7 +225,7 @@ def _parse_disk(raw: bytes, start: int, header: int) -> Disk:
         start=start,
         declared=declared,
         header=header,
-        name=raw[start : start + 16].split(b"\0", 1)[0].decode("cp932", "replace"),
+        name=fixed_text(raw[start : start + 16], "cp932"),
         media=raw[start + MEDIA_FIELD],
         protected=raw[start + PROTECT_FIELD] != 0,
     )

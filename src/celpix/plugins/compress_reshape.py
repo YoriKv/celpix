@@ -72,13 +72,13 @@ from typing import TYPE_CHECKING
 
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
+from celpix.plugins._params import adapter_spec
 from celpix.plugins.base import (
     NO_COMPRESSION,
     NO_RESHAPE,
     CompressionPlugin,
     PluginInfo,
     ReshapePlugin,
-    check_declared_stage,
     writes_back,
 )
 
@@ -122,6 +122,11 @@ class CompressReshape:
             reshape, Stage.RESHAPE
         ):
             self.compress = self._compress
+        # Same per-instance rule for an end marker the inputs decide: the pair
+        # delimits itself exactly when its compression half does.
+        ask = getattr(compression, "delimits_itself", None)
+        if callable(ask):
+            self.delimits_itself = ask
 
     @property
     def members(self) -> tuple[str, str]:
@@ -171,22 +176,18 @@ def compress_reshape_from_spec(spec: dict, reg: RegistryLike) -> CompressReshape
     after everything else in its plugin root, so it may name a plugin dropped
     beside it (:func:`~celpix.plugins.discovery.load_directory`).
     """
-    engine = spec.get("engine_id")
-    if engine != COMPRESS_RESHAPE_ENGINE:
-        raise ValueError(
-            f"engine_id {engine!r} is not a compression engine "
-            f"(expected {COMPRESS_RESHAPE_ENGINE!r})"
-        )
-    check_declared_stage(spec, Stage.COMPRESSION)
-    params = spec.get("params", {})
-    if not isinstance(params, dict):
-        raise ValueError("params must be a table")
+    plugin_id, name, category, params = adapter_spec(
+        spec,
+        engine_id=COMPRESS_RESHAPE_ENGINE,
+        stage=Stage.COMPRESSION,
+        known=("compression", "reshape"),
+    )
     return CompressReshape(
-        spec["id"],
-        spec["name"],
+        plugin_id,
+        name,
         _member(reg, Stage.COMPRESSION, params, "compression", NO_COMPRESSION),
         _member(reg, Stage.RESHAPE, params, "reshape", NO_RESHAPE),
-        spec.get("category", ""),
+        category,
     )
 
 

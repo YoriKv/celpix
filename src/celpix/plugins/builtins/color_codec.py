@@ -49,7 +49,7 @@ from typing import Any
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.palette import Palette
-from celpix.plugins._params import byte_order, flag
+from celpix.plugins._params import byte_order, flag, integer
 from celpix.plugins.base import PluginInfo
 from celpix.plugins.builtins._fields import bit_width
 from celpix.plugins.builtins._mask import (
@@ -60,6 +60,7 @@ from celpix.plugins.builtins._mask import (
     shift_widths,
     value_to_argb,
 )
+from celpix.plugins.builtins._tile import require_whole
 
 
 @dataclass(frozen=True)
@@ -99,7 +100,11 @@ class ColorCodec:
     def _config(params: dict[str, Any]) -> _Config:
         # Validated here rather than per entry point, so encode and
         # bytes_per_entry reject an unusable preset with decode's message.
-        bits = params.get("bits_per_entry")
+        bits = (
+            None
+            if params.get("bits_per_entry") is None
+            else integer(params, "bits_per_entry")
+        )
         if bits is not None and "bytes_per_entry" in params:
             raise ValueError(
                 "give bits_per_entry or bytes_per_entry, not both - "
@@ -110,12 +115,12 @@ class ColorCodec:
             # say it twice; one that does is cross-checked by ``color_masks``.
             bits = bit_width(layout_text(params))
         if bits is None:
-            size = int(params["bytes_per_entry"])
+            size = integer(params, "bytes_per_entry")
             if size <= 0:
                 raise ValueError("bytes_per_entry must be positive")
             entry_bits, unit_bytes, per_unit = size * 8, size, 1
         else:
-            entry_bits = int(bits)
+            entry_bits = bits
             if entry_bits <= 0:
                 raise ValueError("bits_per_entry must be positive")
             if entry_bits >= 8:
@@ -158,11 +163,7 @@ class ColorCodec:
         self, data: bytes, params: dict[str, Any], ctx: PipelineContext
     ) -> Palette:
         cfg = self._config(params)
-        if len(data) % cfg.unit_bytes != 0:
-            raise ValueError(
-                f"palette length {len(data)} is not a multiple of entry size "
-                f"{cfg.unit_bytes}"
-            )
+        require_whole(len(data), cfg.unit_bytes, noun="entry", what="palette")
         sw = shift_widths(cfg.masks)
         slot = (1 << cfg.entry_bits) - 1
         colors = []

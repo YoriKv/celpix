@@ -6,7 +6,7 @@ render can be *looked at* without a human driving the GUI — and so what is loo
 at is the real thing rather than a second implementation that could drift.
 
 **It drives celPix itself.** A ``MainWindow`` is built on Qt's ``offscreen``
-platform, the project is opened through ``MainWindow._load_project``, the entry is
+platform, the project is opened through ``MainWindow.open_project``, the entry is
 activated through ``_activate_entry``, and the image handed to the canvas by
 ``_refresh_view`` is written out. Every subtlety of what the canvas shows —
 the view window (columns/rows/offset/nudge), block and 2D arrangements, tile
@@ -174,7 +174,14 @@ def _silence_modals() -> list[tuple[str, str]]:
 
     alerts: list[tuple[str, str]] = []
 
-    def alert(self, message: str, *, title: str = "celPix", detail: str = "") -> None:
+    def alert(
+        self,
+        message: str,
+        *,
+        title: str = "celPix",
+        detail: str = "",
+        error: bool = False,
+    ) -> None:
         alerts.append((title, message))
         print(f"{title}: {message}", file=sys.stderr)
         if detail:
@@ -321,7 +328,7 @@ def _render(  # noqa: ANN001 - what _build_registry made
         plugin_issues=issues,
         reload_plugins=reload_plugins,
     )
-    window._load_project(str(args.project))
+    window.open_project(str(args.project))
     workspace = window._workspace
     if not workspace.entries:
         print(f"{args.project} opened with no entries", file=sys.stderr)
@@ -366,7 +373,9 @@ def _render(  # noqa: ANN001 - what _build_registry made
         )
         size += f" at {aspect[0]}:{aspect[1]}" if aspect != SQUARE else ""
     out = args.out or Path(f"{export_basename(entry)}.png")
-    if not save_png(image, str(out)):
+    try:
+        save_png(image, str(out))
+    except OSError:
         print(f"could not write {out}", file=sys.stderr)
         return 1
     scaled = f" at {args.scale}x" if args.scale > 1 else ""

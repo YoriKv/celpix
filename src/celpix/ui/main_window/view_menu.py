@@ -44,6 +44,8 @@ state what the bytes *are* rather than how they are shown
 
 from __future__ import annotations
 
+from functools import partial
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import (
     QAction,
@@ -148,21 +150,14 @@ class ViewMenuMixin:
         Mnemonic "D": "T" belongs to Theme and "G"/"B"/"S" to the three grid
         entries this sits with.
         """
-        self._show_tile_ids_action = QAction("Show Tile I&Ds", self, checkable=True)
-        self._show_tile_ids_action.setToolTip(
+        self._show_tile_ids_action = self._local_view_toggle(
+            TILE_IDS_KEY,
+            "_show_tile_ids",
+            "Show Tile I&Ds",
             "Label each cell with the tile index it stores, in hex\n"
-            "Shown before Base tile is applied"
+            "Shown before Base tile is applied",
+            menu=view_menu,
         )
-        self._show_tile_ids = load_bool_setting(TILE_IDS_KEY, False)
-        self._show_tile_ids_action.setChecked(self._show_tile_ids)
-        self._show_tile_ids_action.toggled.connect(self._on_show_tile_ids_change)
-        view_menu.addAction(self._show_tile_ids_action)
-
-    def _on_show_tile_ids_change(self, on: bool) -> None:
-        save_bool_setting(TILE_IDS_KEY, on)
-        self._show_tile_ids = on
-        if self._doc is not None:
-            self._refresh_view()
 
     def _build_cell_attrs_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu
         """View ▸ Show Cell Attributes — badge the invisible per-cell fields.
@@ -182,20 +177,52 @@ class ViewMenuMixin:
 
         Mnemonic "C": D, T, G, B, S and u are taken by its neighbours.
         """
-        self._show_cell_attrs_action = QAction(
-            "Show &Cell Attributes", self, checkable=True
+        self._show_cell_attrs_action = self._local_view_toggle(
+            CELL_ATTRS_KEY,
+            "_show_cell_attrs",
+            "Show &Cell Attributes",
+            "Badge each cell whose priority or flags are set",
+            menu=view_menu,
         )
-        self._show_cell_attrs_action.setToolTip(
-            "Badge each cell whose priority or flags are set"
-        )
-        self._show_cell_attrs = load_bool_setting(CELL_ATTRS_KEY, False)
-        self._show_cell_attrs_action.setChecked(self._show_cell_attrs)
-        self._show_cell_attrs_action.toggled.connect(self._on_show_cell_attrs_change)
-        view_menu.addAction(self._show_cell_attrs_action)
 
-    def _on_show_cell_attrs_change(self, on: bool) -> None:
-        save_bool_setting(CELL_ATTRS_KEY, on)
-        self._show_cell_attrs = on
+    def _local_view_toggle(
+        self,
+        key: str,
+        attr: str,
+        text: str,
+        tip: str,
+        *,
+        default: bool = False,
+        menu=None,  # noqa: ANN001 — QMenu
+    ) -> QAction:
+        """A checkable action over a **local preference** the refresh reads.
+
+        Loads ``attr`` from the QSettings ``key`` (``default`` when unset) and
+        builds the action on it, persisting every toggle through
+        :meth:`_persist_view_toggle`. For a switch about how the person looking
+        wants to see things rather than about the entry, so it is remembered
+        app-wide and written to no project.
+        """
+        setattr(self, attr, load_bool_setting(key, default))
+        return make_action(
+            self,
+            text,
+            partial(self._persist_view_toggle, key, attr),
+            menu=menu,
+            tip=tip,
+            checkable=True,
+            checked=getattr(self, attr),
+        )
+
+    def _persist_view_toggle(self, key: str, attr: str, on: bool) -> None:
+        """Remember a local view preference and redraw through it.
+
+        The refresh is what lands it: the flag reaches the canvas and the model
+        through the view options ``_refresh_view`` captures, so setting the
+        member and asking for a redraw is the whole of applying one.
+        """
+        save_bool_setting(key, on)
+        setattr(self, attr, on)
         if self._doc is not None:
             self._refresh_view()
 
@@ -214,13 +241,14 @@ class ViewMenuMixin:
         Mnemonic "A": free among the View entries, and the word's own first
         letter.
         """
-        self._animation_action = QAction("&Animation...", self)
-        self._animation_action.setToolTip(
-            "Play this sprite object's animation sequences"
+        self._animation_action = make_action(
+            self,
+            "&Animation...",
+            self._show_animation,
+            menu=view_menu,
+            tip="Play this sprite object's animation sequences",
+            enabled=False,
         )
-        self._animation_action.triggered.connect(self._show_animation)
-        self._animation_action.setEnabled(False)
-        view_menu.addAction(self._animation_action)
 
     def _build_subsprites_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu
         """View ▸ Subsprites - show what this sprite map is built from.
@@ -238,13 +266,14 @@ class ViewMenuMixin:
         Mnemonic "u": "S" belongs to Grid Style and "b" to Block Grid, so the
         word's second letter is what is left.
         """
-        self._subsprites_action = QAction("S&ubsprites...", self)
-        self._subsprites_action.setToolTip(
-            "Show every subsprite this object is built from"
+        self._subsprites_action = make_action(
+            self,
+            "S&ubsprites...",
+            self._show_subsprites,
+            menu=view_menu,
+            tip="Show every subsprite this object is built from",
+            enabled=False,
         )
-        self._subsprites_action.triggered.connect(self._show_subsprites)
-        self._subsprites_action.setEnabled(False)
-        view_menu.addAction(self._subsprites_action)
 
     def _build_text_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu
         """View ▸ Text - open the string this fontmap holds, as words.
@@ -263,13 +292,14 @@ class ViewMenuMixin:
         second, so the third is what is left - and it is the letter of the word
         that stands out.
         """
-        self._text_action = QAction("Te&xt...", self)
-        self._text_action.setToolTip(
-            "Read and edit this text run through the font's alphabet"
+        self._text_action = make_action(
+            self,
+            "Te&xt...",
+            self._show_text,
+            menu=view_menu,
+            tip="Read and edit this text run through the font's alphabet",
+            enabled=False,
         )
-        self._text_action.triggered.connect(self._show_text)
-        self._text_action.setEnabled(False)
-        view_menu.addAction(self._text_action)
 
     def _build_font_alphabet_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu
         """View ▸ Font Alphabet - say what this font's tiles spell.
@@ -283,13 +313,14 @@ class ViewMenuMixin:
         already, since the empty table is the thing it exists to fill in
         (:meth:`~...font_alphabet.FontAlphabetMixin._font_alphabet_available`).
         """
-        self._font_alphabet_action = QAction("&Font Alphabet...", self)
-        self._font_alphabet_action.setToolTip(
-            "Set which character each of this font's tiles draws"
+        self._font_alphabet_action = make_action(
+            self,
+            "&Font Alphabet...",
+            self._show_font_alphabet,
+            menu=view_menu,
+            tip="Set which character each of this font's tiles draws",
+            enabled=False,
         )
-        self._font_alphabet_action.triggered.connect(self._show_font_alphabet)
-        self._font_alphabet_action.setEnabled(False)
-        view_menu.addAction(self._font_alphabet_action)
 
     def _build_entire_file_action(self, view_menu) -> None:  # noqa: ANN001 - QMenu
         """View ▸ Entire File - drop the row window and show all of it at once.
@@ -485,7 +516,7 @@ class ViewMenuMixin:
         funnel, the tilemap bar's jump, the navigation bar's and the palette
         dock's step arrows, and the transform bar's five groups of flip/rotate
         buttons. Each reads the **application** palette: the window's own is still
-        the outgoing theme's when a switch calls this (:func:`glyph_icon`).
+        the outgoing theme's when a switch calls this (:func:`icon_qicon`).
 
         Called on a theme switch rather than from a ``changeEvent`` like the
         panels that own their own icons - Qt sends a burst of PaletteChange

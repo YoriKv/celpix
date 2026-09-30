@@ -245,7 +245,8 @@ class Glyph:
     about its commands gets and is what most of them are. Declared per command
     because that is where the fact lives: the count is a property of the one
     code, not of the format, and a reader who has not worked one out leaves it
-    at zero and gets the operand as its own ``[$00]``, exactly as before.
+    at zero and gets the operand as its own ``[$00]`` — still correct, and still
+    typing back to the same byte.
 
     It is meaningless on a glyph that spells, and ignored there: a character
     consumes nothing.
@@ -638,7 +639,7 @@ class FontAlphabet:
     # -- matching ----------------------------------------------------------
     def _hex(self, value: int) -> str:
         """``value`` as it is written inside a token — ``$1F``, at this width."""
-        return f"${value:0{self.code_digits}X}"
+        return format_code(value, self.code_digits)
 
     def hex_code(self, code: int) -> str:
         """``code`` as the ``[$1F]`` form — the reading that loses nothing."""
@@ -1061,6 +1062,22 @@ def unit_spans(text: str) -> list[tuple[int, int]]:
     return spans
 
 
+def format_code(code: int, digits: int = 2) -> str:
+    """``code`` as a font code is written — ``$1F``, zero-padded to ``digits``.
+
+    The one spelling for a code wherever celPix shows one: inside a token
+    (``[$001F]`` under a two-byte format), in the font alphabet's Code column,
+    in a status line about a row. ``digits`` is the format's
+    :attr:`FontAlphabet.code_digits`, so the same code reads the same in every
+    place a font shows it. A negative value — a row listed below the origin,
+    which no cell can hold — puts its sign outside the ``$`` (``-$04``), since
+    ``$-04`` reads as a hex digit soup.
+    """
+    if code < 0:
+        return f"-${-code:0{digits}X}"
+    return f"${code:0{digits}X}"
+
+
 def inside_code(body: str, at: int) -> bool:
     """Whether the caret at ``at`` sits **within** a ``[...]`` rather than beside it.
 
@@ -1209,6 +1226,77 @@ def sequential(first: int, chars: str) -> list[Glyph]:
     or every letter after the gap lands on the wrong tile.
     """
     return [Glyph(first + at, char) for at, char in enumerate(chars) if char != HOLE]
+
+
+def font_alphabet(
+    chars: str,
+    codes: Iterable[Glyph],
+    *,
+    code_digits: int = 2,
+    base: int = 0,
+    flag_break: bool = False,
+) -> FontAlphabet | None:
+    """The lookup a fontmap's codes are read through, from its two sources.
+
+    Both are the **font entry's own data**, and the second is laid over the first:
+
+    ==============================  ========================  =================
+    source                          stated by                 moved by ``base``
+    ==============================  ========================  =================
+    the positional run, ``chars``   the **font** sheet        yes
+    the named ``codes``             the **font**, absolutely  no
+    ==============================  ========================  =================
+
+    The run is the sheet read straight off: character *i* is what tile *i* draws,
+    which is legible the moment the art is. ``base`` moves it and only it,
+    because where the run *starts* is in the game's code and appears in neither
+    the sheet nor the string (``docs/graphics-formats-reference/text-formats.md``
+    §3.2) — while a named code was read at the value the stream actually holds,
+    so shifting one would move a terminator the user took straight out of the
+    file.
+
+    **The punctuation is in the named codes too**, which is the whole of where an
+    alphabet comes from: a line break, a terminator and a command worth a caption
+    are all ``codes`` carrying a role (``docs/design/fontmap-entry.md`` §3). A
+    cell format states no glyph table and no control of its own, so two streams
+    punctuated differently are two font entries over the same tiles rather than
+    one entry and two presets.
+
+    ``flag_break`` is the exception and stays the **cell format's**, because it
+    is not a code at all: it says lines end on a *bit the cell carries*, which is
+    a fact about how the bytes are laid out and has nowhere to live in a table of
+    codes (:attr:`~celpix.core.font.FontAlphabet.flag_break`).
+
+    **Both are stated by hand**, and nothing fills a font's table in from the
+    file. A container that stated one would be read whatever **Use as Font** said,
+    since that tick is what blanks ``chars`` and ``codes`` at the call site
+    (``docs/design/fontmap-entry.md`` §4) — so the one control over whether a
+    sheet's codes mean anything would stop deciding it.
+
+    Returns **None** rather than an empty alphabet where nothing says anything:
+    "no alphabet yet" and "an alphabet that maps nothing" are different states,
+    and only the first is worth telling the user about.
+
+    Never raises. An alphabet is a *reading* of cells that are already decoded,
+    so nothing here may take the document with it — the map still draws, and its
+    text reads as hex until the table is put right.
+    """
+    named = list(codes)
+    run = list(sequential(0, chars))
+    font = FontAlphabet(run, code_digits=code_digits, flag_break=flag_break).shifted(
+        base
+    )
+    # Asked of what the font *said*, not of what survived the shift: a run dialled
+    # clean off the end of the code space is still a run the user typed, and
+    # reporting "nothing here" would point them at the table they already filled
+    # in instead of at the spin they just moved.
+    if not run and not named:
+        return None
+    if not named:
+        return font
+    return font.merged(
+        FontAlphabet(named, code_digits=code_digits, flag_break=flag_break)
+    )
 
 
 def parse_table(text: str, *, order: str = "code-first") -> list[Glyph]:

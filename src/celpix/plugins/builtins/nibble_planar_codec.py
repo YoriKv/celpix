@@ -41,6 +41,7 @@ from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.index_grid import IndexGrid
 from celpix.plugins._byteops import or_all
+from celpix.plugins._params import integer
 from celpix.plugins.base import PluginInfo
 from celpix.plugins.builtins._bits import (
     nibble_plane_expansion,
@@ -49,6 +50,7 @@ from celpix.plugins.builtins._bits import (
 from celpix.plugins.builtins._tile import (
     flatten_tiles,
     require_whole_tiles,
+    tile_dims,
     tiles_from_rows,
 )
 
@@ -64,22 +66,14 @@ class NibblePlanarGeometry:
     __slots__ = ("bpp", "group_bytes", "groups_per_row", "height", "width")
 
     def __init__(self, params: dict[str, Any]) -> None:
-        self.bpp = int(params["bpp"])
-        self.width = int(params.get("tile_width", 8))
-        self.height = int(params.get("tile_height", 8))
+        self.bpp = integer(params, "bpp")
+        self.width, self.height = tile_dims(
+            params, multiple_of=PIXELS_PER_GROUP, engine="nibble-planar"
+        )
         if self.bpp <= 0 or self.bpp % PLANES_PER_BYTE != 0 or self.bpp > 8:
             raise ValueError(
                 f"nibble-planar bpp must be an even 2..8 (two planes per byte): "
                 f"got {self.bpp}"
-            )
-        if self.width <= 0 or self.width % PIXELS_PER_GROUP != 0:
-            raise ValueError(
-                f"nibble-planar tile_width must be a multiple of {PIXELS_PER_GROUP}: "
-                f"got {self.width}"
-            )
-        if self.height <= 0:
-            raise ValueError(
-                f"nibble-planar tile_height must be positive: {self.height}"
             )
         self.group_bytes = self.bpp // PLANES_PER_BYTE
         self.groups_per_row = self.width // PIXELS_PER_GROUP

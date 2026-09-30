@@ -137,7 +137,7 @@ class FontAlphabetMixin:
         if font is not self._font_alphabet_font:
             # A cell still open belongs to the table about to be refilled, so it
             # lands on the font it was typed against before that table goes.
-            self._font_alphabet.commit_edit()
+            self._font_alphabet.commit_pending()
         if font is None or self._doc is None:
             self._font_alphabet.hide_overlay()
             return
@@ -149,6 +149,11 @@ class FontAlphabetMixin:
                 return
             image, ids, cell_px, columns = drawn
             self._font_alphabet.set_sheet(image, ids, cell_px, columns)
+        # A code's width is the *stream's* measure, not the font's: over a
+        # fontmap it is what that map's alphabet prints, so a two-byte format's
+        # Code column reads ``$0121`` as its text does. A sheet typed up on its
+        # own has no stream to ask, and takes the one-byte width.
+        alphabet = self._doc.font_alphabet if self._doc.is_fontmap else None
         self._font_alphabet.show_alphabet(
             font.name,
             font.font_base,
@@ -156,6 +161,7 @@ class FontAlphabetMixin:
             font.font_append,
             font.font_chars,
             font.font_codes,
+            code_digits=alphabet.code_digits if alphabet is not None else 2,
         )
         self._font_alphabet.set_status(self._font_alphabet_status(font))
         if sheet:
@@ -209,7 +215,7 @@ class FontAlphabetMixin:
                 return None
             across, down = doc.stamp_tiles
             return (
-                render_bridge.render_pinned(source.grid, doc.palette),
+                render_bridge.render(source.grid, doc.palette),
                 list(source.ids),
                 (across * doc.tile_width, down * doc.tile_height),
                 FONT_SHEET_COLUMNS,
@@ -228,7 +234,7 @@ class FontAlphabetMixin:
             if not source.ids:
                 return None
             return (
-                render_bridge.render_pinned(source.grid, doc.palette),
+                render_bridge.render(source.grid, doc.palette),
                 list(source.ids),
                 (
                     grouped.block_columns * doc.tile_width,
@@ -359,7 +365,7 @@ class FontAlphabetMixin:
         The font the table was **filled from**, not the one the current entry
         names: an editor left open settles when it closes, which can be after
         the view has moved to an entry bound to another font or to none
-        (:meth:`~celpix.ui.font_alphabet_window.FontAlphabetWindow.commit_edit`).
+        (:meth:`~celpix.ui.font_alphabet_window.FontAlphabetWindow.commit_pending`).
         The values are that table's, so they are that font's.
         """
         font = self._font_alphabet_font

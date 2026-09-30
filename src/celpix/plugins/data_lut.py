@@ -49,8 +49,8 @@ from functools import lru_cache
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.plugins._byteops import or_all
-from celpix.plugins._params import only_keys, preset_identity
-from celpix.plugins.base import PluginInfo, check_declared_stage
+from celpix.plugins._params import adapter_spec, int_list, one_of
+from celpix.plugins.base import reshape_info
 
 DATA_LUT_ENGINE = "reshape.data-lut"
 
@@ -168,9 +168,7 @@ class DataLutReshape:
         # selector repeats every 2^(highest bit + 1) bytes, so one set of masks
         # serves every chunk.
         self._period = (1 << (max(selector_bits) + 1)) if selector_bits else 0
-        self.info = PluginInfo(
-            id=plugin_id, name=name, stage=Stage.RESHAPE, category=category
-        )
+        self.info = reshape_info(plugin_id, name, category)
 
     def _map(self, data: bytes, tables: tuple[tuple[bytes, ...], ...]) -> bytes:
         """Substitute every unit of ``data`` through one compiled table set."""
@@ -210,12 +208,7 @@ class DataLutReshape:
 
 
 def _checked_selector(params: dict) -> tuple[int, ...]:
-    bits = params.get("selector_bits", [])
-    if not isinstance(bits, (list, tuple)) or not all(
-        isinstance(b, int) and not isinstance(b, bool) for b in bits
-    ):
-        raise ValueError("params.selector_bits must be a list of bit positions")
-    bits = tuple(bits)
+    bits = int_list(params, "selector_bits")
     if len(bits) > MAX_SELECTOR_BITS:
         raise ValueError(
             f"params.selector_bits takes at most {MAX_SELECTOR_BITS} bits, "
@@ -271,21 +264,15 @@ def _resolve_luts(params: dict, unit: int, wanted: int) -> list[list[int]]:
 
 def data_lut_from_spec(spec: dict) -> DataLutReshape:
     """Build the plugin a parsed preset spec describes."""
-    engine = spec.get("engine_id")
-    if engine != DATA_LUT_ENGINE:
-        raise ValueError(
-            f"engine_id {engine!r} is not this reshape engine "
-            f"(expected {DATA_LUT_ENGINE!r})"
-        )
-    check_declared_stage(spec, Stage.RESHAPE)
-    plugin_id, name, category = preset_identity(spec)
-    params = spec.get("params", {})
-    if not isinstance(params, dict):
-        raise ValueError("params must be a table")
-    only_keys(params, ("unit", "selector_bits", "bitswaps", "luts", "selector_remap"))
-    unit = params.get("unit", 1)
-    if unit not in UNITS:
-        raise ValueError(f"params.unit must be one of {UNITS}, got {unit!r}")
+    plugin_id, name, category, params = adapter_spec(
+        spec,
+        engine_id=DATA_LUT_ENGINE,
+        stage=Stage.RESHAPE,
+        known=("unit", "selector_bits", "bitswaps", "luts", "selector_remap"),
+    )
+    # Through one_of, which compares types: a plain `in UNITS` would take a
+    # TOML `true` for the integer 1.
+    unit = one_of(params, "unit", UNITS, 1)
     bits = _checked_selector(params)
     if unit == 2 and 0 in bits:
         # Both bytes of a unit must resolve to the same table, and bit 0 is the

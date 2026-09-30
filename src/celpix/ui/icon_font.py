@@ -16,7 +16,7 @@ their defaults — pinning ``opsz`` to its small-size end measurably *worsened*
 the 13 px markers, washing them out where the default holds them crisp.
 
 The file ships **subset to the codepoints celPix actually draws** — 19 KB of a
-10.6 MB upstream face — which is why a new :class:`~celpix.ui.glyphs.Glyph` has
+10.6 MB upstream face — which is why a new :class:`~celpix.ui.icons.Icon` has
 to be followed by ``tools/subset_icon_font.py``: the glyph is not in the bundled
 font until it is.
 
@@ -27,9 +27,11 @@ than at import, and is retried if that first attempt came too early.
 
 What comes back is a **mask** — the glyph as ink on transparency — because that
 is what the rest of the app already knows how to finish: every icon in celPix is
-stamped with a palette color so it tracks the theme, and several are stamped
-twice (a rail button bakes its own disabled shade). See
-:func:`~celpix.ui.widgets.stamped`.
+tinted with a palette color so it tracks the theme, and several are tinted twice
+(a button bakes its own disabled shade). :func:`tinted` is that one operation,
+and :func:`mask_icon` the enabled/disabled pair every button face is built from —
+whether its mask came from this face or was painted by hand (the tools rail's
+geometry marks).
 
 Glyphs are fitted by their **ink**, not their font metrics. An icon font's line
 box is sized for text — full ascent and descent, the same for every glyph — so
@@ -52,10 +54,10 @@ from PySide6.QtGui import (
     QPalette,
     QPixmap,
 )
+from PySide6.QtWidgets import QWidget
 
 from celpix import resources
-from celpix.ui.glyphs import Glyph
-from celpix.ui.widgets import stamped
+from celpix.ui.icons import Icon
 
 _FONT_FILE = ("fonts", "material-symbols-subset.ttf")
 
@@ -99,7 +101,7 @@ def icon_font_family() -> str | None:
     return _family
 
 
-def glyph_mask(glyph: Glyph, box: QSize) -> QPixmap:
+def icon_mask(glyph: Icon, box: QSize) -> QPixmap:
     """``glyph`` as white ink on transparency, fitted and centred in ``box``.
 
     ``box`` is in **device** pixels: the caller decides the resolution, since it
@@ -138,7 +140,7 @@ def _fitted_ink(family: str, text: str, room: QSize) -> QImage | None:
     """``text`` rasterized as large as it fits ``room``, cropped to its ink.
 
     ``None`` when the glyph puts no pixels down at all — a codepoint missing
-    from the face, which is what a member added to :class:`Glyph` without
+    from the face, which is what a member added to :class:`Icon` without
     re-running ``tools/subset_icon_font.py`` looks like from here.
 
     Converges rather than solving: each pass renders, measures what it actually
@@ -222,23 +224,71 @@ def _icon_font(family: str, pixel_size: int) -> QFont:
     return font
 
 
-def glyph_pixmap(glyph: Glyph, color: QColor, box: QSize, ratio: float) -> QPixmap:
+def tinted(mask: QPixmap, color: QColor) -> QPixmap:
+    """A copy of ``mask`` with ``color`` filled through its alpha.
+
+    The one operation every icon in celPix ends with: the art carries the shape
+    and the palette carries the color, so one mask serves both themes and, where
+    a widget needs it, its own disabled shade as well. A copy per call because
+    SourceIn overwrites what it is composited onto, and the caller usually
+    tints the same mask more than once.
+    """
+    pixmap = mask.copy()
+    painter = QPainter(pixmap)
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+    painter.fillRect(pixmap.rect(), color)
+    painter.end()
+    return pixmap
+
+
+def tinted_pixmap(mask: QPixmap, color: QColor, ratio: float) -> QPixmap:
+    """:func:`tinted`, marked as rendered at ``ratio`` device pixels per unit.
+
+    The ratio is what makes a mask rasterized at ``box * ratio`` device pixels
+    measure ``box`` in layout units — without it Qt draws the pixmap at its
+    device size and a 200% display gets icons twice as big.
+    """
+    pixmap = tinted(mask, color)
+    pixmap.setDevicePixelRatio(ratio)
+    return pixmap
+
+
+def mask_icon(
+    mask: QPixmap, palette: QPalette, ratio: float, *, color: QColor | None = None
+) -> QIcon:
+    """``mask`` as a button face: the palette's ink, and its disabled shade.
+
+    Drawn in the palette's button-text ink, or ``color`` for a mark that has to
+    say something the theme's ink would not (the warning amber). The **disabled**
+    face is baked too, in the palette's disabled button-text, rather than left to
+    Qt: Qt derives it by fading the pixmap, which takes a light-on-dark mark down
+    to a tenth of its opacity — gone on the dark theme, rather than greyed — and
+    fades a flat silhouette by so little on the light one that a dead control
+    still reads as live.
+    """
+    ink = color if color is not None else palette.color(QPalette.ColorRole.ButtonText)
+    off = palette.color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText)
+    icon = QIcon(tinted_pixmap(mask, ink, ratio))
+    icon.addPixmap(tinted_pixmap(mask, off, ratio), QIcon.Mode.Disabled)
+    return icon
+
+
+def _device_box(box: QSize, ratio: float) -> QSize:
+    return QSize(round(box.width() * ratio), round(box.height() * ratio))
+
+
+def icon_pixmap(glyph: Icon, color: QColor, box: QSize, ratio: float) -> QPixmap:
     """``glyph`` in ``color``, ``box`` **logical** units rendered at ``ratio``.
 
     The one call a widget needs to put a themed icon on screen: it decides the
     box and hands over the palette color it wants, and gets back a pixmap that
     measures that box in layout units however many device pixels it holds.
     """
-    mask = glyph_mask(
-        glyph, QSize(round(box.width() * ratio), round(box.height() * ratio))
-    )
-    tinted = stamped(mask, color)
-    tinted.setDevicePixelRatio(ratio)
-    return tinted
+    return tinted_pixmap(icon_mask(glyph, _device_box(box, ratio)), color, ratio)
 
 
-def glyph_icon(
-    glyph: Glyph,
+def icon_qicon(
+    glyph: Icon,
     palette: QPalette,
     *,
     size: int = 16,
@@ -247,11 +297,8 @@ def glyph_icon(
 ) -> QIcon:
     """``glyph`` as a square :class:`QIcon` for a button's face, in ``palette``.
 
-    Drawn in the palette's button-text ink, or ``color`` for a mark that has to
-    say something the theme's ink would not (the warning amber). The **disabled**
-    face is baked too, in the palette's disabled button-text, rather than left to
-    Qt: Qt derives it by fading the pixmap, which takes a light-on-dark glyph down
-    to a tenth of its opacity — gone on the dark theme, rather than greyed.
+    The glyph's mask through :func:`mask_icon`, so ``color`` and the baked
+    disabled shade are that function's.
 
     ``size`` defaults to 16 because that is the icon size the styles give a
     button that never asked for one; a button that sets its own ``iconSize`` has
@@ -263,9 +310,27 @@ def glyph_icon(
     reaches each widget through the event loop, so a widget's own is still the
     outgoing theme at the moment the switch re-bakes.
     """
-    box = QSize(size, size)
-    ink = color if color is not None else palette.color(QPalette.ColorRole.ButtonText)
-    off = palette.color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText)
-    icon = QIcon(glyph_pixmap(glyph, ink, box, ratio))
-    icon.addPixmap(glyph_pixmap(glyph, off, box, ratio), QIcon.Mode.Disabled)
-    return icon
+    mask = icon_mask(glyph, _device_box(QSize(size, size), ratio))
+    return mask_icon(mask, palette, ratio, color=color)
+
+
+def app_pixmap() -> QPixmap:
+    """The application icon — the one piece of art that is not a glyph.
+
+    Loaded from bytes rather than a file path so it resolves the same in a
+    source checkout and a frozen build, where the resources live inside the
+    bundle. The window icon and About both draw it.
+    """
+    pixmap = QPixmap()
+    pixmap.loadFromData(resources.read_bytes("icons", "app.png"))
+    return pixmap
+
+
+def icon_cache_key(widget: QWidget) -> tuple[int, float]:
+    """What a widget's baked icons depend on: the theme, and the device scale.
+
+    Both arrive as a ``changeEvent`` storm — Qt sends a burst of PaletteChange on
+    startup and again on every theme switch — so every panel that rasterizes its
+    own icons guards the re-bake on this rather than re-doing it per event.
+    """
+    return (widget.palette().cacheKey(), widget.devicePixelRatioF())

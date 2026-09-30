@@ -31,6 +31,8 @@ from celpix.plugins.base import (
     splice,
 )
 
+from ._container_fields import checksum_field, untouched_field
+
 MAGIC = b"TMR SEGA"
 # Where the header may sit: $7FF0 on every cartridge of 32 KiB or more, the
 # two lower slots on the 8 and 16 KiB ROMs the BIOS also checks.
@@ -111,11 +113,10 @@ class SmsRomContainer:
         header = header_offset(raw)
         if header is None:
             return (
-                ContainerField(
+                untouched_field(
                     "Header",
                     "no TMR SEGA marker",
-                    "No marker, no checksum to keep current\n"
-                    "A save writes the bytes through untouched",
+                    "No marker, no checksum to keep current",
                 ),
             )
         stored = int.from_bytes(
@@ -129,11 +130,11 @@ class SmsRomContainer:
                 "The 16-byte cartridge header the BIOS reads\n"
                 "Product code, version, region, size and the checksum",
             ),
-            ContainerField(
+            checksum_field(
                 "Checksum",
-                f"${stored:04X} stored, ${computed:04X} computed"
-                + (" - matches" if stored == computed else " - stale"),
-                "Every byte outside the header, over the size nibble's range\n"
+                stored,
+                computed,
+                detail="Every byte outside the header, over the size nibble's range\n"
                 "An export Master System BIOS refuses a stale copy\n"
                 "Recomputed on save",
             ),

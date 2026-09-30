@@ -66,8 +66,8 @@ Those bits are real bytes in the file, and they belong to the **page** rather
 than to any cell — which is why they are not in
 :attr:`~celpix.core.tilemap.Cell.flags`, whose contract is bits of *that cell's
 own record* (``docs/design/tilemap-entry.md`` §6, "NES nametable",
-"The bits no cell reaches"). A cell travels: eyedrop the carrier and stamp it somewhere
-else and its bits would land on a block that has no room for them, over live
+"The bits no cell reaches"). A cell travels: eyedrop the carrier and paint it somewhere
+else and its bits would land on an attribute area that has no room for them, over live
 colour fields, while the position they came from would save as zero. Both
 failures are silent, because the model agrees with itself either way.
 
@@ -105,7 +105,7 @@ NES_NAMETABLE_FORMAT = "format.tilemap.nes-nametable"
 KEY_NES_ATTRIBUTE_PLANES = "tilemap.nes-nametable.attribute-planes"
 
 # The console's numbers, in the order each follows from the one above it. The PPU
-# reads one attribute byte per 4x4-tile block and splits it into four 2x2-tile
+# reads one attribute byte per 4x4-tile area and splits it into four 2x2-tile
 # quadrants of two bits each; a page is 32 cells across and 30 down, which is why
 # it is 960 bytes of index and not 1024.
 _BLOCK = 4
@@ -134,9 +134,9 @@ def _attr_at(x: int, y: int) -> tuple[int, int]:
 
 
 def _spare_mask(x: int, y: int) -> int:
-    """Which bits of the attribute byte covering the block at ``x, y`` reach no cell.
+    """Which bits of the attribute byte covering the area at ``x, y`` reach no cell.
 
-    Non-zero only where the page's rows stop inside the 4x4 block the byte
+    Non-zero only where the page's rows stop inside the 4x4 area the byte
     covers — the last attribute row of a 30-row page, whose upper half addresses
     rows 30 and 31. Those are bytes in the file, so something has to put them
     back; the alternative is a save that clears bits it never asked about.
@@ -236,8 +236,8 @@ class NesNametableFormat:
             # this page was read as. The mask is what makes the OR safe — it
             # leaves only the fields that address rows the page does not have, so
             # the two never overlap however the cells have been edited. Keyed by
-            # the block's position and not by a cell, because that is whose bits
-            # they are.
+            # the attribute area's position and not by a cell, because that is
+            # whose bits they are.
             spare = planes[page] if page < len(planes) else b""
             for y in range(0, _ROWS, _BLOCK):
                 for x in range(0, _COLUMNS, _BLOCK):
@@ -270,9 +270,6 @@ class NesNametableFormat:
         set by the binding's base tile, and not a bit of this file.
         """
         return 0xFF
-
-    def has_palette_rows(self) -> bool:
-        return True
 
     def palette_row_limit(self) -> int:
         return _ROW_MASK

@@ -54,16 +54,16 @@ from __future__ import annotations
 from dataclasses import replace
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QImage, QKeySequence
+from PySide6.QtGui import QImage
 
 from celpix.core.capabilities import Capability
-from celpix.core.document import resolve_chain
+from celpix.core.cellchain import resolve_chain
 from celpix.core.errors import PipelineError
 from celpix.core.tilemap import BLANK, Cell, CellGrid
 from celpix.pipeline import pipeline
 from celpix.ui import render_bridge
 from celpix.ui.tools import EditMode
-from celpix.ui.widgets import counted, signals_blocked
+from celpix.ui.widgets import counted, modal_tool_actions, sync_modal_tool
 
 STAMP_TIP = (
     "Edit Tiles (T): click or drag to lay the picked tile or stamp\n"
@@ -127,31 +127,26 @@ class StampToolMixin:
     def _build_stamp_actions(self, bar) -> None:  # noqa: ANN001 — a QToolBar
         """The tool's two actions: the toolbar button and the Edit menu row.
 
-        Two actions over one state for the reason the rearrange tool has two
-        (see ``rearrange.py``): a bar button needs Qt's checkable flag to latch,
-        and the menu row must not have it, sitting among plain mode-toggle rows.
-        Both drive :meth:`_set_stamping` and :meth:`_sync_stamp_actions`
-        converges them, so they cannot disagree.
-
-        ``T`` is set as a shortcut for the label it puts in the menu and the F1
-        guide, but with a widget context so it never fires: the bare letter is
-        routed by the app-wide event filter (``_handle_nav_key``), which yields
-        to focused text inputs — the treatment every other bare letter gets.
+        Two actions over one state, a latching bar button and a plain menu row
+        (:func:`~celpix.ui.widgets.modal_tool_actions` says why). Both drive
+        :meth:`_set_stamping` and :meth:`_sync_stamp_actions` converges them, so
+        they cannot disagree. ``T`` is display-only on the row; the bare letter
+        is routed by the app-wide event filter (``_handle_nav_key``), which
+        yields to focused text inputs — the treatment every other bare letter
+        gets.
         """
-        self._stamp_action = QAction("Toggle Edit Tiles Mode", self)
-        self._stamp_action.setIconText("Edit Tiles")
-        self._stamp_action.setCheckable(True)
-        self._stamp_action.setToolTip(STAMP_TIP)
-        self._stamp_action.toggled.connect(self._set_stamping)
+        # No mnemonic on the row: "T" is Cut's in this menu, and the rearrange
+        # rows it sits with carry none either, so it reads as one of that group.
+        self._stamp_action, self._toggle_stamp_action = modal_tool_actions(
+            self,
+            "Toggle Edit Tiles Mode",
+            "Edit Tiles",
+            "T",
+            STAMP_TIP,
+            self._set_stamping,
+            self._toggle_stamping,
+        )
         bar.addAction(self._stamp_action)
-        # No mnemonic: "T" is Cut's in this menu, and the rearrange rows it sits
-        # with carry none either, so the row reads as one of that group.
-        self._toggle_stamp_action = QAction("Toggle Edit Tiles Mode", self)
-        self._toggle_stamp_action.setShortcut(QKeySequence("T"))
-        self._toggle_stamp_action.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
-        self._toggle_stamp_action.setToolTip(STAMP_TIP)
-        self._toggle_stamp_action.triggered.connect(self._toggle_stamping)
-        self._toggle_stamp_action.setEnabled(False)  # nothing open yet
 
     def _connect_stamp_canvas(self) -> None:
         """Wire the canvas's stamp gestures (called once the canvas exists)."""
@@ -229,19 +224,18 @@ class StampToolMixin:
         if self._stamping and not available:
             # Re-enters here once with _stamping already False, so it settles.
             self._set_stamping(False)
-        if self._stamp_action.isChecked() != self._stamping:
-            with signals_blocked(self._stamp_action):
-                self._stamp_action.setChecked(self._stamping)
-        self._stamp_action.setEnabled(available)
-        self._toggle_stamp_action.setEnabled(available)
         # The blocked tip only applies where the tool would otherwise be offered:
         # off a tilemap entirely, the actions are hidden and say nothing.
         blocked = (
             self._doc is not None and self._can(Capability.STAMP) and not available
         )
-        tip = STAMP_BLOCKED_TIP if blocked else STAMP_TIP
-        self._stamp_action.setToolTip(tip)
-        self._toggle_stamp_action.setToolTip(tip)
+        sync_modal_tool(
+            self._stamp_action,
+            self._toggle_stamp_action,
+            armed=self._stamping,
+            available=available,
+            tip=STAMP_BLOCKED_TIP if blocked else STAMP_TIP,
+        )
         # The preview follows everything this pass follows — arming, the entry,
         # the format — plus the render inputs the refresh brings it here for: a
         # palette edit or a Palette Row move recolours what the held tiles would land
@@ -367,11 +361,11 @@ class StampToolMixin:
         that can show a cell drawing a different tile.
 
         The anchor is a **drawn** position and the brush extends over drawn
-        neighbours, clipped at the row's end rather than wrapped: laying a
-        rectangle is :meth:`~...tilemap_edit.TilemapEditMixin._paste_cells`'
-        geometry, and each landing cell is resolved through
-        :meth:`~celpix.core.document.Document.cell_at` for the reason a paste's
-        is — on an assembled map the drawn position is not the file's own.
+        neighbours, clipped at the row's end rather than wrapped — the lay a
+        paste makes (:meth:`~...tilemap_edit.TilemapEditMixin._lay_positions`),
+        each landing cell resolved through
+        :meth:`~celpix.core.document.Document.cell_at` because on an assembled
+        map the drawn position is not the file's own.
 
         On a **stamped chain** the brush holds one entry per stamp
         (:meth:`_on_stamp_area_picked`), so the neighbours step by the stamp —
@@ -387,26 +381,12 @@ class StampToolMixin:
             return
         self._stamp_touched.add(anchor)
         brush = self._stamp_brush
-        width = self._cells_per_row()
-        unit_w, unit_h = doc.stamp_cells
-        x0, y0 = anchor % width, anchor // width
-        laying = (
-            [(0, 0, None)]
-            if brush is None or not len(brush)
-            else [
-                (dx, dy, brush.get(dx, dy))
-                for dy in range(brush.height)
-                for dx in range(brush.width)
-            ]
-        )
+        if brush is not None and not len(brush):
+            brush = None
+        cols, rows = (1, 1) if brush is None else (brush.width, brush.height)
         changed = False
-        for dx, dy, record in laying:
-            x = x0 + dx * unit_w
-            if x >= width:
-                continue
-            at = doc.cell_at((y0 + dy * unit_h) * width + x)
-            if not 0 <= at < len(cells):
-                continue
+        for dx, dy, at in self._lay_positions(doc, anchor, cols, rows):
+            record = None if brush is None else brush.get(dx, dy)
             if record is None:
                 landing = self._stamp_cell(tile_id, cells[at])
             elif self._source_cell is None:
@@ -646,12 +626,9 @@ class StampToolMixin:
 
         On a **stamped chain** the placed unit is the whole stamp, so the sweep
         is read in stamps: the rectangle grows out to the stamp lattice — every
-        stamp it touches, whole — and the brush holds **one entry per stamp**,
-        found at each stamp's corner. Per drawn position it would hold every
-        entry once per position it covers, and laying that back would write the
-        same stamps again a tile apart. The lattice sits on the resolved grid
-        (:meth:`~celpix.core.document.Document.cell_at` snaps to the same one),
-        so a sweep and a click cannot disagree about which entry a position is.
+        stamp it touches, whole — and the brush holds **one entry per stamp**
+        (:meth:`~...tilemap_edit.TilemapEditMixin._lift_cell_rect`, the lift a
+        cell copy makes too).
 
         A click never lands here: the canvas reports a drag that stayed inside
         one unit as the single-cell ``stamp_pressed`` it is.
@@ -660,21 +637,10 @@ class StampToolMixin:
         if doc is None or doc.cells is None:
             return
         width = self._cells_per_row()
-        unit_w, unit_h = doc.stamp_cells
         a, b = anchor // doc.tiles_per_cell, far // doc.tiles_per_cell
         x0, x1 = sorted((a % width, b % width))
         y0, y1 = sorted((a // width, b // width))
-        # Out to the lattice: the corner floors onto it, and counting the units
-        # from there to the far edge is the round *up* — a rectangle that enters
-        # a stamp holds all of it.
-        x0 -= x0 % unit_w
-        y0 -= y0 % unit_h
-        lifted = CellGrid((x1 - x0) // unit_w + 1, (y1 - y0) // unit_h + 1)
-        for dy in range(lifted.height):
-            for dx in range(lifted.width):
-                at = doc.cell_at((y0 + dy * unit_h) * width + (x0 + dx * unit_w))
-                if 0 <= at < len(doc.cells):
-                    lifted.set(dx, dy, doc.cells[at])
+        lifted, x0, y0 = self._lift_cell_rect(doc, x0, y0, x1, y1)
         corner = doc.cell_at(y0 * width + x0)
         if not 0 <= corner < len(doc.cells):
             return
@@ -829,7 +795,7 @@ class StampToolMixin:
         ``cell`` itself for every ordinary map. On a **chained** map a held ID
         is a position in the map being drawn through, so the unit is that
         stamp's source cells resolved, through every hop — by the resolution's
-        own walk (:func:`~celpix.core.document.resolve_chain`), so the ghost and
+        own walk (:func:`~celpix.core.cellchain.resolve_chain`), so the ghost and
         the map cannot resolve one coordinate two different ways. The **whole** record
         goes in, not just its index: the landing composes the laid entry's
         flips, row and visibility over the source (§3.1), and a ghost built

@@ -21,27 +21,26 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtWidgets import (
-    QDialog,
-    QDialogButtonBox,
-    QFormLayout,
-    QLabel,
-    QLineEdit,
-    QWidget,
-)
+from PySide6.QtWidgets import QDialog, QFormLayout, QLabel, QLineEdit, QWidget
 
 from celpix.core.errors import Stage
-from celpix.plugins.base import NO_COMPRESSION, NO_RESHAPE, writes_back
+from celpix.plugins.base import NO_COMPRESSION, NO_RESHAPE
 from celpix.plugins.compress_reshape import (
     ID_PREFIX,
     CompressReshape,
     preset_path,
     slug,
 )
+from celpix.plugins.detect import stage_write_enabled
 from celpix.plugins.registry import Registry
 from celpix.ui.searchable_combo import SearchableComboBox, fill_stage_combo
-from celpix.ui.theme import ERROR_INK, set_ink
-from celpix.ui.widgets import PRESET_COMBO_WIDTH
+from celpix.ui.widgets import (
+    PRESET_COMBO_WIDTH,
+    ErrorLabel,
+    add_form_row,
+    dialog_buttons,
+    run_modal,
+)
 
 __all__ = ["CompressReshapeDialog", "CompressReshapeParams"]
 
@@ -64,7 +63,7 @@ class CompressReshapeDialog(QDialog):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("celPix - new Compress & Reshape plugin")
+        self.setWindowTitle("New Compress & Reshape Plugin")
         self._registry = registry
         self._plugin_root = Path(plugin_root)
         self._params: CompressReshapeParams | None = None
@@ -115,27 +114,16 @@ class CompressReshapeDialog(QDialog):
         )
         self._note = QLabel()
         self._note.hide()
-        self._error = QLabel()
-        set_ink(self._error, ERROR_INK)
-        self._error.hide()
+        self._error = ErrorLabel()
 
         form = QFormLayout(self)
-        form.addRow("Compression:", self._compression)
-        form.addRow("Then reshape:", self._reshape)
-        form.addRow("Name:", self._name)
-        form.addRow("Saved as:", self._saved_as)
+        add_form_row(form, "Compression:", self._compression)
+        add_form_row(form, "Then reshape:", self._reshape)
+        add_form_row(form, "Name:", self._name)
+        add_form_row(form, "Saved as:", self._saved_as)
         form.addRow(self._note)
         form.addRow(self._error)
-        for field in (self._compression, self._reshape, self._name, self._saved_as):
-            label = form.labelForField(field)
-            if label is not None:
-                label.setToolTip(field.toolTip())
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self._validate_and_accept)
-        buttons.rejected.connect(self.reject)
-        form.addRow(buttons)
+        dialog_buttons(self, form, self._validate_and_accept)
 
         self._compression.currentIndexChanged.connect(self._sync)
         self._reshape.currentIndexChanged.connect(self._sync)
@@ -162,7 +150,8 @@ class CompressReshapeDialog(QDialog):
         )
         self._note.setText(self._view_only_note())
         self._note.setVisible(bool(self._note.text()))
-        self._error.hide()
+        # Every field this reads is one OK checks, so any edit answers the error.
+        self._error.dismiss()
 
     def _view_only_note(self) -> str:
         """Which half cannot run backwards, said before the choice is committed.
@@ -178,9 +167,13 @@ class CompressReshapeDialog(QDialog):
         missing = [
             f"{combo.currentText()} {why}"
             for stage, combo, why in halves
+            # Both combos list only what this registry holds, so ``missing``
+            # is never consulted here; False is the entry-open answer, which
+            # the container dialog's container check shares and its reshape
+            # check does not.
             if combo.currentData() is not None
-            and not writes_back(
-                self._registry.plugin(stage, combo.currentData()), stage
+            and not stage_write_enabled(
+                self._registry, stage, combo.currentData(), missing=False
             )
         ]
         if not missing:
@@ -190,29 +183,25 @@ class CompressReshapeDialog(QDialog):
         )
 
     # -- accept ------------------------------------------------------------
-    def _fail(self, message: str) -> None:
-        self._error.setText(message)
-        self._error.show()
-
     def _validate_and_accept(self) -> None:
         compression_id = self._compression.currentData()
         reshape_id = self._reshape.currentData()
         if compression_id is None or reshape_id is None:
-            self._fail("Pick a compression scheme and a reshape.")
+            self._error.fail("Pick a compression scheme and a reshape.")
             return
         plugin_id = self.plugin_id()
         if plugin_id == ID_PREFIX:
-            self._fail("The name needs at least one letter or digit.")
+            self._error.fail("The name needs at least one letter or digit.")
             return
         # Against the live id only, not through the rename table: a retired name
         # is free for a user's own plugin to take (`Registry.plugin`).
         taken = {p.info.id for p in self._registry.plugins(Stage.COMPRESSION)}
         if plugin_id in taken:
-            self._fail(f"{plugin_id} already exists. Choose another name.")
+            self._error.fail(f"{plugin_id} already exists. Choose another name.")
             return
         path = preset_path(self._plugin_root, plugin_id)
         if path.exists():
-            self._fail(f"{path.name} is already in the project's plugins folder.")
+            self._error.fail(f"{path.name} is already in the project's plugins folder.")
             return
         self._params = CompressReshapeParams(
             plugin_id, self.name(), compression_id, reshape_id
@@ -224,7 +213,6 @@ class CompressReshapeDialog(QDialog):
         parent: QWidget | None, registry: Registry, plugin_root: str | Path
     ) -> CompressReshapeParams | None:
         """Run the dialog modally; what it was OK'd with, or ``None`` if cancelled."""
-        dialog = CompressReshapeDialog(registry, plugin_root, parent)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return None
-        return dialog._params
+        return run_modal(
+            CompressReshapeDialog(registry, plugin_root, parent), lambda d: d._params
+        )

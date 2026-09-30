@@ -58,7 +58,13 @@ from __future__ import annotations
 
 from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
-from celpix.plugins.builtins.gba_lz77 import ALIGNMENT, HEADER_SIZE, MAX_DECOMPRESSED
+from celpix.plugins.builtins._gba_bios import (
+    ALIGNMENT,
+    HEADER_SIZE,
+    read_header,
+    write_header,
+)
+from celpix.plugins.builtins._lz import corrupt
 from celpix.plugins.builtins.running_sum import difference_units, sum_units
 
 DIFF_TYPE = 0x80  # high nibble 8; the low nibble is the unit width in bytes
@@ -67,8 +73,7 @@ DIFF16_TYPE = DIFF_TYPE | 2
 WIDTHS = (1, 2)
 
 
-def _fail(reason: str) -> ValueError:
-    return ValueError(f"corrupt GBA diff-filter stream: {reason}")
+_fail = corrupt("GBA diff-filter")
 
 
 def _check_width(width: int) -> None:
@@ -86,16 +91,15 @@ def decompress(
     """
     _check_width(width)
     kind = DIFF_TYPE | width
-    if len(data) < HEADER_SIZE:
-        raise _fail(f"shorter than the {HEADER_SIZE}-byte header")
-    if data[0] != kind:
-        raise _fail(
-            f"type byte {data[0]:#04x} is not a {8 * width}-bit diff header "
+    target = read_header(
+        data,
+        types=(kind,),
+        what=(
+            f"a {8 * width}-bit diff header "
             f"({kind:#04x}; the low nibble is the unit width)"
-        )
-    target = int.from_bytes(data[1:HEADER_SIZE], "little")
-    if target == 0:
-        raise _fail("declared decompressed size is zero")
+        ),
+        fail=_fail,
+    )
 
     units = -(-target // width)
     count = min(units, (len(data) - HEADER_SIZE) // width)
@@ -112,18 +116,7 @@ def compress(data: bytes, *, width: int = 1) -> bytes:
     """Delta-filter ``data`` into ``width``-byte units behind the BIOS header."""
     _check_width(width)
     n = len(data)
-    if n == 0:
-        # A zero size is what decompress refuses, so writing one would save a
-        # stream this plugin cannot open again.
-        raise ValueError(
-            "the GBA BIOS diff filter has no encoding for an empty payload"
-        )
-    if n > MAX_DECOMPRESSED:
-        raise ValueError(
-            f"input is {n:,} bytes; the 24-bit size field holds {MAX_DECOMPRESSED:,}"
-        )
-    out = bytearray([DIFF_TYPE | width])
-    out += n.to_bytes(3, "little")
+    out = write_header(DIFF_TYPE | width, n, what="the GBA BIOS diff filter")
     # An odd length under the 16-bit filter keeps its odd size in the header,
     # which decompress honours, but the units are whole halfwords: complete the
     # last one with a zero high byte. The decoder drops that byte, and a BIOS

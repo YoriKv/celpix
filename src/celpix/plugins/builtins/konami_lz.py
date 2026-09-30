@@ -80,9 +80,13 @@ from __future__ import annotations
 from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
 from celpix.plugins.builtins._lz import (
+    ByteSource,
     FlagGroup,
+    GroupReader,
     MatchFinder,
+    Truncated,
     copy_back,
+    corrupt,
     parse_greedy,
 )
 
@@ -104,35 +108,7 @@ BLOCK_WORTH = 10
 END_OP = 0xFF
 
 
-def _fail(reason: str) -> ValueError:
-    return ValueError(f"corrupt Konami LZ stream: {reason}")
-
-
-class _Truncated(Exception):
-    """The stream ran out mid-op — recoverable only under ``partial``."""
-
-
-class _Reader:
-    """Flag bits and bytes over one buffer, with the shared refill sentinel."""
-
-    def __init__(self, data: bytes) -> None:
-        self._data = data
-        self.pos = 0
-        self._flags = 1  # spent, so the first bit opens a byte
-
-    def byte(self) -> int:
-        if self.pos >= len(self._data):
-            raise _Truncated
-        value = self._data[self.pos]
-        self.pos += 1
-        return value
-
-    def flag(self) -> int:
-        if self._flags == 1:
-            self._flags = 0x100 | self.byte()
-        bit = self._flags & 1
-        self._flags >>= 1
-        return bit
+_fail = corrupt("Konami LZ")
 
 
 def decompress_1k(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]:
@@ -142,7 +118,9 @@ def decompress_1k(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bo
     buffer ran out before the ``0xFF`` opcode, which ``partial`` downgrades from
     an error to a short result.
     """
-    reader = _Reader(data)
+    # Flag bits LSB first, the flag byte fetched only when the last is spent.
+    src = ByteSource(data)
+    flags = GroupReader(src, msb_first=False)
     # The prefix is the ring's width, so a reach can never fall before the
     # buffer: one past the first output byte lands in the zero fill instead.
     buf = bytearray(RING_1K)
@@ -150,12 +128,12 @@ def decompress_1k(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bo
 
     try:
         while True:
-            is_op = reader.flag()
-            op = reader.byte()  # read either way: for a literal it *is* the byte
+            is_op = flags.bit()
+            op = src.byte()  # read either way: for a literal it *is* the byte
             if not is_op:
                 buf.append(op)
             elif op < 0x80:  # long match
-                field = reader.byte() | ((op & 3) << 8)
+                field = src.byte() | ((op & 3) << 8)
                 # The field addresses the ring position the cursor sits on, which
                 # after a wrap is the byte a whole ring back — not no distance.
                 distance = field if field else RING_1K
@@ -167,14 +145,14 @@ def decompress_1k(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bo
                 break
             else:  # literal block
                 for _ in range(op - BLOCK_BIAS):
-                    buf.append(reader.byte())
+                    buf.append(src.byte())
             if len(buf) - RING_1K > OUTPUT_CAP:
                 raise _fail(f"output would exceed {OUTPUT_CAP:,} bytes")
-    except _Truncated:
+    except Truncated:
         if not partial:
             raise _fail(f"source ended after {len(buf) - RING_1K:,} bytes") from None
 
-    return bytes(buf[RING_1K:]), reader.pos, complete
+    return bytes(buf[RING_1K:]), src.pos, complete
 
 
 def compress_1k(data: bytes) -> bytes:
@@ -253,7 +231,9 @@ def decompress_4k(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bo
     buffer ran out before a zero-distance back-reference, which ``partial``
     downgrades from an error to a short result.
     """
-    reader = _Reader(data)
+    # Flag bits LSB first, the flag byte fetched only when the last is spent.
+    src = ByteSource(data)
+    flags = GroupReader(src, msb_first=False)
     # The prefix is the ring's width, so a reach can never fall before the
     # buffer: one past the first output byte lands in the zero fill instead.
     buf = bytearray(RING_4K)
@@ -261,12 +241,12 @@ def decompress_4k(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bo
 
     try:
         while True:
-            if reader.flag():
-                buf.append(reader.byte())
+            if flags.bit():
+                buf.append(src.byte())
             else:
                 # One 16-bit field, high byte first: twelve bits of distance
                 # then four of length. The two halves of `lo` split between them.
-                hi, lo = reader.byte(), reader.byte()
+                hi, lo = src.byte(), src.byte()
                 distance = (hi << 4) | (lo >> 4)
                 if not distance:
                     complete = True
@@ -274,11 +254,11 @@ def decompress_4k(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bo
                 copy_back(buf, distance, (lo & 0x0F) + MATCH_MIN)
             if len(buf) - RING_4K > OUTPUT_CAP:
                 raise _fail(f"output would exceed {OUTPUT_CAP:,} bytes")
-    except _Truncated:
+    except Truncated:
         if not partial:
             raise _fail(f"source ended after {len(buf) - RING_4K:,} bytes") from None
 
-    return bytes(buf[RING_4K:]), reader.pos, complete
+    return bytes(buf[RING_4K:]), src.pos, complete
 
 
 def compress_4k(data: bytes) -> bytes:

@@ -33,8 +33,9 @@ the file it came out of.
 
 The three formats map onto codecs celPix already has, so nothing here is a new
 color format — only the framing that says which one to use. Full provenance, and
-why other readers get this format wrong by assuming type 0, is in
-``docs/graphics-formats-reference/tile-layer-pro-formats.md`` §3.
+why other readers get this format wrong by assuming type 0, is in the
+graphics-formats reference (``docs/graphics-formats-reference/``), under
+"Palette handling".
 """
 
 from __future__ import annotations
@@ -49,6 +50,8 @@ from celpix.plugins.base import (
     ReadSource,
     WriteTarget,
 )
+
+from ._container_fields import require_header
 
 PLUGIN_ID = "container.tpl-palette"
 
@@ -91,10 +94,7 @@ def parse(raw: bytes) -> tuple[int, int]:
 
     The count is derived rather than read, the file having no field for it.
     """
-    if len(raw) < HEADER_SIZE:
-        raise _fail(f"file is {len(raw)} bytes; the header alone needs {HEADER_SIZE}")
-    if raw[:3] != _MAGIC:
-        raise _fail("file does not begin with the TPL signature")
+    require_header(raw, HEADER_SIZE, _MAGIC, what="the TPL signature", fail=_fail)
     kind = raw[3]
     if kind not in FORMATS:
         raise _fail(

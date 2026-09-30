@@ -85,8 +85,8 @@ from __future__ import annotations
 
 from celpix.core.context import KEY_TILEMAP_COLUMNS, PipelineContext
 from celpix.core.errors import Stage
-from celpix.plugins._params import flag, only_keys, preset_identity
-from celpix.plugins.base import PluginInfo, check_declared_stage
+from celpix.plugins._params import adapter_spec, flag, integer
+from celpix.plugins.base import reshape_info
 
 SPLIT_PARTS_ENGINE = "reshape.split-parts"
 
@@ -194,9 +194,7 @@ class SplitPartsReshape:
         self.groups = groups
         self.clockwise = clockwise
         self.lock_columns = groups > 1 if lock_columns is None else lock_columns
-        self.info = PluginInfo(
-            id=plugin_id, name=name, stage=Stage.RESHAPE, category=category
-        )
+        self.info = reshape_info(plugin_id, name, category)
 
     def reshape(self, data: bytes, ctx: PipelineContext) -> bytes:
         self._state_layout(data, ctx)
@@ -232,36 +230,19 @@ class SplitPartsReshape:
         )
 
 
-def _count(params: dict, key: str, default: int, low: int, high: int) -> int:
-    """The integer parameter ``key``, within ``low..high``."""
-    value = params.get(key, default)
-    # bool is an int to Python and `parts = true` is a typo, not a 1.
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise ValueError(f"params.{key} must be an integer, got {value!r}")
-    if not low <= value <= high:
-        raise ValueError(f"params.{key} must be {low}..{high}, got {value}")
-    return value
-
-
 def split_parts_from_spec(spec: dict) -> SplitPartsReshape:
     """Build the plugin a parsed ``reshape.split-parts`` preset spec describes."""
-    engine = spec.get("engine_id")
-    if engine != SPLIT_PARTS_ENGINE:
-        raise ValueError(
-            f"engine_id {engine!r} is not this reshape engine "
-            f"(expected {SPLIT_PARTS_ENGINE!r})"
-        )
-    check_declared_stage(spec, Stage.RESHAPE)
-    plugin_id, name, category = preset_identity(spec)
-    params = spec.get("params", {})
-    if not isinstance(params, dict):
-        raise ValueError("params must be a table")
-    only_keys(params, ("parts", "unit", "groups", "clockwise", "lock_columns"))
+    plugin_id, name, category, params = adapter_spec(
+        spec,
+        engine_id=SPLIT_PARTS_ENGINE,
+        stage=Stage.RESHAPE,
+        known=("parts", "unit", "groups", "clockwise", "lock_columns"),
+    )
     if "parts" not in params:
         raise ValueError("params.parts is required: how many parts to join")
-    parts = _count(params, "parts", 0, 2, MAX_PARTS)
-    unit = _count(params, "unit", 1, 1, MAX_UNIT)
-    groups = _count(params, "groups", 1, 1, MAX_GROUPS)
+    parts = integer(params, "parts", low=2, high=MAX_PARTS)
+    unit = integer(params, "unit", 1, low=1, high=MAX_UNIT)
+    groups = integer(params, "groups", 1, low=1, high=MAX_GROUPS)
     clockwise = flag(params, "clockwise")
     if clockwise and groups != 2:
         # Around a stamp is across its top row and back along its bottom one; a

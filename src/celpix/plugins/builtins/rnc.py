@@ -89,7 +89,7 @@ import heapq
 from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
 
-from ._lz import BitGroup, MatchFinder, copy_back, parse_greedy
+from ._lz import BitGroup, MatchFinder, copy_back, corrupt, parse_greedy
 
 MAGIC = b"RNC"
 HEADER_SIZE = 18
@@ -154,8 +154,7 @@ M2_DISTANCE_CODES = (
 )  # fmt: skip
 
 
-def _fail(reason: str) -> ValueError:
-    return ValueError(f"corrupt RNC stream: {reason}")
+_fail = corrupt("RNC")
 
 
 class _Truncated(Exception):

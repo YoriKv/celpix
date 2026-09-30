@@ -516,6 +516,10 @@ def test_data_lut_rejects_bad_specs() -> None:
         _data_lut(unit=2, selector_bits=[0], bitswaps=[list(range(16))] * 2)
     with pytest.raises(ValueError):
         _data_lut(selector_bits=[MAX_SELECTOR_BIT + 1], bitswaps=[[0]] * 2)
+    # `true == 1` to Python, so a membership test would run a typo as the byte
+    # unit; the value has to be the integer itself.
+    with pytest.raises(ValueError, match="unit must be"):
+        _data_lut(unit=True, bitswaps=[[7, 6, 5, 4, 3, 2, 1, 0]])
 
 
 # -- slice-length discovery is off under a reshape ---------------------------

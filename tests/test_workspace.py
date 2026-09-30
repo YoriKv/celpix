@@ -954,6 +954,26 @@ def test_a_new_slice_is_seeded_into_offset_order(tmp_path) -> None:
     assert ws.add_index_for(ws.open_file(str(tmp_path / "b.sfc"))) == len(ws.entries)
 
 
+def test_a_tilemap_slice_of_a_view_only_file_is_view_only(tmp_path) -> None:
+    """A slice cannot outrank the file it is part of (slices-and-parents §4),
+    and a map's cells are bytes of that file like any pixel slice's tiles: with
+    the file's container gone missing, a save would deposit the cells at an
+    offset the pass-through never named. Both pathways must answer alike."""
+    reg = default_registry()
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(bytes(256))
+    ws = Workspace()
+    parent = ws.open_file(str(rom))
+    sl = ws.add_slice(str(rom), "map", 0x10, 0x40)
+    sl.content_kind = ContentKind.TILEMAP
+    assert tilemap_config_for(sl, "preset.tilemap.snes-bg", reg, ws).write_enabled
+
+    parent.container_id = "container.not-installed"
+    assert not pixel_config_for(parent, "preset.pixel.snes-4bpp", reg).write_enabled
+    assert not pixel_config_for(sl, "preset.pixel.snes-4bpp", reg, ws).write_enabled
+    assert not tilemap_config_for(sl, "preset.tilemap.snes-bg", reg, ws).write_enabled
+
+
 def test_a_missing_plugin_opens_view_only_and_names_itself(tmp_path) -> None:
     """A stored plugin this build hasn't got degrades to the pass-through so the
     file still opens, but the entry is view-only and says which plugin is gone.

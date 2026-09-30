@@ -77,6 +77,8 @@ from celpix.plugins.base import (
     splice,
 )
 
+from ._container_fields import require_header
+
 PIXEL_PLUGIN_ID = "container.tim"
 CLUT_PLUGIN_ID = "container.tim-clut"
 
@@ -167,10 +169,9 @@ def parse(raw: bytes) -> TimLayout:
     the file actually holds, so a truncated dump is reported as truncated rather
     than as some other format.
     """
-    if len(raw) < _FIRST_BLOCK:
-        raise _fail(f"file is {len(raw)} bytes; a header alone needs {_FIRST_BLOCK}")
-    if raw[:4] != _MAGIC:
-        raise _fail("file does not begin with the 0x00000010 header word")
+    require_header(
+        raw, _FIRST_BLOCK, _MAGIC, what="the 0x00000010 header word", fail=_fail
+    )
     flags = int.from_bytes(raw[_FLAGS_AT : _FLAGS_AT + 4], "little")
     pmode = flags & _PMODE_MASK
     if pmode not in DEPTHS:

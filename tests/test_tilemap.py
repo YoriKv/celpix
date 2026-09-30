@@ -1033,6 +1033,25 @@ def test_the_later_build_stores_its_attribute_word_the_other_way_round() -> None
     assert cell.index == 0x1FF  # read big-endian it would be 0x1FE, palette 7
 
 
+def test_a_nul_padded_build_marker_is_read_and_described_alike() -> None:
+    """The marker is a fixed-width field its tool may pad with NULs rather than
+    spaces. The decode and the info popup answer "is this the swapped build"
+    from one reading of it, so they cannot disagree about the same bytes."""
+    from celpix.core.context import KEY_TILEMAP_ENDIAN
+    from celpix.plugins.builtins.scgcad import ObjContainer
+
+    data = _obj_bytes(bytes(6), marker=b"Ver1.11 930511F\0")
+    ctx = PipelineContext()
+    ObjContainer().read(ReadSource(data=data), ctx)
+    assert ctx.get(KEY_TILEMAP_ENDIAN) == "little"
+    (row,) = [
+        f
+        for f in ObjContainer().describe(ReadSource(data=data), ctx)
+        if f.name == "Build marker"
+    ]
+    assert "byte-swapped" in row.value
+
+
 def test_the_entrys_size_pair_reaches_the_frames_it_decides(tmp_path) -> None:
     """The one thing about an object that neither its file nor its format knows.
 
@@ -2454,34 +2473,30 @@ def test_a_dense_stamped_map_fixes_its_own_width_and_restamps_by_the_stamp() -> 
     ]
 
 
-def test_a_single_stamp_resolves_exactly_as_the_map_does() -> None:
-    """``expand_stamp`` is the per-entry factoring of ``expand_stamps`` — the
-    previews (the tile source sheet, Edit Tiles' ghost) resolve through it, so a
-    preview and the map cannot resolve one coordinate two different ways. The
-    referring entry goes in whole: a format that carries rows or flips composes
-    them over every cell of the stamp, and a caller with no real entry behind
-    the coordinate passes ``carry_rows=False`` — a bare cell's row 0 let
+def test_a_single_stamp_composes_its_entry_over_every_cell() -> None:
+    """The referring entry goes in whole: a format that carries rows or flips
+    composes them over every cell of the stamp, and a caller with no real entry
+    behind the coordinate passes ``carry_rows=False`` — a bare cell's row 0 let
     through would repaint the source's rows."""
-    from celpix.core.tilemap import expand_stamp, expand_stamps
+    from celpix.core.tilemap import expand_stamps
 
     source = [Cell(index=100 + at, palette_row=at % 8) for at in range(16)]
-    entry = Cell(index=1, palette_row=5, flip_h=True)
-    unit = expand_stamp(entry, source, (2, 2), 4, carry_rows=True)
+
+    def one(entry: Cell, *, carry_rows: bool) -> list[Cell]:
+        return expand_stamps(
+            [entry], source, 1, (2, 2), 4, carry_rows=carry_rows, dense=True
+        )
+
+    unit = one(Cell(index=1, palette_row=5, flip_h=True), carry_rows=True)
     # Mirrored as a stamp, not only cell by cell: right-hand cells on the left,
     # and under a vertical flip the lower row on top.
     assert [cell.index for cell in unit] == [102, 101, 106, 105]
-    upside = expand_stamp(
-        Cell(index=1, flip_v=True), source, (2, 2), 4, carry_rows=True
-    )
+    upside = one(Cell(index=1, flip_v=True), carry_rows=True)
     assert [cell.index for cell in upside] == [105, 106, 101, 102]
     assert [cell.palette_row for cell in unit] == [5, 5, 5, 5]
     assert all(cell.flip_h for cell in unit)
-    # Byte-identical to the map's own resolution of the same entry.
-    assert unit == expand_stamps(
-        [entry], source, 1, (2, 2), 4, carry_rows=True, dense=True
-    )
     # A synthetic referrer carries nothing: the source's own rows survive.
-    bare = expand_stamp(Cell(index=1), source, (2, 2), 4, carry_rows=False)
+    bare = one(Cell(index=1), carry_rows=False)
     assert [cell.palette_row for cell in bare] == [1, 2, 5, 6]
 
 
@@ -2785,7 +2800,7 @@ def test_a_chain_that_loops_or_draws_through_a_sparse_map_is_refused(
     # already said why it draws unstamped itself.
     assert loaded.problems[-1] == (
         "top.bin: 2x2 stamps not resolved - a table it draws through is a sparse "
-        "stamped map; drawing one cell per entry."
+        "stamped map; each entry draws one cell."
     )
     assert [c.index for c in loaded.doc.drawn_cells] == [0, 4]
     assert [loaded.doc.cell_at(at) for at in range(2)] == [0, 1]

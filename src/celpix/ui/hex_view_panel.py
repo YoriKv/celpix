@@ -1,7 +1,7 @@
 """The hex-view panel — a scrollable raw hex dump of the file being edited.
 
 A presentation-only companion to the canvas, in the spirit of the decompression
-overlay: the main window feeds it the document's raw bytes plus where the view
+preview: the main window feeds it the document's raw bytes plus where the view
 sits, and it renders a classic address · hex · ASCII dump. It owns no model and
 decides nothing — switching entries, moving the offset, or changing the address
 format just re-feeds it, and nothing typed here can alter a byte. It lives in a
@@ -18,7 +18,7 @@ builds only the rows on screen — so a multi-megabyte ROM costs the same as a
 tile bank.
 
 The dump math (row alignment, the ASCII gutter, which columns fall inside the
-on-screen window), the find-box grammar and the search itself are Qt-free so
+canvas's selection), the find-box grammar and the search itself are Qt-free so
 they can be unit tested headless; the widget turns those rows into pixels.
 """
 
@@ -29,7 +29,14 @@ from dataclasses import dataclass
 from math import ceil
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QFontDatabase, QFontMetricsF, QKeyEvent, QMouseEvent, QPainter
+from PySide6.QtGui import (
+    QFontDatabase,
+    QFontMetricsF,
+    QKeyEvent,
+    QKeySequence,
+    QMouseEvent,
+    QPainter,
+)
 from PySide6.QtWidgets import (
     QAbstractScrollArea,
     QApplication,
@@ -42,7 +49,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from celpix.ui.widgets import ShortcutIsland, load_bool_setting, save_bool_setting
+from celpix.ui.settings import (
+    load_bool_setting,
+    save_bool_setting,
+)
+from celpix.ui.widgets import ShortcutIsland
 
 BYTES_PER_ROW = 16
 
@@ -64,9 +75,9 @@ class HexRow:
     gutter, and the half-open column span ``[hi_from, hi_to)`` that falls inside
     the highlighted range (``hi_from`` is ``None`` when the row has none).
 
-    ``hex_cells`` and ``ascii`` are always ``per_row`` wide; a cell past the end
-    of the data is an empty string (hex) and a space (ASCII), so trailing
-    partial rows still line up under the columns above them.
+    ``hex_cells`` and ``ascii`` are always :data:`BYTES_PER_ROW` wide; a cell
+    past the end of the data is an empty string (hex) and a space (ASCII), so
+    trailing partial rows still line up under the columns above them.
     """
 
     address: str
@@ -87,17 +98,16 @@ def hex_rows(
     region_end: int,
     addr_of: Callable[[int], str],
     highlight: tuple[int, int] | None = None,
-    per_row: int = BYTES_PER_ROW,
     min_addr_width: int = 0,
 ) -> list[HexRow]:
     """Build the dump rows for ``data[region_start:region_end]``.
 
-    ``region_start`` is expected to be a multiple of ``per_row`` (the caller
-    aligns to a row boundary so columns stay put as the offset moves).
+    ``region_start`` is expected to be a multiple of :data:`BYTES_PER_ROW` (the
+    caller aligns to a row boundary so columns stay put as the offset moves).
     ``addr_of`` maps a byte index in ``data`` to its displayed address — the
     same address format the navbar uses, so the two agree. ``highlight`` is a
-    ``(start, length)`` byte range (typically the window currently on the
-    canvas); each row reports the sub-span of its columns that it covers.
+    ``(start, length)`` byte range — the canvas's selection, in bytes; each row
+    reports the sub-span of its columns that it covers.
 
     Addresses are right-justified to a common width, so the hex and ASCII
     columns align even when the address format yields varying lengths.
@@ -111,6 +121,7 @@ def hex_rows(
     # Addresses first: they are right-justified to the widest one, and building
     # every row twice to discover that width is a whole extra pass over a dump
     # the view rebuilds on each offset move.
+    per_row = BYTES_PER_ROW
     starts = list(range(region_start, region_end, per_row))
     addresses = [addr_of(base) for base in starts]
     width = max((len(address) for address in addresses), default=0)
@@ -198,10 +209,10 @@ class HexDumpView(ShortcutIsland, QAbstractScrollArea):
 
     Holds the whole byte string but renders only the rows the viewport can show,
     so the scrollbar spans the file at any size. Two tints sit on top of it, and
-    they mean different things: the **window** highlight is what the canvas is
-    currently drawing (fed by the main window, dimmed so it reads as a marker
-    rather than a selection) and the **selection** is the user's own click-drag
-    in the dump, which is what Copy copies.
+    they mean different things: the **highlight** is what is selected on the
+    canvas, in bytes (fed by the main window, dimmed so it reads as a marker
+    rather than as this dump's own selection) and the **selection** is the
+    user's click-drag in the dump, which is what Copy copies.
 
     Copy and Select All do their natural thing on the dump (its own keys); the
     rest of the claimed editing shortcuts are inert on this read-only view - the
@@ -475,10 +486,12 @@ class HexDumpView(ShortcutIsland, QAbstractScrollArea):
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: D102, N802
         key, mods = event.key(), event.modifiers()
-        ctrl = mods & Qt.KeyboardModifier.ControlModifier
-        if ctrl and key == Qt.Key.Key_C:
+        # By standard key, the way the island claimed them
+        # (:class:`~celpix.ui.widgets.ShortcutIsland`), so a platform whose Copy
+        # is not Ctrl+C still copies here.
+        if event.matches(QKeySequence.StandardKey.Copy):
             self.copy()
-        elif ctrl and key == Qt.Key.Key_A:
+        elif event.matches(QKeySequence.StandardKey.SelectAll):
             self.select_all()
         elif key == Qt.Key.Key_Escape:
             self._sel_anchor = self._sel_cursor = None
@@ -536,9 +549,10 @@ class HexDumpView(ShortcutIsland, QAbstractScrollArea):
         palette = self.palette()
         text_pen = palette.text().color()
         marked_pen = palette.highlightedText().color()
-        # Half the brightness of the system highlight, so the window tint reads
-        # as a marker over the dump; the user's own selection gets the real one.
-        window_fill = palette.highlight().color().darker(60)
+        # Half the brightness of the system highlight, so the canvas selection's
+        # tint reads as a marker over the dump; the dump's own selection gets the
+        # real one.
+        highlight_fill = palette.highlight().color().darker(60)
         selection_fill = palette.highlight().color()
         selection = self.selection()
         sel_start, sel_end = (
@@ -551,8 +565,8 @@ class HexDumpView(ShortcutIsland, QAbstractScrollArea):
             top = line * row_height
             baseline = top + metrics.ascent()
             base_index = (first + line) * BYTES_PER_ROW
-            # Role per column: the user's selection wins over the window tint,
-            # since it is the one they are actively pointing at.
+            # Role per column: the dump's own selection wins over the canvas
+            # selection's tint, since it is the one being pointed at here.
             roles = [
                 2
                 if sel_start <= base_index + col < sel_end
@@ -564,7 +578,7 @@ class HexDumpView(ShortcutIsland, QAbstractScrollArea):
             for col, role in enumerate(roles):
                 if not role:
                     continue
-                fill = selection_fill if role == 2 else window_fill
+                fill = selection_fill if role == 2 else highlight_fill
                 # A run of same-role columns is filled across the separator too,
                 # so a highlighted range reads as one band and not as gapped
                 # pairs of digits.
@@ -637,8 +651,8 @@ class HexViewPanel(QWidget):
     Both boxes move the **dump** and nothing else. That is the point of them:
     the navbar's offset box moves the canvas, so checking a header or a pointer
     table through it means losing the view you were working on and putting it
-    back afterwards. Here the canvas holds still and its window stays tinted in
-    the dump, so what you looked up and what you are editing are on screen
+    back afterwards. Here the canvas holds still and its selection stays tinted
+    in the dump, so what you looked up and what you are editing are on screen
     together.
 
     Traffic the other way — the canvas moving the dump — is the Follow selection
@@ -748,9 +762,9 @@ class HexViewPanel(QWidget):
         address format the navbar uses - byte index to displayed address, and
         typed address back to byte index - so what the dump prints and what its
         Go to box accepts both agree with the rest of the window. ``highlight``
-        tints the bytes currently shown on the canvas, so the dump reads as
-        "here is what you're looking at, in hex", and with Follow selection on
-        it also scrolls the dump onto it. ``anchor_is_selection`` puts an anchor
+        tints the bytes selected on the canvas, so the dump reads as "here is
+        what you picked, in hex", and with Follow selection on it also scrolls
+        the dump onto it. ``anchor_is_selection`` puts an anchor
         that is itself the selection under that same switch
         (:meth:`HexDumpView.set_data`).
         """

@@ -45,7 +45,7 @@ rectangle is being chosen.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from enum import Enum
 
 from PySide6.QtCore import QPoint, QPointF, QRect, Qt, Signal
@@ -54,8 +54,13 @@ from PySide6.QtWidgets import QWidget
 
 from celpix.core.arrangement import BlockLayout
 from celpix.core.document import GridMode
+from celpix.ui.panzoom import (
+    ZOOM_LEVELS,
+    PanZoomSurface,
+)
+from celpix.ui.theme import GRID_FINE_COLOR, GRID_STRUCTURE_COLOR
 from celpix.ui.tools import EditMode
-from celpix.ui.widgets import ZOOM_LEVELS, PanZoomSurface, paint_selection_outline
+from celpix.ui.widgets import paint_selection_outline
 
 # The neutral surround/backing behind the rendered pixels: a fixed mid-gray (not a
 # theme color) so it never biases how the art's colors read. The scroll viewport
@@ -80,19 +85,8 @@ class GridStyle(Enum):
     LINE = "line"  # solid lines
 
 
-# The lattice's two colors, following the convention modern pixel editors settled
-# on (analysed in `docs/design-reference/editing-features.md`). They go by *role*,
-# which is what makes the grid readable without being told which mode it is in:
-# a neutral light grey for the **fine** level — the unit being worked in, pixels
-# or tiles — and a saturated blue for the **structural** one above it, the tile,
-# block or 8-tile square that unit sits inside.
-#
-# Hue rather than two opacities of white is what makes a grid line separable from
-# the art at a glance — white lines vanish into white pixels, which is most of
-# what a light sprite is, while nothing in a retro palette reads as this blue at
-# this opacity.
-GRID_FINE_COLOR = QColor(0xC8, 0xC8, 0xC8)
-GRID_STRUCTURE_COLOR = QColor(0x00, 0x00, 0xFF)
+# The lattice's two colors are the theme's constants (:mod:`celpix.ui.theme`),
+# re-exported here beside the rest of the grid's settings.
 # The opacity a level is drawn at once it is fully faded in, and the stronger one
 # the coarse step gets so the two levels stay distinct where both are solid.
 GRID_ALPHA = 160
@@ -119,6 +113,20 @@ GRID_COARSE_TILES = 8
 # art without hiding the previewed colour, and matches the grid's idiom of tinting
 # rather than overwriting.
 PREVIEW_OUTLINE_COLOR = QColor(0xFF, 0xFF, 0xFF, 0xC0)
+
+
+def _preview_outline(painter: QPainter, rect: QRect) -> None:
+    """The thin contrasting ring round a preview of what a press would write.
+
+    A preview can be indistinguishable from what is already there — the pen's
+    colour on a pixel of that colour, a stamp over the same tiles — so the ring
+    is what keeps the target visible either way. ``rect.adjusted``: a 1px pen
+    straddles the path, so it is inset to stay inside.
+    """
+    painter.setPen(QPen(PREVIEW_OUTLINE_COLOR, 1))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawRect(rect.adjusted(0, 0, -1, -1))
+
 
 # Where a rearrange drag would land. Opaque and thicker than the grid, because
 # this marks a destination rather than tinting the art: it has to be findable
@@ -534,7 +542,7 @@ class Canvas(PanZoomSurface, QWidget):
         numbers, and drawn down that cell's trailing edge — where the line stops.
 
         A fontmap's line structure is content: the cart's own strings end where
-        these say, and the canvas otherwise draws a run of glyphs with nothing to
+        these say, and the canvas otherwise draws a run of letter tiles with nothing to
         show for it. That is why this has no switch of its own, unlike the two
         label overlays: it is never on where there is nothing to say, and where
         there is, it is the picture's only account of the thing the entry exists
@@ -982,11 +990,30 @@ class Canvas(PanZoomSurface, QWidget):
             self._drag_anchor is not None
             and event.buttons() & Qt.MouseButton.LeftButton
         ):
-            slot = self._slot_at(event.position(), clamp=True)
-            if slot is not None and slot != self._drag_slot:
-                self._drag_slot = slot
-                self.slots_selected.emit(self._drag_anchor, slot)
+            self._track_slot(event, "_drag_slot", self._report_drag_selection)
         super().mouseMoveEvent(event)
+
+    def _track_slot(
+        self,
+        event,
+        last: str,
+        report: Callable[[int], None],  # noqa: ANN001
+    ) -> None:
+        """Follow a drag to the slot under the pointer, reporting each new one.
+
+        Every slot drag here is **clamped** — sliding off the edge keeps aiming at
+        the boundary slot rather than dropping the gesture — and reports only a
+        slot it has not just reported, which is what keeps a slow drag across one
+        cell from re-running its handler per mouse event. ``last`` names the
+        attribute that holds the drag's current slot.
+        """
+        slot = self._slot_at(event.position(), clamp=True)
+        if slot is not None and slot != getattr(self, last):
+            setattr(self, last, slot)
+            report(slot)
+
+    def _report_drag_selection(self, slot: int) -> None:
+        self.slots_selected.emit(self._drag_anchor, slot)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: ANN001 — Qt override
         if self._pan_release(event):
@@ -1044,19 +1071,10 @@ class Canvas(PanZoomSurface, QWidget):
         if self._drag_anchor is not None and buttons & Qt.MouseButton.RightButton:
             # The borrowed selection drag: same growing range as tile mode's, on
             # the button the tool left free.
-            slot = self._slot_at(event.position(), clamp=True)
-            if slot is not None and slot != self._drag_slot:
-                self._drag_slot = slot
-                self.slots_selected.emit(self._drag_anchor, slot)
+            self._track_slot(event, "_drag_slot", self._report_drag_selection)
             return
-        if not (self._rearrange_drag and buttons & Qt.MouseButton.LeftButton):
-            return
-        # Clamped, like the tile-selection drag: sliding off the edge keeps
-        # aiming at the boundary tile rather than dropping the gesture.
-        slot = self._slot_at(event.position(), clamp=True)
-        if slot is not None and slot != self._rearrange_slot:
-            self._rearrange_slot = slot
-            self.rearrange_moved.emit(slot)
+        if self._rearrange_drag and buttons & Qt.MouseButton.LeftButton:
+            self._track_slot(event, "_rearrange_slot", self.rearrange_moved.emit)
 
     def _rearrange_release(self, event) -> None:  # noqa: ANN001 — Qt event
         if event.button() == Qt.MouseButton.RightButton:
@@ -1098,19 +1116,10 @@ class Canvas(PanZoomSurface, QWidget):
         if self._stamp_picking and buttons & Qt.MouseButton.RightButton:
             # The pick drag: nothing is emitted until release, so all a move
             # does is grow the outlined rectangle.
-            slot = self._slot_at(event.position(), clamp=True)
-            if slot is not None and slot != self._stamp_pick_slot:
-                self._stamp_pick_slot = slot
-                self.update()
+            self._track_slot(event, "_stamp_pick_slot", lambda _slot: self.update())
             return
-        if not (self._stamp_drag and buttons & Qt.MouseButton.LeftButton):
-            return
-        # Clamped, like every other drag here: sliding off the edge keeps aiming
-        # at the boundary cell rather than dropping the stroke.
-        slot = self._slot_at(event.position(), clamp=True)
-        if slot is not None and slot != self._stamp_slot:
-            self._stamp_slot = slot
-            self.stamp_moved.emit(slot)
+        if self._stamp_drag and buttons & Qt.MouseButton.LeftButton:
+            self._track_slot(event, "_stamp_slot", self.stamp_moved.emit)
 
     def _stamp_release(self, event) -> None:  # noqa: ANN001 — Qt event
         if event.button() == Qt.MouseButton.RightButton:
@@ -1419,12 +1428,7 @@ class Canvas(PanZoomSurface, QWidget):
         rect.setWidth(max(1, rect.width()))
         rect.setHeight(max(1, rect.height()))
         painter.fillRect(rect, self._preview_color)
-        pen = QPen(PREVIEW_OUTLINE_COLOR)
-        pen.setWidth(1)
-        painter.setPen(pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        # adjusted(): a 1px pen straddles the path, so inset to keep it inside.
-        painter.drawRect(rect.adjusted(0, 0, -1, -1))
+        _preview_outline(painter, rect)
 
     def _paint_stamp_preview(self, painter: QPainter) -> None:
         """The held tiles over the cell they would land on — the pen preview at
@@ -1457,11 +1461,7 @@ class Canvas(PanZoomSurface, QWidget):
             self._stamp_preview.height(),
         )
         painter.drawImage(rect, self._stamp_preview)
-        pen = QPen(PREVIEW_OUTLINE_COLOR)
-        pen.setWidth(1)
-        painter.setPen(pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRect(rect.adjusted(0, 0, -1, -1))
+        _preview_outline(painter, rect)
 
     def _paint_stamp_pick(self, painter: QPainter) -> None:
         """Outline the cells a right drag has swept so far.
@@ -1563,7 +1563,7 @@ class Canvas(PanZoomSurface, QWidget):
         """Draw the two-level grid in the current style (device coords).
 
         POINT dots the finest level's corners in the fine color; the line
-        styles draw the fine grid (grey) with the coarse one (white) laid over
+        styles draw the fine grid (grey) with the structural one (blue) laid over
         it, so the bigger boundaries stand out from the lattice between them.
 
         Both are one repeating cell, so the whole lattice is a tiled blit of that
@@ -1743,6 +1743,57 @@ class Canvas(PanZoomSurface, QWidget):
         painter.end()
         return pixmap
 
+    def _exposed_cells(
+        self,
+        exposed: QRect,
+        values: Sequence[object],
+        across: int,
+        down: int,
+        *,
+        keep: Callable[[object], bool] = lambda value: value is not None,
+    ) -> Iterator[tuple[int, object, QRect]]:
+        """``(slot, value, rect)`` for each labelled cell ``exposed`` touches.
+
+        The walk every per-cell overlay shares: ``values`` is per slot, a cell
+        is ``across`` x ``down`` slots, and ``keep`` says which values are worth
+        a mark. Bounded by the exposed band of slots (:meth:`_exposed_slots`)
+        and then by its columns — a slot band is whole rows of the window, which
+        can be hundreds of tiles across where the exposed strip is twenty. Both
+        are read off the same rectangle the drawing is clipped to, so what they
+        take out is only ever what would have been clipped away. The columns
+        reach one cell further left, since a mark is written from its cell's
+        left edge and the cell before the strip may start outside it.
+        """
+        layout = self._layout()
+        cols, canvas_rows = self._columns(), self._rows()
+        band = self._exposed_slots(exposed)
+        left, right = self._exposed_columns(exposed, self._tile_w)
+        left, right = max(0, left - across), min(cols, right)
+        for slot in range(band.start, min(band.stop, len(values))):
+            value = values[slot]
+            if not keep(value):
+                continue
+            tile_x, tile_y = layout.slot_to_pos(slot)
+            if not (left <= tile_x < right and 0 <= tile_y < canvas_rows):
+                continue
+            rect = self._cell_rect(tile_x, tile_y, across, down)
+            if exposed.intersects(rect):
+                yield slot, value, rect
+
+    @staticmethod
+    def _label_font(painter: QPainter, cell_h: float) -> None:
+        """The overlays' label face: bold, a third of the cell, in the grid ink.
+
+        Floored where a digit still reads and capped where it stops needing to
+        grow; in the grid's own colour because a label is the same kind of thing
+        — an annotation laid over the art, one the eye can ignore.
+        """
+        font = painter.font()
+        font.setPixelSize(max(_ROW_LABEL_MIN - 2, min(int(cell_h // 3), 14)))
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(_tinted(GRID_FINE_COLOR, GRID_COARSE_ALPHA))
+
     def _paint_palette_rows(self, painter: QPainter, exposed: QRect) -> None:
         """Number each labelled tile with its palette row, bottom-left corner.
 
@@ -1766,31 +1817,9 @@ class Canvas(PanZoomSurface, QWidget):
         cell_h = self._tile_h * self._zoom_y
         if cell_w < _ROW_LABEL_MIN or cell_h < _ROW_LABEL_MIN:
             return
-        layout = self._layout()
-        cols, canvas_rows = self._columns(), self._rows()
-        font = painter.font()
-        font.setPixelSize(max(_ROW_LABEL_MIN - 2, min(int(cell_h // 3), 14)))
-        font.setBold(True)
-        painter.setFont(font)
-        painter.setPen(_tinted(GRID_FINE_COLOR, GRID_COARSE_ALPHA))
-        band = self._exposed_slots(exposed)
-        # A slot band is whole rows of the window, which can be hundreds of tiles
-        # across where the exposed strip is twenty: the columns bound what is
-        # worth turning into a rectangle. Both are read off the same exposed
-        # rectangle the drawing is clipped to, so what they take out is only ever
-        # what would have been clipped away.
-        left, right = self._exposed_columns(exposed, self._tile_w)
-        right = min(cols, right)
-        for slot in range(band.start, min(band.stop, len(rows))):
-            row = rows[slot]
-            if row is None:
-                continue  # this slot names no row; row 0 named is still a row
-            tile_x, tile_y = layout.slot_to_pos(slot)
-            if not (left <= tile_x < right and 0 <= tile_y < canvas_rows):
-                continue
-            rect = self._slot_rect(tile_x, tile_y)
-            if not exposed.intersects(rect):
-                continue
+        self._label_font(painter, cell_h)
+        # ``row`` 0 named is still a row; only a slot naming none is skipped.
+        for _slot, row, rect in self._exposed_cells(exposed, rows, 1, 1):
             painter.drawText(
                 rect.adjusted(1, 0, 0, 0),
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom,
@@ -1825,32 +1854,11 @@ class Canvas(PanZoomSurface, QWidget):
         cell_h = self._tile_h * self._zoom_y * down
         if cell_h < _ROW_LABEL_MIN:
             return
-        font = painter.font()
-        font.setPixelSize(max(_ROW_LABEL_MIN - 2, min(int(cell_h // 3), 14)))
-        font.setBold(True)
-        painter.setFont(font)
+        self._label_font(painter, cell_h)
         metrics = painter.fontMetrics()
         if metrics.horizontalAdvance(_tile_id_text(self._widest_tile_id)) + 2 > cell_w:
             return
-        layout = self._layout()
-        cols, canvas_rows = self._columns(), self._rows()
-        painter.setPen(_tinted(GRID_FINE_COLOR, GRID_COARSE_ALPHA))
-        band = self._exposed_slots(exposed)
-        # The columns of the band worth drawing — :meth:`_paint_palette_rows`,
-        # less one cell's width, since a cell's number is written from its left
-        # edge and the cell before it may start outside the strip.
-        left, right = self._exposed_columns(exposed, self._tile_w)
-        left, right = max(0, left - across), min(cols, right)
-        for slot in range(band.start, min(band.stop, len(ids))):
-            value = ids[slot]
-            if value is None:
-                continue
-            tile_x, tile_y = layout.slot_to_pos(slot)
-            if not (left <= tile_x < right and 0 <= tile_y < canvas_rows):
-                continue
-            rect = self._cell_rect(tile_x, tile_y, across, down)
-            if not exposed.intersects(rect):
-                continue
+        for _slot, value, rect in self._exposed_cells(exposed, ids, across, down):
             painter.drawText(
                 rect.adjusted(1, 0, 0, 0),
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
@@ -1881,21 +1889,10 @@ class Canvas(PanZoomSurface, QWidget):
         if min(cell_w, cell_h) < ATTR_BADGE_MIN_CELL:
             return
         side = max(4, min(int(cell_h // 4), 10))
-        layout = self._layout()
-        cols, canvas_rows = self._columns(), self._rows()
-        band = self._exposed_slots(exposed)
-        left, right = self._exposed_columns(exposed, self._tile_w)
-        left, right = max(0, left - across), min(cols, right)
-        for slot in range(band.start, min(band.stop, len(marks))):
-            mask = marks[slot]
-            if not mask:
-                continue
-            tile_x, tile_y = layout.slot_to_pos(slot)
-            if not (left <= tile_x < right and 0 <= tile_y < canvas_rows):
-                continue
-            cell = self._cell_rect(tile_x, tile_y, across, down)
-            if not exposed.intersects(cell):
-                continue
+        # A mask of 0 is no attribute set, so nothing to badge.
+        for _slot, mask, cell in self._exposed_cells(
+            exposed, marks, across, down, keep=bool
+        ):
             corner_x = cell.right() - side
             if mask & ATTR_PRIORITY_BIT:
                 badge = QRect(corner_x, cell.y() + 1, side, side)

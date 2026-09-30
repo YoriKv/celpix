@@ -68,8 +68,8 @@ from celpix.core.tilerearrangement import (
 from celpix.ui import render_bridge
 from celpix.ui.main_window.transform import TransformOp
 from celpix.ui.tools import EditMode
-from celpix.ui.undo_commands import TileRearrangementCommand, ViewToggleCommand
-from celpix.ui.widgets import signals_blocked
+from celpix.ui.undo_commands import TileRearrangementCommand
+from celpix.ui.widgets import modal_tool_actions, signals_blocked, sync_modal_tool
 
 # The tool's own tooltip, re-set by :meth:`RearrangeMixin._sync_rearrange_actions`
 # when something locks the tool out, so all three readings live side by side. The
@@ -217,37 +217,26 @@ class RearrangeMixin:
         while armed anyway (:meth:`_showing_rearranged`) — so it lives on the
         menu, which is also where the F1 guide reads it from.
 
-        The tool takes **two** actions over the one state because a bar button
-        and a menu row want opposite things from Qt's checkable flag: the button
-        needs it (a latched button is how an armed modal tool says it is armed),
-        while the menu row must not have it — it sits with Toggle Selection Mode
-        and Toggle Edit Mode, which are plain rows, and a lone checkbox among
-        three mode switches reads as a different kind of thing from its
-        neighbours. Both drive the same :meth:`_set_rearranging`, and
+        The tool takes **two** actions over the one state, a latching bar
+        button and a plain menu row (:func:`~celpix.ui.widgets.modal_tool_actions`
+        says why); both drive :meth:`_set_rearranging`, and
         :meth:`_sync_rearrange_actions` converges them, so they cannot disagree.
 
         ``R``/``Shift+R`` are set as shortcuts for the label they put in the menu
         and the F1 guide, but with a widget context so they never fire: the bare
         letters are routed by the app-wide event filter (``_handle_nav_key``),
         which yields to focused text inputs — the same treatment View ▸ Grid gets.
-        The key is on the menu row, since the guide reads the menu bar.
         """
-        # The bar button carries the short label: QToolButton takes its text from
-        # iconText, and the full "Toggle Rearrange Mode" would stretch the bar.
-        self._rearrange_action = QAction("Toggle Rearrange Mode", self)
-        self._rearrange_action.setIconText("Rearrange Mode")
-        self._rearrange_action.setCheckable(True)
-        self._rearrange_action.setToolTip(REARRANGE_TIP)
-        self._rearrange_action.toggled.connect(self._set_rearranging)
-        bar.addAction(self._rearrange_action)
-        self._toggle_rearrange_action = QAction("Toggle Rearrange Mode", self)
-        self._toggle_rearrange_action.setShortcut(QKeySequence("R"))
-        self._toggle_rearrange_action.setShortcutContext(
-            Qt.ShortcutContext.WidgetShortcut
+        self._rearrange_action, self._toggle_rearrange_action = modal_tool_actions(
+            self,
+            "Toggle Rearrange Mode",
+            "Rearrange Mode",
+            "R",
+            REARRANGE_TIP,
+            self._set_rearranging,
+            self._toggle_rearranging,
         )
-        self._toggle_rearrange_action.setToolTip(REARRANGE_TIP)
-        self._toggle_rearrange_action.triggered.connect(self._toggle_rearranging)
-        self._toggle_rearrange_action.setEnabled(False)  # nothing open yet
+        bar.addAction(self._rearrange_action)
         self._show_rearranged_action = QAction("Show Rearranged Tiles", self)
         self._show_rearranged_action.setCheckable(True)
         self._show_rearranged_action.setChecked(True)
@@ -318,21 +307,10 @@ class RearrangeMixin:
         file underneath. With nothing open there is no entry to carry it, and it
         lands through the apply helper directly.
         """
-        if self._show_rearranged == on or self._applying_undo:
-            return
-        entry = self._workspace.current
-        if self._doc is None or entry is None:
-            self._apply_view_toggle("_show_rearranged", on)
-            return
-        self._push_command(
-            ViewToggleCommand(
-                self,
-                entry,
-                "_show_rearranged",
-                "show the file's own tile order" if not on else "show rearranged tiles",
-                before=self._show_rearranged,
-                after=on,
-            )
+        self._push_view_toggle(
+            "_show_rearranged",
+            "show rearranged tiles" if on else "show the file's own tile order",
+            on,
         )
 
     def _sync_rearrange_actions(self) -> None:
@@ -348,17 +326,11 @@ class RearrangeMixin:
         if self._rearranging and not available:
             # Re-enters here once with _rearranging already False, so it settles.
             self._set_rearranging(False)
-        for action, checked in (
-            (self._rearrange_action, self._rearranging),
-            (self._show_rearranged_action, self._show_rearranged),
-        ):
-            if action.isChecked() != checked:
-                with signals_blocked(action):
-                    action.setChecked(checked)
-            action.setEnabled(available)
-        # The tool's menu row holds no state of its own - it only ever needs to
-        # be as reachable, and say as much, as the button it stands in for.
-        self._toggle_rearrange_action.setEnabled(available)
+        show = self._show_rearranged_action
+        if show.isChecked() != self._show_rearranged:
+            with signals_blocked(show):
+                show.setChecked(self._show_rearranged)
+        show.setEnabled(available)
         tip = REARRANGE_TIP
         if self._doc is not None and not available:
             # Which lockout it is, since they are answered in different places:
@@ -368,8 +340,13 @@ class RearrangeMixin:
                 if self._can(Capability.TILE_REARRANGE)
                 else REARRANGE_TILEMAP_TIP
             )
-        self._rearrange_action.setToolTip(tip)
-        self._toggle_rearrange_action.setToolTip(tip)
+        sync_modal_tool(
+            self._rearrange_action,
+            self._toggle_rearrange_action,
+            armed=self._rearranging,
+            available=available,
+            tip=tip,
+        )
         # The transform buttons need something to act on: the carried tiles
         # mid-drag, else the selection. The block group additionally needs a 2D
         # block, exactly as the destructive Block group does — and both groups'

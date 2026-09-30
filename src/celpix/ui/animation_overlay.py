@@ -1,22 +1,25 @@
 """The animation player — a floating window that steps a sprite object's frames.
 
+(:class:`AnimationOverlay` is a tool window beside the view, not drawn over it;
+the class name and the ``layout/animation-player`` settings key are what the rest
+of the code and a user's stored layout know it by.)
+
 A sprite object's canvas shows its frames as a *strip*, laid out in file order,
 which is a picture of the file. The table beside them says which frames play, in
 what order and for how long (:mod:`celpix.core.animation`), and this is the
 window that walks it — the picture of the motion.
 
-It is a `Qt.Tool` window on the decompression overlay's pattern
-(:mod:`celpix.ui.decompress_overlay`): floats above the main window, takes no
-taskbar slot, placed beside it on the first show and left where the user drags it
-after. Below the frame sits the same status bar and the same
-:class:`~celpix.ui.widgets.Badge`, for the same reason — the picture cannot show
-that a sequence names frames the file does not have, so it is said in words.
+It is a floating tool window (:class:`~celpix.ui.tool_window.ToolWindow`):
+floats above the main window, takes no taskbar slot, placed beside it on the
+first show and left where the user drags it after. Below the frame sits the tool
+windows' status bar and :class:`~celpix.ui.widgets.Badge` — the picture cannot
+show that a sequence names frames the file does not have, so it is said in words.
 
 **Its zoom is its own**, deliberately not the main view's. That is why the frame
 is a widget of this module rather than a :class:`~celpix.ui.canvas.Canvas`: the
 canvas carries slot mapping, selection and a configurable lattice that an
 animation frame has no use for, and its zoom belongs to the document's view.
-Instead this follows the tile source panel's split
+Instead this follows the split the tile source dock makes with its panel
 (:mod:`celpix.ui.tile_source_panel`) one level in — :class:`AnimationFrame`
 reports Ctrl+wheel and space-drag and owns no state, while the window holds the
 level in its Zoom spin and the scrolling in its scroll area.
@@ -30,34 +33,34 @@ Nothing here re-renders, and nothing here reads the model.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtWidgets import (
-    QApplication,
     QComboBox,
     QHBoxLayout,
-    QLabel,
     QMenu,
     QPushButton,
-    QScrollArea,
     QSpinBox,
-    QStatusBar,
     QToolButton,
-    QVBoxLayout,
     QWidget,
 )
 
 from celpix.core.animation import Sequence, unknown_frames
+from celpix.ui.panzoom import (
+    PanOnlyMouse,
+    PanZoomSurface,
+    SpacePanFilter,
+    mount_surface,
+    zoom_spin,
+)
+from celpix.ui.tool_window import ToolWindow
 from celpix.ui.widgets import (
     Badge,
-    PanZoomSurface,
-    apply_badge,
-    pan_scroll_area,
+    add_labelled,
+    counted,
     select_combo_data,
     signals_blocked,
-    zoom_anchored,
 )
-from celpix.ui.window_layout import WindowLayout
 
 # The rate the durations are read at, and the range the spin offers. A duration is
 # the authoring tool's own tick and not a time (``core.animation.Step``), so this
@@ -78,13 +81,8 @@ DEFAULT_ZOOM = 4
 # for one tick instead, which is the shortest thing the format can mean.
 MIN_TICKS = 1
 
-# How long a burst of view refreshes is allowed to coalesce into one recompose of
-# the strip. Long enough to swallow a stroke's worth, short enough that an edit
-# appears to land here at the same time it lands on the canvas.
-REFRESH_DEBOUNCE_MS = 120
 
-
-class AnimationFrame(PanZoomSurface, QWidget):
+class AnimationFrame(PanOnlyMouse, PanZoomSurface, QWidget):
     """One frame of an already-composed strip, drawn at this window's zoom.
 
     Owns no zoom or scroll state of its own — both are reported and applied by
@@ -155,34 +153,16 @@ class AnimationFrame(PanZoomSurface, QWidget):
         painter.drawImage(QPoint(0, 0), self._strip, self._source)
         painter.end()
 
-    # -- interaction ---------------------------------------------------------
-    def mousePressEvent(self, event) -> None:  # noqa: ANN001 — Qt override
-        if self._pan_press(event):
-            return
-        super().mousePressEvent(event)
 
-    def mouseMoveEvent(self, event) -> None:  # noqa: ANN001 — Qt override
-        if self._pan_move(event):
-            return
-        super().mouseMoveEvent(event)
+class AnimationOverlay(ToolWindow):
+    """Floating player for one sprite object's sequences.
 
-    def mouseReleaseEvent(self, event) -> None:  # noqa: ANN001 — Qt override
-        if self._pan_release(event):
-            return
-        super().mouseReleaseEvent(event)
+    :attr:`refresh_requested` asks for the strip to be recomposed, through the
+    shell's debounce: the strip is the object's every frame, untrimmed, and the
+    main window refreshes on things that arrive in bursts
+    (:mod:`celpix.ui.main_window.animation`).
+    """
 
-
-class AnimationOverlay(QWidget):
-    """Floating player for one sprite object's sequences."""
-
-    # Asked for when the entry underneath has changed and the strip wants
-    # recomposing. A signal rather than a direct call because the composing half
-    # lives on the window (:mod:`celpix.ui.main_window.animation`), and it is
-    # **debounced**: the strip is the object's every frame, untrimmed, and the
-    # window refreshes on things that arrive in bursts — each pixel of a stroke,
-    # each step of a drag. One recompose per burst is imperceptible here and the
-    # difference between a player that is open and one that is in the way.
-    refresh_requested = Signal()
     # Export ▸ one of four: (as GIF rather than PNGs, every sequence rather than
     # the one showing). Asked of the window, which owns the dialogs, the default
     # folder and the entry's name; the frames themselves are this window's to
@@ -190,9 +170,7 @@ class AnimationOverlay(QWidget):
     export_requested = Signal(bool, bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent, Qt.WindowType.Tool)
-        self.setWindowTitle("Animation")
-        self._positioned = False
+        super().__init__(parent, "Animation", "layout/animation-player", (420, 420))
 
         # What is being played. Held rather than read back off the model: the
         # window outlives a repaint and must not depend on the document still
@@ -204,18 +182,6 @@ class AnimationOverlay(QWidget):
         self._inferred = False
 
         self._frame = AnimationFrame()
-        self._frame.zoom_requested.connect(self._on_wheel_zoom)
-        self._frame.pan_requested.connect(self._pan)
-        self._scroll = QScrollArea()
-        self._scroll.setWidget(self._frame)
-        self._scroll.setAlignment(
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
-        )
-        self._scroll.setWidgetResizable(False)
-        # A frame is small and the window is not, so most of what is on screen is
-        # backing — and a zoom gesture that only answers over the sprite itself
-        # would be aimed at the wrong half of the window most of the time.
-        self._frame.claim_background(self._scroll)
 
         self._sequence = QComboBox()
         self._sequence.setToolTip(
@@ -227,8 +193,9 @@ class AnimationOverlay(QWidget):
         # The three transport buttons take no focus, so stepping or starting the
         # playback leaves it on the frame rather than on the button last pressed.
         # Space is this window's pan gesture and is claimed window-wide
-        # (:meth:`eventFilter`), so a button that held focus could not click
-        # itself with it anyway — it would just wear a focus ring for nothing.
+        # (:class:`~celpix.ui.widgets.SpacePanFilter`), so a button that held
+        # focus could not click itself with it anyway — it would just wear a
+        # focus ring for nothing.
         self._play = QPushButton("Play")
         self._play.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._play.setCheckable(True)
@@ -252,16 +219,17 @@ class AnimationOverlay(QWidget):
         )
         self._rate.valueChanged.connect(self._on_rate_changed)
 
-        self._zoom = QSpinBox()
-        self._zoom.setRange(*ZOOM_RANGE)
-        self._zoom.setValue(DEFAULT_ZOOM)
-        self._zoom.setKeyboardTracking(False)
-        self._zoom.setSuffix("x")
-        self._zoom.setToolTip(
+        self._zoom = zoom_spin(
+            ZOOM_RANGE,
+            DEFAULT_ZOOM,
+            self._frame.set_zoom,
             "Frame magnification (Ctrl+Scroll over the frame)\n"
-            "Independent of the main view. Space+drag pans"
+            "Independent of the main view. Space+drag pans",
         )
-        self._zoom.valueChanged.connect(self._frame.set_zoom)
+        # A frame is small and the window is not, so most of what is on screen is
+        # backing — and a zoom gesture that only answers over the sprite itself
+        # would be aimed at the wrong half of the window most of the time.
+        self._scroll = mount_surface(self._frame, spin=self._zoom)
 
         # One button, four choices: a menu rather than four buttons, since an
         # export is occasional and the header is the transport's.
@@ -299,31 +267,11 @@ class AnimationOverlay(QWidget):
         header.addWidget(self._prev)
         header.addWidget(self._play)
         header.addWidget(self._next)
-        header.addWidget(QLabel("Rate"))
-        header.addWidget(self._rate)
-        header.addWidget(QLabel("Zoom"))
-        header.addWidget(self._zoom)
+        add_labelled(header, "Rate", self._rate, self._rate.toolTip())
+        add_labelled(header, "Zoom", self._zoom, self._zoom.toolTip())
         header.addWidget(self._export)
-
-        self._status = QStatusBar()
-        self._status.setSizeGripEnabled(False)
-        self._badge = QLabel()
-        self._badge.hide()
-        self._status.addPermanentWidget(self._badge)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 6, 6, 0)
-        layout.addLayout(header)
-        layout.addWidget(self._scroll, 1)
-        layout.addWidget(self._status)
-        self.resize(420, 420)
-        # Kept across runs like the main window's: the size that fits the sprite
-        # being animated is the user's to find, and finding it again every time
-        # the player opens is the tax celpix.ui.window_layout exists to stop.
-        self._layout_memory = WindowLayout(self, "layout/animation-player")
-        # A remembered position counts as already placed (see the overlay this
-        # follows, :mod:`celpix.ui.decompress_overlay`).
-        self._positioned = self._layout_memory.restore()
+        self.content.addLayout(header)
+        self.content.addWidget(self._scroll, 1)
 
         # Single-shot and re-armed per step, rather than one repeating timer at
         # the tick rate: a step's duration is known when it starts, so this waits
@@ -332,27 +280,17 @@ class AnimationOverlay(QWidget):
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(lambda: self._advance(1))
 
-        self._pending = QTimer(self)
-        self._pending.setSingleShot(True)
-        self._pending.setInterval(REFRESH_DEBOUNCE_MS)
-        self._pending.timeout.connect(self.refresh_requested)
+        # Space pans wherever focus sits in here — except on the sequence
+        # picker, a QComboBox dropping its list open on space. The list itself
+        # is a window of its own, so an open popup falls outside the filter.
+        self._space_pan = SpacePanFilter(
+            self, self._frame, yields=lambda obj: isinstance(obj, QComboBox)
+        )
 
-        # The pan gesture's space key is taken off an application filter rather
-        # than a key event of this window, so it answers wherever focus sits in
-        # here - see eventFilter.
-        app = QApplication.instance()
-        if app is not None:
-            app.installEventFilter(self)
+    def _pixel_surface(self) -> PanZoomSurface:
+        return self._frame
 
     # -- presenting ----------------------------------------------------------
-    def set_pixel_aspect(self, aspect) -> None:  # noqa: ANN001 — a PixelAspect
-        """Draw at ``aspect`` — forwarded to the frame it plays.
-
-        One name on every holder of a pixel surface, so the window applies the
-        project's setting with a loop rather than by reaching through each of them
-        (:meth:`~celpix.ui.main_window.view_menu.ViewMenuMixin._sync_pixel_aspect`).
-        """
-        self._frame.set_pixel_aspect(aspect)
 
     def show_object(
         self,
@@ -398,42 +336,27 @@ class AnimationOverlay(QWidget):
                 for at, sequence in enumerate(sequences):
                     if not sequence:
                         continue
-                    steps = len(sequence.steps)
-                    label = f"Sequence {at} - {steps} step{'s' if steps != 1 else ''}"
+                    label = f"Sequence {at} - {counted(len(sequence.steps), 'step')}"
                     # Said where it is not the default, in the status line's
                     # 1-based numbering: otherwise playback skipping the first
                     # steps after one pass looks like a fault.
-                    if 0 < sequence.loop < steps:
+                    if 0 < sequence.loop < len(sequence.steps):
                         label += f", loops to step {sequence.loop + 1}"
                     self._sequence.addItem(label, at)
             self._step = 0
         elif keep is not None:
             select_combo_data(self._sequence, keep)
         self._refresh()
-        if not self.isVisible():
-            if not self._positioned and self.parentWidget() is not None:
-                anchor = self.parentWidget().frameGeometry().topRight()
-                self.move(anchor + QPoint(12, 0))
-                self._positioned = True
-            self.show()
-            # The frame takes the focus, not the picker, which would otherwise
-            # have it as the first widget of the layout: the picker is a
-            # QComboBox and space drops its list open, and that is the one place
-            # in this window the pan gesture yields (:meth:`eventFilter`).
-            self._frame.setFocus()
-
-    def request_refresh(self) -> None:
-        """Ask for the strip to be recomposed shortly, coalescing a burst into one."""
-        if self.isVisible():
-            self._pending.start()
+        # The frame takes the focus, not the picker, which would otherwise have
+        # it as the first widget of the layout: the picker is a QComboBox and
+        # space drops its list open, and that is the one place in this window
+        # the pan gesture yields.
+        self.present(focus=self._frame)
 
     def hide_overlay(self) -> None:
         """Hide and stop (the entry changed, or it is not an object any more)."""
-        self._play.setChecked(False)
-        self._timer.stop()
-        self._pending.stop()
-        if self.isVisible():
-            self.hide()
+        self._stop()
+        super().hide_overlay()
 
     def closeEvent(self, event) -> None:  # noqa: ANN001 — Qt override
         """Stop playing when the window is closed from its own frame.
@@ -442,14 +365,14 @@ class AnimationOverlay(QWidget):
         :meth:`hide_overlay`, and the timer has to hear about it: closed while
         playing, it would go on firing against the strip it was holding for as
         long as the app stayed open — and the window-side sync leaves a hidden
-        player alone, so nothing else would ever stop it. The pan mode goes down
-        for the same reason, a space release landing anywhere else being a
-        release this window never sees.
+        player alone, so nothing else would ever stop it.
         """
+        self._stop()
+        super().closeEvent(event)
+
+    def _stop(self) -> None:
         self._play.setChecked(False)
         self._timer.stop()
-        self._frame.set_pan_mode(False)
-        super().closeEvent(event)
 
     # -- export --------------------------------------------------------------
     def export_source(
@@ -523,8 +446,7 @@ class AnimationOverlay(QWidget):
         sequence = self._current
         if sequence is None or not sequence.steps:
             self._frame.show_frame(None)
-            self._status.showMessage("No sequences" if not self._sequences else "Empty")
-            apply_badge(self._badge, None)
+            self.set_status("No sequences" if not self._sequences else "Empty")
             for control in (self._play, self._prev, self._next, *self._export_one):
                 control.setEnabled(False)
             self._export.setEnabled(any(self._sequences) and bool(self._rects))
@@ -535,12 +457,12 @@ class AnimationOverlay(QWidget):
         step = sequence.steps[self._step]
         known = 0 <= step.frame < self._frames
         self._frame.show_frame(self._rects[step.frame] if known else None)
-        ticks = f"{step.duration} tick{'s' if step.duration != 1 else ''}"
+        ticks = counted(step.duration, "tick")
         where = f"frame {step.frame}" if known else f"frame {step.frame} - not in file"
-        self._status.showMessage(
-            f"Step {self._step + 1}/{len(sequence.steps)} - {where} - {ticks}"
+        self.set_status(
+            f"Step {self._step + 1}/{len(sequence.steps)} - {where} - {ticks}",
+            self._badge_for(sequence),
         )
-        apply_badge(self._badge, self._badge_for(sequence))
 
     def _badge_for(self, sequence: Sequence) -> Badge | None:
         """What the picture cannot show about the sequence being played.
@@ -552,24 +474,25 @@ class AnimationOverlay(QWidget):
 
         A step naming a frame the file does not have is a **warning** — the table
         is making a claim the file contradicts, and the frame simply is not there
-        (the corpus holds 7,019 such steps). That the block split was *inferred*
-        is a **fact**: nothing is wrong, but a reading shown as confidently as a
-        confirmed one becomes a fact by repetition.
+        (the corpus holds 7,019 such steps). That the split into a frame array
+        and a duration array was *inferred* is a **fact**: nothing is wrong, but
+        a reading shown as confidently as a confirmed one becomes a fact by
+        repetition.
         """
         parts: list[Badge] = []
         if self._inferred:
             parts.append(
                 Badge(
                     "inferred",
-                    "Frame and duration blocks were inferred from\n"
-                    "the data; the file does not declare them",
+                    "Which array holds frames and which durations\n"
+                    "was inferred from the data; the file does not say",
                 )
             )
         missing = unknown_frames((sequence,), self._frames)
         if missing:
             parts.append(
                 Badge(
-                    f"{missing} missing frame{'s' if missing != 1 else ''}",
+                    counted(missing, "missing frame"),
                     "The sequence names frames the file does not hold\n"
                     "Those steps show as blank",
                     warning=True,
@@ -582,58 +505,3 @@ class AnimationOverlay(QWidget):
             "\n\n".join(part.detail for part in parts),
             warning=any(part.warning for part in parts),
         )
-
-    # -- zoom and pan --------------------------------------------------------
-    def _on_wheel_zoom(self, steps: int, pos) -> None:  # noqa: ANN001 — QPointF
-        """Ctrl+wheel over the frame, anchored on the pixel under the cursor.
-
-        The tile source dock's wheel zoom over this window's own scroll area,
-        with its levels: whole magnifications the spin steps through, so a notch
-        is one step of it.
-        """
-        spin = self._zoom
-        new = min(max(spin.value() + steps, spin.minimum()), spin.maximum())
-        zoom_anchored(self._scroll, spin, new, pos)
-
-    def _pan(self, dx: int, dy: int) -> None:
-        """Shift the scroll view by a space-drag delta (device pixels)."""
-        pan_scroll_area(self._scroll, dx, dy)
-
-    # -- space arms the pan --------------------------------------------------
-    def eventFilter(self, obj, event) -> bool:  # noqa: ANN001 — Qt override
-        """Claim the space bar for the pan wherever focus sits in this window.
-
-        Filtered on the application rather than handled in ``keyPressEvent``,
-        because a key press goes to the focused widget alone and a hold sends
-        exactly one: with focus on the Zoom spin — where magnifying the frame
-        leaves it, and having magnified it is the usual reason to want to pan —
-        the press reached a widget that does nothing with it, and the gesture was
-        dead until the picture happened to get clicked. Taking it here instead is
-        the rule the main window's own space pan follows
-        (:meth:`~celpix.ui.main_window.navigation.NavigationMixin._handle_space_pan`).
-
-        Any widget of *this* window, and nothing outside it: the main window's
-        filter arms its own surfaces off the same key, and only one of the two
-        windows can be the one being typed into. The sequence picker is the
-        exception, a QComboBox dropping its list open on space; the list itself
-        is a window of its own, so an open popup falls outside this test.
-        """
-        et = event.type()
-        if et == QEvent.Type.WindowDeactivate and obj is self:
-            # A hold that outlives the window's activation: the release lands in
-            # whatever was raised over it and is never seen here, which would
-            # leave the frame holding an open hand and eating the next press.
-            self._frame.set_pan_mode(False)
-        elif (
-            et in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease)
-            and event.key() == Qt.Key.Key_Space
-            and isinstance(obj, QWidget)
-            and obj.window() is self
-            and not isinstance(obj, QComboBox)
-        ):
-            # Auto-repeat is swallowed rather than acted on: holding space fires
-            # press after press, and each would re-arm a mode already on.
-            if not event.isAutoRepeat():
-                self._frame.set_pan_mode(et == QEvent.Type.KeyPress)
-            return True
-        return super().eventFilter(obj, event)

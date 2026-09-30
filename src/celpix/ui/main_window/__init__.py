@@ -1,7 +1,8 @@
 """The application main window, split by concern.
 
 :class:`~celpix.ui.main_window.window.MainWindow` is one class assembled from
-mixins, one per surface it drives - navigation, interpretation, palette (source,
+mixins, one per surface it drives - navigation, interpretation (with the
+arrangement and the plugin reload beside it), palette (source,
 offset, entry, dock, color editing and pinned regions), selection, the clipboard
 verbs over it and the tile-byte read/write underneath both, transforms, pixel editing,
 rearrange, session, tilemap (the binding bar, cell editing, the tile source dock

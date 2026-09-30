@@ -42,15 +42,9 @@ aliases, and command 7 in long form collides with the ``0xFF`` terminator
 from __future__ import annotations
 
 from celpix.core.address import format_hex
-from celpix.core.context import (
-    KEY_COMPRESSED_SIZE,
-    KEY_DECOMPRESS_COMPLETE,
-    KEY_DECOMPRESS_PARTIAL,
-    PipelineContext,
-)
 from celpix.core.errors import Stage
-from celpix.plugins.base import PluginInfo
-from celpix.plugins.builtins._lz import MatchFinder, copy_from
+from celpix.plugins.base import PartialDecompression, PluginInfo
+from celpix.plugins.builtins._lz import MatchFinder, copy_from, corrupt
 
 # One HiROM bank — the conventional cap on an uncompressed structure, and the
 # reach of the absolute 16-bit backreference offset.
@@ -95,8 +89,7 @@ _ORIG_MAX_LITERAL = 1024
 _NO_CHOICE = (_OP_LITERAL, 0, 0)
 
 
-def _fail(reason: str) -> ValueError:
-    return ValueError(f"corrupt LZ stream: {reason}")
+_fail = corrupt("LZ")
 
 
 def decompress(
@@ -481,7 +474,7 @@ def compress_improved(data: bytes, *, big_endian_offsets: bool) -> bytes:
     return bytes(out)
 
 
-class _LzBase:
+class _LzBase(PartialDecompression):
     """Both directions of one LZ variant; ``_big_endian`` is all that differs.
 
     ``_improved`` picks the parse, which only a save-back can tell apart: both
@@ -491,25 +484,22 @@ class _LzBase:
     _big_endian: bool
     _improved = False
 
-    def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
+    def _decode(self, data: bytes, *, partial: bool) -> tuple[bytes, int, bool]:
         # Strict first: reaching the terminator means the structure's true end is
         # known. Fall back to a best-effort partial decode only when the caller
         # said the buffer may cut the structure short.
         try:
             out, consumed = decompress(data, big_endian_offsets=self._big_endian)
-            complete = True
+            return out, consumed, True
         except ValueError:
-            if not ctx.get(KEY_DECOMPRESS_PARTIAL):
+            if not partial:
                 raise
-            out, consumed = decompress(
-                data, big_endian_offsets=self._big_endian, allow_partial=True
-            )
-            complete = False
-        ctx.set(KEY_COMPRESSED_SIZE, consumed)
-        ctx.set(KEY_DECOMPRESS_COMPLETE, complete)
-        return out
+        out, consumed = decompress(
+            data, big_endian_offsets=self._big_endian, allow_partial=True
+        )
+        return out, consumed, False
 
-    def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
+    def _encode(self, data: bytes) -> bytes:
         pack = compress_improved if self._improved else compress
         return pack(data, big_endian_offsets=self._big_endian)
 

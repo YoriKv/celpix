@@ -138,7 +138,7 @@ def _window(records: list[_Record], inputs: dict) -> tuple[int, int]:
     return min(pages), max(pages) + PAGE_BYTES - min(pages)
 
 
-def _blank(base: int, length: int, fill: int) -> bytearray:
+def _blank(length: int, fill: int) -> bytearray:
     out = bytearray()
     for _ in range(length // PAGE_BYTES):
         out += bytes([fill]) * CELL_BYTES + bytes(PAGE_BYTES - CELL_BYTES)
@@ -207,7 +207,7 @@ class NesPpuListCompression:
             raise ValueError("no terminator — no PPU write list here")
         inputs = ctx.get(KEY_INPUTS) or {}
         base, length = _window(records, inputs)
-        out = _blank(base, length, inputs.get(INPUT_FILL, 0))
+        out = _blank(length, inputs.get(INPUT_FILL, 0))
         for position, (_, at) in _visible(records, base, length).items():
             out[position] = data[at]
         ctx.set(KEY_COMPRESSED_SIZE, consumed)
@@ -232,7 +232,7 @@ class NesPpuListCompression:
             raise ValueError(
                 f"the picture is {len(data)} bytes; the list draws {length}"
             )
-        blank = _blank(base, length, inputs.get(INPUT_FILL, 0))
+        blank = _blank(length, inputs.get(INPUT_FILL, 0))
         visible = _visible(records, base, length)
         for position in range(length):
             if position not in visible and data[position] != blank[position]:

@@ -33,12 +33,14 @@ would need — the same trade
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import replace
+from typing import Any
 
 from celpix.core import ceil_div
 from celpix.core.arrangement import BlockLayout, compose_window, split_grid
 from celpix.core.capabilities import Capability, ContentKind
+from celpix.core.document import Document
 from celpix.core.errors import PipelineError
 from celpix.core.notices import Notice, notices
 from celpix.core.tilemap import Cell, CellGrid, CellOp
@@ -64,6 +66,11 @@ _FIELD_LABELS = {
 }
 _BOOL_FIELDS = frozenset({"flip_h", "flip_v", "visible", "ends_line"})
 
+# Sentinels for :meth:`TilemapEditMixin._probe_cell_codec`: "``failed`` was not
+# given", and "the codec has no such method" where None is a real answer.
+_AS_DEFAULT = object()
+_NO_ANSWER = object()
+
 
 class TilemapEditMixin:
     """Cell flips and the in-app cell clipboard.
@@ -71,6 +78,15 @@ class TilemapEditMixin:
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a
     standalone object.
     """
+
+    def _init_tilemap_edit(self) -> None:
+        """Seed the cell clipboard; called from the window's ``__init__``.
+
+        Empty until the first cell copy. It lives on the window rather than an
+        entry, so a copy off one map pastes onto another, and it never reaches
+        the system clipboard (the module docstring says why).
+        """
+        self._cell_clipboard: CellGrid | None = None
 
     # -- addressing ----------------------------------------------------------
     def _cells_per_row(self) -> int:
@@ -175,6 +191,42 @@ class TilemapEditMixin:
         except KeyError:
             return None
 
+    def _probe_cell_codec(
+        self,
+        name: str,
+        *args: Any,
+        read: Callable[[Any], Any] | None = None,
+        default: Any = None,
+        failed: Any = _AS_DEFAULT,
+    ) -> Any:  # whatever the codec answers, which the caller knows the shape of
+        """Ask this entry's cell codec ``name``, or answer ``default`` for it.
+
+        **The one probe protocol** every "what can this format's cells do"
+        question follows: no tilemap, or a codec written before the method
+        existed, answers ``default`` — each caller's safe direction, since a
+        format that was never asked cannot have said where its field sits. A
+        method that *raises* is reported through :meth:`_codec_fault` and read
+        as ``failed`` (``default`` unless the caller must tell "cannot answer"
+        from "does not answer"): a broken plugin must not break the bar.
+
+        ``read`` shapes the answer inside the same guard, so a codec that hands
+        back something malformed is caught as the fault it is rather than
+        escaping from the caller's own iteration.
+        """
+        found = self._tilemap_engine()
+        if found is None:
+            return default
+        engine, preset = found
+        ask = getattr(engine, name, None)
+        if ask is None:
+            return default
+        try:
+            answer = ask(*args, preset.params)
+            return answer if read is None else read(answer)
+        except Exception as exc:  # noqa: BLE001 — a probe must not break the bar
+            self._codec_fault(preset.id, name, exc)
+            return default if failed is _AS_DEFAULT else failed
+
     # -- transforms ----------------------------------------------------------
     def _cell_transform(self, op) -> Callable[[Cell], Cell] | None:  # noqa: ANN001
         """``op`` as this entry's *format* performs it, or None if it cannot.
@@ -232,18 +284,7 @@ class TilemapEditMixin:
         not answer has its references left alone rather than clamped to a guess,
         because it cannot have been asked where its index field sits.
         """
-        found = self._tilemap_engine()
-        if found is None:
-            return None
-        engine, preset = found
-        ask = getattr(engine, "index_limit", None)
-        if ask is None:
-            return None
-        try:
-            top = ask(preset.params)
-        except Exception as exc:  # noqa: BLE001 — a probe must not break the bar
-            self._codec_fault(preset.id, "index_limit", exc)
-            return None
+        top = self._probe_cell_codec("index_limit")
         return top if top and top > 0 else None
 
     def _cell_index_runs(self) -> tuple[range, ...] | None:
@@ -259,24 +300,19 @@ class TilemapEditMixin:
         fault noticed. None where there is no limit, and so no reference at all.
         """
         limit = self._cell_index_limit()
-        found = self._tilemap_engine()
-        if limit is None or found is None:
+        if limit is None:
             return None
         whole = (range(limit + 1),)
-        engine, preset = found
-        ask = getattr(engine, "index_runs", None)
-        if ask is None:
-            return whole
-        try:
+        runs = self._probe_cell_codec(
+            "index_runs",
             # Cut to the limit so the runs can bound the spin on their own.
-            runs = tuple(
+            read=lambda answer: tuple(
                 cut
-                for run in ask(preset.params)
+                for run in answer
                 if (cut := range(max(0, run.start), min(limit + 1, run.stop)))
-            )
-        except Exception as exc:  # noqa: BLE001 — a probe must not break the bar
-            self._codec_fault(preset.id, "index_runs", exc)
-            return whole
+            ),
+            default=whole,
+        )
         # An empty answer names nothing and bounds nothing; read as no answer.
         return runs or whole
 
@@ -357,18 +393,9 @@ class TilemapEditMixin:
         the caller has one predicate rather than two.
         """
         doc = self._doc
-        found = self._tilemap_engine()
-        if doc is None or not doc.cells_editable or found is None:
+        if doc is None or not doc.cells_editable:
             return None
-        engine, preset = found
-        ask = getattr(engine, "palette_row_limit", None)
-        if ask is None:
-            return None
-        try:
-            top = ask(preset.params)
-        except Exception as exc:  # noqa: BLE001 — a probe must not break the bar
-            self._codec_fault(preset.id, "palette_row_limit", exc)
-            return None
+        top = self._probe_cell_codec("palette_row_limit")
         return top if top and top > 0 else None
 
     def _cells_have_visibility(self) -> bool:
@@ -380,18 +407,7 @@ class TilemapEditMixin:
         bit invented for it, since a hide the encode drops would leave the
         picture lying against the bytes.
         """
-        found = self._tilemap_engine()
-        if found is None:
-            return False
-        engine, preset = found
-        ask = getattr(engine, "has_visibility", None)
-        if ask is None:
-            return False
-        try:
-            return bool(ask(preset.params))
-        except Exception as exc:  # noqa: BLE001 — a probe must not break the gesture
-            self._codec_fault(preset.id, "has_visibility", exc)
-            return False
+        return bool(self._probe_cell_codec("has_visibility"))
 
     def _cell_fields(self) -> dict[str, int]:
         """Every per-cell field this entry's format stores, with each one's limit.
@@ -408,33 +424,19 @@ class TilemapEditMixin:
         probe speaks for either, and a control over a field the encode drops
         would write bits that vanish on save.
         """
-        found = self._tilemap_engine()
-        if found is None:
+        if self._tilemap_engine() is None:
             return {}
-        engine, preset = found
-        ask = getattr(engine, "cell_fields", None)
-        if ask is not None:
-            try:
-                stated = dict(ask(preset.params))
-            except Exception as exc:  # noqa: BLE001 — a probe must not break the bar
-                self._codec_fault(preset.id, "cell_fields", exc)
-                return {}
+        stated = self._probe_cell_codec(
+            "cell_fields", read=dict, default=_NO_ANSWER, failed={}
+        )
+        if stated is not _NO_ANSWER:
             return {
                 name: limit
                 for name, limit in stated.items()
                 if isinstance(limit, int) and limit > 0
             }
 
-        def probe(name: str):  # noqa: ANN202 — whatever the codec answers
-            asked = getattr(engine, name, None)
-            if asked is None:
-                return None
-            try:
-                return asked(preset.params)
-            except Exception as exc:  # noqa: BLE001 — a probe must not break the bar
-                self._codec_fault(preset.id, name, exc)
-                return None
-
+        probe = self._probe_cell_codec
         fields: dict[str, int] = {}
         top = probe("index_limit")
         if isinstance(top, int) and top > 0:
@@ -442,14 +444,9 @@ class TilemapEditMixin:
         row = probe("palette_row_limit")
         if isinstance(row, int) and row > 0:
             fields["palette_row"] = row
-        mirror = getattr(engine, "transform_cell", None)
-        if mirror is not None:
-            for op, name in ((CellOp.FLIP_H, "flip_h"), (CellOp.FLIP_V, "flip_v")):
-                try:
-                    if mirror(Cell(), op, preset.params) is not None:
-                        fields[name] = 1
-                except Exception as exc:  # noqa: BLE001 — same rule as above
-                    self._codec_fault(preset.id, "transform_cell", exc)
+        for op, name in ((CellOp.FLIP_H, "flip_h"), (CellOp.FLIP_V, "flip_v")):
+            if probe("transform_cell", Cell(), op) is not None:
+                fields[name] = 1
         if probe("has_visibility"):
             fields["visible"] = 1
         if probe("has_line_flag"):
@@ -672,6 +669,66 @@ class TilemapEditMixin:
         if moved and self._apply_cells(cells, f"{op.verb} cell selection"):
             self.statusBar().showMessage(f"{op.past} the {cols}x{rows} cell selection.")
 
+    # -- placed units --------------------------------------------------------
+    def _lift_cell_rect(
+        self, doc: Document, x0: int, y0: int, x1: int, y1: int
+    ) -> tuple[CellGrid, int, int]:
+        """The drawn rectangle ``x0,y0``-``x1,y1`` as one record per placed unit.
+
+        With the corner it was snapped to. **The one lift** both rectangle
+        pickups share — the cell copy (:meth:`_copy_cells`) and the right drag's
+        area pick (:meth:`~...stamp_tool.StampToolMixin._on_stamp_area_picked`)
+        — so what a copy holds and what a sweep holds cannot drift apart.
+
+        On a stamped chain several drawn positions share one entry, so a lift
+        per position would hold every stamp once per position it covers. The
+        rectangle grows out to the stamp lattice instead — the corner floors
+        onto it, and counting units from there to the far edge is the round
+        *up*, so a rectangle that enters a stamp holds all of it — and each
+        unit is read at its corner. The lattice sits on the resolved grid
+        (:meth:`~celpix.core.document.Document.cell_at` snaps to the same one),
+        so a sweep and a click cannot disagree about which entry a position
+        is. Everywhere else the unit is one cell and this is the plain lift.
+        """
+        width = self._cells_per_row()
+        unit_w, unit_h = doc.stamp_cells
+        x0 -= x0 % unit_w
+        y0 -= y0 % unit_h
+        lifted = CellGrid((x1 - x0) // unit_w + 1, (y1 - y0) // unit_h + 1)
+        for dy in range(lifted.height):
+            for dx in range(lifted.width):
+                at = doc.cell_at((y0 + dy * unit_h) * width + (x0 + dx * unit_w))
+                if 0 <= at < len(doc.cells):
+                    lifted.set(dx, dy, doc.cells[at])
+        return lifted, x0, y0
+
+    def _lay_positions(
+        self, doc: Document, anchor: int, cols: int, rows: int
+    ) -> Iterator[tuple[int, int, int]]:
+        """Where a ``cols``x``rows`` grid of records lands from drawn ``anchor``.
+
+        ``(dx, dy, file cell index)`` for every unit that lands, row by row:
+        **the one lay** the cell paste (:meth:`_paste_cells`) and the stamp
+        brush (:meth:`~...stamp_tool.StampToolMixin._stamp_into`) share. Each
+        record steps a whole placed unit, the counterpart of
+        :meth:`_lift_cell_rect`, so on a stamped chain each lands on exactly
+        one stamp — an unaligned anchor snaps to the stamp holding it through
+        :meth:`~celpix.core.document.Document.cell_at`, where a per-position
+        lay would write each entry into every stamp its cells graze. Clipped
+        at the row's end rather than wrapped, and at the file's end.
+        """
+        width = self._cells_per_row()
+        unit_w, unit_h = doc.stamp_cells
+        x0, y0 = anchor % width, anchor // width
+        for dy in range(rows):
+            for dx in range(cols):
+                x = x0 + dx * unit_w
+                if x >= width:
+                    continue
+                at = doc.cell_at((y0 + dy * unit_h) * width + x)
+                if 0 <= at < len(doc.cells):
+                    yield dx, dy, at
+
     # -- the in-app clipboard ------------------------------------------------
     def _copy_cells(self) -> bool:
         """Lift the selected rectangle of cells into the in-app buffer.
@@ -679,17 +736,12 @@ class TilemapEditMixin:
         A rectangle so a paste can put it back with its shape; a linear
         selection copies as one row, which is what it looks like on screen.
 
-        The rectangle is read in **placed units** — the reading the right
-        drag's pick gives its sweep
-        (:meth:`~...stamp_tool.StampToolMixin._on_stamp_area_picked`), and for
-        its reason. On a stamped chain several drawn positions share one entry,
-        so a lift per position would hold every stamp once per position it
-        covers, and the paste, laying those back a position apart, would write
-        the same stamps over a wider area than was copied. So the rectangle
-        grows out to the stamp lattice and holds one record per stamp — what
-        was swept over, once each — and :meth:`_paste_cells` steps by the same
-        unit. On every other map the unit is one cell and this is the per-cell
-        lift it reads as.
+        The rectangle is read in **placed units** (:meth:`_lift_cell_rect`,
+        the right drag's area pick reads its sweep the same way): on a stamped
+        chain it holds one record per stamp — what was swept over, once each —
+        and :meth:`_paste_cells` steps by the same unit, so a paste writes back
+        exactly the area that was copied. On every other map the unit is one
+        cell and this is the per-cell lift it reads as.
 
         A **sprite object** copies its pixels instead. Its cells are not what is
         on screen — a canvas position there is a *subsprite* through an overlap
@@ -705,21 +757,11 @@ class TilemapEditMixin:
         if doc is None or doc.cells is None or self._refuse_view_only():
             return False
         rect = self._cell_rect()
-        width = self._cells_per_row()
         if rect is not None and rect[0] > 0 and rect[1] > 0:
             cols, rows, x0, y0 = rect
-            # Out to the lattice and one record per stamp, the area pick's
-            # geometry to the letter — a no-op wherever the unit is one cell.
-            unit_w, unit_h = doc.stamp_cells
-            x1, y1 = x0 + cols - 1, y0 + rows - 1
-            x0 -= x0 % unit_w
-            y0 -= y0 % unit_h
-            lifted = CellGrid((x1 - x0) // unit_w + 1, (y1 - y0) // unit_h + 1)
-            for dy in range(lifted.height):
-                for dx in range(lifted.width):
-                    at = doc.cell_at((y0 + dy * unit_h) * width + (x0 + dx * unit_w))
-                    if 0 <= at < len(doc.cells):
-                        lifted.set(dx, dy, doc.cells[at])
+            lifted, _x, _y = self._lift_cell_rect(
+                doc, x0, y0, x0 + cols - 1, y0 + rows - 1
+            )
         else:
             indices = self._selected_cells()
             if not indices:
@@ -775,7 +817,7 @@ class TilemapEditMixin:
         picture = compose_window(tiles, columns, 0, rows, BlockLayout(columns))
         clipboard.put(
             clipboard.TilePayload.from_tiles(tiles, colors, columns=columns),
-            render_bridge.render_pinned(picture, doc.palette),
+            render_bridge.render(picture, doc.palette),
         )
         self._sync_edit_actions()
         self.statusBar().showMessage(f"Copied {counted(len(tiles), 'tile')}.")
@@ -833,17 +875,13 @@ class TilemapEditMixin:
         Overwrite and clipped, never inserting: the map's extent is the file's,
         so a paste replaces exactly as many cells as there is room for.
 
-        Stepped in **placed units**, the stamp brush's landing to the letter
-        (:meth:`~...stamp_tool.StampToolMixin._stamp_into`): the buffer holds
-        one record per unit (:meth:`_copy_cells`), so on a stamped chain each
-        record steps a whole stamp and lands on exactly one — an unaligned
-        anchor snaps to the stamp holding it through
-        :meth:`~celpix.core.document.Document.cell_at`, instead of a
-        per-position lay writing each entry into every stamp its cells graze,
-        which pastes a wider block than was copied.
+        Stepped in **placed units** (:meth:`_lay_positions`, the stamp brush's
+        lay too): the buffer holds one record per unit (:meth:`_copy_cells`),
+        so on a stamped chain each record lands on exactly one stamp rather
+        than pasting a wider block than was copied.
         """
         doc = self._doc
-        copied = getattr(self, "_cell_clipboard", None)
+        copied = self._cell_clipboard
         if doc is None or doc.cells is None or copied is None or not len(copied):
             self.statusBar().showMessage("No cells copied yet.")
             return
@@ -852,18 +890,11 @@ class TilemapEditMixin:
         # map those are different numbers (:meth:`_selected_positions`).
         positions = self._selected_positions()
         start = positions[0] if positions else 0
-        width = self._cells_per_row()
-        unit_w, unit_h = doc.stamp_cells
-        x0, y0 = start % width, start // width
         cells = list(doc.cells)
         written = 0
-        for dy in range(copied.height):
-            for dx in range(copied.width):
-                x, y = x0 + dx * unit_w, y0 + dy * unit_h
-                at = doc.cell_at(y * width + x)
-                if x < width and 0 <= at < len(cells):
-                    cells[at] = copied.get(dx, dy)
-                    written += 1
+        for dx, dy, at in self._lay_positions(doc, start, copied.width, copied.height):
+            cells[at] = copied.get(dx, dy)
+            written += 1
         if not written:
             self.statusBar().showMessage("Nothing pasted - no room here.")
             return
@@ -875,7 +906,7 @@ class TilemapEditMixin:
 
     def _has_cell_clipboard(self) -> bool:
         """Whether a cell paste would have anything to put down."""
-        copied = getattr(self, "_cell_clipboard", None)
+        copied = self._cell_clipboard
         return copied is not None and len(copied) > 0
 
     # -- committing ----------------------------------------------------------
@@ -991,7 +1022,7 @@ class TilemapEditMixin:
         Both directions of the chain are settled here, which is what makes a
         restamp show up: this document re-resolves its own new coordinates, and
         anything drawing *through* it is re-pointed at the cells it now has
-        (:meth:`~...session.SessionMixin._rechain_dependents`).
+        (:meth:`~...bindings.BindingsMixin._rechain_dependents`).
 
         **An entry with no document is read first.** The command applies in
         place, so it can land on a map whose cache a write of another entry on the
@@ -1027,7 +1058,7 @@ class TilemapEditMixin:
         since ``said`` was taken.
 
         A format's settle runs per edit rather than per load
-        (:func:`~celpix.pipeline._stage._cell_settler`), so the notice it leaves
+        (:func:`~celpix.pipeline._stage.cell_settler`), so the notice it leaves
         when it crashes and is stood down arrives with no load behind it to
         repaint the row. The dirty marker's repaint happens to catch it on the
         first edit after a save, and on no other. Compared rather than repainted

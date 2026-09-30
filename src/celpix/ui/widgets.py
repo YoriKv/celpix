@@ -1,6 +1,12 @@
 """Small reusable UI widgets and shared painting idioms.
 
 Qt lives here (this is the ``ui`` layer); the model stays Qt-free.
+
+Three families that grew here have modules of their own — the pan/zoom surface
+and its scroll-area wiring (:mod:`celpix.ui.panzoom`), the preference store
+(:mod:`celpix.ui.settings`) and the toolbar overflow button
+(:mod:`celpix.ui.toolbar_overflow`) — and are re-exported from this module, so
+an import of one of them from here keeps working.
 """
 
 from __future__ import annotations
@@ -12,16 +18,13 @@ import textwrap
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 from typing import TypeVar
 
 from PySide6.QtCore import (
     QEvent,
     QObject,
-    QPointF,
     QRect,
-    QSettings,
     QSize,
     Qt,
     QUrl,
@@ -35,38 +38,71 @@ from PySide6.QtGui import (
     QKeySequence,
     QPainter,
     QPen,
-    QPixmap,
     QValidator,
 )
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QDoubleSpinBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
-    QFrame,
+    QFormLayout,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
-    QStyle,
-    QToolBar,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from celpix import APP_NAME
 from celpix.core import ceil_div
-from celpix.core.aspect import SQUARE, PixelAspect
-from celpix.core.aspect import scale as aspect_scale
-from celpix.ui.glyphs import Glyph
-from celpix.ui.theme import WARNING_INK, set_ink
+from celpix.core.address import format_hex, parse_hex
+from celpix.plugins.base import format_size
+from celpix.ui.icon_font import icon_cache_key
+from celpix.ui.panzoom import (  # noqa: F401 — re-exported, see the module docs
+    ZOOM_LEVELS,
+    PanOnlyMouse,
+    PanZoomSurface,
+    SpacePanFilter,
+    ZoomSpinBox,
+    mount_surface,
+    pan_scroll_area,
+    wheel_zoom,
+    zoom_anchored,
+    zoom_level_after,
+    zoom_spin,
+)
+from celpix.ui.settings import (  # noqa: F401 — re-exported, see the module docs
+    MAX_RECENT_PROJECTS,
+    RECENT_PROJECTS_KEY,
+    _recent_path,
+    clear_recent_projects,
+    forget_recent_project,
+    load_bool_setting,
+    load_enum_setting,
+    load_float_setting,
+    load_recent_projects,
+    load_setting,
+    remember_recent_project,
+    save_bool_setting,
+    save_enum_setting,
+    save_float_setting,
+    settings,
+)
+from celpix.ui.theme import ERROR_INK, GRID_STRUCTURE_COLOR, WARNING_INK, set_ink
+from celpix.ui.toolbar_overflow import (  # noqa: F401 — re-exported, see the module docs
+    ToolBarOverflow,
+)
 
-_EnumT = TypeVar("_EnumT", bound=Enum)
 _SpinT = TypeVar("_SpinT", bound=QSpinBox)
+_DialogT = TypeVar("_DialogT", bound=QDialog)
+_ResultT = TypeVar("_ResultT")
 
 # The canvas editing shortcuts (Cut/Copy/Paste/Select All/Delete). The main
 # window binds these window-wide (see ``SelectionMixin``), so they otherwise fire
@@ -83,13 +119,34 @@ _EDITING_SHORTCUTS = (
 )
 
 
+def take_shortcuts(event: QEvent, keys: Iterable[QKeySequence.StandardKey]) -> bool:
+    """Claim ``keys`` off the window-wide shortcuts; call from ``event()``.
+
+    Returns True (having *accepted* ``event``) when it is a ``ShortcutOverride``
+    for one of ``keys``. Accepting the override says the focused widget wants
+    the key as an ordinary keystroke, so no shortcut runs anywhere and the press
+    arrives at the widget's ``keyPressEvent`` to be answered once. That matters
+    twice over: a panel shadowed by the main window's editing keys, and a
+    ``Qt.Tool`` window — Qt keeps its parent's window shortcuts alive while it is
+    active, so a key both bind is a tie, and Qt's answer to a tie is to fire
+    *neither*. Matched by key sequence, so platform bindings track without
+    hard-coded literals.
+    """
+    if event.type() == QEvent.Type.ShortcutOverride and any(
+        event.matches(key) for key in keys
+    ):
+        event.accept()
+        return True
+    return False
+
+
 def take_editing_shortcut(event: QEvent) -> bool:
     """Claim a canvas editing shortcut for a focused panel; call from ``event()``.
 
-    Returns True (having *accepted* ``event``) when it is a ``ShortcutOverride``
-    for one of :data:`_EDITING_SHORTCUTS`. Accepting the override routes the key
-    to the focused widget as a normal press instead of letting the canvas's
-    window-wide shortcut consume (or, for Delete, ambiguously drop) it - so a
+    :func:`take_shortcuts` over :data:`_EDITING_SHORTCUTS`. Accepting the
+    override routes the key to the focused widget as a normal press instead of
+    letting the canvas's window-wide shortcut consume (or, for Delete,
+    ambiguously drop) it - so a
     panel that has its own key handling isn't shadowed by the editing surface
     behind it. The widget then handles the resulting key press however it likes
     (or ignores it, so the key simply does nothing there). Mirrors how the
@@ -99,12 +156,7 @@ def take_editing_shortcut(event: QEvent) -> bool:
     Usually reached through :class:`ShortcutIsland` rather than called directly;
     it stays public for a widget that has its own ``event()`` to weave it into.
     """
-    if event.type() == QEvent.Type.ShortcutOverride and any(
-        event.matches(key) for key in _EDITING_SHORTCUTS
-    ):
-        event.accept()
-        return True
-    return False
+    return take_shortcuts(event, _EDITING_SHORTCUTS)
 
 
 class ShortcutIsland:
@@ -151,6 +203,52 @@ def counted(count: int, noun: str) -> str:
     other way would have to be spelled out at the call site.
     """
     return f"{count:,} {noun}" + ("" if count == 1 else "s")
+
+
+def size_text(count: int) -> str:
+    """A byte count in both forms — ``"8 KiB (8,192 bytes)"`` — where they differ.
+
+    The round form is what a size is quoted in and the exact one is what a
+    reader checks an offset against, so a payload gets both. A count that is
+    not a whole binary multiple already *is* its exact form, and saying it twice
+    reads as a bug. Grouped, as every count the app shows is (:func:`counted`).
+    """
+    exact = counted(count, "byte")
+    pretty = format_size(count)
+    return exact if pretty.endswith(" bytes") else f"{pretty} ({exact})"
+
+
+class SyncGuard:
+    """A "this change is ours, not the user's" flag that is always put back.
+
+    A widget that writes into its own inputs — restoring a caret, refilling a
+    table — has to tell its change handlers to stand down while it does, and
+    the hand-written ``flag = True; try: … finally: flag = False`` gets that
+    wrong the moment two such writes nest: the inner one clears the flag while
+    the outer is still writing. Counted rather than boolean, so nesting holds::
+
+        with self._syncing:
+            self._edit.setPlainText(body)
+        ...
+        if self._syncing:
+            return
+
+    Where the thing to silence is a widget's *signals* rather than the owner's
+    own handlers, :func:`signals_blocked` is the tool instead.
+    """
+
+    def __init__(self) -> None:
+        self._depth = 0
+
+    def __enter__(self) -> SyncGuard:
+        self._depth += 1
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self._depth -= 1
+
+    def __bool__(self) -> bool:
+        return self._depth > 0
 
 
 @contextmanager
@@ -287,31 +385,68 @@ def add_labelled(
     return label
 
 
-def icon_cache_key(widget: QWidget) -> tuple[int, float]:
-    """What a widget's baked icons depend on: the theme, and the device scale.
+def add_form_row(
+    form: QFormLayout,
+    caption: str,
+    field: QWidget,
+    tooltip: str | None = None,
+    buddy: QWidget | None = None,
+) -> QLabel:
+    """:func:`add_labelled` for a form: one row, its caption tooltipped too.
 
-    Both arrive as a ``changeEvent`` storm — Qt sends a burst of PaletteChange on
-    startup and again on every theme switch — so every panel that rasterizes its
-    own icons guards the re-bake on this rather than re-doing it per event.
+    ``QFormLayout.addRow(str, …)`` builds the caption itself and gives it no
+    tooltip, so the half of the row people point at first answers nothing —
+    which every dialog here used to patch up afterwards by walking its fields.
+    ``tooltip`` is set on ``field`` when given; otherwise the field's own is
+    copied, for a field built with one. ``buddy`` is the mnemonic's target for a
+    ``field`` that is a holder of several controls, as in :func:`add_labelled`.
     """
-    return (widget.palette().cacheKey(), widget.devicePixelRatioF())
+    if tooltip is not None:
+        field.setToolTip(tooltip)
+    label = QLabel(caption)
+    label.setToolTip(field.toolTip())
+    label.setBuddy(buddy if buddy is not None else field)
+    form.addRow(label, field)
+    return label
 
 
-def stamped(mask: QPixmap, color: QColor) -> QPixmap:
-    """A copy of ``mask`` with ``color`` stamped through its alpha.
+class IconBaker:
+    """Mix in front of a widget that bakes its own icons, to re-bake on time.
 
-    The one operation every icon in celPix ends with: the art carries the shape
-    and the palette carries the color, so one mask serves both themes and, where
-    a widget needs it, its own disabled shade as well. A copy per call because
-    SourceIn overwrites what it is composited onto, and the caller usually
-    stamps the same mask more than once.
+    Baked icons hold the palette's ink and the screen's device scale in their
+    pixels, so a theme switch or a move to a differently scaled display has to
+    re-render them — and both arrive as a ``changeEvent`` storm (a burst of
+    PaletteChange on startup alone). Every such widget guards the re-bake on
+    :func:`icon_cache_key` the same way, so the guard is here once: any change
+    event, and :meth:`_bake_icons` runs only when the key actually moved.
+
+    Mixed in **before** the Qt base (``class Panel(IconBaker, QWidget)``), and
+    after any other mixin that supplies :meth:`_bake_icons`, or this one's
+    placeholder is the one found. A
+    widget calls :meth:`_bake_if_stale` once at the end of its constructor, and
+    change events are ignored until it has: one can arrive while the widget is
+    still building what :meth:`_bake_icons` paints onto.
     """
-    pixmap = mask.copy()
-    painter = QPainter(pixmap)
-    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-    painter.fillRect(pixmap.rect(), color)
-    painter.end()
-    return pixmap
+
+    _icon_key: tuple[int, float] | None = None
+
+    def changeEvent(self, event: QEvent) -> None:  # noqa: D102 — Qt override
+        super().changeEvent(event)
+        if self._icon_key is not None:
+            self._bake_if_stale()
+
+    def _bake_if_stale(self) -> bool:
+        """Re-bake when the palette or the device scale moved; True if it did."""
+        key = icon_cache_key(self)
+        if key == self._icon_key:
+            return False
+        self._icon_key = key
+        self._bake_icons()
+        return True
+
+    def _bake_icons(self) -> None:
+        """Render every icon against the current palette and device scale."""
+        raise NotImplementedError
 
 
 def paint_selection_outline(
@@ -521,425 +656,6 @@ def apply_badge(label: QLabel, badge: Badge | None) -> None:
     label.setVisible(badge is not None)
 
 
-# The zoom multipliers the view offers, in order. Whole numbers magnify, and
-# **0.5 is the one reduction**: it is what a file too tall for the window is read
-# at (a screen's worth of a tilemap, a sprite sheet end to end), where every
-# larger step would only show less of it. Nothing between 0.5 and 1 - halving is
-# the only reduction nearest-neighbour can do without inventing pixels, and the
-# art these are for is pixel art.
-ZOOM_LEVELS: tuple[float, ...] = (0.5, *range(1, 25))
-
-
-def zoom_level_after(zoom: float, steps: int) -> float:
-    """The level ``steps`` along from ``zoom``, clamped to the ends of the list.
-
-    Stepping walks the list rather than adding to the value, so the gap under 1
-    is one step like every other and Zoom Out from 1 lands on 0.5 instead of on
-    nothing. An off-list value (a project written by hand) starts from the
-    nearest level - the lower one when it falls exactly between two - so a step
-    still lands somewhere the picker can show.
-    """
-    at = min(range(len(ZOOM_LEVELS)), key=lambda i: abs(ZOOM_LEVELS[i] - zoom))
-    return ZOOM_LEVELS[max(0, min(len(ZOOM_LEVELS) - 1, at + steps))]
-
-
-class ZoomSpinBox(QDoubleSpinBox):
-    """The Zoom control: a multiplier, stepped through :data:`ZOOM_LEVELS`.
-
-    A double spin because one level is fractional, but it never *reads* like one:
-    :meth:`textFromValue` writes whole numbers bare, so the box shows "4" and not
-    "4.0". Its arrows and Up/Down keys move one level, and a typed value snaps to
-    the nearest one - the list is the whole of what the view supports, so an
-    in-between number would be a setting that silently did something else.
-    """
-
-    def __init__(self, value: float = 4.0) -> None:
-        super().__init__()
-        self.setRange(ZOOM_LEVELS[0], ZOOM_LEVELS[-1])
-        self.setDecimals(1)  # enough for the one fractional level
-        # Commit on Enter / focus-out / stepping, not per keystroke, like every
-        # other view spin: typing "12" must not re-render at "1".
-        self.setKeyboardTracking(False)
-        self.setValue(value)
-
-    def textFromValue(self, value: float) -> str:
-        return f"{value:g}"
-
-    def valueFromText(self, text: str) -> float:
-        """Snap typed text onto the nearest level; keep the current one if unread."""
-        try:
-            return zoom_level_after(float(text.replace(",", ".")), 0)
-        except ValueError:
-            return self.value()
-
-    def stepBy(self, steps: int) -> None:
-        self.setValue(zoom_level_after(self.value(), steps))
-
-
-def _set_cursor(widget: QWidget, shape: Qt.CursorShape | None) -> None:
-    """``shape`` on ``widget``, or back to whatever it inherits for ``None``."""
-    if shape is None:
-        widget.unsetCursor()
-    else:
-        widget.setCursor(shape)
-
-
-class PanZoomSurface:
-    """Space-drag panning and Ctrl+wheel zooming, for a widget in a scroll area.
-
-    The four surfaces that magnify pixel art inside a scroll area — the canvas,
-    the tile source sheet, the font alphabet's sheet, the animation frame — all
-    offer the same two gestures, and a user who learns one on any of them expects
-    it on the others. What they
-    do *with* the gestures differs (each reports to a different controller over
-    its own signals), but the mechanics are identical down to the reason for
-    every line, so they live here rather than being kept in step by hand.
-
-    The state is one armed flag and one dragging flag, deliberately apart:
-    ``_pan_active`` is the space bar held — a pan is *armed*, and the open hand
-    says so — while ``_panning`` is a drag actually under way. Disarming has to
-    end a drag in progress, because the key can come up mid-drag.
-
-    Mixed in **before** the Qt base (``class Canvas(PanZoomSurface, QWidget)``).
-    The three mouse handlers are helpers returning "I took this event" rather
-    than Qt overrides, because each surface has its own gesture stack to weave
-    the pan into (and pan wins over all of it — see the call sites); only
-    :meth:`wheelEvent` is complete enough to be the override itself.
-
-    Two hooks: :meth:`_pan_cursor` for a surface with cursors of its own beyond
-    the hand, and :meth:`_has_content` for the "nothing to zoom" guard, which is
-    a different emptiness in each of them. A surface that wants the empty backing
-    around it to zoom as well says so once, with
-    :meth:`claim_background`.
-    """
-
-    # Declared by the concrete widget (a Signal only registers on a QObject
-    # subclass), and named here so the helpers below read as the whole gesture:
-    # ``pan_requested(dx, dy)`` in device pixels, ``zoom_requested(steps, pos)``
-    # with the cursor in the widget's own coordinates.
-    pan_requested: Signal
-    zoom_requested: Signal
-
-    _pan_active = False
-    _panning = False
-    _pan_last = QPointF()
-    #: The scroll viewport this surface has claimed as its own backing, if it has
-    #: (:meth:`claim_background`) — the one other widget the gestures answer over.
-    _backing: QWidget | None = None
-
-    #: The magnification, in the surface's own units — an integer level on the
-    #: sheets, a :data:`ZOOM_LEVELS` multiplier on the canvas. Held here because
-    #: the pixel aspect below is only meaningful against it: what reaches the
-    #: screen is the two multiplied, and every surface has to multiply them the
-    #: same way. Each subclass still owns its own range, through its ``set_zoom``.
-    _zoom: float = 1.0
-    #: The shape of one pixel (:mod:`celpix.core.aspect`) — one project-wide
-    #: setting, pushed onto every surface by the window.
-    _pixel_aspect: PixelAspect = SQUARE
-    #: :func:`~celpix.core.aspect.scale` of the above, kept rather than recomputed:
-    #: the per-cell geometry helpers below are called inside paint loops that run
-    #: once per cell of a window holding thousands.
-    _aspect_scale: tuple[float, float] = (1.0, 1.0)
-
-    @property
-    def _zoom_x(self) -> float:
-        """Image pixels to device pixels, horizontally — zoom times the aspect.
-
-        The pair below is what every surface draws, measures and hit-tests
-        through. They are equal on a square pixel, which is every existing view,
-        so a surface that reads both is unchanged wherever nothing has been set.
-        """
-        return self._zoom * self._aspect_scale[0]
-
-    @property
-    def _zoom_y(self) -> float:
-        """Image pixels to device pixels, vertically — see :attr:`_zoom_x`."""
-        return self._zoom * self._aspect_scale[1]
-
-    def set_pixel_aspect(self, aspect: PixelAspect) -> None:
-        """Draw one image pixel at ``aspect``'s shape from now on.
-
-        The one entry point for the setting, so a surface added later is aspect-
-        aware by inheriting rather than by remembering to be. Resizes through the
-        subclass's own ``_update_size``, which is what puts the new geometry in
-        front of the scroll area that holds it.
-        """
-        aspect = tuple(aspect)  # a list, off a project file, is the same shape
-        if aspect == self._pixel_aspect:
-            return
-        self._pixel_aspect = aspect
-        self._aspect_scale = aspect_scale(aspect)
-        self._update_size()
-        self.update()
-
-    def _update_size(self) -> None:
-        """Re-fit the widget to its content at the current zoom and aspect.
-
-        Every surface has one already — it is how each answers its scroll area —
-        and naming it here is what lets :meth:`set_pixel_aspect` be the whole of
-        the setting rather than four copies of it.
-        """
-
-    def _scaled_size(self, width: int, height: int) -> tuple[int, int]:
-        """``width`` x ``height`` image pixels as whole device pixels.
-
-        What every surface's ``_update_size`` measures with. Rounded rather than
-        truncated so a 7:8 pixel does not lose a device row off the bottom, and
-        floored at 1 so an empty picture still has a widget.
-        """
-        return (
-            max(1, round(width * self._zoom_x)),
-            max(1, round(height * self._zoom_y)),
-        )
-
-    def _scaled_rect(self, x: int, y: int, width: int, height: int) -> QRect:
-        """An image-pixel rectangle in device pixels.
-
-        Each edge is rounded on its own — right edge from ``x + width``, not from
-        a rounded width — so abutting rectangles keep abutting under a fractional
-        aspect instead of leaving a seam between every pair.
-        """
-        left, top = round(x * self._zoom_x), round(y * self._zoom_y)
-        right, bottom = (
-            round((x + width) * self._zoom_x),
-            round((y + height) * self._zoom_y),
-        )
-        return QRect(left, top, right - left, bottom - top)
-
-    def _exposed_rows(self, exposed: QRect, row_height: int) -> tuple[int, int]:
-        """Which rows of ``row_height`` image pixels ``exposed`` touches.
-
-        A half-open ``(first, stop)`` in rows, for the per-cell overlays every
-        surface draws — captions, ids, marks. Those loops are written per *cell*
-        and a scrolled view exposes a sliver of a picture that is thousands of
-        them: testing each cell against the exposed rectangle still costs a
-        rectangle per cell, which is what made a repaint of a metatile map with
-        its ids on take an eighth of a second. Turning the band into a row range
-        first makes the cost the band's rather than the picture's.
-
-        **One row of slack either side.** A caption sits at the top or the bottom
-        of its cell, so the row above and the row below can each put ink inside
-        the exposed band without their cell reaching into it.
-        """
-        step = row_height * self._zoom_y
-        if step <= 0:
-            return 0, 0
-        return (
-            max(0, int(exposed.top() // step) - 1),
-            int(exposed.bottom() // step) + 2,
-        )
-
-    def _exposed_columns(self, exposed: QRect, column_width: int) -> tuple[int, int]:
-        """:meth:`_exposed_rows` the other way — the columns ``exposed`` touches.
-
-        The slack matters more across than down: a caption is drawn *rightward*
-        from its cell's left edge, so a cell one column left of the band can put
-        several characters inside it.
-        """
-        step = column_width * self._zoom_x
-        if step <= 0:
-            return 0, 0
-        return (
-            max(0, int(exposed.left() // step) - 1),
-            int(exposed.right() // step) + 2,
-        )
-
-    def _image_pixel(self, pos: QPointF) -> tuple[int, int]:
-        """The image pixel under a device position — the inverse of the above.
-
-        Floored, so the answer is the pixel the point is *inside*. Callers decide
-        what to do about a point outside the picture; this only undoes the scale.
-        """
-        return (int(pos.x() // self._zoom_x), int(pos.y() // self._zoom_y))
-
-    def set_pan_mode(self, on: bool) -> None:
-        """Arm/disarm space-drag panning (the window drives this off the space key).
-
-        Arming shows the open hand; disarming ends any pan drag in progress, the
-        space key being free to come up mid-drag. Panning is modal over the
-        mouse — while armed a press pans instead of selecting or painting.
-        """
-        if self._pan_active == on:
-            return
-        self._pan_active = on
-        if not on:
-            self._panning = False
-        self._apply_cursor()
-
-    def _pan_cursor(self) -> Qt.CursorShape | None:
-        """The cursor when no pan is armed — ``None`` for the widget's own.
-
-        Overridden by a surface that is modal in more ways than this one: the
-        canvas arms tools that each want their own pointer.
-        """
-        return None
-
-    def _has_content(self) -> bool:
-        """Whether there is anything on show to zoom. Overridden per surface —
-        each holds its picture in a different attribute."""
-        return True
-
-    def _apply_cursor(self) -> None:
-        """Set the cursor for the current mode: closed hand while panning, open
-        while a pan is merely armed, and the surface's own otherwise.
-
-        The claimed backing wears **the hands and nothing else**: a pan answers
-        out there exactly as it does over the art (:meth:`claim_background`), so a
-        pointer that changed shape on the way in would say otherwise — while the
-        surface's own cursor is a promise about its content (the canvas's cross
-        says "this paints"), which the grey cannot keep.
-        """
-        if self._panning:
-            hand = Qt.CursorShape.ClosedHandCursor
-        elif self._pan_active:
-            hand = Qt.CursorShape.OpenHandCursor
-        else:
-            hand = None
-        _set_cursor(self, hand if hand is not None else self._pan_cursor())
-        if self._backing is not None:
-            _set_cursor(self._backing, hand)
-
-    def _pan_press(self, event) -> bool:  # noqa: ANN001 — Qt event
-        """Begin a pan drag if one is armed; True when the press was taken.
-
-        Called first in every surface's ``mousePressEvent``, so an armed pan wins
-        over selecting, painting and picking alike.
-        """
-        if not (self._pan_active and event.button() == Qt.MouseButton.LeftButton):
-            return False
-        self._panning = True
-        self._pan_last = event.globalPosition()
-        self._apply_cursor()
-        event.accept()
-        return True
-
-    def _pan_move(self, event) -> bool:  # noqa: ANN001 — Qt event
-        """Report the drag's delta if a pan is under way; True when taken."""
-        if not self._panning:
-            return False
-        # Global position, not widget-local: the widget shifts under the cursor
-        # as the view scrolls, which would feed back into a widget-local delta.
-        pos = event.globalPosition()
-        delta = pos - self._pan_last
-        self._pan_last = pos
-        self.pan_requested.emit(round(delta.x()), round(delta.y()))
-        event.accept()
-        return True
-
-    def _pan_release(self, event) -> bool:  # noqa: ANN001 — Qt event
-        """End a pan drag; True when the release was taken."""
-        if not (self._panning and event.button() == Qt.MouseButton.LeftButton):
-            return False
-        self._panning = False
-        self._apply_cursor()  # back to the open hand (space may still be held)
-        event.accept()
-        return True
-
-    def wheelEvent(self, event) -> None:  # noqa: ANN001 — Qt override
-        """**Ctrl**+wheel zooms; a plain wheel falls through to the scroll area.
-
-        Reports a signed step per notch and the cursor position, leaving the
-        range and the cursor-anchoring to the controller: the level is a
-        control's value, not this widget's. Only a zooming wheel is swallowed,
-        so an unmodified one still scrolls the area that owns us.
-        """
-        if not (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
-            event.ignore()  # let the scroll area scroll as usual
-            return
-        self._report_zoom(event, event.position())
-        event.accept()
-
-    def _report_zoom(self, event, pos: QPointF) -> bool:  # noqa: ANN001 — QWheelEvent
-        """Turn one Ctrl+wheel into a zoom step at ``pos`` (this widget's coords).
-
-        False where there was nothing to report — an empty surface, or a wheel
-        whose delta rounds to no notch at all. The event is swallowed either way
-        by the caller: a Ctrl+wheel is a zoom the moment it is aimed here, and
-        letting the leftovers fall through would scroll the view instead.
-        """
-        if not self._has_content():
-            return False
-        dy = event.angleDelta().y()
-        if dy == 0:
-            return False
-        # One step per 120-unit notch, but at least one so a high-resolution
-        # wheel sending small deltas still zooms.
-        steps = int(dy / 120) or (1 if dy > 0 else -1)
-        self.zoom_requested.emit(steps, pos)
-        return True
-
-    def claim_background(self, scroll: QScrollArea) -> None:
-        """Count the backing around this surface in ``scroll`` as part of it.
-
-        A surface is sized to its content, so anything smaller than its scroll
-        area leaves a band of empty viewport around it — and that band is exactly
-        where the pointer is when the picture is small enough to want zooming
-        *in* on. Without this the gesture answers over the art and does nothing
-        an inch to its right, which reads as the wheel zoom being broken rather
-        than as a target having been missed. The **grey is the surface** as far
-        as a user is concerned, so both gestures answer out there — a Ctrl+wheel
-        zooms and an armed space-drag pans — and a click focuses, which is what
-        puts the keys that address this sheet (Shift+Left/Right for its width,
-        the arrows for its pick) on it.
-
-        Filtered on the viewport rather than handled by a QScrollArea subclass so
-        the whole gesture stays one class: the events land on the viewport (the
-        surface is its child), and the filter gets them before the scroll area
-        turns them into a scroll or takes the focus for itself.
-        """
-        self._backing = scroll.viewport()
-        self._backing.installEventFilter(self)
-
-    def eventFilter(self, obj, event) -> bool:  # noqa: ANN001 — Qt override
-        """The backing's Ctrl+wheel, pan drag and click, answered as our own.
-
-        The wheel's position is mapped into this widget and **clamped to it**, so
-        a zoom started out on the backing anchors on the nearest content pixel
-        rather than on a coordinate outside the picture — the anchoring
-        arithmetic reads ``pos`` as content pixels times the zoom
-        (:func:`zoom_anchored`), and a point past the edge would ask it to hold
-        still something that is not there. A plain wheel is left alone and
-        scrolls as usual.
-
-        A **pan drag** needs no mapping at all: it is measured in global screen
-        deltas, so where it started says nothing about what it moves. The whole
-        drag is taken here rather than only its press — the implicit mouse grab
-        belongs to the widget the press was accepted on, so every move and the
-        release land on the backing too.
-
-        Any other **press** takes the focus and is then left to travel on. Qt has
-        already handed focus to the scroll area by the time this runs — it is
-        given before the press is delivered — so this is the surface taking it
-        back, and it is what a click on the grey has to do for the keys addressed
-        to this sheet to reach it. Not consumed: the press is still the scroll
-        area's to do whatever else it does with.
-        """
-        et = event.type()
-        if et == QEvent.Type.MouseButtonPress and self._pan_press(event):
-            return True
-        if et == QEvent.Type.MouseMove and self._pan_move(event):
-            return True
-        if et == QEvent.Type.MouseButtonRelease and self._pan_release(event):
-            return True
-        if isinstance(obj, QWidget) and et == QEvent.Type.MouseButtonPress:
-            self.setFocus(Qt.FocusReason.MouseFocusReason)
-        elif (
-            event.type() == QEvent.Type.Wheel
-            and event.modifiers() & Qt.KeyboardModifier.ControlModifier
-            and isinstance(obj, QWidget)
-        ):
-            local = self.mapFrom(obj, event.position().toPoint())
-            self._report_zoom(
-                event,
-                QPointF(
-                    min(max(local.x(), 0), max(0, self.width() - 1)),
-                    min(max(local.y(), 0), max(0, self.height() - 1)),
-                ),
-            )
-            return True
-        return super().eventFilter(obj, event)
-
-
 def confirm_destructive(
     parent: QWidget,
     title: str,
@@ -978,6 +694,81 @@ def confirm_destructive(
     if box.clickedButton() is cancel:
         return False
     return safe() if box.clickedButton() is accept else True
+
+
+def dialog_buttons(
+    dialog: QDialog,
+    layout=None,  # noqa: ANN001 — QFormLayout | QBoxLayout | None
+    on_accept: Callable[[], None] | None = None,
+    *,
+    close_only: bool = False,
+) -> QDialogButtonBox:
+    """A dialog's button row — OK/Cancel, or Close — wired and placed.
+
+    ``on_accept`` is what OK runs: a validating dialog's check, which calls
+    ``accept()`` itself once the fields hold up; left out, OK accepts outright.
+    ``close_only`` is the single Close button of a dialog that only shows
+    something. A Close button carries the *reject* role, so only ``rejected``
+    is connected there — an ``accepted`` connection on it could never fire.
+
+    Added to ``layout`` as a whole row of a form, or as the next widget of a
+    box; ``None`` leaves the placing to a caller that builds its layout later.
+    """
+    if close_only:
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+    else:
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(on_accept if on_accept is not None else dialog.accept)
+    buttons.rejected.connect(dialog.reject)
+    if isinstance(layout, QFormLayout):
+        layout.addRow(buttons)
+    elif layout is not None:
+        layout.addWidget(buttons)
+    return buttons
+
+
+class ErrorLabel(QLabel):
+    """The line a validating dialog says "why OK did nothing" on.
+
+    Hidden until :meth:`fail`, in the error ink. Connect the edits of the fields
+    it can complain about to :meth:`dismiss`, so a message about a value the
+    user has since fixed does not stay up beside the fixed value — the dialog
+    stays open on a failed OK, so a stale line would read as a live complaint.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        set_ink(self, ERROR_INK)
+        self.hide()
+
+    def fail(self, message: str) -> None:
+        """Show ``message``."""
+        self.setText(message)
+        self.show()
+
+    def dismiss(self, *_args: object) -> None:
+        """Take the message down — a field it may be about was edited.
+
+        Not named ``clear``: that is ``QLabel``'s own, which only empties the
+        text and leaves the (now blank) row showing.
+        """
+        self.hide()
+
+
+def run_modal(
+    dialog: _DialogT, result: Callable[[_DialogT], _ResultT]
+) -> _ResultT | None:
+    """Run ``dialog`` modally; ``result(dialog)`` once OK'd, ``None`` otherwise.
+
+    Every ``get_*``/``ask`` runner is this one line around its own dialog, and
+    reading the answer only on Accepted is the part worth having once: a dialog
+    cancelled after a failed validation may still hold half an answer.
+    """
+    if dialog.exec() != QDialog.DialogCode.Accepted:
+        return None
+    return result(dialog)
 
 
 def grid_slot_at(
@@ -1020,42 +811,52 @@ def grid_slot_at(
     return min(row * columns + col, count - 1)
 
 
-def pan_scroll_area(scroll: QScrollArea, dx: int, dy: int) -> None:
-    """Shift ``scroll`` by a space-drag delta (device pixels).
+#: The keys that step a pick across a grid of squares (:func:`grid_step`).
+GRID_ARROWS = (Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down)
 
-    The bars clamp to the content, so a pan can never push the picture off
-    screen, and is a no-op while the view already fits the viewport — which is
-    the whole of the policy, hence one function for all three surfaces.
+
+def grid_step(
+    current: int | None, key: int, columns: int, count: int, *, start: int = 0
+) -> int | None:
+    """The slot an arrow key moves a pick to, or ``None`` to stay put.
+
+    The palette's swatches and the tile source sheet step the same way:
+    Left/Right by one square, crossing display rows, and Up/Down by one row. A
+    step off the top or the bottom stays put rather than being clamped to a
+    corner, which would change the column under the user; Left/Right clamp to
+    the ends. ``start`` is where a grid with nothing picked steps from. ``key``
+    is one of :data:`GRID_ARROWS` — the caller has already asked.
     """
-    hbar = scroll.horizontalScrollBar()
-    vbar = scroll.verticalScrollBar()
-    hbar.setValue(hbar.value() - dx)
-    vbar.setValue(vbar.value() - dy)
+    delta = {
+        Qt.Key.Key_Left: -1,
+        Qt.Key.Key_Right: 1,
+        Qt.Key.Key_Up: -columns,
+        Qt.Key.Key_Down: columns,
+    }[key]
+    target = (current if current is not None else start) + delta
+    if abs(delta) == columns and not 0 <= target < count:
+        return None
+    return min(max(0, target), count - 1)
 
 
-def zoom_anchored(scroll: QScrollArea, spin, new: float, pos) -> None:  # noqa: ANN001
-    """Move ``spin`` to ``new``, keeping the content pixel under ``pos`` still.
+def paint_pick_ring(painter: QPainter, rect: QRect) -> None:
+    """A panel's own pick: the selection outline, inset a pixel and a touch soft.
 
-    Driving the *spin* rather than the view is what keeps the readout, the
-    keyboard and the wheel one value, and re-renders through the normal path.
-    Without the two scroll-bar writes afterwards a zoom appears to slide the art
-    out from beneath the pointer: ``pos`` is in the widget's own coordinates,
-    which are content pixels times the old zoom, so the pixel under the cursor
-    divides out and putting it back is arithmetic the bars then clamp.
-
-    A no-op when the level does not actually change (an end of the range).
+    Inset so a square that is also *marked* (:func:`paint_mark_ring`) still
+    reads as two rings rather than one thick one, and soft so it does not
+    overpower the small art it sits on.
     """
-    old = spin.value()
-    if new == old:
-        return
-    hbar = scroll.horizontalScrollBar()
-    vbar = scroll.verticalScrollBar()
-    # The cursor's spot in the viewport, and the content pixel it sits on now.
-    view_x, view_y = pos.x() - hbar.value(), pos.y() - vbar.value()
-    img_x, img_y = pos.x() / old, pos.y() / old
-    spin.setValue(new)  # re-renders and resizes the view synchronously
-    hbar.setValue(round(img_x * new - view_x))
-    vbar.setValue(round(img_y * new - view_y))
+    paint_selection_outline(painter, rect.adjusted(1, 1, -1, -1), alpha=230)
+
+
+def paint_mark_ring(painter: QPainter, rect: QRect) -> None:
+    """What the canvas is pointing at, on a panel: the outline in structural blue.
+
+    White is where the user pointed; blue is what that resolved to — the colour
+    that marks structure rather than choice everywhere else, so the ring is not
+    read as a second pick.
+    """
+    paint_selection_outline(painter, rect, color=GRID_STRUCTURE_COLOR)
 
 
 def value_spin(low: int, high: int, value: int, on_change) -> QSpinBox:  # noqa: ANN001
@@ -1155,6 +956,39 @@ def hex_spin(
     return spin
 
 
+#: The last line of every free-text address box's tooltip: the convention is
+#: app-wide (:func:`~celpix.core.address.parse_hex`), so it is said the same way
+#: wherever one is typed into.
+HEX_ENTRY_NOTE = "Hex; $ and 0x prefixes accepted"
+
+
+def hex_field(tip: str, value: int | None = None) -> QLineEdit:
+    """A free-text address box: bare hex digits, ``$``/``0x`` accepted.
+
+    A text field rather than :func:`hex_spin` where the value may be blank —
+    a length a decompressor discovers, an input left unbound. The tooltip ends
+    in :data:`HEX_ENTRY_NOTE` so no box forgets to say which base it reads, and
+    ``value`` is shown in the one spelling an input box holds (no prefix, six
+    digits, :func:`~celpix.core.address.format_hex`). Read back with
+    :func:`hex_value`.
+    """
+    field = QLineEdit("" if value is None else format_hex(value, prefix=False))
+    field.setToolTip(f"{tip}\n{HEX_ENTRY_NOTE}")
+    return field
+
+
+def hex_value(field: QLineEdit, *, allow_negative: bool = False) -> int | None:
+    """What :func:`hex_field` ``field`` holds, or ``None`` for blank or unreadable.
+
+    Negative is refused unless asked for: ``parse_hex("-5")`` is -5, and no
+    offset or length a box here takes can be one.
+    """
+    value = parse_hex(field.text())
+    if value is None or (value < 0 and not allow_negative):
+        return None
+    return value
+
+
 def make_action(
     owner: QWidget,
     text: str,
@@ -1203,6 +1037,66 @@ def make_action(
     return action
 
 
+def modal_tool_actions(
+    owner: QWidget,
+    text: str,
+    icon_text: str,
+    key: str,
+    tip: str,
+    toggled: Callable[[bool], None],
+    triggered: Callable[[], None],
+) -> tuple[QAction, QAction]:
+    """A modal tool's two actions over one state: ``(bar button, menu row)``.
+
+    Two because a bar button and a menu row want opposite things from Qt's
+    checkable flag. The button needs it — a latched button is how an armed modal
+    tool says it is armed — while the row must not have it: it sits among plain
+    mode-toggle rows (Toggle Selection Mode, Toggle Edit Mode), and a lone
+    checkbox there reads as a different kind of thing from its neighbours. The
+    button drives the state through ``toggled``; the row's ``triggered`` should
+    press the button, so the two cannot disagree, and
+    :func:`sync_modal_tool` converges them afterwards.
+
+    The button carries ``icon_text``, since QToolButton takes its label from it
+    and the full row text would stretch the bar. ``key`` goes on the **row**,
+    display-only (a widget-context shortcut that never fires): the bare letter
+    is routed by the app-wide key filter, which yields to focused text inputs,
+    and the row is where the menu and the F1 guide read it from. The row starts
+    disabled, as nothing is open yet; the button is the caller's to place.
+    """
+    tool = make_action(owner, text, toggled, tip=tip, checkable=True)
+    tool.setIconText(icon_text)
+    row = make_action(
+        owner,
+        text,
+        triggered,
+        tip=tip,
+        shortcut=QKeySequence(key),
+        context=Qt.ShortcutContext.WidgetShortcut,
+        enabled=False,
+    )
+    return tool, row
+
+
+def sync_modal_tool(
+    tool: QAction, row: QAction, *, armed: bool, available: bool, tip: str
+) -> None:
+    """Converge a :func:`modal_tool_actions` pair with the state they show.
+
+    The button is re-latched under blocked signals, since a converge is not a
+    gesture and must not re-enter the arming it reflects. The row holds no state
+    of its own; it only needs to be as reachable, and say as much, as the button
+    it stands in for. Disarming a tool that became unavailable is the caller's,
+    before this: only it knows how to put the tool down.
+    """
+    if tool.isChecked() != armed:
+        with signals_blocked(tool):
+            tool.setChecked(armed)
+    for action in (tool, row):
+        action.setEnabled(available)
+        action.setToolTip(tip)
+
+
 def add_enum_action_group(
     owner: QWidget,
     menu,  # noqa: ANN001 — QMenu
@@ -1236,6 +1130,81 @@ def add_enum_action_group(
         actions[value] = action
     group.triggered.connect(on_triggered)
     return group, actions
+
+
+class FlowButtonGrid(QWidget):
+    """A run of buttons folded to the widget's width, a row at a time.
+
+    A grid rather than a strip that scrolls sideways: where the buttons are a
+    whole vocabulary — the text window's insert row is a format's every command
+    — one scrolled out of sight is one the user has to go hunting for, and a
+    hidden name is no better than an unlisted one. So every button is on screen
+    at once and the widget grows a line at a time instead.
+
+    Columns are uniform and as wide as the widest caption needs, which keeps a
+    control table reading as a table; how many of them fit is the width divided
+    by that, recomputed as the window is dragged. The buttons stretch to fill,
+    so the last row of a short list lines up with the ones above it rather than
+    ending in a ragged edge.
+    """
+
+    def __init__(self, spacing: int, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._grid = QGridLayout(self)
+        self._grid.setContentsMargins(0, 0, 0, 0)
+        self._grid.setSpacing(spacing)
+        self._spacing = spacing
+        self._buttons: list[QPushButton] = []
+        self._columns = 0
+        # Vertically Minimum: the height is whatever the rows come to, and the
+        # content above keeps the rest.
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+
+    @property
+    def layout_(self) -> QGridLayout:
+        """The grid itself — the buttons in the order they were given."""
+        return self._grid
+
+    def set_buttons(self, buttons: list[QPushButton]) -> None:
+        for button in self._buttons:
+            self._grid.removeWidget(button)
+            button.setParent(None)
+            button.deleteLater()
+        self._buttons = buttons
+        for button in buttons:
+            # Expanding, so a column wider than the caption is filled rather than
+            # leaving the button floating in the middle of its cell.
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._columns = 0  # nothing is placed yet, whatever the count was before
+        self._reflow()
+
+    def resizeEvent(self, event) -> None:  # noqa: ANN001, N802 — Qt override
+        super().resizeEvent(event)
+        self._reflow()
+
+    def _reflow(self) -> None:
+        """Lay the buttons out in as many columns as the current width holds."""
+        columns = self._fits()
+        if columns == self._columns:
+            return
+        self._columns = columns
+        # Taken out before being put back: adding a widget the layout already
+        # manages to a second cell leaves it in both, and the row it came from
+        # keeps its old height.
+        for button in self._buttons:
+            self._grid.removeWidget(button)
+        for at, button in enumerate(self._buttons):
+            self._grid.addWidget(button, *divmod(at, columns))
+        for column in range(self._grid.columnCount()):
+            self._grid.setColumnStretch(column, 1 if column < columns else 0)
+
+    def _fits(self) -> int:
+        """How many uniform columns the width holds — at least one, at most all."""
+        if not self._buttons:
+            return 1
+        widest = max(button.sizeHint().width() for button in self._buttons)
+        step = widest + self._spacing
+        return max(1, min(len(self._buttons), (self.width() + self._spacing) // step))
 
 
 class ChecklistPopupButton(QToolButton):
@@ -1329,283 +1298,3 @@ class ChecklistPopupButton(QToolButton):
         for key, box in self._boxes.items():
             with signals_blocked(box):
                 box.setChecked(key in effective)
-
-
-class ToolBarOverflow(QObject):
-    """Make a toolbar's » button show the controls that didn't fit.
-
-    Qt draws the » itself once a toolbar runs out of width, but outside a
-    QMainWindow's toolbar area it offers the hidden part as a *menu*, and a menu
-    cannot hold a combo or a spin — so for bars made of nothing else Qt greys
-    the button out, and the controls past the edge are simply unreachable.
-
-    This keeps the button live and, on a press, hands the overflowing tail to a
-    popup toolbar for as long as the popup is up. The *actions* move, not the
-    widgets: a ``QWidgetAction`` releases its widget when it leaves one toolbar
-    and hands it to the next, so the controls keep their signals, their action's
-    visibility and their place in the order. The popup closing puts them back.
-
-    Worth it even on a bar of plain buttons, which Qt's menu could hold: Qt's »
-    is a fixed dark pixmap, and every bar over the canvas should overflow the
-    same way.
-    """
-
-    def __init__(self, bar: QToolBar) -> None:
-        super().__init__(bar)
-        self._bar = bar
-        self._button: QToolButton = bar.findChild(QToolButton, "qt_toolbar_ext_button")
-        self._button.setToolTip("Controls that do not fit the toolbar")
-        self._button.installEventFilter(self)
-        bar.installEventFilter(self)
-        self._button.setEnabled(True)
-        self._bake_icon()
-
-    def _bake_icon(self) -> None:
-        """Paint the » in the theme's button-text colour, at the button's size.
-
-        Qt's own is a fixed dark pixmap that vanishes on the dark theme. Baked,
-        so it is re-baked on the bar's PaletteChange (see :meth:`eventFilter`).
-        Sized to the style's extension extent rather than the usual 16: the
-        button is only that wide, and a 16px glyph drawn into it loses its thin
-        strokes to the squeeze — a gray smudge rather than the theme's ink.
-        """
-        # icon_font imports this module (for ``stamped``), so not at the top.
-        from celpix.ui.icon_font import glyph_icon  # noqa: PLC0415
-
-        extent = self._bar.style().pixelMetric(
-            QStyle.PixelMetric.PM_ToolBarExtensionExtent, None, self._bar
-        )
-        self._button.setIconSize(QSize(extent, extent))
-        self._button.setIcon(
-            glyph_icon(
-                Glyph.OVERFLOW,
-                self._bar.palette(),
-                size=extent,
-                ratio=self._bar.devicePixelRatioF(),
-            )
-        )
-
-    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        kind = event.type()
-        if kind == QEvent.Type.PaletteChange and watched is self._bar:
-            self._bake_icon()
-        elif kind == QEvent.Type.EnabledChange:
-            # The toolbar's layout disables the button on every pass; undo it —
-            # also when the bar itself comes back from being frozen, since the
-            # layout's own disable left the button stuck off behind it.
-            if self._bar.isEnabled() and not self._button.isEnabled():
-                self._button.setEnabled(True)
-        elif watched is not self._button:
-            pass
-        elif kind == QEvent.Type.MouseButtonPress:
-            self._open()
-            return True
-        elif kind in (QEvent.Type.MouseButtonRelease, QEvent.Type.MouseButtonDblClick):
-            return True  # the button's own click would open Qt's empty menu
-        return False
-
-    def _open(self) -> None:
-        actions = self._bar.actions()
-        overflow = [
-            index
-            for index, action in enumerate(actions)
-            if action.isVisible()
-            and (widget := self._bar.widgetForAction(action)) is not None
-            and not widget.isVisibleTo(self._bar)
-        ]
-        if not overflow:
-            return
-        # The layout lays out front to back and hides the rest, so what didn't fit
-        # is always a tail — hidden actions inside it included, so their place in
-        # the order survives the round trip.
-        moved = actions[overflow[0] :]
-
-        popup = _OverflowPopup(self._button)
-        spare = QToolBar(popup)
-        spare.layout().setSpacing(self._bar.layout().spacing())
-        spare.setIconSize(self._bar.iconSize())
-        spare.setToolButtonStyle(self._bar.toolButtonStyle())
-        popup.layout().addWidget(spare)
-        for action in moved:
-            self._bar.removeAction(action)
-            spare.addAction(action)
-
-        def put_back() -> None:
-            for action in moved:
-                spare.removeAction(action)
-                self._bar.addAction(action)
-            popup.deleteLater()
-
-        popup.closed.connect(put_back)
-        popup.adjustSize()
-        # Hang it under the » with right edges aligned, the way a menu drops from
-        # a button at the end of a bar, kept on screen.
-        corner = self._button.mapToGlobal(self._button.rect().bottomRight())
-        pos = corner - popup.rect().topRight()
-        screen = self._button.screen().availableGeometry()
-        pos.setX(max(screen.left(), min(pos.x(), screen.right() - popup.width())))
-        popup.move(pos)
-        popup.show()
-
-
-class _OverflowPopup(QFrame):
-    """The frame :class:`ToolBarOverflow` shows, announcing when it goes."""
-
-    closed = Signal()
-
-    def __init__(self, parent: QWidget) -> None:
-        super().__init__(parent, Qt.WindowType.Popup)
-        self.setFrameShape(QFrame.Shape.StyledPanel)
-        # A click on the » that dismisses the popup must not reopen it.
-        self.setAttribute(Qt.WidgetAttribute.WA_NoMouseReplay)
-        row = QHBoxLayout(self)
-        row.setContentsMargins(2, 2, 2, 2)
-
-    def hideEvent(self, event) -> None:
-        super().hideEvent(event)
-        self.closed.emit()
-
-
-def settings() -> QSettings:
-    """The app's preference store, opened the one way everything here opens it.
-
-    The organization is named **explicitly** rather than left to the bare
-    ``QSettings()`` default. celPix sets only an application name on the
-    QApplication (:mod:`celpix.app` says why), and with no organization Qt files
-    the settings under a literal ``Unknown Organization`` — a directory on Linux
-    and macOS, a registry key on Windows. celPix is its own organization, so
-    naming it puts the file where its name says: ``~/.config/celPix.conf``,
-    ``HKCU\\Software\\celPix``.
-
-    The format is named too, as whatever the default currently *is*, rather than
-    left to the constructor to imply: the overloads that take no format resolve
-    the file through the platform's native path table whatever
-    ``setDefaultFormat`` says, which would put the store beyond the reach of
-    ``QSettings.setPath`` — and that is the one hook a test suite has for keeping
-    its writes out of the developer's own config.
-    """
-    return QSettings(QSettings.defaultFormat(), QSettings.Scope.UserScope, APP_NAME)
-
-
-def load_enum_setting(key: str, default: _EnumT) -> _EnumT:
-    """An app-wide appearance/interaction preference out of QSettings.
-
-    The app-global preferences (the grid, selection shape, active tool) are
-    stored by their enum's string ``value``, so the settings file stays readable
-    and stable. A stored value this build has no member for — an older or newer
-    celPix wrote the settings — falls back to ``default`` rather than raising: a
-    stale preference is not a reason to fail to start.
-    """
-    stored = settings().value(key, default.value)
-    try:
-        return type(default)(stored)
-    except ValueError:
-        return default
-
-
-def save_enum_setting(key: str, value: Enum) -> None:
-    """Persist an app-wide preference — the write half of
-    :func:`load_enum_setting`, storing the enum's ``value`` so the two agree on
-    the on-disk form in one place rather than at each call site."""
-    settings().setValue(key, value.value)
-
-
-def load_bool_setting(key: str, default: bool) -> bool:
-    """An app-wide on/off preference out of QSettings.
-
-    Read through Qt's own conversion rather than Python's: the INI backend hands
-    a boolean back as the *string* it wrote, and ``bool("false")`` is True.
-    """
-    return settings().value(key, default, type=bool)
-
-
-def save_bool_setting(key: str, value: bool) -> None:
-    """Persist an app-wide on/off preference (see :func:`load_bool_setting`)."""
-    settings().setValue(key, value)
-
-
-def load_float_setting(key: str, default: float) -> float:
-    """An app-wide numeric preference out of QSettings.
-
-    Through Qt's conversion for the reason :func:`load_bool_setting` gives — the
-    INI backend hands back the string it wrote — and falling back to ``default``
-    when the stored text is not a number at all, since a settings file edited by
-    hand is not a reason to fail to start.
-    """
-    stored = settings().value(key, default)
-    try:
-        return float(stored)
-    except (TypeError, ValueError):
-        return default
-
-
-def save_float_setting(key: str, value: float) -> None:
-    """Persist an app-wide numeric preference (see :func:`load_float_setting`)."""
-    settings().setValue(key, value)
-
-
-# The recently opened projects, newest first. App-wide rather than per-project:
-# the list is how you get *back* to a project, so it cannot live inside one. Ten
-# is deep enough to reach last week's work while the menu stays a menu.
-RECENT_PROJECTS_KEY = "recent/projects"
-MAX_RECENT_PROJECTS = 10
-
-
-def _recent_path(path: str) -> str:
-    """A project path in the one spelling the list stores it under.
-
-    The same project reaches us spelled differently depending on how it was
-    opened — Qt hands back a dropped file's URL with POSIX separators even on
-    Windows, where the file dialog's answer is native — and a list that stores
-    both grows a second row for a project the user only has one of. Separators
-    are normalized for storage; case only for the comparison (:func:`_recent_key`),
-    since the name still has to be shown as the file system spells it.
-    """
-    return os.path.normpath(os.path.abspath(path))
-
-
-def _recent_key(path: str) -> str:
-    """The identity a recent path is de-duplicated by — case-folded on the
-    platforms whose file names are (Windows), so a project opened as
-    ``D:\\roms`` and again as ``d:\\ROMS`` stays one row."""
-    return os.path.normcase(_recent_path(path))
-
-
-def load_recent_projects() -> list[str]:
-    """The remembered project paths, newest first.
-
-    A one-item list comes back out of QSettings as a bare string — the INI
-    backend can't tell a single-element list from a scalar — so both shapes are
-    folded to a list here rather than at each call site.
-    """
-    stored = settings().value(RECENT_PROJECTS_KEY)
-    if stored is None:
-        return []
-    if isinstance(stored, str):
-        return [stored] if stored else []
-    return [str(path) for path in stored]
-
-
-def remember_recent_project(path: str) -> None:
-    """Record ``path`` as the newest recent project, dropping the oldest over
-    :data:`MAX_RECENT_PROJECTS`. Re-opening a listed project moves it back to
-    the top rather than listing it twice."""
-    key = _recent_key(path)
-    recent = [p for p in load_recent_projects() if _recent_key(p) != key]
-    recent.insert(0, _recent_path(path))
-    settings().setValue(RECENT_PROJECTS_KEY, recent[:MAX_RECENT_PROJECTS])
-
-
-def forget_recent_project(path: str) -> None:
-    """Drop ``path`` from the recent list — for a project that is no longer
-    where it was, which the list itself has no way of noticing."""
-    key = _recent_key(path)
-    settings().setValue(
-        RECENT_PROJECTS_KEY,
-        [p for p in load_recent_projects() if _recent_key(p) != key],
-    )
-
-
-def clear_recent_projects() -> None:
-    """Forget every recent project."""
-    settings().remove(RECENT_PROJECTS_KEY)

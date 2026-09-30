@@ -70,10 +70,12 @@ from celpix.plugins.builtins._lz import (
     FlagGroup,
     MatchFinder,
     copy_from,
+    corrupt,
     parse_greedy,
 )
 
-HEADER_SIZE = 4
+from ._gba_bios import ALIGNMENT, HEADER_SIZE, read_header, write_header
+
 # The whole type byte: high nibble 1 is the LZ77 the BIOS dispatches on, and the
 # low nibble is reserved as zero. The hardware itself never looks at the low
 # nibble, so requiring it is a choice, made for the structure scan: masking it
@@ -81,12 +83,6 @@ HEADER_SIZE = 4
 # 0x11-0x1F, exactly one of them word-aligned and over 64 bytes, and that one
 # a 1.01:1 coincidence — while all 463 real streams carried 0x10.
 LZ77_TYPE = 0x10
-# The start alignment the BIOS imposes: it reads the header with one 32-bit
-# load, which on this CPU rotates rather than faults at an unaligned address,
-# so a stream at an unaligned offset decodes to garbage on the console. The
-# scan probes only aligned offsets for that reason; a decode is handed a
-# buffer, not an address, and cannot check it.
-ALIGNMENT = 4
 
 MIN_MATCH = 3
 MAX_MATCH = 18  # 4-bit length field, biased by MIN_MATCH
@@ -99,15 +95,8 @@ MAX_DISTANCE = 4096
 # to 2 makes one stream valid for both. See the module docstring.
 MIN_DISTANCE = 2
 
-MAX_DECOMPRESSED = 0xFFFFFF  # the header's size field is 24 bits
 
-# Compressor tuning: how many recent positions sharing a 3-byte prefix to test
-# (see :class:`~celpix.plugins.builtins._lz.MatchFinder`).
-_MAX_CANDIDATES = 96
-
-
-def _fail(reason: str) -> ValueError:
-    return ValueError(f"corrupt LZ77 stream: {reason}")
+_fail = corrupt("LZ77")
 
 
 def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]:
@@ -119,18 +108,12 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
     mid-stream yields the prefix decoded so far instead of raising, which is what
     a bounded view window needs; a structurally invalid stream still raises.
     """
-    if len(data) < HEADER_SIZE:
-        raise _fail(f"shorter than the {HEADER_SIZE}-byte header")
-    if data[0] != LZ77_TYPE:
-        raise _fail(
-            f"type byte {data[0]:#04x} is not an LZ77 header "
-            f"(high nibble 1, low nibble reserved as 0)"
-        )
-    target = int.from_bytes(data[1:HEADER_SIZE], "little")
-    if target == 0:
-        # Nothing to produce, and accepting it would make four bytes of noise a
-        # valid structure wherever a 0x10 happened to land.
-        raise _fail("declared decompressed size is zero")
+    target = read_header(
+        data,
+        types=(LZ77_TYPE,),
+        what="an LZ77 header (high nibble 1, low nibble reserved as 0)",
+        fail=_fail,
+    )
 
     out = bytearray()
     src = HEADER_SIZE
@@ -178,22 +161,10 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
 
 def compress(data: bytes) -> bytes:
     """Encode raw bytes into a BIOS LZ77 stream, safe for both BIOS entry points."""
-    n = len(data)
-    if n == 0:
-        # A zero size is what decompress refuses, so writing one would save a
-        # stream this plugin cannot open again.
-        raise ValueError("GBA BIOS LZ77 has no encoding for an empty payload")
-    if n > MAX_DECOMPRESSED:
-        raise ValueError(
-            f"input is {n:,} bytes; the 24-bit LZ77 size field holds "
-            f"{MAX_DECOMPRESSED:,}"
-        )
-
-    finder = MatchFinder(
-        data, min_match=MIN_MATCH, window=MAX_DISTANCE, max_candidates=_MAX_CANDIDATES
+    out = write_header(
+        LZ77_TYPE, len(data), what="GBA BIOS LZ77", field="LZ77 size field"
     )
-    out = bytearray([LZ77_TYPE])
-    out += n.to_bytes(3, "little")
+    finder = MatchFinder(data, min_match=MIN_MATCH, window=MAX_DISTANCE)
     # MSB first, and a set bit is the back-reference — both the opposite way round
     # from the ring LZSS next door (see the module docstring).
     group = FlagGroup(out, msb_first=True, set_means_match=True)

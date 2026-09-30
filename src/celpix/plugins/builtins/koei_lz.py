@@ -66,9 +66,13 @@ from __future__ import annotations
 from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
 from celpix.plugins.builtins._lz import (
+    ByteSource,
     FlagGroup,
+    GroupReader,
     MatchFinder,
+    Truncated,
     copy_back,
+    corrupt,
     parse_greedy,
 )
 
@@ -110,15 +114,9 @@ _FIRST_FAR_DISTANCE = 0x80
 
 WORD_BYTES = 2
 WORD_BITS = 16
-FLAG_BITS = 8
 
 
-def _fail(reason: str) -> ValueError:
-    return ValueError(f"corrupt Koei LZ stream: {reason}")
-
-
-class _Truncated(Exception):
-    """The stream ran out mid-op — recoverable only under ``partial``."""
+_fail = corrupt("Koei LZ")
 
 
 class _Reader:
@@ -132,30 +130,22 @@ class _Reader:
     """
 
     def __init__(self, data: bytes) -> None:
-        self._data = data
-        self.pos = 0
-        self._flags = 0
-        self._left = 0
+        self.src = ByteSource(data)
+        # The flag channel is the ordinary lazily fetched byte group, MSB first;
+        # only the match channel's primed 16-bit window is this format's own.
+        self._flags = GroupReader(self.src, msb_first=True)
+        self.byte = self.src.byte
+        self.flag = self._flags.bit
         self._window = self._word()
         self._held = self._window  # the word the window is draining
         self._avail = 0  # bits of it not yet in the window
 
-    def byte(self) -> int:
-        if self.pos >= len(self._data):
-            raise _Truncated
-        value = self._data[self.pos]
-        self.pos += 1
-        return value
+    @property
+    def pos(self) -> int:
+        return self.src.pos
 
     def _word(self) -> int:
         return self.byte() | (self.byte() << 8)
-
-    def flag(self) -> int:
-        if not self._left:
-            self._flags = self.byte()
-            self._left = FLAG_BITS
-        self._left -= 1
-        return (self._flags >> self._left) & 1
 
     def peek(self, count: int) -> int:
         return self._window >> (WORD_BITS - count)
@@ -235,7 +225,7 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
             if len(out) + length > OUTPUT_CAP:
                 raise _fail(f"output would exceed {OUTPUT_CAP:,} bytes")
             copy_back(out, distance + 1, length)
-    except _Truncated:
+    except Truncated:
         if not partial:
             raise _fail(f"source ended after {len(out):,} bytes") from None
 

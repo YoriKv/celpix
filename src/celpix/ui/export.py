@@ -1,20 +1,20 @@
 """Exporting interpreted graphics to standalone image / raw files.
 
 Export is a one-way projection *out* of celPix's model: it renders an entry's
-whole document — every tile, laid out by its view arrangement — to a PNG, or
-writes the decoded pixel bytes straight out as a raw binary. Unlike Write, it
-never targets the source file; it produces new, self-contained files for use in
-other tools.
+whole document to a PNG — every tile, laid out by its view arrangement, or for a
+tilemap the map it draws — or writes the decoded bytes straight out as a raw
+binary. Unlike Write, it never targets the source file; it produces new,
+self-contained files for use in other tools.
 
 The PNG is a genuine **indexed** (color-type-3) image: the render bridge builds
-a ``Format_Indexed8`` QImage whose color table is exactly the active palette row,
-and Qt's PNG writer turns that into a palette PNG — so an exported sheet opens in
-a sprite editor as an indexed image, with the palette and index identity intact.
-Colors
-keep the codec's own alpha; index 0 is exported opaque like any other entry (its
-color is preserved, not forced transparent) unless a tilemap's **Transparent 0**
-box is ticked, which the export follows as the canvas does — see
-``docs/design/export.md``.
+a ``Format_Indexed8`` QImage whose color table is the palette rows the picture
+draws through — the active one, or every row a pinned region or a map's cells
+name — and Qt's PNG writer turns that into a palette PNG, so an exported sheet
+opens in a sprite editor as an indexed image, with the palette and index
+identity intact. Colors keep the codec's own alpha; index 0 is exported opaque
+like any other entry (its color is preserved, not forced transparent) unless a
+tilemap's **Transparent 0** box is ticked, which the export follows as the
+canvas does — see ``docs/design/export.md``.
 
 This lives on the ``ui`` side because it produces ``QImage`` and uses Qt's image
 writer; the decode+compose core it calls (``pipeline.decode_and_compose``) is the
@@ -37,9 +37,18 @@ from celpix.plugins.registry import Registry
 from celpix.ui import render_bridge
 
 
-def _palette_biases(
-    doc: Document, registry: Registry, columns: int
-) -> list[int] | None:
+def _color_table(doc: Document, start: int, count: int) -> list[int]:
+    """``count`` of ``doc``'s palette colours from index ``start``, in order.
+
+    Exactly one entry per index the picture can hold, in celPix order — no
+    minimizing, which editors do on load and which would renumber unused leading
+    colours. Every entry keeps the codec's own alpha; index 0 is *not* forced
+    transparent here, so a meaningful colour 0 exports as the opaque colour it is.
+    """
+    return [doc.palette.color(start + i) for i in range(count)]
+
+
+def _palette_biases(doc: Document, columns: int, index_space: int) -> list[int] | None:
     """Pinned-region index shifts for **every** tile, or None if nothing is pinned.
 
     The whole-file counterpart of the live view's ``_window_biases``. One thing
@@ -58,9 +67,6 @@ def _palette_biases(
     view = doc.view
     if not view.show_palette_regions or view.palette_regions.is_empty():
         return None
-    index_space = pipeline.palette_row_size(
-        doc.pixel_config.interpret_preset_id, registry
-    )
     wrap = doc.palette_row_wrap(index_space)
     per_tile = doc.tile_width * doc.tile_height
     regions = view.palette_regions.bounded(
@@ -89,7 +95,9 @@ def _palette_biases(
     ]
 
 
-def _tilemap_image(doc: Document, registry: Registry, columns: int) -> QImage:
+def _tilemap_image(
+    doc: Document, registry: Registry, columns: int, index_space: int
+) -> QImage:
     """Export a tilemap entry as the **map**, not as the tiles behind it.
 
     What such an entry *is* on screen is its cells drawn through the tile source
@@ -111,12 +119,9 @@ def _tilemap_image(doc: Document, registry: Registry, columns: int) -> QImage:
     screen (``rendering.RenderingMixin._render_tilemap``).
     """
     drawn = pipeline.tilemap_image(doc, registry, columns)
-    index_space = pipeline.palette_row_size(
-        doc.pixel_config.interpret_preset_id, registry
-    )
     top = min(256, drawn.palette_rows * index_space)
     base = 0 if doc.cells_carry_palette_rows else doc.view.palette_row * index_space
-    table = [doc.palette.color(base + i) for i in range(top)]
+    table = _color_table(doc, base, top)
     if doc.view.transparent_zero:
         # The map's own Transparent 0 box, honoured here as on the canvas: a
         # backdrop the user has cleared on screen leaves as a hole too, where the
@@ -131,25 +136,29 @@ def _tilemap_image(doc: Document, registry: Registry, columns: int) -> QImage:
 
 
 def document_image(doc: Document, registry: Registry) -> QImage:
-    """Render every tile of ``doc`` to one QImage, laid out per its view options.
+    """Render the whole of ``doc`` to one QImage, laid out per its view options.
 
     The full-file analogue of the windowed live view: it honors the columns, the
-    block/2D arrangement and the active palette row, so the export matches what
-    the canvas shows — just the whole file rather than the visible window. An
-    indexed codec yields a ``Format_Indexed8`` image whose color table is exactly
-    the active palette row, so Qt writes a compact indexed PNG; a direct-color
-    codec yields ``Format_ARGB32``.
+    block/2D arrangement and the palette rows, so the export matches what the
+    canvas shows — just the whole file rather than the visible window. An
+    indexed codec yields a ``Format_Indexed8`` image whose color table is the
+    active palette row, or every row pinned regions draw through, so Qt writes a
+    compact indexed PNG; a direct-color codec yields ``Format_ARGB32``.
 
     A tilemap entry takes a route of its own (:func:`_tilemap_image`): what it
     shows is the map, and its pixel bytes are a different entry's tiles.
     """
     view = doc.view
     cols = max(1, view.columns)
+    # One palette row's worth of indices — what every table below is measured in.
+    index_space = pipeline.palette_row_size(
+        doc.pixel_config.interpret_preset_id, registry
+    )
     if doc.is_tilemap:
-        return _tilemap_image(doc, registry, cols)
+        return _tilemap_image(doc, registry, cols, index_space)
     engine, preset = registry.engine_for(doc.pixel_config.interpret_preset_id)
     layout = BlockLayout(cols, view.block_columns, view.block_rows, view.block_order)
-    biases = _palette_biases(doc, registry, cols)
+    biases = _palette_biases(doc, cols, index_space)
     grid, _filled = pipeline.decode_and_compose(
         doc.pixel_data,
         engine,
@@ -165,31 +174,22 @@ def document_image(doc: Document, registry: Registry) -> QImage:
     if grid.bytes_per_pixel == 4:
         # Direct-color: no palette; the ARGB carries its own alpha.
         return render_bridge.render(grid, doc.palette)
-    index_space = pipeline.palette_row_size(
-        doc.pixel_config.interpret_preset_id, registry
-    )
     if biases is not None:
         # Pinned regions: the row is already in the indices, so the table cannot
         # offset again — and it has to span every row on screen rather than one
         # palette row. Sized to the highest row actually used, not blindly to 256,
         # so a two-palette sheet exports a two-row table.
         top = (max(biases) // index_space + 1) * index_space
-        return render_bridge.indexed_image(
-            grid, [doc.palette.color(i) for i in range(top)]
-        )
-    base = view.palette_row * index_space
-    # Exactly one entry per index the format can produce, in celPix order — no
-    # minimizing, which editors do on load and which would renumber unused
-    # leading colors. Every
-    # entry keeps the codec's own alpha; index 0 is *not* forced transparent, so a
-    # meaningful color 0 exports as the opaque color it is.
-    table = [doc.palette.color(base + i) for i in range(index_space)]
+        return render_bridge.indexed_image(grid, _color_table(doc, 0, top))
+    table = _color_table(doc, view.palette_row * index_space, index_space)
     return render_bridge.indexed_image(grid, table)
 
 
-def save_png(image: QImage, path: str) -> bool:
-    """Write ``image`` to ``path`` as PNG; False if Qt could not write it."""
-    return image.save(path, "PNG")
+def save_png(image: QImage, path: str) -> None:
+    """Write ``image`` to ``path`` as PNG. Raises ``OSError`` when Qt could not
+    write it, for the caller to report — as :func:`save_raw` does."""
+    if not image.save(path, "PNG"):
+        raise OSError(f"Could not write {path}.")
 
 
 def raw_bytes(doc: Document) -> bytes:
@@ -233,17 +233,12 @@ def sequence_frames(
 def _argb(image: QImage) -> list[int]:
     """``image``'s pixels as ``0xAARRGGBB`` ints, row-major.
 
-    Read off the buffer rather than one ``QImage.pixel`` call per pixel, which is
-    what the whole of a GIF export used to cost: ``Format_ARGB32`` stores each
-    pixel as a single host-order word, which is already the int wanted. Rows are
-    padded to a multiple of four bytes, so the stride is read from the image
-    rather than taken to be its width.
+    Read off the grid's buffer rather than one ``QImage.pixel`` call per pixel,
+    which is what the whole of a GIF export would cost: the grid holds each pixel
+    as ``Format_ARGB32``'s single host-order word, which is already the int
+    wanted.
     """
-    image = image.convertToFormat(QImage.Format.Format_ARGB32)
-    width = image.width()
-    stride = image.bytesPerLine() // 4
-    words = memoryview(image.constBits()).cast("I")
-    return [words[y * stride + x] for y in range(image.height()) for x in range(width)]
+    return list(memoryview(render_bridge.argb_grid_from_image(image).data).cast("I"))
 
 
 def _step_pixels(
@@ -327,7 +322,6 @@ def save_sequence_pngs(
         if frame is None:
             frame = _blank_like(strip, rects[0])
         path = f"{stem}-{at:0{digits}d}.png"
-        if not save_png(frame, path):
-            raise OSError(f"Could not write {path}.")
+        save_png(frame, path)
         written.append(path)
     return written

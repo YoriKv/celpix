@@ -16,7 +16,12 @@ from celpix.plugins.base import NO_COMPRESSION, NO_RESHAPE, PluginInfo
 
 class PassthroughCompression:
     info = PluginInfo(
-        id=NO_COMPRESSION, name="None (uncompressed)", stage=Stage.COMPRESSION
+        id=NO_COMPRESSION,
+        name="None (uncompressed)",
+        stage=Stage.COMPRESSION,
+        # Plain bytes have no end marker: their extent is the slice's, which is
+        # exactly what the flag's false says.
+        self_delimiting=False,
     )
 
     def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:

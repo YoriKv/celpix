@@ -1,8 +1,9 @@
 """The run/literal packer the byte-oriented RLE schemes here share.
 
-PackBits and the Konami RLE family are one encoder wearing two headers. Both walk
-the input once, emit a run of equal bytes as its own packet the moment it is long
-enough to pay for the header, and let everything else pile into a literal packet
+PackBits, the Konami RLE family, the GBA BIOS and GBDK run-length schemes, the
+SNES RLE and Phantasy Star's are one encoder wearing different headers. Each walks
+the input once, emits a run of equal bytes as its own packet the moment it is long
+enough to pay for the header, and lets everything else pile into a literal packet
 that is flushed whenever a run interrupts it or the data ends. What differs is
 arithmetic — how a header states its count, and how many bytes a packet may carry
 — which is what this takes as parameters.
@@ -40,11 +41,13 @@ def pack_runs(
     been cut into whole packets, and that tail spills back into the literal buffer
     the same way.
 
-    ``spill_pair_as_run`` is the one place the two schemes genuinely differ. A pair
-    with **no literal packet open** has nowhere free to ride: opening one to hold
-    two bytes costs three where a run costs two, so PackBits emits the short run
-    instead. The Konami encoder declines the trade, staying inside the subset every
-    variant of that format decodes alike.
+    ``spill_pair_as_run`` is the one choice beyond arithmetic. A pair with **no
+    literal packet open** has nowhere free to ride: opening one to hold two bytes
+    costs three where a run costs two, so PackBits (and GBDK's and Phantasy Star's
+    schemes) emit the short run instead. The Konami encoder declines the trade,
+    staying inside the subset every variant of that format decodes alike. Where
+    ``min_run`` is already 2 (the SNES RLE) or 3 (the GBA BIOS RLE) the trade
+    never arises.
 
     ``run_limit(value)`` narrows ``max_packet`` for a run of one particular byte,
     for the scheme whose *terminator* a full-length run of that byte would spell —

@@ -1,6 +1,6 @@
 """Enigma — the Mega Drive's plane-map RLE, both directions.
 
-A *tilemap* compression, unlike everything else in this module: it unpacks to
+A *tilemap* compression, unlike the other schemes of its family: it unpacks to
 plain 16-bit VDP cells, which ``preset.tilemap.md-bg`` then reads. Sega shipped it
 alongside Nemesis in the same toolchain, and it turns up wherever a game stores a
 whole static screen — menus, title cards, special-stage layouts, block mappings.
@@ -58,6 +58,7 @@ from collections import Counter
 
 from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
+from celpix.plugins.builtins._lz import corrupt
 
 HEADER_SIZE = 6
 CELL_BYTES = 2
@@ -89,8 +90,7 @@ NARROW_FILLERS = 2
 NARROW_ABOVE = 4096
 
 
-def _fail(reason: str) -> ValueError:
-    return ValueError(f"corrupt Enigma stream: {reason}")
+_fail = corrupt("Enigma")
 
 
 def _flag_bits(mask: int) -> tuple[int, ...]:

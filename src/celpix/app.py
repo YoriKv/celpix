@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QStandardPaths
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from celpix import APP_NAME, __version__, resources
+from celpix import APP_NAME, APP_TAGLINE, __version__
 from celpix.core.capabilities import ContentKind
 from celpix.plugins.discovery import (
     FOLDER_STAGE,
@@ -18,13 +19,14 @@ from celpix.plugins.discovery import (
     project_plugin_dir,
     seed_examples,
 )
-from celpix.plugins.registry import default_registry
+from celpix.plugins.registry import Registry, default_registry
 from celpix.plugins.trust import PendingCodePlugin, TrustStore
 from celpix.project.projectfile import PROJECT_EXTENSION
+from celpix.ui.icon_font import app_pixmap
 from celpix.ui.main_window import MainWindow
 from celpix.ui.main_window.palette_source import PALETTE_EXTENSIONS
+from celpix.ui.settings import load_enum_setting
 from celpix.ui.theme import THEME_KEY, Theme, apply_theme
-from celpix.ui.widgets import load_enum_setting
 
 # The application name is the *only* identity set on the QApplication (no
 # organization name): QStandardPaths appends both organizationName and
@@ -84,7 +86,7 @@ def _build_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(
         prog="celpix",
-        description="A graphics and palette editor for retro-game data.",
+        description=APP_TAGLINE,
     )
     parser.add_argument(
         "--version", action="version", version=f"{APP_NAME} {__version__}"
@@ -150,7 +152,7 @@ def _open_arguments(window: MainWindow, args: argparse.Namespace) -> None:
     """
     for path in args.files:
         if _is_project(path):
-            window._load_project(str(path))
+            window.open_project(str(path))
             return
     forced = ContentKind(args.content_kind) if args.content_kind else None
 
@@ -163,59 +165,35 @@ def _open_arguments(window: MainWindow, args: argparse.Namespace) -> None:
             return ContentKind.PALETTE
         return None  # the container's own answer
 
-    window._open_dropped([(str(path), kind(path)) for path in args.files])
+    window.open_paths([(str(path), kind(path)) for path in args.files])
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Entry point for both ``celpix`` and ``python -m celpix``."""
-    raw = list(argv if argv is not None else sys.argv)
-    parser = _build_parser()
-    # --help and --version are answered before Qt starts, so asking what the
-    # options are works on a machine with no display to open a window on.
-    # parse_known_args, because a Qt option sitting next to --help is not an
-    # error - it is simply not ours to report on.
-    if any(arg in ("-h", "--help", "--version") for arg in raw[1:]):
-        parser.parse_known_args(raw[1:])
-    app = QApplication(raw)
-    app.setApplicationName(APP_NAME)
-    app.setApplicationVersion(__version__)
-    # Qt has removed the options it recognized, so what is left over is ours.
-    # Parsed here, at the top, so a command line that cannot work costs nothing:
-    # no plugin scan, no window, and the reason on the terminal.
-    args = _parse_args(parser, app.arguments()[1:])
-    # Style and palette both come from the theme, before the window is built: a
-    # widget that bakes a palette color into a pixmap should rasterize it once,
-    # in the color it will be shown in (View ▸ Theme switches it live afterwards).
-    apply_theme(load_enum_setting(THEME_KEY, Theme.LIGHT))
-    # The window/taskbar/dock icon while running. Loaded from bytes (not a file
-    # path) so it resolves the same in a source checkout and a frozen build,
-    # where resources live inside the bundle. The packaged executables also
-    # embed platform icons at build time (see packaging/ and the release
-    # workflow); this covers every platform's live window and Linux, which has
-    # no build-time icon.
-    icon = QPixmap()
-    icon.loadFromData(resources.read_bytes("icons", "app.png"))
-    app.setWindowIcon(QIcon(icon))
+def _prepare_plugin_dir(data_dir: Path) -> Path:
+    """The user's plugin folder, made ready to be looked in.
 
-    # Built-ins first, then whatever the user has dropped into the plugin folder
-    # (plus any CELPIX_PLUGIN_PATH dirs). Code plugins are gated by a confirm
-    # dialog and remembered in the trust store; load failures are reported, not
-    # fatal.
-    data_dir = _app_data_dir()
+    The typed subfolders are pre-created so opening the folder shows where each
+    kind of plugin goes, and the README and the inert ``_``-prefixed reference
+    files are seeded — refreshed each launch so they match this build.
+    """
     plugin_dir = data_dir / "plugins"
     plugin_dir.mkdir(parents=True, exist_ok=True)
-    # Pre-create the typed subfolders so opening the folder shows where each kind
-    # of plugin goes, then seed the README and the inert `_`-prefixed reference
-    # files — refreshed each launch so they match this build.
     for sub in FOLDER_STAGE:
         (plugin_dir / sub).mkdir(exist_ok=True)
     seed_examples(str(plugin_dir))
-    trust = TrustStore(str(data_dir / "trusted-plugins.json"))
+    return plugin_dir
 
-    def reload_plugins(project_path: str | None = None):
-        """Build a fresh registry from built-ins + the plugin folders. Reused for
-        the initial load, for opening a project and for the window's Refresh
-        action, so all three go through the same trust gate.
+
+def _plugin_loader(
+    plugin_dir: Path, trust: TrustStore
+) -> Callable[..., tuple[Registry, list]]:
+    """What builds a fresh registry: built-ins plus the plugin folders.
+
+    Reused for the initial load, for opening a project and for the window's
+    Refresh action, so all three go through the same trust gate.
+    """
+
+    def reload_plugins(project_path: str | None = None) -> tuple[Registry, list]:
+        """A fresh registry, and what failed to load into it.
 
         ``project_path`` is the open ``.celpix`` file, whose folder may carry a
         ``plugins/`` root of its own - scanned **after** the user's, so a project
@@ -240,6 +218,45 @@ def main(argv: list[str] | None = None) -> int:
         )
         return reg, load_issues
 
+    return reload_plugins
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Entry point for both ``celpix`` and ``python -m celpix``."""
+    raw = list(argv if argv is not None else sys.argv)
+    parser = _build_parser()
+    # --help and --version are answered before Qt starts, so asking what the
+    # options are works on a machine with no display to open a window on.
+    # parse_known_args, because a Qt option sitting next to --help is not an
+    # error - it is simply not ours to report on.
+    if any(arg in ("-h", "--help", "--version") for arg in raw[1:]):
+        parser.parse_known_args(raw[1:])
+    app = QApplication(raw)
+    app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(__version__)
+    # Qt has removed the options it recognized, so what is left over is ours.
+    # Parsed here, at the top, so a command line that cannot work costs nothing:
+    # no plugin scan, no window, and the reason on the terminal.
+    args = _parse_args(parser, app.arguments()[1:])
+    # Style and palette both come from the theme, before the window is built: a
+    # widget that bakes a palette color into a pixmap should rasterize it once,
+    # in the color it will be shown in (View ▸ Theme switches it live afterwards).
+    apply_theme(load_enum_setting(THEME_KEY, Theme.LIGHT))
+    # The window/taskbar/dock icon while running. The packaged executables also
+    # embed platform icons at build time (see packaging/ and the release
+    # workflow); this covers every platform's live window and Linux, which has
+    # no build-time icon.
+    app.setWindowIcon(QIcon(app_pixmap()))
+
+    # Built-ins first, then whatever the user has dropped into the plugin folder
+    # (plus any CELPIX_PLUGIN_PATH dirs). Code plugins are gated by a confirm
+    # dialog and remembered in the trust store; load failures are reported, not
+    # fatal.
+    data_dir = _app_data_dir()
+    plugin_dir = _prepare_plugin_dir(data_dir)
+    reload_plugins = _plugin_loader(
+        plugin_dir, TrustStore(str(data_dir / "trusted-plugins.json"))
+    )
     registry, issues = reload_plugins()
 
     window = MainWindow(

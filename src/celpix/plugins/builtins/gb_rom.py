@@ -37,6 +37,8 @@ from celpix.plugins.base import (
     splice,
 )
 
+from ._container_fields import checksum_field, untouched_field
+
 # The Nintendo logo the boot ROM compares against, at 0x104. Every ROM that runs
 # on hardware carries it byte-for-byte, making its head a better identifier than
 # the file suffix — a `.gb` may be any dump at all.
@@ -114,12 +116,11 @@ class GbRomContainer:
         ]
         if len(raw) < _HEADER_END:
             fields.append(
-                ContainerField(
+                untouched_field(
                     "Checksums",
                     "no header to repair",
                     f"A file under {format_hex(_HEADER_END, None)} bytes "
-                    "has no cartridge header\n"
-                    "A save writes it through untouched",
+                    "has no cartridge header",
                 )
             )
             return tuple(fields)
@@ -127,39 +128,24 @@ class GbRomContainer:
         stored_header = raw[_HEADER_SUM_AT]
         stored_global = int.from_bytes(raw[_GLOBAL_SUM_AT : _GLOBAL_SUM_AT + 2], "big")
         fields.append(
-            ContainerField(
+            checksum_field(
                 "Header checksum",
-                _sum_value(stored_header, repaired[_HEADER_SUM_AT], "02X"),
-                "Byte at 0x14D, summed over 0x134-0x14C\n"
+                stored_header,
+                repaired[_HEADER_SUM_AT],
+                digits=2,
+                detail="Byte at 0x14D, summed over 0x134-0x14C\n"
                 "The boot ROM refuses a cartridge whose copy is wrong\n"
                 "Recomputed on every save",
             )
         )
         fields.append(
-            ContainerField(
+            checksum_field(
                 "Global checksum",
-                _sum_value(
-                    stored_global,
-                    int.from_bytes(
-                        repaired[_GLOBAL_SUM_AT : _GLOBAL_SUM_AT + 2], "big"
-                    ),
-                    "04X",
-                ),
-                "Word at 0x14E: the sum of every other byte in the ROM\n"
+                stored_global,
+                int.from_bytes(repaired[_GLOBAL_SUM_AT : _GLOBAL_SUM_AT + 2], "big"),
+                detail="Word at 0x14E: the sum of every other byte in the ROM\n"
                 "Stale after any tile edit; recomputed on save\n"
                 "Checked by tooling and ROM databases, not the boot ROM",
             )
         )
         return tuple(fields)
-
-
-def _sum_value(stored: int, computed: int, spec: str) -> str:
-    """``0xNN`` when the file's copy is right, both values when it is not.
-
-    Which it is, is the only question worth answering here: a dump whose
-    checksums already disagree was edited by something that did not repair them,
-    and a save through celPix will quietly correct it.
-    """
-    if stored == computed:
-        return f"0x{stored:{spec}} (correct)"
-    return f"0x{stored:{spec}} in file, 0x{computed:{spec}} correct"

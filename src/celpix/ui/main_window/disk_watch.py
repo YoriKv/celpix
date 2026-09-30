@@ -37,7 +37,7 @@ from celpix.core.document import Document
 from celpix.core.palette import Palette
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.project.diskchanges import DiskState, Merge, carry_color_edits, merge_bytes
-from celpix.project.workspace import Entry, EntryKind, palette_source_for
+from celpix.project.workspace import Entry, EntryKind
 from celpix.ui.widgets import counted
 
 #: How long after the watcher's last signal a file is looked at: a program
@@ -492,27 +492,17 @@ class DiskWatchMixin:
     ) -> bool:
         """Drop ``entry``'s document and load it again; False if that failed.
 
-        :meth:`~...tilemap_bar.TilemapBarMixin._reread_tilemap`'s shape, for
-        any kind of entry: the view and the palette source go across through the
-        entry's pending fields, and a failed read puts the old document back so
-        the entry is either re-read or exactly as it was. Unsaved **colours**
-        are carried by hand, because a re-read of an Offset or Entry palette
-        decodes the new bytes and would leave the edits behind.
+        :meth:`~...session.SessionMixin._reread_entry`, quietly: the view and
+        the palette source go across through the entry's pending fields, and a
+        failed read puts the old document back so the entry is either re-read or
+        exactly as it was. Unsaved **colours** are carried by hand, because a
+        re-read of an Offset or Entry palette decodes the new bytes and would
+        leave the edits behind.
         """
         previous = entry.doc
-        pending_palette = entry.pending_palette
-        if pending_palette is None:
-            entry.pending_palette = palette_source_for(entry)
-        pending_view = entry.pending_view
-        if pending_view is None and previous is not None:
-            entry.pending_view = previous.view
-        entry.doc = None
-        if not self._load_entry(entry, quiet=True, live=live):
+        if not self._reread_entry(entry, quiet=True, live=live):
             # The old document is back, so the entry did not fail to open; the
             # failed re-read is the tally's to report.
-            self._restore_document(entry, previous)
-            entry.pending_palette = pending_palette
-            entry.pending_view = pending_view
             tally.failed.append(entry.name)
             return False
         fresh = entry.doc

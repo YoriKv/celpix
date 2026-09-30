@@ -65,17 +65,23 @@ from collections import Counter
 
 from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
-from celpix.plugins.builtins.gba_lz77 import ALIGNMENT, HEADER_SIZE, MAX_DECOMPRESSED
+from celpix.plugins.builtins._gba_bios import (
+    ALIGNMENT,
+    HEADER_SIZE,
+    read_header,
+    write_header,
+)
+from celpix.plugins.builtins._lz import corrupt
 
 HUFFMAN_TYPE = 0x20  # high nibble 2; the low nibble is the symbol width
 SYMBOL_BITS = (4, 8)
 ROOT = HEADER_SIZE + 1  # the root node's byte, relative to the stream start
 MAX_OFFSET = 0x3F
 MAX_TABLE = 512  # the size byte counts pairs: (0xFF + 1) * 2
+_TYPES = frozenset(HUFFMAN_TYPE | bits for bits in SYMBOL_BITS)
 
 
-def _fail(reason: str) -> ValueError:
-    return ValueError(f"corrupt GBA Huffman stream: {reason}")
+_fail = corrupt("GBA Huffman")
 
 
 def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]:
@@ -88,12 +94,13 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
     """
     if len(data) < HEADER_SIZE + 1:
         raise _fail("shorter than the header and tree-size byte")
+    target = read_header(
+        data,
+        types=_TYPES,
+        what="a Huffman header (0x24 or 0x28)",
+        fail=_fail,
+    )
     bits = data[0] & 0x0F
-    if data[0] & 0xF0 != HUFFMAN_TYPE or bits not in SYMBOL_BITS:
-        raise _fail(f"type byte {data[0]:#04x} is not a Huffman header (0x24 or 0x28)")
-    target = int.from_bytes(data[1:HEADER_SIZE], "little")
-    if target == 0:
-        raise _fail("declared decompressed size is zero")
     stream_at = HEADER_SIZE + (data[HEADER_SIZE] + 1) * 2
     if stream_at > len(data):
         raise _fail(f"tree table runs to byte {stream_at:,}, past the end of the data")
@@ -266,14 +273,7 @@ def compress(data: bytes, *, bits: int = 8) -> bytes:
     if bits not in SYMBOL_BITS:
         raise ValueError(f"symbol size must be 4 or 8 bits, not {bits}")
     n = len(data)
-    if n == 0:
-        # A zero size is what decompress refuses, so writing one would save a
-        # stream this plugin cannot open again.
-        raise ValueError("GBA BIOS Huffman has no encoding for an empty payload")
-    if n > MAX_DECOMPRESSED:
-        raise ValueError(
-            f"input is {n:,} bytes; the 24-bit size field holds {MAX_DECOMPRESSED:,}"
-        )
+    out = write_header(HUFFMAN_TYPE | bits, n, what="GBA BIOS Huffman")
     if bits == 8:
         symbols = list(data)
     else:
@@ -289,8 +289,6 @@ def compress(data: bytes, *, bits: int = 8) -> bytes:
     table = _layout(root)
     codes = _codes(root)
 
-    out = bytearray([HUFFMAN_TYPE | bits])
-    out += n.to_bytes(3, "little")
     out += table
     acc = 0
     filled = 0

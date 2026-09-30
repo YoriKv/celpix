@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from celpix.ui.color_editor import ColorEditor, ColorEditorDialog, parse_hex_color
+from celpix.core.palette import parse_argb
+from celpix.ui.color_editor import ColorEditor, ColorEditorDialog
 
 
 @pytest.mark.parametrize(
@@ -23,14 +24,14 @@ from celpix.ui.color_editor import ColorEditor, ColorEditorDialog, parse_hex_col
         ("#00FFFFFF", 0x00FFFFFF),  # a zero alpha is a value, not "missing"
     ],
 )
-def test_parse_hex_color_accepts(text: str, expected: int) -> None:
-    assert parse_hex_color(text) == expected
+def test_parse_argb_accepts(text: str, expected: int) -> None:
+    assert parse_argb(text) == expected
 
 
 @pytest.mark.parametrize("text", ["", "#12345", "#123456789", "#GGHHII", "nonsense"])
-def test_parse_hex_color_rejects(text: str) -> None:
+def test_parse_argb_rejects(text: str) -> None:
     # None is the contract CommittingLineEdit reads as "invalid, revert".
-    assert parse_hex_color(text) is None
+    assert parse_argb(text) is None
 
 
 def test_channel_edit_emits_once_and_syncs_the_hex_field(qtbot) -> None:

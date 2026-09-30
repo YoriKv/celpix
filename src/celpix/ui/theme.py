@@ -1,14 +1,14 @@
 """The app-wide light/dark appearance, in one palette applied in one place.
 
 celPix themes through **QPalette**, not a stylesheet: every widget in the app
-already draws from palette roles (the panels' icons are tinted from Text and
-Highlight, the file-position rail derives its accent from Highlight, the hex
-view shades its cursor from it), so handing the application a different palette
-re-colors the whole UI without a per-widget rule anywhere. The only literals
-left are the ones that are deliberately *not* theme colors — the canvas's
-neutral gray backing, the grid's two levels, and the warning and error inks
-(:data:`WARNING_INK`, :data:`ERROR_INK`) — all of which have to read the same
-whichever theme is on.
+already draws from palette roles (button icons are tinted from ButtonText, the
+Files list's markers from Text, the file-position rail derives its accent from
+Highlight, the hex view shades its cursor from it), so handing the application a
+different palette re-colors the whole UI without a per-widget rule anywhere. The
+only literals left are the ones that are deliberately *not* theme colors — the
+canvas's neutral gray backing, the grid's two levels, and the warning and error
+inks (:data:`WARNING_INK`, :data:`ERROR_INK`) — all of which have to read the
+same whichever theme is on.
 
 **Both themes run on Fusion.** The native Windows and macOS styles paint many
 controls from platform colors and ignore the application palette, so a dark
@@ -140,6 +140,21 @@ _PALETTES: dict[Theme, _PaletteSpec] = {
 # contrast one color can hold against both.
 WARNING_INK = QColor(0xAE, 0x7A, 0x11)
 ERROR_INK = QColor(0xDC, 0x58, 0x58)
+
+# The lattice's two colors, following the convention modern pixel editors settled
+# on (analysed in `docs/design-reference/editing-features.md`). They go by *role*,
+# which is what makes the grid readable without being told which mode it is in:
+# a neutral light grey for the **fine** level — the unit being worked in, pixels
+# or tiles — and a saturated blue for the **structural** one above it, the tile,
+# block or 8-tile square that unit sits inside. Here rather than with the canvas
+# because every sheet and grid of squares marks structure in the same blue.
+#
+# Hue rather than two opacities of white is what makes a grid line separable from
+# the art at a glance — white lines vanish into white pixels, which is most of
+# what a light sprite is, while nothing in a retro palette reads as this blue at
+# this opacity.
+GRID_FINE_COLOR = QColor(0xC8, 0xC8, 0xC8)
+GRID_STRUCTURE_COLOR = QColor(0x00, 0x00, 0xFF)
 
 
 class _UnderlinedMnemonics(QProxyStyle):

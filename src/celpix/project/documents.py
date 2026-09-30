@@ -4,18 +4,23 @@ An entry's document is assembled from several reads and a long list of
 decisions: which cell format its file is read under, what that format declares
 about itself, where its tiles come from, whether they come *through* another
 map, how big a stamp is and how far apart its rows are, which palette row its
-cells count from, whether a font groups its tiles into glyphs. The window made
-all of those decisions in its session mixin, which left a script — a verifier,
-a renderer, an agent checking a generated project — no way to get the document
-the app would have drawn, only a second implementation of it that drifts.
+cells count from, whether a font groups its tiles into glyphs. They live here,
+Qt-free, so a script — a verifier, a renderer, an agent checking a generated
+project — gets the very document the app would have drawn rather than a second
+implementation of it that drifts.
 
-So the decisions live here, Qt-free, and the window calls them
-(:mod:`celpix.ui.main_window.session`). Two things are **injected** rather than
-decided, because they are the window's alone: how a pixel pathway config is
-built (the window's settles a slice's parent first, so a dirty parent's edits
-reach the read — ``docs/design/slices-and-parents.md`` §2) and what happens to
-a problem (the window alerts; a script collects). :func:`load_document` wires
-both to their headless answers and is the one entry point a script needs.
+What a cell format declares, and how a map's indices read, are answered in
+:mod:`celpix.project.declarations`; where a palette read from another entry, a
+palette file or an emulator state comes from, in :mod:`celpix.project.palettes`.
+This module binds, builds and loads, and re-exports both.
+
+The window calls them (:mod:`celpix.ui.main_window.session`). Two things are
+**injected** rather than decided, because they are the window's alone: how a
+pixel pathway config is built (the window's settles a slice's parent first, so
+a dirty parent's edits reach the read — ``docs/design/slices-and-parents.md``
+§2) and what happens to a problem (the window alerts; a script collects).
+:func:`load_document` wires both to their headless answers and is the one entry
+point a script needs.
 """
 
 from __future__ import annotations
@@ -27,70 +32,166 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from celpix.core.arrangement import BlockLayout
 from celpix.core.capabilities import ContentKind
+from celpix.core.cellchain import CellChain
 from celpix.core.context import (
     KEY_PIXEL_PRESET,
     KEY_TILE_PALETTE_ROW_BASE,
     KEY_TILE_PALETTE_ROWS,
     KEY_TILEMAP_CELL_TILES,
     KEY_TILEMAP_PALETTE_ROW_BASE,
-    KEY_TILEMAP_RECORD_HEADER,
-    KEY_TILEMAP_RECORD_SHAPE,
-    KEY_TILEMAP_STAMP_CELLS,
-    KEY_TILEMAP_STAMP_COLUMN_MAJOR,
-    KEY_TILEMAP_STAMP_STRIDE,
     PipelineContext,
 )
-from celpix.core.document import CellChain, Document
+from celpix.core.document import Document
 from celpix.core.errors import Pathway, PipelineError, Stage
-from celpix.core.palette import FULL_PALETTE_COUNT, Palette
+from celpix.core.font import FontAlphabet, font_alphabet
+from celpix.core.palette import Palette
 from celpix.core.paletteregions import PaletteRegion, PaletteRegions
 from celpix.core.tilemap import (
-    RECORD_KEYS,
     VRAM_ROW_STRIDE,
     Cell,
     Geometry,
-    IndexAddressing,
-    containing_at,
-    corner_at,
     index_corner,
-    metatile_geometry,
-    record_geometry,
-    stamp_geometry,
-    unit_at,
 )
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
-from celpix.plugins.base import NO_RESHAPE, STAGE_DEFAULT_PRESET, FileRef, Preset
+from celpix.plugins.base import (
+    DEFAULT_PALETTE_PRESET,
+    DEFAULT_PIXEL_PRESET,
+    FileRef,
+)
+from celpix.plugins.registry import Registry
+from celpix.project.declarations import (
+    CellStamp,
+    IndexReading,
+    binding_target,
+    cell_stamp,
+    chain_source_columns,
+    chain_stamp_cells,
+    chain_stamp_column_major,
+    chain_width_is_stated,
+    count_bases_in_units,
+    declared_cell_column_stride,
+    declared_cell_row_stride,
+    document_index_reading,
+    engine_counts_records,
+    flag_break,
+    format_addressing,
+    index_reading,
+    is_dense,
+    is_fontmap,
+    is_indirect,
+    is_sprite,
+    preset_declares,
+    reads_record_keys,
+    rebound_reading,
+    stated_addressing,
+    states_subsprite_size,
+    tilemap_declares,
+    tilemap_preset_id,
+)
+from celpix.project.palettes import (
+    emulator_palette_config,
+    entry_palette_config,
+    entry_palette_source,
+    fallback_palette,
+    file_palette_config,
+    offset_palette_files,
+    offset_palette_source,
+    offset_palette_space,
+    palette_entry_target,
+    palette_offset_owner,
+    placeholder_palette_config,
+    reordered_view,
+    source_view_preset,
+)
 from celpix.project.workspace import (
     Entry,
     EntryKind,
     PaletteMode,
     PaletteSource,
-    TileMode,
     TileSource,
     Workspace,
     backfill_slice_length,
-    can_supply_palette,
     composite_config,
     composite_layout,
-    composite_preset_id,
-    entry_view_bytes,
     pixel_config_for,
     record_composite_layout,
-    reorders_bytes,
     swatch_session_for,
     tilemap_config_for,
 )
 
 if TYPE_CHECKING:
-    from celpix.project.projectfile import LoadedProject
+    pass
 
-#: What a tilemap entry falls back to when nothing else named a cell codec — a
-#: container normally supplies one (``detect.tilemap_preset_for``), so this is
-#: for a tilemap that was carved out by hand rather than detected.
-DEFAULT_TILEMAP_PRESET = STAGE_DEFAULT_PRESET[Stage.INTERPRET_TILEMAP]
-DEFAULT_PIXEL_PRESET = STAGE_DEFAULT_PRESET[Stage.INTERPRET_PIXEL]
-DEFAULT_PALETTE_PRESET = STAGE_DEFAULT_PRESET[Stage.INTERPRET_PALETTE]
+# The whole of what the window reaches here: this module's own bindings,
+# builders and headless load, and the two it composes — what a cell format
+# declares (:mod:`celpix.project.declarations`) and where a cross-entry palette
+# is read from (:mod:`celpix.project.palettes`) — so a caller asks one module
+# for everything about an entry's document.
+__all__ = [
+    "BoundTiles",
+    "CellStamp",
+    "IndexReading",
+    "Loaded",
+    "PixelConfig",
+    "TileSourceUnavailable",
+    "apply_pixel_preset_hint",
+    "binding_target",
+    "bound_tilemap",
+    "can_supply_tiles",
+    "cell_stamp",
+    "chain_loops",
+    "chain_source_columns",
+    "chain_stamp_cells",
+    "chain_stamp_column_major",
+    "chain_width_is_stated",
+    "chained_document",
+    "count_bases_in_units",
+    "declared_cell_column_stride",
+    "declared_cell_row_stride",
+    "document_index_reading",
+    "draws_through_tilemap",
+    "emulator_palette_config",
+    "engine_counts_records",
+    "entry_palette_config",
+    "entry_palette_source",
+    "fallback_palette",
+    "file_palette_config",
+    "fit_tile_base",
+    "flag_break",
+    "font_alphabet_for",
+    "format_addressing",
+    "glyph_layout_for",
+    "index_reading",
+    "is_dense",
+    "is_fontmap",
+    "is_indirect",
+    "is_sprite",
+    "live_bound_tiles",
+    "load_document",
+    "no_tiles",
+    "offset_palette_files",
+    "offset_palette_source",
+    "offset_palette_space",
+    "palette_entry_target",
+    "palette_offset_owner",
+    "pixel_document",
+    "placeholder_palette_config",
+    "preset_declares",
+    "reads_record_keys",
+    "rebound_reading",
+    "reordered_view",
+    "restored_palette",
+    "row_base_for",
+    "seed_tile_palette_rows",
+    "source_view_preset",
+    "stated_addressing",
+    "states_subsprite_size",
+    "tile_source_config",
+    "tilemap_declares",
+    "tilemap_document",
+    "tilemap_preset_id",
+]
 
 #: ``(entry, preset id) -> config``: how the caller builds a pixel pathway.
 PixelConfig = Callable[[Entry, str], PathwayConfig]
@@ -108,538 +209,8 @@ class BoundTiles(NamedTuple):
     config: PathwayConfig
 
 
-def fallback_palette() -> Palette:
-    """The generated palette shown until a real one is loaded — full length.
-
-    Sized to the whole 256 rather than one palette row's worth: the generator
-    puts a contrasting row first, a **grayscale ramp second** and distinct
-    colors after, none of which exists at all if only the format's index
-    space is asked for (a 4bpp view would stop at 16 — one row, no ramp).
-    At full length every palette row the row spin can reach is populated, so
-    single-channel data can be read as a ramp by stepping to row 1, and
-    forking Default → Custom keeps the palette exactly the size it was.
-    """
-    return Palette.default(FULL_PALETTE_COUNT)
-
-
-def placeholder_palette_config(preset_id: str) -> PathwayConfig:
-    """The no-palette-loaded config: empty source, never written back."""
-    return PathwayConfig(
-        source=FileRef(""), interpret_preset_id=preset_id, write_enabled=False
-    )
-
-
 # ---------------------------------------------------------------------------
-# What a cell format declares about itself
-#
-# Declarations are readable before anything is loaded or bound, which is the
-# whole of what they are for: the binding bar has to describe an entry it has not
-# read yet. An object with no tile source is still an object, and a stamp layout
-# with none is still a stamp layout.
-
-
-def tilemap_preset_id(entry: Entry) -> str:
-    """The cell format ``entry``'s own file is read under.
-
-    A container names one when the file is opened
-    (``detect.tilemap_preset_for``), so the fallback is for a tilemap carved
-    out by hand, which had no container to have said.
-    """
-    return entry.tilemap_preset_id or DEFAULT_TILEMAP_PRESET
-
-
-def preset_declares(registry, preset_id: str, name: str) -> object:  # noqa: ANN001
-    """What the **format** ``preset_id`` declares under ``name``, or None.
-
-    None for a preset id nothing is registered under, which is the same answer
-    as a preset that declares nothing: a format celPix does not have cannot have
-    claimed anything about its cells.
-    """
-    try:
-        preset = registry.preset(preset_id)
-    except KeyError:
-        return None
-    return preset.params.get(name)
-
-
-def tilemap_declares(registry, entry: Entry, name: str) -> object:  # noqa: ANN001
-    """What ``entry``'s cell format declares under ``name``, or None."""
-    return preset_declares(registry, tilemap_preset_id(entry), name)
-
-
-def is_fontmap(registry, entry: Entry) -> bool:  # noqa: ANN001
-    """Whether ``entry``'s format says its cells are character codes
-    (``docs/design/fontmap-entry.md``)."""
-    return tilemap_declares(registry, entry, "layout") == "text"
-
-
-def is_sprite(registry, entry: Entry) -> bool:  # noqa: ANN001
-    """Whether ``entry``'s format says its cells are subsprites grouped into
-    frames rather than positions in a grid (``docs/design/sprite-map.md`` §1)."""
-    return tilemap_declares(registry, entry, "layout") == "sprite"
-
-
-def states_subsprite_size(registry, entry: Entry) -> bool:  # noqa: ANN001
-    """Whether ``entry``'s format gives each subsprite its own rectangle.
-
-    Most sprite records hold a size *bit* picking between two squares the file
-    never records, so the pair is a setting the user supplies; a Mega Drive
-    record holds the console's own size nibble and states a rectangle outright.
-    """
-    return tilemap_declares(registry, entry, "subsprite_size") == "stated"
-
-
-def is_indirect(registry, entry: Entry) -> bool:  # noqa: ANN001
-    """Whether ``entry``'s format says its cells are coordinates into a map.
-
-    It decides how the bar reads while nothing is bound, never what a map may
-    draw through — chaining is generic and gated on depth (:func:`bound_tilemap`).
-    """
-    return bool(tilemap_declares(registry, entry, "indirect"))
-
-
-def is_dense(registry, entry: Entry) -> bool:  # noqa: ANN001
-    """Whether ``entry``'s format holds one entry per stamp.
-
-    The referring half of a stamped chain, and the only part of one that is not
-    the source's to answer (:attr:`~celpix.core.document.CellChain.dense`). A
-    stamp layout has a slot per drawn position and only its corners are read; a
-    map of 16x16 metatiles over an 8x8 bank has a slot per stamp. Which shape a
-    file is, is fixed by its format, so it is declared beside ``indirect``.
-    False for a format that declares nothing: a wrong guess would expand a map to
-    four times its size.
-    """
-    return bool(tilemap_declares(registry, entry, "stamp_dense"))
-
-
-def declared_cell_row_stride(registry, entry: Entry) -> int:  # noqa: ANN001
-    """The stride between a metatile cell's tile rows, in tiles of the bank.
-
-    ``cell_row_stride`` in the preset params, for a format whose metatile's rows
-    are not a VRAM row apart — a table of consecutive tiles is its own width (2
-    for a 2x2 cell). The default stays the console VRAM row.
-    """
-    try:
-        stride = int(tilemap_declares(registry, entry, "cell_row_stride"))  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return VRAM_ROW_STRIDE
-    return stride if stride > 0 else VRAM_ROW_STRIDE
-
-
-def declared_cell_column_stride(registry, entry: Entry) -> int:  # noqa: ANN001
-    """The stride between a metatile cell's tile columns, in tiles of the bank.
-
-    ``cell_column_stride`` in the preset params, for a format that fills a cell
-    down each column: 16x16 objects drawn as four consecutive tiles, the left
-    column first, are ``cell_row_stride = 1`` and ``cell_column_stride = 2``. The
-    default is 1, the next tile to the right, which is every row-major cell.
-    """
-    try:
-        stride = int(tilemap_declares(registry, entry, "cell_column_stride"))  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return 1
-    return stride if stride > 0 else 1
-
-
-def flag_break(registry, entry: Entry) -> bool:  # noqa: ANN001
-    """Whether ``entry``'s format ends a line on a bit rather than a code.
-
-    Asked of the **codec**, the only thing that knows where a cell's bits go.
-    False for a codec that was never asked: a line break that costs a cell is
-    always writable, where a bit inferred onto a format that has not got one
-    would be written into its bytes.
-    """
-    try:
-        preset = registry.preset(tilemap_preset_id(entry))
-        engine = registry.plugin(Stage.INTERPRET_TILEMAP, preset.engine_id)
-    except KeyError:
-        return False
-    ask = getattr(engine, "has_line_flag", None)
-    return bool(ask is not None and ask(preset.params))
-
-
-class CellStamp(NamedTuple):
-    """A referring map's own cell size, read as a stamp over a tilemap source.
-
-    ``cell_tiles`` says one cell draws several of what it draws through. Over
-    art those are *tiles*, a metatile; over another tilemap they can only be
-    that map's *cells*, which is a stamp — so a preset stating ``cell_tiles =
-    [2, 2]`` draws 2x2 whichever kind of source it is bound to, rather than
-    shrinking to one cell the moment the source is a map
-    (``docs/design/tilemap-entry.md`` §3.1).
-
-    Only the size carries over. The metatile's strides, ``cell_row_stride``
-    and ``cell_column_stride``, are steps through a tile bank, and a stamp is a
-    rectangle cut out of the source as the *source* lays its cells out — its
-    width, or the stride and order it publishes for its records
-    (:func:`chain_source_columns`, :func:`chain_stamp_column_major`). Half of a
-    bank's walk applied to a map is what draws overlapping cells: a cell filled
-    down each column is a row stride of 1, which over a map would step each of
-    the stamp's rows one cell along the row above.
-    """
-
-    cells: tuple[int, int]
-
-
-def cell_stamp(registry, entry: Entry, ctx) -> CellStamp | None:  # noqa: ANN001
-    """The stamp ``entry``'s own cell size states over a tilemap source, or None.
-
-    None where its format declares ``stamp_cells``, which is the stamp spelled
-    outright and wins, and where its cells cover one unit. The size is the
-    container's answer over the codec's, as it is for a map drawn from art
-    (:func:`tilemap_document`) — ``ctx`` is the referrer's own tilemap context.
-    """
-    if tilemap_declares(registry, entry, "stamp_cells"):
-        return None
-    stated = ctx.get(KEY_TILEMAP_CELL_TILES)
-    try:
-        if not stated:
-            preset = registry.preset(tilemap_preset_id(entry))
-            engine = registry.plugin(Stage.INTERPRET_TILEMAP, preset.engine_id)
-            stated = engine.cell_tiles(preset.params)
-        across, down = max(1, int(stated[0])), max(1, int(stated[1]))
-    except (KeyError, TypeError, ValueError, IndexError):
-        return None
-    if (across, down) == (1, 1):
-        return None
-    return CellStamp((across, down))
-
-
-def chain_stamp_cells(
-    registry,  # noqa: ANN001
-    entry: Entry,
-    through: Document,
-    stamp: CellStamp | None = None,
-) -> tuple[int, int]:
-    """How many of ``through``'s **cells** one of ``entry``'s coordinates names.
-
-    Whichever side states it, the referrer first: a format whose coordinates
-    always name a fixed stamp declares ``stamp_cells``, or states its cells
-    cover several units (``stamp``, :func:`cell_stamp`); otherwise the source's
-    published answer (:data:`~celpix.core.context.KEY_TILEMAP_STAMP_CELLS`).
-    ``(1, 1)`` for a pair that states nothing, and for a malformed declaration,
-    since a wrong guess would expand the map to a multiple of its size — the
-    rule :func:`~celpix.pipeline.table_layout.publish_table_layout` keeps for
-    the same declaration on the source's side.
-    """
-    stated = (
-        tilemap_declares(registry, entry, "stamp_cells")
-        or (stamp.cells if stamp is not None else None)
-        or through.tilemap_ctx.get(KEY_TILEMAP_STAMP_CELLS)
-    )
-    try:
-        across, down = stated or (1, 1)
-        return max(1, int(across)), max(1, int(down))
-    except (TypeError, ValueError):
-        return (1, 1)
-
-
-def chain_source_columns(through: Document) -> int:
-    """The stride between a stamp's rows, in cells of the **source**.
-
-    The source's answer, whoever stated the stamp's size: a stamp is a
-    rectangle cut out of the source as it lays its cells out (:class:`CellStamp`).
-    First what it publishes for its records
-    (:data:`~celpix.core.context.KEY_TILEMAP_STAMP_STRIDE`): a table of packed
-    records stamps at the record's width whatever it is displayed at. Else the
-    width its **entries** are laid at (:attr:`~celpix.core.document.Document.
-    entry_columns`) — its format's stated width, or the view's Cols, where file
-    order is drawn order. A stride of 1 in that case would walk a stamp's second
-    row along the same source row instead of down one.
-
-    Entries, not drawn positions, because the hop's source list is the
-    source's entries (``through.cells``). They are the same width until the
-    source is itself densely stamped: then Cols counts the positions its stamps
-    draw, a stamp's width times its entries, and striding by it would put a
-    stamp's second row that many stamps too far along.
-    """
-    return _published_stride(through) or through.entry_columns
-
-
-def chain_width_is_stated(through: Document) -> bool:
-    """Whether :func:`chain_source_columns` is the source's own statement — a
-    published stride or a stated width — rather than the width its view is
-    laid at, which the user moves with Cols."""
-    return bool(_published_stride(through) or through.stated_columns)
-
-
-def _published_stride(through: Document) -> int:
-    """The stamp stride ``through`` publishes, or 0 for none
-    (:data:`~celpix.core.context.KEY_TILEMAP_STAMP_STRIDE`)."""
-    stride = through.tilemap_ctx.get(KEY_TILEMAP_STAMP_STRIDE)
-    try:
-        return int(stride) if stride and int(stride) >= 1 else 0
-    except (TypeError, ValueError):
-        return 0
-
-
-def chain_stamp_column_major(through: Document) -> bool:
-    """Whether the source stores a stamp's cells down each column.
-
-    Only ever the source's own statement
-    (:data:`~celpix.core.context.KEY_TILEMAP_STAMP_COLUMN_MAJOR`), published
-    beside the stride it changes the meaning of: a table viewed at some width is
-    laid out row by row, whatever order its records keep inside.
-    """
-    return bool(through.tilemap_ctx.get(KEY_TILEMAP_STAMP_COLUMN_MAJOR))
-
-
-class IndexReading(NamedTuple):
-    """How ``entry``'s indices number what they draw, and who said so.
-
-    ``stated`` is the addressing asked for and ``stated_by`` whose word it was:
-    ``"binding"`` (:attr:`~celpix.project.workspace.TileSource.addressing`),
-    ``"preset"`` (``index_addressing``), ``"engine"`` (an engine whose index
-    counts records, :func:`engine_counts_records`) or ``"default"``.
-
-    ``geometry`` is what is **in force**: None for corner addressing, a
-    :data:`~celpix.core.tilemap.Geometry` for ordinal. An ordinal can still be
-    read as a corner — a unit of one element, whose count *is* its corner, and a
-    source whose units no geometry can number, where ``refusal`` says why.
-    """
-
-    stated: IndexAddressing
-    stated_by: str
-    geometry: Geometry | None = None
-    refusal: str | None = None
-
-    @property
-    def in_force(self) -> IndexAddressing:
-        """The addressing the model reads the indices in."""
-        if self.geometry is None:
-            return IndexAddressing.CORNER
-        return IndexAddressing.ORDINAL
-
-
-def stated_addressing(registry, entry: Entry) -> tuple[IndexAddressing, str]:  # noqa: ANN001
-    """The addressing asked for of ``entry``'s indices, and whose word it is.
-
-    Most specific first: the **binding**'s override, then the referring
-    format's ``index_addressing``, then its engine where that engine's index
-    counts records, and otherwise corner (:class:`IndexReading` names the
-    four). A word ``index_addressing`` does not have refuses the load earlier
-    (``pipeline._check_declarations``), so one reaching here reads as unset.
-    """
-    source = entry.tile_source
-    if source is not None and source.addressing is not None:
-        return source.addressing, "binding"
-    return format_addressing(registry, entry)
-
-
-def format_addressing(registry, entry: Entry) -> tuple[IndexAddressing, str]:  # noqa: ANN001
-    """:func:`stated_addressing` with the binding's override left out — what
-    ``entry``'s **format** alone says, for a control that offers the override
-    and has to name what clearing it gives back."""
-    word = tilemap_declares(registry, entry, "index_addressing")
-    if word in (IndexAddressing.CORNER.value, IndexAddressing.ORDINAL.value):
-        return IndexAddressing(word), "preset"
-    if engine_counts_records(registry, _tilemap_preset(registry, entry)):
-        return IndexAddressing.ORDINAL, "engine"
-    return IndexAddressing.CORNER, "default"
-
-
-def _tilemap_preset(registry, entry: Entry) -> Preset | None:  # noqa: ANN001
-    """The preset ``entry``'s cells are read under, or None where none is
-    registered under its id."""
-    try:
-        return registry.preset(tilemap_preset_id(entry))
-    except KeyError:
-        return None
-
-
-def engine_counts_records(registry, preset: Preset | None) -> bool:  # noqa: ANN001
-    """Whether ``preset``'s engine reads every index as a record number
-    (:meth:`~celpix.plugins.base.TilemapCodecPlugin.counts_records`).
-
-    The one question behind both things such an engine is owed: its preset is
-    ordinal where it states no ``index_addressing``, and its
-    :data:`~celpix.core.tilemap.RECORD_KEYS` are read at all
-    (:func:`reads_record_keys`). They are that engine's parameters, so over any
-    other they are no statement — the load says so
-    (``pipeline._check_declarations``). An engine that raises is read as one
-    that never answered, the rule every optional probe follows. False for no
-    preset, which has no engine to ask.
-    """
-    if preset is None:
-        return False
-    try:
-        engine = registry.plugin(Stage.INTERPRET_TILEMAP, preset.engine_id)
-    except KeyError:
-        return False
-    ask = getattr(engine, "counts_records", None)
-    try:
-        return bool(ask is not None and ask(preset.params))
-    except Exception:  # noqa: BLE001 — a plugin's crash reads as silence
-        return False
-
-
-def reads_record_keys(registry, entry: Entry) -> bool:  # noqa: ANN001
-    """Whether an ordinal of ``entry``'s counts in the shape its format's record
-    keys give (:func:`~celpix.core.tilemap.record_geometry`, each at its default
-    where unset) rather than one derived from its source.
-
-    Only over an engine counting records (:func:`engine_counts_records`), and
-    there unless the preset states ``index_addressing`` and no record key: that
-    preset has handed the shape to what the map is bound to, so defaults
-    standing in for keys it never wrote would overrule the table's own stride
-    and records. A binding that asks for ordinal is counted in the same shape,
-    since the keys describe the table the format was written against.
-    """
-    preset = _tilemap_preset(registry, entry)
-    if preset is None or not engine_counts_records(registry, preset):
-        return False
-    params = preset.params
-    return "index_addressing" not in params or any(key in params for key in RECORD_KEYS)
-
-
-def _published_header(through: Document) -> int:
-    """How many cells of the record ``through`` publishes come before its
-    stamp, or 0 for none (:data:`~celpix.core.context.KEY_TILEMAP_RECORD_HEADER`)."""
-    try:
-        return max(0, int(through.tilemap_ctx.get(KEY_TILEMAP_RECORD_HEADER) or 0))
-    except (TypeError, ValueError):
-        return 0
-
-
-def _published_pitch(through: Document) -> int:
-    """How many cells the record ``through`` publishes holds, or 0 for none
-    (:data:`~celpix.core.context.KEY_TILEMAP_RECORD_SHAPE`)."""
-    shape = through.tilemap_ctx.get(KEY_TILEMAP_RECORD_SHAPE)
-    try:
-        return max(0, int(shape[0]) * int(shape[1])) if shape else 0
-    except (TypeError, ValueError, IndexError):
-        return 0
-
-
-def index_reading(
-    registry,  # noqa: ANN001
-    entry: Entry,
-    *,
-    through: Document | None = None,
-    stamp: tuple[int, int] = (1, 1),
-    cell_tiles: tuple[int, int] = (1, 1),
-    cell_row_stride: int = 0,
-    cell_column_stride: int = 0,
-    addressing: IndexAddressing | None = None,
-) -> IndexReading:
-    """How ``entry``'s indices number the units they draw — the one derivation.
-
-    Asked of a map drawing **through** another (``through``, the source's
-    document, and ``stamp``, the chain's stamp in its cells) or over a **bank**
-    (``cell_tiles`` and the two strides its metatile steps). ``addressing``
-    stands in for the binding's override, for a caller asking what a choice
-    would give before making it; left None, the binding's own is read.
-
-    The addressing is :func:`stated_addressing`'s. The geometry an ordinal
-    counts in is the referring format's record keys where the host reads them
-    (:func:`reads_record_keys`); otherwise it is derived from how the source
-    lays the units out (:func:`~celpix.core.tilemap.stamp_geometry`,
-    :func:`~celpix.core.tilemap.metatile_geometry`).
-    """
-    if addressing is not None:
-        stated, stated_by = addressing, "binding"
-    else:
-        stated, stated_by = stated_addressing(registry, entry)
-    if stated is IndexAddressing.CORNER:
-        return IndexReading(stated, stated_by)
-    if reads_record_keys(registry, entry):
-        preset = _tilemap_preset(registry, entry)
-        params = preset.params if preset is not None else {}
-        try:
-            return IndexReading(stated, stated_by, record_geometry(params))
-        except (TypeError, ValueError) as exc:
-            return IndexReading(stated, stated_by, None, str(exc))
-    if through is not None:
-        geometry, refusal = stamp_geometry(
-            stamp,
-            chain_source_columns(through),
-            column_major=chain_stamp_column_major(through),
-            pitch=_published_pitch(through),
-            header=_published_header(through),
-        )
-    else:
-        geometry, refusal = metatile_geometry(
-            cell_tiles, cell_row_stride, cell_column_stride
-        )
-    return IndexReading(stated, stated_by, geometry, refusal)
-
-
-def document_index_reading(
-    registry,  # noqa: ANN001
-    workspace: Workspace,
-    entry: Entry,
-    addressing: IndexAddressing | None = None,
-) -> IndexReading | None:
-    """:func:`index_reading` for ``entry`` as its loaded document stands.
-
-    Reads the chain's stamp and source, or the bank's metatile, off
-    ``entry.doc`` — what a control asking "what would ordinal give here" needs,
-    with ``addressing`` as the choice it is asking about. None where there is no
-    tilemap document to ask, and a corner answer for the two shapes whose
-    indices never count units of the bank: a sprite object's subsprites, and a
-    fontmap over glyphs, whose codes already count whole glyphs. None too for a
-    chained map whose source has no document to read the stamps' layout off.
-    """
-    doc = entry.doc
-    if doc is None or not doc.is_tilemap:
-        return None
-    if doc.chain is not None:
-        source = entry.tile_source
-        bound = binding_target(workspace, source) if source is not None else None
-        through = bound.doc if bound is not None else None
-        if through is None:
-            return None
-        return index_reading(
-            registry,
-            entry,
-            through=through,
-            stamp=doc.chain.stamp,
-            addressing=addressing,
-        )
-    if doc.is_sprite or doc.glyph_layout is not None:
-        if addressing is not None:
-            return IndexReading(addressing, "binding")
-        return IndexReading(*stated_addressing(registry, entry))
-    return index_reading(
-        registry,
-        entry,
-        cell_tiles=doc.cell_tiles,
-        cell_row_stride=doc.cell_row_stride,
-        cell_column_stride=doc.cell_column_stride,
-        addressing=addressing,
-    )
-
-
-def rebound_reading(registry, entry: Entry, bound: Entry) -> IndexReading | None:  # noqa: ANN001
-    """:func:`index_reading` for ``entry`` as it will read once bound to
-    ``bound`` — asked before the rebind lands, for a base to be re-counted in
-    the unit it will count (:func:`~celpix.core.tilemap.rebased`).
-
-    Read off ``entry``'s loaded document for its own cell size and stamp, and
-    off ``bound``'s for how the source lays its units out, with the binding's
-    Index unit carried as it stands. None where either is not loaded, or where
-    a chained map would be bound to art — its document's cell size is its
-    source's, not its own — and so the reading is unknown.
-    """
-    doc, through = entry.doc, bound.doc
-    if doc is None or through is None or not doc.is_tilemap:
-        return None
-    if doc.is_sprite or doc.glyph_layout is not None:
-        return IndexReading(*stated_addressing(registry, entry))
-    if bound.content_kind is ContentKind.TILEMAP:
-        stamp = chain_stamp_cells(
-            registry, entry, through, cell_stamp(registry, entry, doc.tilemap_ctx)
-        )
-        return index_reading(registry, entry, through=through, stamp=stamp)
-    if doc.chain is not None:
-        return None
-    return index_reading(
-        registry,
-        entry,
-        cell_tiles=doc.cell_tiles,
-        cell_row_stride=doc.cell_row_stride,
-        cell_column_stride=doc.cell_column_stride,
-    )
+# Palette rows, glyphs and the tile base
 
 
 def row_base_for(
@@ -765,122 +336,8 @@ def fit_tile_base(
         entry.tile_source = replace(source, base_index=-low)
 
 
-def count_bases_in_units(registry, loaded: LoadedProject) -> list[str]:  # noqa: ANN001
-    """Re-count, in units, every base a project from before format version 7
-    counted in elements; a line for each map that could not keep its picture.
-
-    A base counts what its map's index counts (:func:`~celpix.core.tilemap.
-    index_corner`). Until version 7 it counted cells or tiles whichever way the
-    index was read, and one kind of map read its index as units then: an
-    engine whose index is always a record number, which turned the record into
-    its corner by the record keys before the base was added. That is the one
-    map whose base changes meaning, and the record keys are all its geometry
-    was — so the conversion needs the registry and the entry's preset, and no
-    document. :func:`reads_record_keys` and an ordinal stated by the format are
-    that map exactly; any other kept its base in elements then and now.
-
-    The migration that walks the file forward has no registry to ask, so this
-    is for whoever opens the project to call once its registry is final — the
-    window before it shows an entry, a script before its first
-    :func:`load_document` — and nothing else calls it. A base that is a whole
-    number of units and shifts every index alike becomes that number, and the
-    map draws what it drew. One that is not cannot be said in units: it becomes
-    the unit its old start falls inside, and the line says how far the picture
-    moved, for the user to check before saving.
-
-    Does nothing for a project whose bases already count units — a current
-    file, or one this has been called on
-    (:attr:`~celpix.project.projectfile.LoadedProject.bases_count_elements`):
-    a base in units read as elements would be divided a second time.
-    """
-    notes: list[str] = []
-    if not loaded.bases_count_elements:
-        return notes
-    loaded.bases_count_elements = False
-    for entry in loaded.entries:
-        source = entry.tile_source
-        if source is None or not source.base_index:
-            continue
-        if entry.content_kind is not ContentKind.TILEMAP:
-            continue
-        base = source.base_index
-        if not reads_record_keys(registry, entry):
-            continue
-        if stated_addressing(registry, entry)[0] is not IndexAddressing.ORDINAL:
-            continue
-        preset = _tilemap_preset(registry, entry)
-        try:
-            geometry = record_geometry(preset.params if preset is not None else {})
-        except (TypeError, ValueError):
-            continue  # refused: read as corners, where a base counts elements
-        units = unit_at(base, geometry)
-        across = geometry[2]
-        # Adding a whole number of units moves every corner alike only where a
-        # row of units does not wrap between them: always when packed, and on a
-        # grid in whole rows.
-        exact = units is not None and (not across or units % across == 0)
-        if units is None:
-            units = containing_at(abs(base), geometry) * (1 if base > 0 else -1)
-        entry.tile_source = replace(source, base_index=units)
-        if exact:
-            continue
-        over_map = source.entry is not None and (
-            source.entry.content_kind is ContentKind.TILEMAP
-        )
-        element, unit = ("cell", "stamp") if over_map else ("tile", "metatile")
-        moved = corner_at(units, geometry) - corner_at(0, geometry) - base
-        how = (
-            f"starts {abs(moved)} {element}{'s' if abs(moved) != 1 else ''} "
-            f"{'later' if moved > 0 else 'earlier'} than it did"
-            if moved
-            else f"moves some {unit}s, since {unit}s here wrap every {across}"
-        )
-        notes.append(
-            f"{entry.name}: base {element} ${base:X} is not a whole number of "
-            f"{unit}s, so it is now base {unit} ${units:X} and the map {how}."
-        )
-    return notes
-
-
 # ---------------------------------------------------------------------------
 # Where a map's tiles come from
-
-
-def binding_target(workspace: Workspace, source: TileSource) -> Entry | None:
-    """The open entry ``source`` names, or None when it names nothing usable.
-
-    The one place a binding becomes a usable entry. The check is that the entry
-    is still **open**, which holding it by identity cannot answer on its own: a
-    closed entry is a live object that undo may yet put back. Scanned by
-    identity rather than by ``in``, which would ask :class:`Entry` for an
-    equality it deliberately does not have.
-    """
-    if source.mode is not TileMode.ENTRY:
-        return None
-    entry = source.entry
-    if entry is None or not any(open_ is entry for open_ in workspace.entries):
-        return None
-    return entry
-
-
-def palette_entry_target(
-    workspace: Workspace, entry: Entry, source: Entry | None
-) -> Entry | None:
-    """The open entry an ENTRY palette names, or None when it names nothing usable.
-
-    :func:`binding_target`'s twin, and the same two questions in the same order:
-    the entry has to still be **open** — which holding it by identity cannot
-    answer, a closed entry being a live object undo may yet put back — and it has
-    to be something this consumer may read
-    (:func:`~celpix.project.workspace.can_supply_palette`). Scanned by identity
-    rather than with ``in``, which would ask :class:`Entry` for an equality it
-    deliberately does not have.
-    """
-    if source is None:
-        return None
-    if not any(open_ is source for open_ in workspace.entries):
-        return None
-    return source if can_supply_palette(entry, source) else None
 
 
 def draws_through_tilemap(workspace: Workspace, entry: Entry) -> bool:
@@ -936,7 +393,9 @@ def chain_loops(workspace: Workspace, entry: Entry, candidate: Entry) -> bool:
     return False
 
 
-def font_alphabet_for(registry, workspace: Workspace, entry: Entry, cell_bytes: int):  # noqa: ANN001, ANN201
+def font_alphabet_for(
+    registry: Registry, workspace: Workspace, entry: Entry, cell_bytes: int
+) -> FontAlphabet | None:
     """The lookup ``entry``'s codes read through — the font's, whole.
 
     Read only from a sheet that says it is a font (**Use as Font**); unticking
@@ -948,7 +407,7 @@ def font_alphabet_for(registry, workspace: Workspace, entry: Entry, cell_bytes: 
         return None
     bound = binding_target(workspace, entry.tile_source) if entry.tile_source else None
     font = bound if bound is not None and bound.is_font_sheet else None
-    return pipeline.load_font_alphabet(
+    return font_alphabet(
         font.font_chars if font is not None else "",
         font.font_codes if font is not None else (),
         code_digits=max(1, cell_bytes) * 2,
@@ -957,7 +416,7 @@ def font_alphabet_for(registry, workspace: Workspace, entry: Entry, cell_bytes: 
     )
 
 
-def no_tiles(registry, preset_id: str) -> BoundTiles:  # noqa: ANN001
+def no_tiles(registry: Registry, preset_id: str) -> BoundTiles:
     """The stand-in for an unbound or unreadable source: geometry, no bytes.
 
     The tile size still comes from a real codec so the cells have a size to be
@@ -1057,8 +516,12 @@ def live_bound_tiles(
 
 
 def apply_pixel_preset_hint(
-    entry: Entry, px, cfg: PathwayConfig, registry, pixel_config: PixelConfig
-):  # noqa: ANN001, ANN201
+    entry: Entry,
+    px: pipeline.PixelData,
+    cfg: PathwayConfig,
+    registry: Registry,
+    pixel_config: PixelConfig,
+) -> tuple[pipeline.PixelData, PathwayConfig]:
     """Adopt the format the container says its payload is in, if it says.
 
     A tile bank that records its own bit depth should not need one guessed: 2bpp,
@@ -1084,7 +547,9 @@ def apply_pixel_preset_hint(
 # The documents themselves
 
 
-def pixel_document(entry: Entry, px, cfg: PathwayConfig) -> Document:  # noqa: ANN001
+def pixel_document(
+    entry: Entry, px: pipeline.PixelData, cfg: PathwayConfig
+) -> Document:
     """A pixel entry's document, on the placeholder palette until one is applied."""
     assert entry.session is not None
     return Document(
@@ -1108,12 +573,16 @@ def pixel_document(entry: Entry, px, cfg: PathwayConfig) -> Document:  # noqa: A
 
 
 def chained_document(
-    registry, entry: Entry, loaded, cfg: PathwayConfig, through: Document
-) -> Document:  # noqa: ANN001
+    registry: Registry,
+    entry: Entry,
+    loaded: pipeline.TilemapData,
+    cfg: PathwayConfig,
+    through: Document,
+) -> Document:
     """A map whose cells are coordinates into ``through``'s cells.
 
     ``through`` may be chained itself, to any depth: its own chain rides along
-    (:attr:`~celpix.core.document.CellChain.through`), and everything else taken
+    (:attr:`~celpix.core.cellchain.CellChain.through`), and everything else taken
     from it — the art, the cell size, the tile base — is already the end of the
     chain's, since ``through`` took it from its own source the same way. The
     drawing geometry is the source map's, because what is drawn is its cells;
@@ -1193,10 +662,10 @@ def chained_document(
 
 
 def tilemap_document(
-    registry,  # noqa: ANN001
+    registry: Registry,
     workspace: Workspace,
     entry: Entry,
-    loaded,  # noqa: ANN001
+    loaded: pipeline.TilemapData,
     cfg: PathwayConfig,
     tiles: BoundTiles,
 ) -> Document:
@@ -1286,306 +755,6 @@ def tilemap_document(
 
 
 # ---------------------------------------------------------------------------
-# Offset palettes, in the owning file's coordinates (docs/design/palette-editing.md §2)
-
-
-def palette_offset_owner(workspace: Workspace, entry: Entry | None) -> Entry | None:
-    """The FILE entry whose coordinates ``entry``'s Offset palette is in.
-
-    ``entry`` itself when it is a whole file; the file its chain ends at when it
-    is a slice, because a slice's palette offsets are file-absolute and
-    deliberately reach outside its own window — a nested slice's included, since
-    colours live in the ROM beside a compressed stream rather than inside it.
-    ``None`` when that file is not open.
-
-    A **composite** comes from no file, so it borrows the coordinates of its
-    first piece that has an entry — the file a VRAM window's first bank sits in,
-    which is where a ROM keeps the colours for it. ``None`` for a composite of
-    pads only. Reordering the pieces across files moves the owner with them.
-    """
-    if entry is None:
-        return None
-    if entry.kind in (EntryKind.FILE, EntryKind.PALETTE):
-        return entry
-    if entry.kind is EntryKind.COMPOSITE:
-        first = next((p.entry for p in entry.pieces if p.entry is not None), None)
-        return palette_offset_owner(workspace, first) if first is not entry else None
-    return workspace.root_of(entry)
-
-
-def offset_palette_files(workspace: Workspace, entry: Entry) -> tuple[str, ...]:
-    """The files ``entry``'s Offset palette offsets address: the owner's, or its
-    own when the parent is not open — which is that same list, since a slice
-    carries the parent's files."""
-    owner = palette_offset_owner(workspace, entry)
-    return owner.paths if owner is not None else entry.paths
-
-
-def reordered_view(
-    registry,
-    workspace: Workspace,
-    owner: Entry,
-    settle: Callable[[Entry], None] | None = None,  # noqa: ANN001
-    fallback_preset: str = DEFAULT_PIXEL_PRESET,
-) -> tuple[bytes, int] | None:
-    """``owner``'s view buffer and its base, or ``None`` when reading the file
-    would give the same bytes. A permuting container or an active reshape makes
-    the buffer a different address space from the file, and then the buffer is
-    the only place an offset means anything."""
-    if not reorders_bytes(owner, registry):
-        return None
-    if settle is not None:
-        settle(owner)
-    return entry_view_bytes(
-        owner,
-        registry,
-        owner.session.pixel_preset_id if owner.session is not None else fallback_preset,
-        workspace,
-    )
-
-
-def offset_palette_space(
-    registry,
-    workspace: Workspace,
-    entry: Entry,
-    settle: Callable[[Entry], None] | None = None,  # noqa: ANN001
-    fallback_preset: str = DEFAULT_PIXEL_PRESET,
-) -> tuple[tuple[bytes, int] | None, int]:
-    """The address space ``entry``'s Offset palette reads: ``(view, end)``.
-
-    ``view`` is the owner's ``(buffer, base)`` when it reorders bytes, else
-    ``None``, meaning offsets are file offsets into the joined files. ``base``
-    mirrors the owner's own anchor: under an active reshape offsets are 0-based
-    buffer positions; under a permuting container they keep the recorded start.
-    """
-    owner = palette_offset_owner(workspace, entry)
-    view = (
-        reordered_view(registry, workspace, owner, settle, fallback_preset)
-        if owner is not None
-        else None
-    )
-    if view is not None:
-        data, base = view
-        if owner is not None and owner.reshape_id != NO_RESHAPE:
-            base = 0
-        return (data, base), base + len(data)
-    paths = offset_palette_files(workspace, entry)
-    return None, sum(Path(p).stat().st_size for p in paths)
-
-
-def offset_palette_source(
-    registry,  # noqa: ANN001
-    workspace: Workspace,
-    entry: Entry,
-    byte_off: int,
-    preset_id: str,
-    settle: Callable[[Entry], None] | None = None,
-    fallback_preset: str = DEFAULT_PIXEL_PRESET,
-) -> tuple[FileRef | None, bool]:
-    """The read window for an Offset palette at ``byte_off``, and whether a color
-    edit can be written back through it.
-
-    Floored to whole entries — the color codecs reject a partial trailing one —
-    and capped at a full palette. ``(None, ...)`` when not even one entry fits.
-    Where the owner reorders bytes the window is cut from its view buffer and the
-    pathway comes back write-off: a length-bounded ``FileRef`` cannot say where a
-    permuted splice belongs.
-    """
-    view, end = offset_palette_space(
-        registry, workspace, entry, settle, fallback_preset
-    )
-    writable = view is None
-    base = 0 if view is None else view[1]
-    avail = end - byte_off if byte_off >= base else 0
-    colors = min(
-        FULL_PALETTE_COUNT, pipeline.palette_entry_capacity(avail, preset_id, registry)
-    )
-    if colors <= 0:
-        return None, writable
-    length = pipeline.palette_read_bytes(colors, preset_id, registry)
-    paths = offset_palette_files(workspace, entry)
-    if view is None:
-        return FileRef(paths, offset=byte_off, length=length), True
-    data, base = view
-    return FileRef(
-        paths, offset=byte_off, length=length, data=data, data_base=base
-    ), False
-
-
-def source_view_preset(
-    source: Entry,
-    registry,  # noqa: ANN001
-    fallback_preset: str = DEFAULT_PIXEL_PRESET,
-) -> str:
-    """The pixel format ``source``'s own buffer is read at, for a cross-entry read.
-
-    Its session's, as the entry on screen is read. A **composite** the user has
-    never opened has no session yet and cannot take the caller's format either:
-    its buffer is *assembled* at a pixel format — un-ranged pieces are rounded up
-    to a whole tile of it (:func:`~celpix.project.workspace.composite_layout`) —
-    so reading one at the stage default would shift every byte after a ragged
-    piece. Its seed is the same answer the view it is about to get will take
-    (:func:`~celpix.project.workspace.composite_preset_id`), which is what keeps
-    the colours a consumer reads out of it from changing the moment it is opened.
-    """
-    session = source.session
-    if session is not None:
-        return session.pixel_preset_id
-    if source.kind is EntryKind.COMPOSITE:
-        return composite_preset_id(source, registry)
-    return fallback_preset
-
-
-def entry_palette_source(
-    registry,  # noqa: ANN001
-    workspace: Workspace,
-    source: Entry,
-    byte_off: int,
-    preset_id: str,
-    settle: Callable[[Entry], None] | None = None,
-    fallback_preset: str = DEFAULT_PIXEL_PRESET,
-) -> FileRef | None:
-    """The read window an ENTRY palette takes out of ``source``'s resolved bytes.
-
-    :func:`offset_palette_source`'s twin for the other cross-entry palette
-    reference, sized by the same two rules — floored to whole colour entries,
-    because the codecs reject a partial trailing one, and capped at a full
-    palette. ``None`` when not even one entry fits.
-
-    ``byte_off`` indexes the source's **resolved** data from 0 — what it looks
-    like once its own container, reshape and decompressor have run, which is the
-    same space a composite piece's range addresses
-    (:class:`~celpix.project.workspace.CompositePiece`). The bytes ride on the
-    ref inline, so the read never touches disk and never runs a second set of
-    byte stages over a buffer that has already been through its own.
-
-    The window is **not** writable on its own account: the colours belong to the
-    source's bytes, and an edit rides that entry's pixel pathway exactly as a
-    reordered Offset palette rides its owner's
-    (``docs/design/palette-editing.md``).
-
-    ``settle`` pays whatever fold the source owes before its buffer is believed,
-    the way :func:`reordered_view` does for an Offset owner.
-    """
-    if settle is not None:
-        settle(source)
-    data, _base = entry_view_bytes(
-        source,
-        registry,
-        source_view_preset(source, registry, fallback_preset),
-        workspace,
-    )
-    avail = len(data) - byte_off if byte_off >= 0 else 0
-    colors = min(
-        FULL_PALETTE_COUNT, pipeline.palette_entry_capacity(avail, preset_id, registry)
-    )
-    if colors <= 0:
-        return None
-    length = pipeline.palette_read_bytes(colors, preset_id, registry)
-    return FileRef(
-        # A composite comes from no file, so its own name is what the address
-        # display and any error message have to call this buffer.
-        source.paths or (source.name or "entry",),
-        offset=byte_off,
-        length=length,
-        data=data,
-        data_base=0,
-    )
-
-
-def entry_palette_config(
-    entry: Entry,
-    source: PaletteSource,
-    registry,  # noqa: ANN001
-    workspace: Workspace,
-    settle: Callable[[Entry], None] | None = None,
-    preset_id: str | None = None,
-) -> PathwayConfig:
-    """The pathway ``entry`` reads its ENTRY-mode palette through.
-
-    One builder for every route into the mode — the project restore, the headless
-    load and the dock's own re-decode — so what a reopened project shows and what
-    the gesture produced cannot differ. Raises where the app degrades to the
-    default palette: a source that is no longer open, or one with too few bytes
-    left at the stated offset for a single colour.
-
-    The **consumer** owns the colour format, which is the whole difference from
-    File mode: these are bytes in somebody else's buffer, and how to read them is
-    a fact about the picture being coloured rather than about the entry holding
-    them. *Which* of the consumer's two answers is the live one depends on the
-    route, so ``preset_id`` is explicit rather than always the session's: a
-    loaded entry's format is on its **document's** palette config, and its
-    session's copy is only written on an entry switch — so the entry on screen
-    would otherwise be re-decoded at whatever format it was opened with, silently
-    undoing a Format pick. The session's is right for the restore route alone,
-    where there is no live config yet.
-    """
-    session = entry.session
-    assert session is not None
-    wanted = preset_id or session.palette_preset_id
-    target = palette_entry_target(workspace, entry, source.entry)
-    if target is None:
-        named = source.entry.name if source.entry is not None else "nothing"
-        raise PipelineError(
-            Stage.CONTAINER,
-            Pathway.PALETTE,
-            f"the palette is read from {named}, which is not open",
-            plugin=wanted,
-        )
-    ref = entry_palette_source(
-        registry, workspace, target, source.offset, wanted, settle
-    )
-    if ref is None:
-        raise PipelineError(
-            Stage.CONTAINER,
-            Pathway.PALETTE,
-            f"not enough data at that offset in {target.name}",
-            plugin=wanted,
-        )
-    # Never writable on its own account: the bytes are the source's, so a colour
-    # edit rides that entry's pixel pathway instead
-    # (``docs/design/palette-editing.md``).
-    return PathwayConfig(source=ref, interpret_preset_id=wanted, write_enabled=False)
-
-
-def file_palette_config(
-    path: str, offset: int, preset_id: str, container_id: str
-) -> PathwayConfig:
-    """The writable pathway a PALETTE entry reads and writes its ``.pal`` with.
-
-    Source and dest are the same file; ``container_id`` is what cuts the colors
-    out of a file that holds more than colors, and re-wraps them on the way back.
-    """
-    return PathwayConfig(
-        source=FileRef(path, offset=offset),
-        dest=FileRef(path, offset=offset),
-        interpret_preset_id=preset_id,
-        container_id=container_id,
-    )
-
-
-def emulator_palette_config(path: str, registry):  # noqa: ANN001, ANN201
-    """Detect the emulator state at ``path``: ``(format, palette config)``.
-
-    The console dictates the codec, so this cannot be set to the wrong colour
-    format. View-only: a state is a memory dump, never a palette written back.
-    Raises :class:`~celpix.core.emustate.StateError` when nothing is recognised.
-    """
-    from celpix.core import emustate  # noqa: PLC0415 — only the emulator mode needs it
-
-    data = Path(path).read_bytes()
-    fmt, region = emustate.locate_palette(data)
-    length = min(
-        len(region.data),
-        pipeline.palette_read_bytes(region.count, region.preset_id, registry),
-    )
-    ref = FileRef(path, offset=0, length=length, data=region.data)
-    return fmt, PathwayConfig(
-        source=ref, interpret_preset_id=region.preset_id, write_enabled=False
-    )
-
-
-# ---------------------------------------------------------------------------
 # Headless: the whole load, as the app performs it
 
 
@@ -1599,7 +768,7 @@ class Loaded:
     problems: list[str] = field(default_factory=list)
 
 
-def load_document(entry: Entry, registry, workspace: Workspace) -> Loaded:  # noqa: ANN001
+def load_document(entry: Entry, registry: Registry, workspace: Workspace) -> Loaded:
     """``entry``'s document as the app builds it, with no window.
 
     Every decision is the one the app makes (the functions above are what its
@@ -1627,16 +796,16 @@ def load_document(entry: Entry, registry, workspace: Workspace) -> Loaded:  # no
     return Loaded(entry.doc, problems)
 
 
-def _pixel_config(registry, workspace: Workspace) -> PixelConfig:  # noqa: ANN001
-    def build(entry: Entry, preset_id: str) -> PathwayConfig:
-        if entry.kind is EntryKind.COMPOSITE:
-            return composite_config(entry, registry, workspace, preset_id=preset_id)
-        return pixel_config_for(entry, preset_id, registry, workspace)
-
-    return build
+def _pixel_config(registry: Registry, workspace: Workspace) -> PixelConfig:
+    # ``pixel_config_for`` already dispatches a composite to its own builder.
+    return lambda entry, preset_id: pixel_config_for(
+        entry, preset_id, registry, workspace
+    )
 
 
-def _load(entry: Entry, registry, workspace: Workspace, problems: list[str]) -> None:  # noqa: ANN001
+def _load(
+    entry: Entry, registry: Registry, workspace: Workspace, problems: list[str]
+) -> None:
     if entry.doc is not None:
         return
     colors = None
@@ -1698,8 +867,8 @@ def _load(entry: Entry, registry, workspace: Workspace, problems: list[str]) -> 
 
 
 def _palette_entry_colors(
-    entry: Entry, registry, problems: list[str]
-) -> tuple[pipeline.PaletteData, PathwayConfig] | None:  # noqa: ANN001
+    entry: Entry, registry: Registry, problems: list[str]
+) -> tuple[pipeline.PaletteData, PathwayConfig] | None:
     """A PALETTE entry's swatch session, and its bytes decoded as colours.
 
     A palette file opens as swatches in its own colour format, on a session
@@ -1730,7 +899,7 @@ def _palette_entry_colors(
     return loaded, cfg
 
 
-def _load_tilemap(entry, registry, workspace, problems, configure) -> None:  # noqa: ANN001
+def _load_tilemap(entry, registry: Registry, workspace, problems, configure) -> None:  # noqa: ANN001
     cfg = tilemap_config_for(entry, tilemap_preset_id(entry), registry, workspace)
     loaded = pipeline.load_tilemap_data(cfg, registry, size_pair=entry.sprite_size_pair)
     if backfill_slice_length(entry, loaded.ctx):
@@ -1751,8 +920,8 @@ def _load_tilemap(entry, registry, workspace, problems, configure) -> None:  # n
 
 
 def bound_tilemap(
-    registry, workspace: Workspace, entry: Entry, problems: list[str]
-) -> Document | None:  # noqa: ANN001
+    registry: Registry, workspace: Workspace, entry: Entry, problems: list[str]
+) -> Document | None:
     """The tilemap ``entry`` draws through, loaded — or None if it draws art.
 
     A chain resolves at any depth; what stops one is a **loop**
@@ -1781,7 +950,9 @@ def bound_tilemap(
     return doc
 
 
-def _bound_tiles(registry, workspace, entry, problems, configure) -> BoundTiles:  # noqa: ANN001
+def _bound_tiles(
+    registry: Registry, workspace, entry, problems, configure
+) -> BoundTiles:  # noqa: ANN001
     source = entry.tile_source
     fallback = entry.session.pixel_preset_id if entry.session else DEFAULT_PIXEL_PRESET
     if source is None or not source.is_bound:
@@ -1804,7 +975,9 @@ def _bound_tiles(registry, workspace, entry, problems, configure) -> BoundTiles:
     )
 
 
-def _restore(entry: Entry, registry, workspace: Workspace, problems: list[str]) -> None:  # noqa: ANN001
+def _restore(
+    entry: Entry, registry: Registry, workspace: Workspace, problems: list[str]
+) -> None:
     """The project restore: the stored view, then the stored palette.
 
     A palette that cannot be restored degrades to the default one with a
@@ -1841,8 +1014,8 @@ class _Palette(NamedTuple):
 
 
 def restored_palette(
-    entry: Entry, source: PaletteSource, registry, workspace: Workspace
-) -> _Palette | None:  # noqa: ANN001
+    entry: Entry, source: PaletteSource, registry: Registry, workspace: Workspace
+) -> _Palette | None:
     """The colours ``source`` names for ``entry``, read the way the app reads them.
 
     Custom colours as stated; a file through its PALETTE entry's own format and

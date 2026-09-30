@@ -13,7 +13,7 @@ the escape hatch for behaviour data cannot express. Qt-free — these run headle
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
@@ -79,6 +79,12 @@ STAGE_DEFAULT_PRESET: dict[Stage, str] = {
     Stage.INTERPRET_PALETTE: "preset.palette.bgr555",
     Stage.INTERPRET_TILEMAP: "preset.tilemap.snes-bg",
 }
+
+# The same three by name, for the many sites that want one pathway's default and
+# would otherwise each index the table (and could each index the wrong stage).
+DEFAULT_PIXEL_PRESET = STAGE_DEFAULT_PRESET[Stage.INTERPRET_PIXEL]
+DEFAULT_PALETTE_PRESET = STAGE_DEFAULT_PRESET[Stage.INTERPRET_PALETTE]
+DEFAULT_TILEMAP_PRESET = STAGE_DEFAULT_PRESET[Stage.INTERPRET_TILEMAP]
 
 
 # The headings a format picker groups its entries under, in the order they are
@@ -495,10 +501,13 @@ class PluginInfo:
     ``self_delimiting`` is **Compression-only** and describes the *scheme*, not
     one decode: false means the stream carries no end marker, so its extent is
     knowable only from outside (a slice length, a container's byte count). It is
-    static — true before a byte is read — and the UI phrases "the decode stopped
-    here" differently for the two: a scheme with an end marker that didn't reach
-    one was cut short and widening the window can fix it, while one without simply
-    decodes as far as it is fed.
+    known before a byte is read, and the UI phrases "the decode stopped here"
+    differently for the two: a scheme with an end marker that didn't reach one
+    was cut short and widening the window can fix it, while one without simply
+    decodes as far as it is fed. A scheme whose *inputs* decide the answer (LZW,
+    whose end code is optional) ships a ``delimits_itself(inputs)`` method
+    beside this static default; hosts ask through :func:`self_delimiting` so
+    neither has to know which kind it holds.
 
     ``alignment`` is **Compression-only**: the start-address alignment the
     hardware imposes on a structure, 1 when it imposes none. Only the scan
@@ -654,6 +663,15 @@ def check_declared_stage(spec: dict, stage: Stage) -> None:
         )
 
 
+def reshape_info(plugin_id: str, name: str, category: str = "") -> PluginInfo:
+    """The info of a reshape plugin a preset was adapted into at load.
+
+    Such a plugin states nothing beyond who it is: a reshape has no end to find,
+    no container kinds and no inputs, so the preset's identity is the whole of it.
+    """
+    return PluginInfo(id=plugin_id, name=name, stage=Stage.RESHAPE, category=category)
+
+
 @runtime_checkable
 class Plugin(Protocol):
     """Common to every plugin: it carries its :class:`PluginInfo`."""
@@ -762,8 +780,11 @@ class PartialDecompression:
     its slot against and what the structure scan reads;
     :data:`~celpix.core.context.KEY_DECOMPRESS_COMPLETE` is what stops a slice
     created without a length from backfilling its extent from a decode that merely
-    ran out of buffer. A scheme with **no end to find** — PackBits, LZ16 — states
-    that for itself instead and does not use this.
+    ran out of buffer. A scheme with **no end to find** — PackBits, the Capcom
+    mask RLE — uses this all the same, with a ``_decode`` that never reports
+    complete. What spells the two keys out by hand is a scheme whose read needs
+    more of the context than the partial flag: LZ16's row count, LZW's
+    parameters, LZ4W's surround.
 
     A subclass supplies :meth:`_decode` and :meth:`_encode`: ``staticmethod`` where
     the module functions take the data alone, an ordinary method where the variant
@@ -773,6 +794,10 @@ class PartialDecompression:
     ``compress`` off too, since shipping the method *is* the declaration that a
     save-back works.
     """
+
+    # Every subclass is a plugin, so every one states this; declared here so code
+    # handed a subclass (the moduled framing, say) can read it as such.
+    info: PluginInfo
 
     def _decode(self, data: bytes, *, partial: bool) -> tuple[bytes, int, bool]:
         """``(output, consumed, complete)`` for one structure at ``data[0]``."""
@@ -801,6 +826,21 @@ def writes_back(plugin: Plugin, stage: Stage) -> bool:
     declaration. :data:`SAVE_METHOD` names it, so no caller has to.
     """
     return callable(getattr(plugin, SAVE_METHOD[stage], None))
+
+
+def self_delimiting(plugin: Plugin, inputs: Mapping[str, object] | None = None) -> bool:
+    """Whether ``plugin``'s stream carries its own end, under ``inputs``.
+
+    The static :attr:`PluginInfo.self_delimiting` answers for nearly every
+    scheme. A scheme whose end marker is itself an input — LZW's optional end
+    code — cannot say statically, and ships ``delimits_itself(inputs)`` instead;
+    the info field is then only its answer for unbound inputs. One probe here,
+    so the badge, the scan gate and the slice-length backfill cannot disagree.
+    """
+    ask = getattr(plugin, "delimits_itself", None)
+    if callable(ask):
+        return bool(ask(dict(inputs or {})))
+    return plugin.info.self_delimiting
 
 
 class PixelCodecPlugin(Plugin, Protocol):

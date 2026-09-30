@@ -79,8 +79,9 @@ from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.sprite import Frame, Subsprite
 from celpix.core.tilemap import Cell, CellOp
-from celpix.plugins._params import byte_order, flag
+from celpix.plugins._params import byte_order, flag, integer
 from celpix.plugins.base import PluginInfo
+from celpix.plugins.builtins._cell_answers import mirror
 from celpix.plugins.builtins._fields import parse_layout, resolve_legend
 from celpix.plugins.builtins._mask import gather, scatter
 
@@ -147,8 +148,8 @@ class RecordLayout:
         if header is None:
             self.header = None
         else:
-            length = int(header.get("bytes", 0))
-            count_at = int(header.get("count_at", 0))
+            length = integer(header, "bytes", 0)
+            count_at = integer(header, "count_at", 0)
             count_type = str(header.get("count_type", "u16"))
             if count_type not in _TYPES or count_at + _TYPES[count_type] > length:
                 raise ValueError("frame_header's count must sit inside its bytes")
@@ -413,9 +414,4 @@ class SpriteRecordCodec:
     ) -> Cell | None:
         """Both mirrors where the record has the bits, and no turn."""
         layout = RecordLayout(params)
-        placed = {p for _n, _a, _w, _s, pl in layout.fields for p in pl}
-        if op is CellOp.FLIP_H and "flip_h" in placed:
-            return cell.flipped_h()
-        if op is CellOp.FLIP_V and "flip_v" in placed:
-            return cell.flipped_v()
-        return None
+        return mirror(cell, op, {p for _n, _a, _w, _s, pl in layout.fields for p in pl})

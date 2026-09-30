@@ -1,12 +1,14 @@
-"""The interpreted tilemap model: a grid of cells, each naming a tile.
+"""The interpreted tilemap model: cells, each naming a tile.
 
 A tilemap is a file of tile *indices* drawn as a layout — a screen, a level's
 background, a stamp sheet. Where an :class:`~celpix.core.index_grid.IndexGrid`
-holds one palette index per pixel, a :class:`CellGrid` holds one :class:`Cell`
-per grid position, and the tile that cell names lives in a *different* document
+holds one palette index per pixel, a tilemap holds one :class:`Cell` per
+entry, and the tile that cell names lives in a *different* document
 (``docs/design/tilemap-entry.md`` §3). Nothing here resolves that reference:
-this is the codec-neutral model the tilemap pathway decodes into and encodes
-back out of, exactly as the index grid is for pixels. Qt-free.
+the tilemap pathway decodes into a flat ``list[Cell]`` in file order and
+encodes the same list back out, the codec-neutral model exactly as the index
+grid is for pixels. A :class:`CellGrid` is the rectangular form — the block of
+cells a selection lifts and a stamp brush or the clipboard carries. Qt-free.
 
 A cell is not a bare index. Every hardware tilemap format worth reading carries
 per-cell **attributes** alongside the index — which palette row to draw through,
@@ -92,6 +94,13 @@ def tile_run(
         for row in range(down)
         for col in range(across)
     ]
+
+
+# The words a cell format's ``layout`` declaration may say besides nothing (a
+# plain map): its cells are sprite records, or text codes. One spelling here, so
+# the declaration check and every reader of the word cannot disagree.
+LAYOUT_SPRITE = "sprite"
+LAYOUT_TEXT = "text"
 
 
 class CellOp(str, Enum):
@@ -249,7 +258,7 @@ def cell_orientation(cell: Cell) -> int:
 # ``Cell.index`` holds what the file holds either way, so a codec only decodes
 # and the hex view, a restamp and the round trip all speak the file's number.
 # The conversion happens where an index is resolved — the chain hop
-# (:func:`expand_stamps`, :func:`~celpix.core.document.resolve_chain`) and the
+# (:func:`expand_stamps`, :func:`~celpix.core.cellchain.resolve_chain`) and the
 # over-art tile walk
 # (:meth:`~celpix.core.document.Document.cell_tile_indices`) — and every one of
 # them asks :func:`index_corner`, the one place the arithmetic is written.
@@ -573,7 +582,7 @@ def resolve_cell(
     may number from partway into the source exactly as a plain map's tile
     numbers may number from partway into a bank, and the base counts what the
     index counts, so the caller adds it where it turns the index into a place
-    (:func:`index_corner`, :meth:`~celpix.core.document.CellChain.source_cell`).
+    (:func:`index_corner`, :meth:`~celpix.core.cellchain.CellChain.source_cell`).
 
     Composed rather than dropped because the referring format may carry
     attributes of its own, and discarding them would draw a picture neither file
@@ -667,57 +676,6 @@ def stamp_cell(
     )
 
 
-def expand_stamp(
-    cell: Cell,
-    source: list[Cell],
-    stamp: tuple[int, int],
-    source_columns: int,
-    *,
-    carry_rows: bool,
-    column_major: bool = False,
-    base: int = 0,
-    geometry: Geometry | None = None,
-) -> list[Cell]:
-    """The source cells one stamp coordinate draws, in drawn (row-major) order.
-
-    One entry's worth of :func:`expand_stamps`' walk, factored out for the
-    previews that render a single stamp — the tile source sheet and the stamp
-    tool's ghost — so a preview and the map cannot resolve the same coordinate
-    two different ways. The corner is the coordinate itself, or the stamp it
-    counts to under ordinal addressing (``geometry``), with ``base`` added in
-    the same count (:func:`index_corner`), and the rest of the stamp steps the
-    **source's** rows: ``source_columns`` is the stride between a stamp's rows
-    because a stamp is a rectangle cut out of the source.
-
-    ``cell`` is the *referring* entry, passed whole for the reason
-    :func:`resolve_cell` composes it: its flips, its row where the format
-    carries one, and its visibility are part of what the stamp draws as. A
-    caller with no real entry behind the coordinate — a sheet enumerating what
-    *could* be stamped — passes a bare ``Cell`` **with** ``carry_rows=False``:
-    a synthetic referrer has no row of its own to carry, and a bare cell's 0
-    let through would repaint the source's rows. Its flips mirror the stamp's
-    arrangement too (:func:`stamp_cell`), not only each cell.
-    """
-    across, down = max(1, stamp[0]), max(1, stamp[1])
-    stride = max(1, source_columns)
-    corner = index_corner(cell.index, geometry, base)
-    return [
-        resolve_cell(
-            cell,
-            source,
-            carry_rows=carry_rows,
-            at=corner
-            + stamp_offset(
-                *stamp_cell(cell, dx, dy, (across, down)),
-                stride,
-                column_major=column_major,
-            ),
-        )
-        for dy in range(down)
-        for dx in range(across)
-    ]
-
-
 def stamp_origin(
     position: int, columns: int, stamp: tuple[int, int], *, dense: bool = False
 ) -> int:
@@ -725,7 +683,7 @@ def stamp_origin(
 
     A stamped map's entries are not one per drawn position, and there are **two
     ways a file can hold fewer**. Which one it is, is the referring format's
-    answer (:attr:`~celpix.core.document.CellChain.dense`), and it is the only
+    answer (:attr:`~celpix.core.cellchain.CellChain.dense`), and it is the only
     thing that differs between the two branches here:
 
     - **Sparse** — the file still has a slot per drawn position and only the
@@ -856,7 +814,12 @@ def expand_stamps(
 
 
 class CellGrid:
-    """A row-major grid of :class:`Cell`, the tilemap pathway's decoded form.
+    """A row-major rectangle of :class:`Cell` — what a selection lifts, and what
+    a stamp brush and the clipboard carry.
+
+    Not the pathway's decoded form: a map decodes to a flat ``list[Cell]`` in
+    file order, whose shape is the layout's to decide. A rectangle is the edit
+    tools' unit, cut out of that layout and pasted back into it.
 
     Sized in **cells**, not pixels or tiles: how many tiles a cell covers is the
     codec's parameter (a panel cell is 2x2 tiles) and how big a tile is belongs
@@ -864,7 +827,7 @@ class CellGrid:
     grid alone, and neither is needed to hold one.
 
     Mutable, like the pixel model and unlike :class:`Cell`: an edit sets a
-    position, and the positions are the document.
+    position, or pastes one rectangle into another.
     """
 
     __slots__ = ("_cells", "_height", "_width")
@@ -889,7 +852,7 @@ class CellGrid:
         return len(self._cells)
 
     def __iter__(self) -> Iterator[Cell]:
-        """Cells in row-major order — the order a codec encodes them back in."""
+        """Cells in row-major order."""
         return iter(self._cells)
 
     def __eq__(self, other: object) -> bool:

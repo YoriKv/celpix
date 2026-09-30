@@ -19,27 +19,28 @@ This module is the **Qt bridge alone** — what goes on the clipboard and what c
 off it. The tile flavour's own byte format, and the validation that makes reading
 one safe, are :class:`~celpix.core.tilepayload.TilePayload`'s: a payload arrives
 from outside the process, so parsing it belongs with the rest of the model where
-it can be tested without a window. The same split holds for the files-pane rows
-at the foot of this file, whose records are
-:func:`~celpix.project.projectfile.entries_payload`'s.
+it can be tested without a window. The same split holds for the two JSON
+flavours at the foot of this file: files-pane rows, whose records are
+:func:`~celpix.project.projectfile.entries_payload`'s, and one entry's input
+bindings (Copy Inputs).
 
-Those rows are the one flavour with a half that **cannot** be written down — a
-tile binding is an entry, and an entry is not a value — so a copy of one leaves
-the object behind in memory beside the payload (:data:`_COPIED_BINDINGS`) rather
-than writing a position that the next drag would invalidate.
+Those two are the flavours with a half that **cannot** be written down — a tile
+binding or an input's source is an entry, and an entry is not a value — so a copy
+of one leaves the objects behind in memory beside the payload
+(:class:`_JsonFlavour`) rather than writing a position that the next drag would
+invalidate.
 """
 
 from __future__ import annotations
 
 import json
-import re
 import weakref
 from uuid import uuid4
 
 from PySide6.QtCore import QByteArray, QMimeData
 from PySide6.QtGui import QGuiApplication, QImage
 
-from celpix.core.argb_grid import ArgbGrid
+from celpix.core.palette import find_argb, format_argb
 from celpix.core.tilepayload import TilePayload
 
 # Our own clipboard flavours. Both names are private MIME types — no other
@@ -60,6 +61,9 @@ PALETTE_PAYLOAD_VERSION = 1
 # representation beside it, only a plain-text listing of the paths for a paste
 # into a text editor.
 ENTRIES_MIME = "application/x-celpix-entries"
+# One entry's input bindings (Copy Inputs / Paste Inputs), keyed by plugin id —
+# the entry's own record, narrowed to its inputs. As celPix-only as the rows.
+INPUTS_MIME = "application/x-celpix-inputs"
 
 # This process, so a paste can tell a copy taken from the running editor from one
 # taken from another window (or another day). It buys exactly one thing: it says
@@ -67,12 +71,6 @@ ENTRIES_MIME = "application/x-celpix-entries"
 # ones *this* payload means, since only a payload this process wrote can have
 # been written with them.
 SESSION_TOKEN = uuid4().hex
-
-# A 6- or 8-digit hex run, optionally ``#``-prefixed, not embedded in a longer
-# hex string — how a foreign clipboard's colors are recognised.
-_HEX_COLOR = re.compile(
-    r"(?<![0-9A-Fa-f])#?([0-9A-Fa-f]{8}|[0-9A-Fa-f]{6})(?![0-9A-Fa-f])"
-)
 
 
 def put(payload: TilePayload | None, image: QImage) -> None:
@@ -111,10 +109,7 @@ def has_content() -> bool:
 # -- palette colors --------------------------------------------------------
 def color_text(argb: int) -> str:
     """One color as ``#RRGGBB`` (opaque) or ``#AARRGGBB`` (carries alpha)."""
-    argb &= 0xFFFFFFFF
-    if (argb >> 24) == 0xFF:
-        return f"#{argb & 0xFFFFFF:06X}"
-    return f"#{argb:08X}"
+    return format_argb(argb, alpha=None)
 
 
 def put_colors(colors: list[int]) -> None:
@@ -142,22 +137,6 @@ def _parse_palette_payload(raw: bytes) -> list[int] | None:
         return None
 
 
-def _parse_hex_colors(text: str) -> list[int]:
-    """Every ``#RRGGBB``/``#AARRGGBB`` token in ``text`` as ARGB (6-digit → opaque).
-
-    The cross-application path: a color copied from any editor that writes hex
-    pastes straight in, and a run of them fills consecutive entries.
-    """
-    colors = []
-    for match in _HEX_COLOR.finditer(text):
-        digits = match.group(1)
-        value = int(digits, 16)
-        if len(digits) == 6:
-            value |= 0xFF000000  # no alpha field means fully opaque
-        colors.append(value & 0xFFFFFFFF)
-    return colors
-
-
 def take_colors() -> list[int] | None:
     """Palette colors from the clipboard: our lossless payload, else hex text."""
     mime = QGuiApplication.clipboard().mimeData()
@@ -168,7 +147,7 @@ def take_colors() -> list[int] | None:
         if colors:
             return colors
     if mime.hasText():
-        colors = _parse_hex_colors(mime.text())
+        colors = find_argb(mime.text())
         if colors:
             return colors
     return None
@@ -181,7 +160,7 @@ def has_colors() -> bool:
         return False
     if mime.hasFormat(PALETTE_MIME):
         return True
-    return mime.hasText() and bool(_parse_hex_colors(mime.text()))
+    return mime.hasText() and bool(find_argb(mime.text()))
 
 
 # -- files-pane entries ----------------------------------------------------
@@ -192,16 +171,75 @@ def has_colors() -> bool:
 #: user's to rearrange, so any position recorded when the copy was taken names a
 #: different entry the moment anything is dragged, closed or opened before the
 #: paste. A copy can sit on the clipboard across all of that.
-#:
-#: **Weak**, so a copy taken and then forgotten about does not pin a closed
-#: entry's document in memory for the rest of the session. An entry that has gone
-#: that thoroughly is one nothing can be bound to anyway, and the paste treats a
-#: dead reference exactly as it treats a copy from another window: unbound.
-#:
-#: Keyed by the record's ``source_index``, which is the payload's own join key and
-#: not a live position — it and the payload are written together and replaced
-#: together, and the session token on the payload is what says they still are.
-_COPIED_BINDINGS: dict[int, weakref.ref] = {}
+class _JsonFlavour:
+    """One of the JSON clipboard flavours, and the entries a copy remembers.
+
+    A payload names entries by a key of its own (a record's ``source_index``, a
+    binding's position among the named ones) and the entries themselves are kept
+    in :attr:`refs` — the payload's join key, not a live position: the two are
+    written together and replaced together, and the session token on the payload
+    is what says they still belong to each other.
+
+    **Weak**, so a copy taken and then forgotten about does not pin a closed
+    entry's document in memory for the rest of the session. An entry that has
+    gone that thoroughly is one nothing can be bound to anyway, and the paste
+    treats a dead reference exactly as it treats a copy from another window:
+    unbound.
+
+    Only this flavour is read back: there is no foreign representation a
+    payload could be reconstructed from, so text on the clipboard is never read
+    as a paste (a path alone says nothing about how to read the file, and
+    guessing would turn an unrelated copied filename into an entry).
+    """
+
+    def __init__(self, mime: str) -> None:
+        self.mime = mime
+        self.refs: dict[int, weakref.ref] = {}
+
+    def put(
+        self, payload: dict, remembered: dict[int, object], text: str | None = None
+    ) -> None:
+        """Place ``payload`` on the clipboard, remembering ``remembered`` beside it.
+
+        Replaced here rather than beside the call so the two cannot be written
+        out of step. ``text`` is an optional plain-text half for other programs.
+        """
+        self.refs.clear()
+        self.refs.update(
+            {key: weakref.ref(target) for key, target in remembered.items()}
+        )
+        mime = QMimeData()
+        mime.setData(self.mime, QByteArray(json.dumps(payload).encode("utf-8")))
+        if text is not None:
+            mime.setText(text)
+        QGuiApplication.clipboard().setMimeData(mime)
+
+    def take(self) -> dict | None:
+        """The payload on the clipboard, if a celPix copy of this flavour is there."""
+        mime = QGuiApplication.clipboard().mimeData()
+        if mime is None or not mime.hasFormat(self.mime):
+            return None
+        try:
+            payload = json.loads(bytes(mime.data(self.mime)).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def remembered(self) -> dict[int, object]:
+        """The entries the last copy remembered, minus any since freed."""
+        live = {key: ref() for key, ref in self.refs.items()}
+        return {key: target for key, target in live.items() if target is not None}
+
+    def has(self) -> bool:
+        """Whether a paste of this flavour could do anything."""
+        mime = QGuiApplication.clipboard().mimeData()
+        return mime is not None and mime.hasFormat(self.mime)
+
+
+_ENTRIES = _JsonFlavour(ENTRIES_MIME)
+_INPUTS = _JsonFlavour(INPUTS_MIME)
+#: The bound entries the last entry copy remembered (:class:`_JsonFlavour`).
+_COPIED_BINDINGS = _ENTRIES.refs
 
 
 def put_entries(payload: dict, paths: list[str], bindings: dict[int, object]) -> None:
@@ -211,18 +249,9 @@ def put_entries(payload: dict, paths: list[str], bindings: dict[int, object]) ->
     its settings, and a bare path is only the first of those. It is there so a
     copy can be dropped into a shell, a bug report or a notes file, which is what
     a user reaches for the moment they want to say *which* files a project holds.
-
-    ``bindings`` is the unserialisable half (:data:`_COPIED_BINDINGS`), replaced
-    here rather than beside the call so the two cannot be written out of step.
+    ``bindings`` is the half that cannot be written down (:class:`_JsonFlavour`).
     """
-    _COPIED_BINDINGS.clear()
-    _COPIED_BINDINGS.update(
-        {key: weakref.ref(target) for key, target in bindings.items()}
-    )
-    mime = QMimeData()
-    mime.setData(ENTRIES_MIME, QByteArray(json.dumps(payload).encode("utf-8")))
-    mime.setText("\n".join(paths))
-    QGuiApplication.clipboard().setMimeData(mime)
+    _ENTRIES.put(payload, bindings, "\n".join(paths))
 
 
 def take_bindings() -> dict[int, object]:
@@ -231,96 +260,38 @@ def take_bindings() -> dict[int, object]:
     Only meaningful for a payload this process wrote — the caller checks that
     against the payload's session token before asking.
     """
-    live = {key: ref() for key, ref in _COPIED_BINDINGS.items()}
-    return {key: target for key, target in live.items() if target is not None}
+    return _ENTRIES.remembered()
 
 
 def take_entries() -> dict | None:
-    """The entry payload on the clipboard, if a celPix copy put one there.
-
-    Only our own flavour: unlike tiles and colors there is no foreign
-    representation an entry could be reconstructed from, so text on the clipboard
-    is never read as a paste (a path alone says nothing about how to read the
-    file, and guessing would turn an unrelated copied filename into an entry).
-    """
-    mime = QGuiApplication.clipboard().mimeData()
-    if mime is None or not mime.hasFormat(ENTRIES_MIME):
-        return None
-    try:
-        payload = json.loads(bytes(mime.data(ENTRIES_MIME)).decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
-        return None
-    return payload if isinstance(payload, dict) else None
+    """The entry payload on the clipboard, if a celPix copy put one there."""
+    return _ENTRIES.take()
 
 
 def has_entries() -> bool:
     """Whether an entry paste could do anything — drives the action's state."""
-    mime = QGuiApplication.clipboard().mimeData()
-    return mime is not None and mime.hasFormat(ENTRIES_MIME)
-
-
-# -- input bindings ------------------------------------------------------------
-INPUTS_MIME = "application/x-celpix-inputs"
-
-#: The entries a copied binding names, by the binding's position among the
-#: named ones — :data:`_COPIED_BINDINGS`'s rule and reason, one feature over.
-_COPIED_INPUT_SOURCES: dict[int, weakref.ref] = {}
+    return _ENTRIES.has()
 
 
 def put_inputs(payload: dict, sources: dict[int, object]) -> None:
-    """Place one entry's input bindings on the clipboard (Copy Inputs)."""
-    _COPIED_INPUT_SOURCES.clear()
-    _COPIED_INPUT_SOURCES.update(
-        {key: weakref.ref(target) for key, target in sources.items()}
-    )
-    mime = QMimeData()
-    mime.setData(INPUTS_MIME, QByteArray(json.dumps(payload).encode("utf-8")))
-    QGuiApplication.clipboard().setMimeData(mime)
+    """Place one entry's input bindings on the clipboard (Copy Inputs).
+
+    ``sources`` are the entries the bindings name, by the binding's position
+    among the named ones.
+    """
+    _INPUTS.put(payload, sources)
 
 
 def take_inputs() -> dict | None:
     """The bindings payload on the clipboard, if Copy Inputs put one there."""
-    mime = QGuiApplication.clipboard().mimeData()
-    if mime is None or not mime.hasFormat(INPUTS_MIME):
-        return None
-    try:
-        payload = json.loads(bytes(mime.data(INPUTS_MIME)).decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
-        return None
-    return payload if isinstance(payload, dict) else None
+    return _INPUTS.take()
 
 
 def take_input_sources() -> dict[int, object]:
     """The entries the last Copy Inputs remembered, minus any since freed."""
-    live = {key: ref() for key, ref in _COPIED_INPUT_SOURCES.items()}
-    return {key: target for key, target in live.items() if target is not None}
+    return _INPUTS.remembered()
 
 
 def has_inputs() -> bool:
     """Whether Paste Inputs could do anything — drives the row's state."""
-    mime = QGuiApplication.clipboard().mimeData()
-    return mime is not None and mime.hasFormat(INPUTS_MIME)
-
-
-def image_to_argb(image: QImage) -> ArgbGrid:
-    """Convert a QImage into the Qt-free grid the import pathway takes.
-
-    Converted to ``Format_ARGB32`` first, so one code path handles every source
-    format a foreign app might hand over (indexed GIFs, 16-bit, premultiplied),
-    and the grid's little-endian ARGB layout then matches Qt's scanlines byte for
-    byte. Rows are copied one at a time because ``bytesPerLine`` may exceed
-    ``width * 4`` (Qt pads scanlines for alignment).
-    """
-    src = image.convertToFormat(QImage.Format.Format_ARGB32)
-    w, h = src.width(), src.height()
-    grid = ArgbGrid(w, h)
-    if w == 0 or h == 0:
-        return grid
-    stride = src.bytesPerLine()
-    buf = bytes(src.constBits())
-    row_bytes = w * 4
-    dst = grid.data
-    for y in range(h):
-        s0 = y * stride
-        dst[y * row_bytes : (y + 1) * row_bytes] = buf[s0 : s0 + row_bytes]
-    return grid
+    return _INPUTS.has()

@@ -181,7 +181,7 @@ class _InPlaceCommand(_StateCommand):
     context the change needs.
     """
 
-    _entry: Entry  # a reaching command always has one
+    _entry: Entry  # every in-place change is to an entry, though none is reached
 
     def _reach(self) -> bool:
         return True
@@ -243,7 +243,45 @@ class _EditModeCommand(_StateCommand):
         return self._window._ensure_edit_context(self._through, self._mode)
 
 
-class OffsetMoveCommand(_CurrentEntryCommand):
+class _MergingStateCommand(_CurrentEntryCommand):
+    """A step a run of the same gesture merges into, and that a run home dissolves.
+
+    The view moves — an offset, an axis spin, an arrangement control — are made
+    in runs: a held key, a spin stepped up in ones. Each run is one step, so a
+    later command of the same kind takes the earlier one's place as its
+    ``after``; and a run that walks back to where it started has changed
+    nothing, so it drops out of the history rather than leaving an empty step.
+
+    The **same entry** check is load-bearing on the unified stack: moves in entry
+    A and entry B can sit adjacent and must stay separate steps. A subclass
+    narrows the run further with :meth:`_merge_key` (which control moved) and
+    widens what counts as "back at the start" with :meth:`_is_empty`. Qt only
+    offers a merge between two commands of one :meth:`id`, which each subclass
+    gives.
+    """
+
+    def _merge_key(self) -> object:
+        """What else, beyond the entry, a run must share to be one step."""
+        return None
+
+    def _is_empty(self) -> bool:
+        """Whether the merged run has come back to where it started."""
+        return self._after == self._before
+
+    def mergeWith(self, other: QUndoCommand) -> bool:  # noqa: D102 — Qt override
+        if (
+            not isinstance(other, type(self))
+            or other._entry is not self._entry
+            or other._merge_key() != self._merge_key()
+        ):
+            return False
+        self._after = other._after
+        if self._is_empty():
+            self.setObsolete(True)
+        return True
+
+
+class OffsetMoveCommand(_MergingStateCommand):
     """One view-position move; consecutive moves in the same entry merge."""
 
     def __init__(
@@ -258,17 +296,6 @@ class OffsetMoveCommand(_CurrentEntryCommand):
 
     def id(self) -> int:
         return OFFSET_MOVE_ID
-
-    def mergeWith(self, other: QUndoCommand) -> bool:
-        # The same-entry check is load-bearing on the unified stack: moves in
-        # entry A and entry B can sit adjacent and must stay separate steps.
-        if not isinstance(other, OffsetMoveCommand) or other._entry is not self._entry:
-            return False
-        self._after = other._after
-        if self._after == self._before:
-            # The run walked back to its start — drop the empty step entirely.
-            self.setObsolete(True)
-        return True
 
     def _apply(self, state: tuple[int, int]) -> None:
         self._window._apply_offset(*state)
@@ -292,7 +319,7 @@ class ViewAxisState:
     byte_nudge: int
 
 
-class ViewAxisCommand(_CurrentEntryCommand):
+class ViewAxisCommand(_MergingStateCommand):
     """One move of a view axis spin - Cols, Rows or Palette Row.
 
     Sibling of :class:`OffsetMoveCommand`: these change how the bytes are laid
@@ -328,18 +355,8 @@ class ViewAxisCommand(_CurrentEntryCommand):
     def id(self) -> int:
         return VIEW_AXIS_ID
 
-    def mergeWith(self, other: QUndoCommand) -> bool:
-        if (
-            not isinstance(other, ViewAxisCommand)
-            or other._entry is not self._entry
-            or other._axis != self._axis
-        ):
-            return False
-        self._after = other._after
-        if self._after == self._before:
-            # The run walked back to its start - drop the empty step entirely.
-            self.setObsolete(True)
-        return True
+    def _merge_key(self) -> object:
+        return self._axis
 
     def _apply(self, state: ViewAxisState) -> None:
         self._window._apply_view_axes(state)
@@ -354,7 +371,7 @@ class ArrangementState:
     a per-field command could not describe a single pick. ``columns`` and
     ``columns_before_bitmap`` ride along because a bitmap width **takes Cols
     over** while it spans the codec's tiles
-    (:meth:`~...interpretation.InterpretationMixin._settle_bitmap_width_and_columns`):
+    (:meth:`~...arrangement.ArrangementMixin._settle_bitmap_width_and_columns`):
     restoring the width without the count it displaced would hand Cols back a
     number derived from a bitmap nobody is reading any more.
 
@@ -394,7 +411,7 @@ class ArrangementState:
         return self.bitmap_width if self.two_dimensional else 0
 
 
-class ArrangementCommand(_CurrentEntryCommand):
+class ArrangementCommand(_MergingStateCommand):
     """One move of the arrangement bar — Pattern, Block W x H, Order, 2D, width.
 
     Display placement, so like :class:`ViewAxisCommand` it **stamps no
@@ -429,24 +446,18 @@ class ArrangementCommand(_CurrentEntryCommand):
     def id(self) -> int:
         return ARRANGEMENT_ID
 
-    def mergeWith(self, other: QUndoCommand) -> bool:
-        if (
-            not isinstance(other, ArrangementCommand)
-            or other._entry is not self._entry
-            or other._field != self._field
-        ):
-            return False
-        self._after = other._after
+    def _merge_key(self) -> object:
+        return self._field
+
+    def _is_empty(self) -> bool:
         # The anchor too, though the state's equality skips it: a re-cut can
         # clamp the view on its way, and a run that walks the fields home after
         # one has still moved the view - dissolving it would strand it there
         # with no step to take it back.
-        if (
+        return (
             self._after == self._before
             and self._after.byte_position == self._before.byte_position
-        ):
-            self.setObsolete(True)
-        return True
+        )
 
     def _recuts(self) -> bool:
         return self._before.effective_width != self._after.effective_width
@@ -712,17 +723,17 @@ class TilemapBindingState:
     seed has not been read yet.
     """
 
-    #: **Use as Font** rides along for one direction only: a cell format that
-    #: makes the entry a fontmap takes the tick off it, since a map cannot be the
-    #: font a map reads through (:attr:`~celpix.project.workspace.Entry.
-    #: is_font_sheet`). Carried here so an undo puts back the declaration the
-    #: switch cleared, in the same step that puts back the format.
     tile_source: TileSource | None = None
     preset_id: str | None = None
     size_pair: tuple[int, int] | None = None
     palette_mode: PaletteMode = PaletteMode.DEFAULT
     palette_preset_id: str = ""
     pending_palette: PaletteSource | None = None
+    #: **Use as Font** rides along for one direction only: a cell format that
+    #: makes the entry a fontmap takes the tick off it, since a map cannot be the
+    #: font a map reads through (:attr:`~celpix.project.workspace.Entry.
+    #: is_font_sheet`). Carried here so an undo puts back the declaration the
+    #: switch cleared, in the same step that puts back the format.
     use_as_font: bool = False
 
 

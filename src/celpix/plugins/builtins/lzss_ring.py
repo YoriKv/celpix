@@ -50,6 +50,7 @@ from celpix.plugins.builtins._lz import (
     FlagGroup,
     MatchFinder,
     copy_from,
+    corrupt,
     parse_greedy,
 )
 
@@ -70,13 +71,7 @@ def _ring_start(ring_size: int) -> int:
     return ring_size - MAX_MATCH
 
 
-# Compressor tuning: how many recent positions sharing a 3-byte prefix to test
-# (see :class:`~celpix.plugins.builtins._lz.MatchFinder`).
-_MAX_CANDIDATES = 96
-
-
-def _fail(reason: str) -> ValueError:
-    return ValueError(f"corrupt LZSS stream: {reason}")
+_fail = corrupt("LZSS")
 
 
 def decompress(
@@ -189,12 +184,7 @@ def compress_body(
     ring_start = _ring_start(ring_size)
     # The longest match wins outright here: a back-reference costs two bytes
     # whatever its distance, so there is nothing to trade off against length.
-    finder = MatchFinder(
-        data,
-        min_match=MIN_MATCH,
-        window=window or ring_size,
-        max_candidates=_MAX_CANDIDATES,
-    )
+    finder = MatchFinder(data, min_match=MIN_MATCH, window=window or ring_size)
 
     out = bytearray()
     # LSB first, and a set bit is the *literal* — both the opposite way round from

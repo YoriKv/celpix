@@ -4,16 +4,16 @@ A tilemap codec by protocol — bytes to a flat list of
 :class:`~celpix.core.tilemap.Cell` and back — but the cells are **subsprites**
 rather than grid positions, and the grid they would lay out in does not exist:
 a subsprite carries a signed pixel offset, and those offsets are not tile-aligned
-(:mod:`celpix.core.sprite`). So these engines have a second output the generic
+(:mod:`celpix.core.sprite`). So these formats have a second output the generic
 packed engine has no need for, :meth:`frames`, which is what the view actually
 draws. The cells stay the file's own records, in the file's own order, so a
 write puts back exactly what was read.
 
 Three records, all frames-of-subsprites, agreeing on nothing below that — which
-is why they are three engines rather than one with a field table. The object
+is why they are three formats rather than one engine with a field table. The object
 record (:class:`ObjectCodec`) wraps the console's own sprite attribute word; the
 transfer record (:class:`ObzCodec`) spreads the same information across single
-bytes, widens the character number to 12 bits and swaps X with Y
+bytes, widens the tile number to 12 bits and swaps X with Y
 (``docs/graphics-formats-reference/scgcad-formats.md`` §9); the sprite-pattern
 record (:class:`SprCodec`) comes from a different tool altogether, is 8 bytes
 rather than 6, and is the one whose frames are *counted* rather than slotted
@@ -42,6 +42,8 @@ is stated once, here, rather than split between a preset table and a resolver.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from celpix.core.context import (
     KEY_TILEMAP_ENDIAN,
     KEY_TILEMAP_FRAME_SIZES,
@@ -51,6 +53,7 @@ from celpix.core.context import (
 )
 from celpix.core.sprite import DEFAULT_SUBSPRITE_TILES, Frame, Subsprite
 from celpix.core.tilemap import Cell
+from celpix.plugins._params import byte_order
 from celpix.plugins.formats import FormatInfo
 
 OBJECT_FORMAT = "format.tilemap.scgcad-object"
@@ -79,7 +82,7 @@ _DRAWN = 0x80  # byte 0
 _LARGE = 0x01
 
 
-def _endian(default: str, ctx: PipelineContext) -> str:
+def _endian(default: str, ctx: PipelineContext) -> Literal["little", "big"]:
     """Which way round the attribute word is, the file's answer preferred.
 
     The container reads the build marker and publishes what it found; ``default``
@@ -87,10 +90,8 @@ def _endian(default: str, ctx: PipelineContext) -> str:
     degrade — it turns every tile number and palette row into a different one —
     so the file's own statement has to win.
     """
-    order = str(ctx.get(KEY_TILEMAP_ENDIAN) or default)
-    if order not in ("little", "big"):
-        raise ValueError(f"endian must be 'little' or 'big', got {order!r}")
-    return order
+    found = {"endian": ctx.get(KEY_TILEMAP_ENDIAN) or default}
+    return byte_order(found, "endian", default)
 
 
 def size_pair(raw: object) -> tuple[int, int]:
@@ -191,7 +192,7 @@ class _SubspriteCodec:
     def frames(self, cells: list[Cell], ctx: PipelineContext) -> list[Frame]:
         """The cells regrouped into frames of subsprites — what the view draws.
 
-        The extra half of these engines, and the reason they are not the generic
+        The extra half of these formats, and the reason they are not the generic
         packed one. Undrawn subsprites are dropped here rather than carried as
         invisible ones: they are the file's empty slots, all 94% of them, and
         nothing downstream would have anything to do with them.
@@ -302,8 +303,8 @@ class ObjectCodec(_SubspriteCodec):
 # The transfer record, read as one 48-bit big-endian number so that every bit the
 # tool does not use travels in `Cell.flags` without being enumerated:
 #
-#   byte 0    bit 7 drawn, bit 6 which of the two sizes, bits 0-3 character high
-#   byte 1    character low byte - the pair make a 12-bit number, not the
+#   byte 0    bit 7 drawn, bit 6 which of the two sizes, bits 0-3 tile number high
+#   byte 1    tile number low byte - the pair make a 12-bit number, not the
 #             object record's 9-bit one
 #   byte 2    X offset, signed   <- the object record has Y here
 #   byte 3    Y offset, signed
@@ -323,8 +324,8 @@ _OBZ_X = 24
 _OBZ_Y = 16
 # Every bit celPix gives a Cell field to. The complement is what rides in
 # `flags`: the drawn and size bits, both offsets, the group byte, and the
-# attribute byte's unused bit 0 — the character bit an on-console sprite word
-# keeps there, which this record has no use for because its character number is
+# attribute byte's unused bit 0 — the tile-number bit an on-console sprite word
+# keeps there, which this record has no use for because its tile number is
 # already 12 bits wide. Set in none of the corpus's 606,208 slots, and carried
 # rather than assumed anyway.
 _OBZ_MODELLED = (0xFFF << _OBZ_INDEX) | (0x7 << _OBZ_PALETTE) | (0xF << _OBZ_PRIORITY)
@@ -333,8 +334,8 @@ _OBZ_MODELLED = (0xFFF << _OBZ_INDEX) | (0x7 << _OBZ_PALETTE) | (0xF << _OBZ_PRI
 class ObzCodec(_SubspriteCodec):
     """The transfer container's subsprite record — the same idea, none of the bits.
 
-    A separate engine rather than a parameterised :class:`ObjectCodec` because
-    nothing survives the change: the character number is a different width in
+    A separate format rather than a parameterised :class:`ObjectCodec` because
+    nothing survives the change: the tile number is a different width in
     different bytes, the attributes are a loose byte rather than the console's
     word, and X and Y are the other way round. What the two do share is the
     frame grouping, which is in :class:`_SubspriteCodec`.
@@ -403,7 +404,7 @@ class ObzCodec(_SubspriteCodec):
 #
 #   byte 0-1  X offset, signed 16-bit
 #   byte 2-3  Y offset, signed 16-bit
-#   byte 4-5  character number, 16 bits wide and 12 bits used
+#   byte 4-5  tile number, 16 bits wide and 12 bits used
 #   byte 6    the console's attribute bits as a loose byte, `vhoopppN`
 #   byte 7    the size bit, stored already shifted up one
 #
@@ -421,7 +422,7 @@ _SPR_LARGE = 1  # the size byte is `size << 1`, so the bit is one up
 # Every bit celPix gives a Cell field to. The complement rides in `flags`: both
 # offsets, the size byte, and **the attribute byte's bit 0**, which is the one
 # that has to be carried rather than recomputed. The tool derives that bit from
-# the character number's bit 8, and its own files disagree with it — 1,054 of the
+# the tile number's bit 8, and its own files disagree with it — 1,054 of the
 # corpus's 7,078 records, nearly 40% of those written by the earliest build. A
 # reader that recomputes it corrupts every one of them
 # (``docs/graphics-formats-reference/ys-sprite-patterns.md`` §3).
@@ -440,7 +441,7 @@ class SprCodec(_SubspriteCodec):
     (:data:`~celpix.core.context.KEY_TILEMAP_FRAME_SIZES`).
 
     Its offsets are a signed **16 bits** where an object's are one byte, and its
-    character number 16 bits where an object's is nine — both wider than anything
+    tile number 16 bits where an object's is nine — both wider than anything
     the corpus puts in them, and both carried at their full width so a write puts
     back what was read.
     """
@@ -486,7 +487,7 @@ class SprCodec(_SubspriteCodec):
         return bytes(out)
 
     def index_limit(self) -> int | None:
-        """The character number's own width — two whole bytes of it."""
+        """The tile number's own width — two whole bytes of it."""
         return 0xFFFF
 
     def frames(self, cells: list[Cell], ctx: PipelineContext) -> list[Frame]:

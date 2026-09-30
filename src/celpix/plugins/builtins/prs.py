@@ -41,7 +41,15 @@ from __future__ import annotations
 
 from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
-from celpix.plugins.builtins._lz import BitGroup, MatchFinder, copy_back
+from celpix.plugins.builtins._lz import (
+    BitGroup,
+    ByteSource,
+    GroupReader,
+    MatchFinder,
+    Truncated,
+    copy_back,
+    corrupt,
+)
 
 SHORT_MAX_DISTANCE = 256
 SHORT_MAX_LENGTH = 5
@@ -58,43 +66,8 @@ _BITS_SHORT = 2 + 2 + 8
 _BITS_LONG = 2 + 16
 _BITS_LONG_EXTENDED = 2 + 16 + 8
 
-# Compressor tuning, as in the other LZ built-ins
-# (:class:`~celpix.plugins.builtins._lz.MatchFinder`).
-_MAX_CANDIDATES = 96
 
-
-def _fail(reason: str) -> ValueError:
-    return ValueError(f"corrupt PRS stream: {reason}")
-
-
-class _Truncated(ValueError):
-    """The buffer ended mid-op — recoverable under a partial decode, unlike a
-    stream whose own structure is wrong."""
-
-
-class _BitReader:
-    """The interleaved control-bit reader: one control byte per eight selectors."""
-
-    def __init__(self, data: bytes) -> None:
-        self.data = data
-        self.pos = 0
-        self.control = 0
-        self.mask = 0  # 0 means "no bits left" - the next read fetches a byte
-
-    def byte(self) -> int:
-        if self.pos >= len(self.data):
-            raise _Truncated("corrupt PRS stream: source ended mid-op")
-        value = self.data[self.pos]
-        self.pos += 1
-        return value
-
-    def bit(self) -> int:
-        if self.mask == 0:
-            self.control = self.byte()
-            self.mask = 1
-        value = 1 if self.control & self.mask else 0
-        self.mask = (self.mask << 1) & 0xFF
-        return value
+_fail = corrupt("PRS")
 
 
 def _copy(out: bytearray, distance: int, length: int, what: str) -> None:
@@ -118,7 +91,10 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
     yields everything decoded up to the last whole op instead of raising — what a
     bounded view window needs.
     """
-    reader = _BitReader(data)
+    # One control byte per eight selectors, read LSB first and fetched only when
+    # the last is spent, interleaved with the operand bytes.
+    src = ByteSource(data)
+    control = GroupReader(src, msb_first=False)
     out = bytearray()
     # Rewind point: the end of the last op that completed, so a truncated buffer
     # reports whole ops rather than half a copy.
@@ -126,23 +102,23 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
 
     try:
         while True:
-            if reader.bit():
-                out.append(reader.byte())
-            elif reader.bit():  # long copy
-                word = reader.byte() | (reader.byte() << 8)
+            if control.bit():
+                out.append(src.byte())
+            elif control.bit():  # long copy
+                word = src.byte() | (src.byte() << 8)
                 if word == 0:
-                    return bytes(out), reader.pos, True
+                    return bytes(out), src.pos, True
                 distance = 8192 - (word >> 3)
                 n = word & 7
-                length = reader.byte() + 1 if n == 0 else n + 2
+                length = src.byte() + 1 if n == 0 else n + 2
                 _copy(out, distance, length, "long")
             else:  # short copy
-                length = ((reader.bit() << 1) | reader.bit()) + 2
-                _copy(out, SHORT_MAX_DISTANCE - reader.byte(), length, "short")
-            safe_len, safe_pos = len(out), reader.pos
-    except _Truncated:
+                length = ((control.bit() << 1) | control.bit()) + 2
+                _copy(out, SHORT_MAX_DISTANCE - src.byte(), length, "short")
+            safe_len, safe_pos = len(out), src.pos
+    except Truncated:
         if not partial:
-            raise
+            raise _fail("source ended mid-op") from None
     return bytes(out[:safe_len]), safe_pos, False
 
 
@@ -164,12 +140,7 @@ def compress(data: bytes) -> bytes:
     # Scored rather than longest-wins, so this walks the chain itself: PRS has two
     # back-reference ops of different cost, and a nearer short match written as the
     # cheap one can beat a distant long one.
-    finder = MatchFinder(
-        data,
-        min_match=MIN_MATCH,
-        window=LONG_MAX_DISTANCE,
-        max_candidates=_MAX_CANDIDATES,
-    )
+    finder = MatchFinder(data, min_match=MIN_MATCH, window=LONG_MAX_DISTANCE)
 
     def best_match(pos: int) -> tuple[int, int, int]:
         """The most profitable match at ``pos``, as ``(benefit, length, distance)``.

@@ -10,7 +10,7 @@
 # reverse_bytes is the byte order *along a row*, not endianness within a value
 # (that is byte_order, which the packed codec does not use).
 # See docs/graphics-formats-reference/implementation-guide.md §2 (packed / linear)
-# and docs/graphics-formats-reference/tile-layer-pro-formats.md §1.
+# and the graphics-formats reference's "The format catalog" section.
 id = "preset.pixel.ngp-2bpp-swapped"
 name = "Neo Geo Pocket 2bpp (8x8)"
 engine_id = "codec.pixel.packed"

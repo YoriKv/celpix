@@ -23,7 +23,7 @@ from celpix.core.context import (
 )
 from celpix.core.errors import Stage
 from celpix.pipeline import pipeline
-from celpix.plugins.base import STAGE_DEFAULT_PRESET
+from celpix.plugins.base import STAGE_DEFAULT_PRESET, self_delimiting
 from celpix.plugins.builtins import (
     aplib,
     bluesky_lz,
@@ -2326,6 +2326,19 @@ _LZW_GIF2 = lzw.Params(
 )
 _LZW_TIFF = lzw.Params(clear_code=256, end_code=257, early_change=True)
 _LZW_FIXED = lzw.Params(initial_bits=12, max_bits=12, end_code=0xFFF)
+
+
+def test_lzw_ends_where_its_bytes_say_only_with_an_end_code_bound() -> None:
+    """LZW's end marker is an input, so whether the scheme delimits itself is a
+    per-entry answer: the host asks through ``self_delimiting`` and the static
+    info flag is only what it says for unbound inputs. Without an end code the
+    scan gate and the "end of view window" badge must treat it like PackBits."""
+    plugin = lzw.LzwCompression()
+    assert self_delimiting(plugin, None) is False
+    assert self_delimiting(plugin, {}) is False
+    assert self_delimiting(plugin, {lzw.INPUT_END_CODE: 257}) is True
+    # A scheme without the hook answers from its info, as before.
+    assert self_delimiting(packbits.PackBitsCompression(), {}) is False
 
 
 def test_lzw_known_vectors_both_bit_orders() -> None:

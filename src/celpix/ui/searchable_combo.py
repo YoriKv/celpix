@@ -66,6 +66,29 @@ MAX_VISIBLE_ROWS = 16
 SEARCH_THRESHOLD = 8
 
 
+def search_needles(text: str) -> list[str]:
+    """What typed search ``text`` looks for: its words, case-folded.
+
+    The read half of :func:`matches_search`, one place for both searches in the
+    app to turn a typed line into the words they then look for.
+    """
+    return text.lower().split()
+
+
+def _style_heading(item: QStandardItem) -> None:
+    """Make ``item`` a category heading: bold, and not a choice.
+
+    Disabled, so it cannot be clicked or arrowed onto (nor stopped on by Qt's
+    own wheel stepping), and the style greys it — which is the whole of the
+    visual distinction a heading needs. The one styling for the closed combo's
+    list and the search popup's, so the two lists show one heading the same way.
+    """
+    font = item.font()
+    font.setBold(True)
+    item.setFont(font)
+    item.setFlags(Qt.ItemFlag.NoItemFlags)
+
+
 def matches_search(text: str, needles: Sequence[str]) -> bool:
     """Whether ``text`` contains every word of the search, in any order.
 
@@ -128,10 +151,7 @@ class SearchableComboBox(CompactComboBox):
         row = self.count() - 1
         item = self._model_item(row)
         if item is not None:
-            font = item.font()
-            font.setBold(True)
-            item.setFont(font)
-            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            _style_heading(item)
         if self.currentIndex() == row:
             self.setCurrentIndex(-1)
         self._has_headings = True
@@ -268,7 +288,7 @@ class SearchableComboBox(CompactComboBox):
         view, model = self._list, self._popup_model
         if view is None or model is None:
             return
-        needles = text.lower().split()
+        needles = search_needles(text)
         model.clear()
         pending = -1
         for row in range(self.count()):
@@ -289,12 +309,7 @@ class SearchableComboBox(CompactComboBox):
     @staticmethod
     def _popup_heading(title: str) -> QStandardItem:
         item = QStandardItem(title)
-        font = item.font()
-        font.setBold(True)
-        item.setFont(font)
-        # Disabled, so it cannot be clicked or arrowed onto, and the style greys
-        # it — which is the whole of the visual distinction a heading needs.
-        item.setFlags(Qt.ItemFlag.NoItemFlags)
+        _style_heading(item)
         return item
 
     def _popup_row_for(self, source_row: int) -> int:

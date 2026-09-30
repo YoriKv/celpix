@@ -86,7 +86,7 @@ from celpix.core.context import (
 from celpix.core.errors import Stage
 from celpix.core.notices import warn
 from celpix.plugins.base import InputKind, InputSpec, PluginInfo
-from celpix.plugins.builtins._lz import MatchFinder, copy_back
+from celpix.plugins.builtins._lz import MatchFinder, copy_back, corrupt
 
 WORD = 2
 
@@ -103,8 +103,7 @@ INPUT_PACK_PREVIOUS = "pack_previous"
 OP_LITERAL, OP_SHORT, OP_LONG, OP_SOURCE = range(4)
 
 
-def _fail(reason: str) -> ValueError:
-    return ValueError(f"corrupt LZ4W stream: {reason}")
+_fail = corrupt("LZ4W")
 
 
 class _Truncated(Exception):

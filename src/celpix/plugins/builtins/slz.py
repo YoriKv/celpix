@@ -69,6 +69,7 @@ from celpix.plugins.builtins._lz import (
     FlagGroup,
     MatchFinder,
     copy_from,
+    corrupt,
     parse_greedy,
 )
 
@@ -85,13 +86,8 @@ MAX_MATCH = 18  # 4-bit length field, biased by MIN_MATCH
 MIN_DISTANCE = 3
 MAX_DISTANCE = 0xFFF + MIN_DISTANCE
 
-# Compressor tuning: how many recent positions sharing a 3-byte prefix to test
-# (see :class:`~celpix.plugins.builtins._lz.MatchFinder`).
-_MAX_CANDIDATES = 96
 
-
-def _fail(reason: str) -> ValueError:
-    return ValueError(f"corrupt SLZ stream: {reason}")
+_fail = corrupt("SLZ")
 
 
 def _max_size(size_bytes: int) -> int:
@@ -178,9 +174,7 @@ def compress(data: bytes, *, size_bytes: int) -> bytes:
     if n == 0:
         return bytes(out)
 
-    finder = MatchFinder(
-        data, min_match=MIN_MATCH, window=MAX_DISTANCE, max_candidates=_MAX_CANDIDATES
-    )
+    finder = MatchFinder(data, min_match=MIN_MATCH, window=MAX_DISTANCE)
     tokens = FlagGroup(out, msb_first=True, set_means_match=True)
     for pos, length, candidate in parse_greedy(
         data,

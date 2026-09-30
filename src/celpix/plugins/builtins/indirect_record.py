@@ -71,7 +71,7 @@ the file), and ``column_major`` where the file runs down each column.
 
 **A map read here can also be a table another map draws through** — the middle
 of a chain, a table of 32x32 records whose bytes name metatile records, and
-whose own records are what a town map stamps. What it offers that map above is
+whose own records a town map draws as its stamps. What it offers that map above is
 not this engine's business either: ``stamp_stride`` (and ``offered_stamp_cells``
 where the offer is not ``stamp_cells``) ride on the preset and the host reads
 them for every engine alike (:mod:`celpix.pipeline.table_layout`).
@@ -104,7 +104,7 @@ from celpix.core.tilemap import (  # noqa: F401
     corner_at,
     record_geometry,
 )
-from celpix.plugins._params import flag
+from celpix.plugins._params import flag, int_list, integer
 from celpix.plugins.base import PluginInfo
 
 MAX_RECORD = 0xFF
@@ -112,10 +112,10 @@ MAX_RECORD = 0xFF
 
 def _groups(params: dict[str, Any]) -> tuple[int, list[int]]:
     """``(record bits, group starts)``, or ``(8, [0])`` for an ungrouped byte."""
-    bits = int(params.get("group_bits", 0))
+    bits = integer(params, "group_bits", 0)
     if not bits:
         return 8, [0]
-    starts = [int(start) for start in params.get("group_starts", ())]
+    starts = list(int_list(params, "group_starts"))
     if not 0 < bits < 8 or len(starts) != 1 << bits or starts != sorted(starts):
         raise ValueError(
             f"group_bits = {bits} needs {1 << bits} ascending group_starts, "
@@ -128,8 +128,7 @@ def _groups(params: dict[str, Any]) -> tuple[int, list[int]]:
 # **already read**, and the public one that reads them. Every walk here is per
 # cell — a decode of a screen, an encode of one, a settle on every edit — so the
 # parsing is hoisted out of the loop and the loop calls the inner form. The
-# outer form is what a caller with only ``params`` in hand wants, and is the one
-# project plugins and the tests reach for.
+# outer form is for a caller with only ``params`` in hand.
 def _record_at(byte: int, low: int, starts: Sequence[int]) -> tuple[int, int]:
     """``(record, group)`` a stored byte names."""
     group = byte >> low
@@ -391,15 +390,6 @@ class IndirectRecordCodec:
         as *true* and would lay a view-wide row over the table's own.
         """
         return flag(params, "group_rows")
-
-    def palette_row_granularity(self, params: dict[str, Any]) -> tuple[int, int]:
-        return (1, 1)
-
-    def has_line_flag(self, params: dict[str, Any]) -> bool:
-        return False
-
-    def has_visibility(self, params: dict[str, Any]) -> bool:
-        return False
 
     def cell_fields(self, params: dict[str, Any]) -> dict[str, int]:
         return {"index": self.index_limit(params)}

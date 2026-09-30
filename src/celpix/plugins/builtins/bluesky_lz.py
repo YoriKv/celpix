@@ -55,7 +55,7 @@ from __future__ import annotations
 from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
 
-from ._lz import FlagGroup, MatchFinder, copy_from
+from ._lz import FlagGroup, MatchFinder, copy_from, corrupt
 
 SIZE_BYTES = 2
 MAX_SIZE = 0x10000  # the size field stores size - 1
@@ -69,8 +69,7 @@ LITERAL_BITS = 1 + 8
 OP_BITS = 1 + 16
 
 
-def _fail(reason: str) -> ValueError:
-    return ValueError(f"corrupt BlueSky LZ stream: {reason}")
+_fail = corrupt("BlueSky LZ")
 
 
 def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]:

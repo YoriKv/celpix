@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from celpix.core import draw
-from celpix.ui.glyphs import Glyph
+from celpix.ui.icons import Icon
 
 
 class EditMode(Enum):
@@ -85,7 +85,7 @@ class ToolSpec:
     key: str  # the bare number key that selects it (1..9)
     gesture: Gesture
     rasterize: Rasterize | None = None
-    icon: Glyph | None = None
+    icon: Icon | None = None
     shape: str | None = None
 
 
@@ -111,7 +111,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         "2",
         Gesture.FREEHAND,
         draw.line,
-        icon=Glyph.PENCIL,
+        icon=Icon.PENCIL,
     ),
     ToolSpec(
         Tool.EYEDROPPER,
@@ -119,7 +119,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         "Pick a color; right-click does this with any tool",
         "3",
         Gesture.SAMPLE,
-        icon=Glyph.EYE_DROPPER,
+        icon=Icon.EYE_DROPPER,
     ),
     ToolSpec(
         Tool.FILL,
@@ -127,7 +127,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         "Flood-fill the area under the cursor",
         "4",
         Gesture.FILL,
-        icon=Glyph.PAINT_BUCKET,
+        icon=Icon.PAINT_BUCKET,
     ),
     ToolSpec(
         Tool.LINE,
@@ -193,15 +193,15 @@ class TransformSpec:
     field: str
     key: str  # the bare letter; Shift picks the Block group, not another letter
     label: str
-    icon: Glyph
+    icon: Icon
 
 
 # The transform bar's left-to-right button order *and* its keys, kept here rather
 # than beside the toolbar so the shortcut guide can list them without importing
 # the window. Shift is the Tile/Block axis, so four letters cover eight buttons.
 TRANSFORM_SPECS: tuple[TransformSpec, ...] = (
-    TransformSpec("flip_h", "H", "Flip horizontal", Glyph.FLIP_HORIZONTAL),
-    TransformSpec("flip_v", "V", "Flip vertical", Glyph.FLIP_VERTICAL),
-    TransformSpec("rotate_cw", "C", "Rotate 90° right", Glyph.ROTATE_RIGHT),
-    TransformSpec("rotate_ccw", "X", "Rotate 90° left", Glyph.ROTATE_LEFT),
+    TransformSpec("flip_h", "H", "Flip horizontal", Icon.FLIP_HORIZONTAL),
+    TransformSpec("flip_v", "V", "Flip vertical", Icon.FLIP_VERTICAL),
+    TransformSpec("rotate_cw", "C", "Rotate 90° right", Icon.ROTATE_RIGHT),
+    TransformSpec("rotate_ccw", "X", "Rotate 90° left", Icon.ROTATE_LEFT),
 )

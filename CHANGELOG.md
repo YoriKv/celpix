@@ -2,7 +2,7 @@
 
 ## v1.2.3 - unreleased
 
-- Lots of fixes
+- Big code review and re-org, lots of small fixes
 
 ## v1.2.2 - 2026-09-30
 

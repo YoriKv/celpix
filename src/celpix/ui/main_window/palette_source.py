@@ -568,7 +568,7 @@ class PaletteSourceMixin:
 
         The same signature match a graphics file gets when it is opened, over the
         containers that frame a palette rather than the ones that frame graphics
-        (:func:`~celpix.plugins.detect.frames`) — so a ``.pal`` still lands on
+        (:func:`~celpix.plugins.detect.frames_kind`) — so a ``.pal`` still lands on
         plain bytes and an authoring tool's palette lands on the format that
         knows where its colors stop. Correctable afterwards, like any detection.
         """

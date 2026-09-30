@@ -12,8 +12,8 @@ from PySide6.QtCore import QSize
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
-from celpix.ui.glyphs import Glyph
-from celpix.ui.icon_font import glyph_mask, glyph_pixmap, icon_font_family
+from celpix.ui.icon_font import icon_font_family, icon_mask, icon_pixmap
+from celpix.ui.icons import Icon
 from celpix.ui.theme import Theme, apply_theme, palette_for
 
 # The two boxes the app actually asks for: the file list's row marker and the
@@ -37,7 +37,7 @@ def test_every_glyph_is_a_single_codepoint(qapp) -> None:
     # (a doubled backslash, say) is a *string* the icon font will happily draw as
     # text - which looks like ink to any test that only counts pixels, and like a
     # smudge to the user. One character is the whole invariant.
-    for glyph in Glyph:
+    for glyph in Icon:
         assert len(glyph.value) == 1, f"{glyph.name} is {glyph.value!r}, not one char"
 
 
@@ -47,9 +47,9 @@ def test_the_icon_font_loads_and_every_glyph_draws(qapp) -> None:
     # the Solid face — and either way the symptom is a blank icon rather than a
     # crash, which nothing else in the suite would notice.
     assert icon_font_family() is not None
-    for glyph in Glyph:
+    for glyph in Icon:
         for box in _BOXES:
-            mask = glyph_mask(glyph, box)
+            mask = icon_mask(glyph, box)
             assert mask.size() == box
             assert _ink(mask) > 0, f"{glyph.name} drew nothing at {box.width()}px"
 
@@ -62,8 +62,8 @@ def test_every_glyph_is_centred_in_its_box(qapp) -> None:
     # noticed, because the icon was the right size and full of ink; it was just
     # in the wrong place. So: measure the actual pixels, both axes, every box.
     for box in (*_BOXES, QSize(26, 32)):
-        for glyph in Glyph:
-            image = glyph_mask(glyph, box).toImage()
+        for glyph in Icon:
+            image = icon_mask(glyph, box).toImage()
             rows = [
                 y
                 for y in range(image.height())
@@ -93,7 +93,7 @@ def test_a_glyph_is_stamped_in_the_asked_for_color_at_device_scale(qapp) -> None
     # than by the widget drawing it: a 2x display gets twice the pixels, and the
     # pixmap still measures the logical box.
     box = QSize(20, 20)
-    pixmap = glyph_pixmap(Glyph.PENCIL, QColor(0xFF, 0x00, 0x00), box, 2.0)
+    pixmap = icon_pixmap(Icon.PENCIL, QColor(0xFF, 0x00, 0x00), box, 2.0)
     assert pixmap.size() == QSize(40, 40)
     assert pixmap.devicePixelRatio() == 2.0
     image = pixmap.toImage()

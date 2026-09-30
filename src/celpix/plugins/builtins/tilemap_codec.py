@@ -89,7 +89,7 @@ always round-tripped.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import replace
 from typing import Any
 
@@ -101,306 +101,31 @@ from celpix.core.context import (
 )
 from celpix.core.errors import Stage
 from celpix.core.tilemap import Cell, CellOp
-from celpix.plugins._params import byte_order
+from celpix.plugins._params import byte_order, int_list, integer
 from celpix.plugins.base import InputKind, InputSpec, PluginInfo
-from celpix.plugins.builtins._fields import (
-    Field,
-    bit_width,
-    parse_layout,
-    resolve_legend,
+from celpix.plugins.builtins._cell_answers import mirror
+from celpix.plugins.builtins._cell_layout import (
+    _BOOL_ATTRS,
+    _CELL_ATTR,
+    _CELL_FIELDS,
+    SIDE_FIELDS,
+    SIDE_INPUT,
+    _by_index,
+    _cell_bytes,
+    _field,
+    _get,
+    _layout,
+    _lead_scheme,
+    _placements,
+    _side_cells,
+    _side_masks,
+    _side_only,
+    _side_words,
 )
-from celpix.plugins.builtins._lead_codes import (
-    LeadScheme,
-    lead_scheme,
-    wants_lead_scheme,
-)
+from celpix.plugins.builtins._fields import limit
 from celpix.plugins.builtins._mask import gather, scatter
 
 TILEMAP_ENGINE = "codec.tilemap.packed"
-
-# Where each Cell attribute is read from and written to. Named once so decode
-# and encode cannot drift apart, and so an unknown key in a preset is inert
-# rather than half-applied.
-# ``drawn`` is set where the position IS drawn, which is how the one format that
-# has it stores the bit; a preset placing no ``drawn`` describes a format whose
-# every position is drawn, and every other format in hand is that.
-_FIELDS = (
-    "index",
-    "palette",
-    "priority",
-    "flip_h",
-    "flip_v",
-    "drawn",
-    "terminator",
-    "flags",
-)
-
-# The transforms this engine can express, and the bit each one lives in. The op's
-# own name *is* the preset field, which is what lets "does this format support
-# it" be answered by looking the field up rather than by a second table that
-# could disagree with the first.
-_MIRRORS = {
-    CellOp.FLIP_H: Cell.flipped_h,
-    CellOp.FLIP_V: Cell.flipped_v,
-}
-
-
-# One field's placement in the word — the chunk masks and (shift, width) pairs
-# ``_mask.gather`` / ``_mask.scatter`` take (:mod:`~celpix.plugins.builtins._fields`).
-_Field = Field
-
-# Which letter of a cell layout names which field. Overridable per preset, so a
-# layout can keep the mnemonics of the note it was copied from.
-_LEGEND = {
-    "i": "index",
-    "p": "palette",
-    "o": "priority",
-    "h": "flip_h",
-    "v": "flip_v",
-    "d": "drawn",
-    "e": "terminator",
-    "f": "flags",
-}
-
-# What each field is called on a Cell. The engine's field names follow the
-# formats' own notes (``drawn``, ``terminator``); the host's vocabulary is the
-# Cell's (``visible``, ``ends_line``), and ``cell_fields`` answers in the
-# host's so no caller ever learns this module's spelling. Beside _FIELDS so the
-# two lists cannot drift apart — a name in one and not the other is a bug here.
-_CELL_ATTR = {
-    "index": "index",
-    "palette": "palette_row",
-    "priority": "priority",
-    "flip_h": "flip_h",
-    "flip_v": "flip_v",
-    "drawn": "visible",
-    "terminator": "ends_line",
-    "flags": "flags",
-}
-
-
-def _layout_text(params: dict[str, Any]) -> str:
-    """The preset's ``fields`` layout, which the engine requires."""
-    text = params.get("fields")
-    if not isinstance(text, str):
-        unread = sorted(name for name in _FIELDS if name in params)
-        note = f" ({', '.join(unread)}: not read)" if unread else ""
-        raise ValueError(
-            "the preset does not say where the cell's fields sit - give "
-            f"`fields`, one letter per bit, most significant first{note}"
-        )
-    return text
-
-
-def _placements(params: dict[str, Any]) -> dict[str, _Field]:
-    """Everything the preset's ``fields`` layout places — and ``side_fields``.
-
-    A side word sits **above** the cell's own, so the two layouts read as one
-    diagram, side first: a field split across both joins most significant first,
-    exactly as a field split within one word does. That is what lets a side byte
-    carry the high bits of an index (a Game Boy Color attribute map's bank bit)
-    as naturally as a whole palette row.
-    """
-    legend = resolve_legend(_LEGEND, params.get("legend"), frozenset(_FIELDS))
-    bits = _cell_bytes(params) * 8
-    side = _side_text(params)
-    if side is None:
-        return parse_layout(_layout_text(params), legend, bits)
-    return parse_layout(
-        f"{side} {_layout_text(params)}", legend, bits + _side_bytes(params) * 8
-    )
-
-
-# -- the side array ----------------------------------------------------------
-#
-# Bits of a cell stored **outside** the cell: a metatile table whose four tile
-# numbers are one array and whose palette rows are a fifth (Final Fantasy II,
-# Famicom), or a map kept as a tile array plus a parallel attribute array. The
-# preset says where those bits sit in one side word (`side_fields`) and how many
-# cells one word covers (`side_cells`); the bytes are the entry's `side_array`
-# input, bound to wherever the game keeps them. An input is never written back,
-# so the side bits are the array's: `settle_cells` re-derives them after every
-# edit, and `encode` refuses a list that disagrees rather than dropping the
-# difference.
-#
-# Which word a cell reads is `side_key`. By **position** (the default) word *k*
-# covers cells `k * side_cells` onward, in cell order. By **index** it is the
-# word the cell's own index selects, `index // side_cells`: a per-tile or
-# per-metatile attribute table, where the colour belongs to the *graphic* and
-# follows it wherever the map puts it (Final Fantasy VI's field BG3, whose
-# palette row is bits 2-4 of a 64-byte table indexed by metatile number). The
-# index there is the field as stored — an ordinal preset's metatile number, not
-# a tile — and can have no bits in the side word, since it is what picks it.
-
-#: The preset parameter that turns the side array on, and names its bit layout.
-SIDE_FIELDS = "side_fields"
-#: The input key the side array is bound under — stored in project files.
-SIDE_INPUT = "side_array"
-
-_BOOL_ATTRS = frozenset({"flip_h", "flip_v", "visible", "ends_line"})
-
-
-def _side_text(params: dict[str, Any]) -> str | None:
-    """The preset's ``side_fields`` layout, or None where it has no side array."""
-    text = params.get(SIDE_FIELDS)
-    if text is None:
-        return None
-    if not isinstance(text, str):
-        raise ValueError(f"side_fields must be a bit layout like fields, got {text!r}")
-    return text
-
-
-def _side_bytes(params: dict[str, Any]) -> int:
-    """How wide one side word is, in bytes; 0 with no side array."""
-    text = _side_text(params)
-    if text is None:
-        return 0
-    width = bit_width(text)
-    if width == 0 or width % 8:
-        raise ValueError(
-            f"a side word has to be a whole number of bytes, and side_fields "
-            f"describes {width} bits"
-        )
-    return width // 8
-
-
-def _side_cells(params: dict[str, Any]) -> int:
-    """How many consecutive cells one side word covers."""
-    value = params.get("side_cells", 1)
-    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-        raise ValueError(f"side_cells must be a positive integer, got {value!r}")
-    return value
-
-
-#: ``side_key``'s two words: which side word a cell reads (the comment above).
-_SIDE_KEYS = ("position", "index")
-
-
-def _by_index(params: dict[str, Any]) -> bool:
-    """Whether the side word is picked by the cell's index (``side_key``).
-
-    Checked wherever the side array is read, so a preset that cannot work
-    refuses its load rather than drawing something: an index with bits in the
-    side word would have to be known to find the word that completes it.
-    """
-    key = params.get("side_key", "position")
-    if key not in _SIDE_KEYS:
-        raise ValueError(f'side_key must be "position" or "index", got {key!r}')
-    if key != "index":
-        return False
-    if "index" in _side_masks(params):
-        raise ValueError(
-            'side_key = "index" picks the side word by the cell\'s index, so '
-            "side_fields cannot place bits of the index itself"
-        )
-    return True
-
-
-def _side_words(
-    params: dict[str, Any], inputs: Mapping[str, Any] | None
-) -> tuple[int, ...]:
-    """The bound side array as words, in order; empty where nothing is bound.
-
-    A cell past the array's end reads its side bits as zero — the same answer an
-    unbound array gives — and a trailing partial word is dropped like a partial
-    cell.
-    """
-    data = (inputs or {}).get(SIDE_INPUT)
-    size = _side_bytes(params)
-    if not isinstance(data, bytes | bytearray) or not size:
-        return ()
-    order = byte_order(params, "endian", "little")
-    return tuple(
-        int.from_bytes(data[at : at + size], order)
-        for at in range(0, len(data) - size + 1, size)
-    )
-
-
-def _side_masks(params: dict[str, Any]) -> dict[str, int]:
-    """Per field with bits in the side word: which bits of its value those are.
-
-    A palette row stored whole in a side byte masks all of its bits; an index
-    whose top bit is a bank flag in the side byte masks that one bit.
-    """
-    side = _side_bytes(params) * 8
-    if not side:
-        return {}
-    everything = ((1 << side) - 1) << (_cell_bytes(params) * 8)
-    return {
-        name: mask
-        for name, field in _placements(params).items()
-        if (mask := gather(everything, *field))
-    }
-
-
-def _side_only(params: dict[str, Any]) -> frozenset[str]:
-    """The fields stored **entirely** in the side array, so nothing to edit."""
-    placed = _placements(params)
-    return frozenset(
-        name
-        for name, mask in _side_masks(params).items()
-        if mask == _limit(placed[name])
-    )
-
-
-def _field(params: dict[str, Any], name: str) -> _Field | None:
-    """Field ``name``'s chunks, or None when the format lacks it."""
-    return _placements(params).get(name)
-
-
-def _limit(field: _Field | None) -> int | None:
-    """The highest value a field can hold — all its chunks' bits set."""
-    if field is None:
-        return None
-    return (1 << sum(width for _, width in field[1])) - 1
-
-
-def _layout(params: dict[str, Any]) -> dict[str, _Field | None]:
-    return {name: _field(params, name) for name in _FIELDS}
-
-
-def _cell_bytes(params: dict[str, Any]) -> int:
-    """How wide one cell is — the layout's own answer where it has one.
-
-    ``bytes`` stays accepted so a preset can state the width plainly, but the
-    layout is what decides it: a cell whose two statements disagree is a preset
-    to fix rather than one to guess at.
-    """
-    stated = None if params.get("bytes") is None else int(params["bytes"])
-    width = bit_width(_layout_text(params))
-    if width % 8:
-        raise ValueError(
-            f"a cell has to be a whole number of bytes, and the layout "
-            f"describes {width} bits"
-        )
-    size = width // 8
-    if stated is not None and stated != size:
-        raise ValueError(
-            f"the layout describes a {size}-byte cell and bytes says {stated}"
-        )
-    if size < 1:
-        raise ValueError(f"cell size must be at least one byte, got {size}")
-    return size
-
-
-def _lead_scheme(params: dict[str, Any]) -> LeadScheme | None:
-    """The preset's mixed-width text reading, or None on the fixed-width path.
-
-    The gate is a handful of key lookups, so a preset without the parameters —
-    every map there is — pays nothing else on the per-edit encode.
-    """
-    if not wants_lead_scheme(params):
-        return None
-    return lead_scheme(
-        params,
-        _cell_bytes(params),
-        {
-            name: limit
-            for name, field in _placements(params).items()
-            if (limit := _limit(field)) is not None
-        },
-        _side_text(params) is not None,
-    )
 
 
 def _publish_pages(cells: int, params: dict[str, Any], ctx: PipelineContext) -> None:
@@ -423,39 +148,19 @@ def _publish_pages(cells: int, params: dict[str, Any], ctx: PipelineContext) -> 
     The container wins where it spoke, and by construction rather than by
     precedence — a header is the better authority, and it has already run.
     """
-    columns = int(params.get("page_columns", 0) or 0)
-    rows = int(params.get("page_rows", 0) or 0)
-    counts = params.get("page_counts") or ()
+    columns = integer(params, "page_columns", 0)
+    rows = integer(params, "page_rows", 0)
+    counts = int_list(params, "page_counts")
     if columns <= 0 or rows <= 0 or ctx.get(KEY_TILEMAP_PAGE_ROWS):
         return
     per_page = columns * rows
-    if cells % per_page or cells // per_page not in {int(n) for n in counts}:
+    if cells % per_page or cells // per_page not in counts:
         return
     # Both halves or neither: a page with no stated width has no shape, and
     # ``Document.page_size`` reads the width off the map width above.
     if not ctx.get(KEY_TILEMAP_COLUMNS):
         ctx.set(KEY_TILEMAP_COLUMNS, columns)
     ctx.set(KEY_TILEMAP_PAGE_ROWS, rows)
-
-
-def _get(word: int, field: _Field | None) -> int:
-    return gather(word, *field) if field else 0
-
-
-# Every field a cell can state, with what reads it off one — the writer's half of
-# :meth:`TilemapCodec.decode`, in the order the word is assembled. A table rather
-# than eight lines of code so the encode loop can be built from the fields a
-# format declares instead of asking after all of them per cell.
-_CELL_FIELDS: tuple[tuple[str, Callable[[Cell], int]], ...] = (
-    ("index", lambda cell: cell.index),
-    ("palette", lambda cell: cell.palette_row),
-    ("priority", lambda cell: cell.priority),
-    ("flip_h", lambda cell: int(cell.flip_h)),
-    ("flip_v", lambda cell: int(cell.flip_v)),
-    ("drawn", lambda cell: int(cell.visible)),
-    ("terminator", lambda cell: int(cell.ends_line)),
-    ("flags", lambda cell: cell.flags),
-)
 
 
 class TilemapCodec:
@@ -614,7 +319,7 @@ class TilemapCodec:
         # too wide for it is — so the word picked here is the one a save and a
         # reload pick.
         keyed = _by_index(params)
-        index_mask = _limit(fields.get("index")) or 0
+        index_mask = limit(fields.get("index")) or 0
         wanted: dict[int, dict[str, int]] = {}
         out: list[Cell] | None = None
         for at, cell in enumerate(cells):
@@ -670,7 +375,7 @@ class TilemapCodec:
         """
         if (lead := _lead_scheme(params)) is not None:
             return lead.top
-        return _limit(_field(params, "index"))
+        return limit(_field(params, "index"))
 
     def palette_row_limit(self, params: dict[str, Any]) -> int | None:
         """How high a cell's palette row can go — the ``palette`` field's width.
@@ -682,7 +387,7 @@ class TilemapCodec:
         """
         if "palette" in _side_only(params):
             return None
-        return _limit(_field(params, "palette"))
+        return limit(_field(params, "palette"))
 
     def has_line_flag(self, params: dict[str, Any]) -> bool:
         """Whether the format ends a line on a **bit** rather than on a code.
@@ -727,7 +432,7 @@ class TilemapCodec:
         The whole-table answer the per-field probes each give a row of, off the
         same table for the same reason — a preset cannot disagree with itself.
         Keys are :class:`Cell` attribute names via :data:`_CELL_ATTR`; values
-        are each field's :func:`_limit`.
+        are each field's :func:`~celpix.plugins.builtins._fields.limit`.
 
         Lead codes answer with the index alone, up to the last two-byte letter.
         A ``line_bytes`` record's line end is where the record fills rather than
@@ -737,9 +442,9 @@ class TilemapCodec:
             return {"index": lead.top}
         side_only = _side_only(params)
         return {
-            _CELL_ATTR[name]: limit
+            _CELL_ATTR[name]: top
             for name, field in _layout(params).items()
-            if (limit := _limit(field)) is not None and name not in side_only
+            if (top := limit(field)) is not None and name not in side_only
         }
 
     def transform_cell(
@@ -756,9 +461,6 @@ class TilemapCodec:
         Rotations are refused by every format this engine reads: none of them has
         a rotation bit, and a :class:`Cell` has no field for one to live in.
         """
-        toggle = _MIRRORS.get(op)
-        if toggle is None or _field(params, op.value) is None:
-            return None
         if op.value in _side_only(params):
             return None  # the array's bit, which a save cannot write
-        return toggle(cell)
+        return mirror(cell, op, _placements(params))

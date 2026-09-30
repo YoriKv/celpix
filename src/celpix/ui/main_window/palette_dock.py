@@ -44,8 +44,8 @@ from celpix.project.workspace import (
     EntryKind,
     PaletteMode,
 )
-from celpix.ui.glyphs import Glyph
-from celpix.ui.icon_font import glyph_icon
+from celpix.ui.icon_font import icon_qicon
+from celpix.ui.icons import Icon
 from celpix.ui.palette_panel import PalettePanel
 from celpix.ui.undo_commands import PaletteRowBaseCommand
 from celpix.ui.widgets import (
@@ -313,7 +313,7 @@ class PaletteDockMixin:
         # format, and sharing a line left neither enough width at the dock's
         # natural size.
         import_row = _dock_row()
-        self._palette_import_label = add_labelled(
+        add_labelled(
             import_row,
             "Import as:",
             self._palette_import_preset,
@@ -373,10 +373,10 @@ class PaletteDockMixin:
         palette = QApplication.palette()
         ratio = self.devicePixelRatioF()
         for button, glyph in (
-            (self._palette_offset_prev, Glyph.ARROW_LEFT),
-            (self._palette_offset_next, Glyph.ARROW_RIGHT),
+            (self._palette_offset_prev, Icon.ARROW_LEFT),
+            (self._palette_offset_next, Icon.ARROW_RIGHT),
         ):
-            button.setIcon(glyph_icon(glyph, palette, ratio=ratio))
+            button.setIcon(icon_qicon(glyph, palette, ratio=ratio))
 
     def _build_palette_menu(self) -> None:
         """Palette ▸ everything palette-flavoured: palette-from-selection,
@@ -603,12 +603,9 @@ class PaletteDockMixin:
                 return
             gone = self._entry_palette_target(entry) is None
             name = source.name + (" (not open)" if gone else "")
-            metrics = self._palette_file_label.fontMetrics()
-            self._palette_file_label.setText(
-                metrics.elidedText(name, Qt.TextElideMode.ElideMiddle, 120)
+            self._show_palette_file_label(
+                name, f"Palette read from {source.name}", width=120
             )
-            self._palette_file_label.setToolTip(f"Palette read from {source.name}")
-            self._palette_file_label.show()
             return
         path, missing = None, False
         doc = self._palette_doc()
@@ -621,11 +618,17 @@ class PaletteDockMixin:
             self._palette_file_label.hide()
             return
         name = Path(path).name + (" (missing)" if missing else "")
-        # Elide long names by hand (QLabel has no elide mode) - the full path
-        # lives in the tooltip, and the dock must not widen to fit the text.
+        self._show_palette_file_label(name, path, width=150)
+
+    def _show_palette_file_label(self, name: str, tip: str, *, width: int) -> None:
+        """Show ``name`` on the dock's file label, elided to ``width`` pixels.
+
+        Elided by hand (QLabel has no elide mode) - the full answer lives in the
+        tooltip, and the dock must not widen to fit the text.
+        """
         metrics = self._palette_file_label.fontMetrics()
         self._palette_file_label.setText(
-            metrics.elidedText(name, Qt.TextElideMode.ElideMiddle, 150)
+            metrics.elidedText(name, Qt.TextElideMode.ElideMiddle, width)
         )
-        self._palette_file_label.setToolTip(path)
+        self._palette_file_label.setToolTip(tip)
         self._palette_file_label.show()

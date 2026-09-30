@@ -39,7 +39,7 @@ from celpix.core.context import (
 )
 from celpix.core.errors import Stage
 from celpix.pipeline import pipeline
-from celpix.plugins.base import NO_COMPRESSION
+from celpix.plugins.base import NO_COMPRESSION, self_delimiting
 from celpix.plugins.builtins.lz16 import KEY_LZ16_ROWS
 from celpix.ui.decompress_overlay import Badge
 from celpix.ui.searchable_combo import fill_stage_combo
@@ -176,7 +176,7 @@ class CompressionMixin:
             after = self._byte_position() + consumed
             if after < len(self._doc.pixel_data):
                 self._next_structure = after
-        elif plugin.info.self_delimiting:
+        elif self_delimiting(plugin, inputs.get(Stage.COMPRESSION)):
             # The scheme has an end marker and this decode never reached it, so
             # the window really did cut a structure short: a warning, with a fix.
             badge = Badge(
@@ -218,13 +218,16 @@ class CompressionMixin:
 
     def _scannable(self) -> bool:
         """Whether the current scheme can be scanned for at all: it has to carry
-        its own end (terminator or declared size) for a probe to ever complete."""
+        its own end (terminator or declared size) for a probe to ever complete.
+        Asked with the entry's bound inputs, since for LZW the end code is one."""
         compression_id = self._compression_id()
         if compression_id == NO_COMPRESSION:
             return False
-        return self._registry.plugin(
-            Stage.COMPRESSION, compression_id
-        ).info.self_delimiting
+        inputs = self._preview_config_inputs(compression_id) or {}
+        return self_delimiting(
+            self._registry.plugin(Stage.COMPRESSION, compression_id),
+            inputs.get(Stage.COMPRESSION),
+        )
 
     def _on_jump_next(self) -> None:
         if self._doc is None or self._next_structure is None:
@@ -336,7 +339,7 @@ class CompressionMixin:
             self.statusBar().showMessage("Scan reached the end without a match.")
 
     def _scan_tick(self, pos: int) -> bool:
-        """Progress callback for :func:`~celpix.pipeline.find_next_structure`:
+        """Progress callback for :func:`~celpix.pipeline.scan.find_next_structure`:
         report the position, pump the event loop so Stop stays clickable, and
         return whether Stop was pressed (which aborts the scan)."""
         self.statusBar().showMessage(f"Scanning… {self._format_offset(pos)}")

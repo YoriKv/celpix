@@ -15,8 +15,9 @@ module ever needs the output of another — each starts with an empty window::
 
 What differs between the moduled formats is only the inner codec and the
 padding: Kosinski modules sit on 16-byte boundaries, because the original queue
-rounds its source pointer up after each one, while the byte-descriptor
-Kosinski+ packs them end to end.
+rounds its source pointer up after each one, while Kosinski+, LZKN1, Comper and
+ComperX pack them end to end. So a moduled plugin is written once, by
+:func:`moduled_plugin`, from the inner plugin and those two facts.
 
 The module count comes from the size, not from a marker. So a module that
 decodes to anything but its share is corrupt rather than merely odd: the loader
@@ -25,7 +26,12 @@ DMAs 0x1000 bytes per module whatever the stream produced.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from typing import cast
+
+from celpix.core.errors import Stage
+from celpix.plugins.base import PartialDecompression, PluginInfo
 
 MODULE_SIZE = 0x1000
 HEADER_BYTES = 2
@@ -47,7 +53,7 @@ def decompress(
     padding: int,
     name: str,
     partial: bool = False,
-    size_alias: dict[int, int] | None = None,
+    size_alias: Mapping[int, int] | None = None,
 ) -> tuple[bytes, int, bool]:
     """Unpack a moduled payload whose modules ``decode`` reads one at a time.
 
@@ -98,7 +104,7 @@ def compress(
     *,
     padding: int,
     name: str,
-    size_alias: dict[int, int] | None = None,
+    size_alias: Mapping[int, int] | None = None,
 ) -> bytes:
     """Cut ``data`` into modules, compress each, and frame them.
 
@@ -123,3 +129,94 @@ def compress(
             out += bytes(-body % padding)
         out += encode(data[index * MODULE_SIZE : (index + 1) * MODULE_SIZE])
     return bytes(out)
+
+
+@dataclass(frozen=True)
+class Moduled:
+    """One moduled format: an inner codec bound to its padding and size quirks.
+
+    :meth:`decompress` and :meth:`compress` are what a codec module publishes as
+    its ``decompress_moduled``/``compress_moduled``, so the framing can be called
+    without going through a plugin instance.
+    """
+
+    decode: Decoder
+    encode: Callable[[bytes], bytes]
+    padding: int
+    name: str
+    size_alias: Mapping[int, int] | None = None
+
+    def decompress(
+        self, data: bytes, *, partial: bool = False
+    ) -> tuple[bytes, int, bool]:
+        """Unpack a size header and the 4 KiB modules behind it."""
+        return decompress(
+            data,
+            self.decode,
+            padding=self.padding,
+            name=self.name,
+            partial=partial,
+            size_alias=self.size_alias,
+        )
+
+    def compress(self, data: bytes) -> bytes:
+        """Encode ``data`` as 4 KiB modules behind a size header."""
+        return compress(
+            data,
+            self.encode,
+            padding=self.padding,
+            name=self.name,
+            size_alias=self.size_alias,
+        )
+
+
+def moduled_plugin(
+    inner: type[PartialDecompression],
+    label: str,
+    *,
+    padding: int = 1,
+    size_alias: Mapping[int, int] | None = None,
+) -> tuple[type[PartialDecompression], Moduled]:
+    """The moduled plugin over ``inner``, and the :class:`Moduled` behind it.
+
+    Everything a moduled plugin states follows from the inner one: its id gains
+    ``-moduled``, its name and error prefix are ``label``'s, and its category is
+    the inner's. It is always self-delimiting — the header's size fixes how many
+    modules follow and each ends on its own marker, so the last one's end is the
+    structure's.
+
+    The inner codec is reached through an instance rather than the class so a
+    variant that binds a parameter in an ordinary ``_decode`` method (ComperX's
+    word form) frames the same way as one whose ``_decode`` is a staticmethod.
+    """
+    codec = inner()
+    moduled = Moduled(
+        codec._decode,
+        codec._encode,
+        padding,
+        f"{label} moduled",
+        size_alias,
+    )
+    name = inner.__name__.removesuffix("Compression") + "ModuledCompression"
+    plugin = cast(
+        "type[PartialDecompression]",
+        type(
+            name,
+            (PartialDecompression,),
+            {
+                "__module__": inner.__module__,
+                "__qualname__": name,
+                "__doc__": f"{label} in 4 KiB modules behind a size header.",
+                "info": PluginInfo(
+                    id=f"{inner.info.id}-moduled",
+                    name=f"{label}, moduled (4 KiB streams behind a size header)",
+                    stage=Stage.COMPRESSION,
+                    self_delimiting=True,
+                    category=inner.info.category,
+                ),
+                "_decode": staticmethod(moduled.decompress),
+                "_encode": staticmethod(moduled.compress),
+            },
+        ),
+    )
+    return plugin, moduled

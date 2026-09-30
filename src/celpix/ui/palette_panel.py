@@ -25,7 +25,7 @@ The display is always 16 swatches wide, purely a wrap — the *palette row* is
 the active range (:meth:`set_active_range`), sized by the pixel format's index
 space (``2^bpp``): stepping, click mapping and the outline all use it, so a
 2bpp view works in 4-entry palette rows (four per display row) and an 8bpp view
-in one 256-entry block.
+in one 256-entry palette row.
 
 **Three marks, and they answer three questions.** The active range is the row the
 view draws through, the swatch ring is the color being inspected, and the third —
@@ -45,10 +45,13 @@ from PySide6.QtWidgets import QWidget
 
 from celpix.core import ceil_div
 from celpix.core.palette import FULL_PALETTE_COUNT
-from celpix.ui.canvas import GRID_STRUCTURE_COLOR
 from celpix.ui.widgets import (
+    GRID_ARROWS,
     ShortcutIsland,
     grid_slot_at,
+    grid_step,
+    paint_mark_ring,
+    paint_pick_ring,
     paint_selection_outline,
 )
 
@@ -284,30 +287,20 @@ class PalettePanel(ShortcutIsland, QWidget):
             self.paste_requested.emit()
             event.accept()
             return
-        if not self._colors:
-            super().keyPressEvent(event)
-            return
-        deltas = {
-            Qt.Key.Key_Left: -1,
-            Qt.Key.Key_Right: 1,
-            Qt.Key.Key_Up: -SWATCH_COLUMNS,
-            Qt.Key.Key_Down: SWATCH_COLUMNS,
-        }
-        delta = deltas.get(event.key())
-        if delta is None:
+        if not self._colors or event.key() not in GRID_ARROWS:
             super().keyPressEvent(event)
             return
         # No selection yet: start from the active palette row's first entry.
-        base = self._selected if self._selected is not None else self._start
-        target = base + delta
-        if abs(delta) == SWATCH_COLUMNS and not 0 <= target < len(self._colors):
-            # No display row above/below — stay put. (A min/max clamp would
-            # yank the selection to the palette's corner, changing its column.)
-            event.accept()
-            return
-        target = min(max(0, target), len(self._colors) - 1)
-        self._select(target)
-        self.palette_row_selected.emit(target // self._count)
+        target = grid_step(
+            self._selected,
+            event.key(),
+            SWATCH_COLUMNS,
+            len(self._colors),
+            start=self._start,
+        )
+        if target is not None:
+            self._select(target)
+            self.palette_row_selected.emit(target // self._count)
         event.accept()
 
     def paintEvent(self, event) -> None:  # noqa: ARG002 — Qt supplies the event
@@ -338,8 +331,8 @@ class PalettePanel(ShortcutIsland, QWidget):
         """The swatches of one palette row, from entry ``start``.
 
         ``count`` is a power of two, so a palette row is either a segment within
-        one display row (count <= 16, e.g. a 2bpp quarter row) or a whole block
-        of rows (count > 16, e.g. 8bpp = 16 rows) — never a ragged wrap.
+        one display row (count <= 16, e.g. a 2bpp quarter row) or a whole run
+        of display rows (count > 16, e.g. 8bpp = 16 rows) — never a ragged wrap.
         """
         if self._count <= SWATCH_COLUMNS:
             rect = self._swatch_rect(start)
@@ -372,7 +365,7 @@ class PalettePanel(ShortcutIsland, QWidget):
         if self._marked_row is None:
             return
         rect = self._range_rect(self._marked_row * self._count).adjusted(1, 1, -1, -1)
-        paint_selection_outline(painter, rect, color=GRID_STRUCTURE_COLOR)
+        paint_mark_ring(painter, rect)
 
     def _paint_selection(self, painter: QPainter) -> None:
         if self._selected is None:
@@ -380,8 +373,7 @@ class PalettePanel(ShortcutIsland, QWidget):
         # The same outline as the active range, one pixel further in so a
         # one-swatch selection inside that range still reads as its own ring,
         # and slightly soft so it doesn't overpower a single swatch.
-        rect = self._swatch_rect(self._selected).adjusted(1, 1, -1, -1)
-        paint_selection_outline(painter, rect, alpha=230)
+        paint_pick_ring(painter, self._swatch_rect(self._selected))
 
     def sizeHint(self):  # noqa: ANN201 — Qt override
         return self.size()

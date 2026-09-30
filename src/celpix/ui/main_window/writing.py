@@ -19,9 +19,11 @@ Writing is **per pathway**. A palette-only edit leaves the graphic untouched,
 because the two live in different files and rewriting unchanged pixel bytes is at
 best a needless mtime bump (``docs/design/palette-editing.md`` §2).
 
-What *creates* the entries being written — projects, slices, bookmarks — is
-:mod:`~celpix.ui.main_window.entries`; where the view goes between them is
-:mod:`~celpix.ui.main_window.session`.
+What *creates* the entries being written is :mod:`~celpix.ui.main_window.entries`
+(files), :mod:`~celpix.ui.main_window.slices` (slices and composites),
+:mod:`~celpix.ui.main_window.jumps` (bookmarks) and
+:mod:`~celpix.ui.main_window.projects` (a project's whole list); where the view
+goes between them is :mod:`~celpix.ui.main_window.session`.
 """
 
 from __future__ import annotations
@@ -199,7 +201,7 @@ class WritingMixin:
 
         Empty for everything that is not a tilemap with a painted-on bank, or a
         composite with a painted-on piece: a pixel entry owns its own art
-        (:meth:`~...session.SessionMixin._tile_bank_owner` answers with the entry
+        (:meth:`~...bindings.BindingsMixin._tile_bank_owner` answers with the entry
         itself there), an unbound map has no bank at all, and one whose bank is
         clean has nothing that needs writing — a map may be opened, its cells
         edited and written a dozen times without anybody having touched a tile.
@@ -659,7 +661,7 @@ class WritingMixin:
         _sync_entry_palette_bytes`). Dropped, the window goes on drawing a
         document the entry no longer has — with the palette the edit was just made
         on inside it — and every later edit lands in a fresh one nobody sees. It
-        is the same exemption :meth:`~...tile_bytes.TileBytesMixin.
+        is the same exemption :meth:`~...bindings.BindingsMixin.
         _reassemble_composites` takes for the entry a stroke was made on, and it
         is safe for the same reason: those bytes are on screen already.
         """
@@ -719,7 +721,7 @@ class WritingMixin:
           pathway config (:meth:`~...interpretation.InterpretationMixin.
           _pixel_config` → ``pixel_config_for``).
         - **A map reading the bank it is bound to**
-          (:meth:`~...session.SessionMixin._load_bound_tiles`), the one deliberate
+          (:meth:`~...bindings.BindingsMixin._load_bound_tiles`), the one deliberate
           exception to ``entry_view_bytes`` being the single funnel.
         - **An Offset palette** resolving against its owner's buffer
           (:meth:`~...palette_offset.PaletteOffsetMixin._reordered_view`).
@@ -772,7 +774,7 @@ class WritingMixin:
     def _drop_bound_copies(self, owner: Entry) -> None:
         """Drop the borrowed tiles of every map bound to ``owner``.
 
-        The one thing :meth:`~...session.SessionMixin._resync_tile_bindings` cannot
+        The one thing :meth:`~...bindings.BindingsMixin._resync_tile_bindings` cannot
         reach: it patches each map's copy with the *same splices*, which is only
         right while both buffers were decoded through one pathway. Across the
         slice/parent boundary they were not — a slice reads a window of its

@@ -21,7 +21,6 @@ from __future__ import annotations
 from PySide6.QtWidgets import (
     QButtonGroup,
     QDialog,
-    QDialogButtonBox,
     QLabel,
     QRadioButton,
     QVBoxLayout,
@@ -29,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from celpix.core.aspect import PRESETS, SQUARE, PixelAspect
+from celpix.ui.widgets import dialog_buttons, run_modal
 
 __all__ = ["PixelAspectDialog"]
 
@@ -38,7 +38,7 @@ class PixelAspectDialog(QDialog):
 
     def __init__(self, current: PixelAspect, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("celPix - pixel aspect")
+        self.setWindowTitle("Pixel Aspect")
         layout = QVBoxLayout(self)
         intro = QLabel(
             "Width:height ratio one image pixel is drawn at.\n"
@@ -70,12 +70,7 @@ class PixelAspectDialog(QDialog):
             self._unlisted = current
         else:
             self._unlisted = None
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        dialog_buttons(self, layout)
 
     def chosen(self) -> PixelAspect:
         """The picked ratio — the one the popup opened on if nothing was picked."""
@@ -87,7 +82,4 @@ class PixelAspectDialog(QDialog):
     @staticmethod
     def ask(parent: QWidget | None, current: PixelAspect) -> PixelAspect | None:
         """Run the popup modally; the chosen ratio, or ``None`` if cancelled."""
-        dialog = PixelAspectDialog(current, parent)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return None
-        return dialog.chosen()
+        return run_modal(PixelAspectDialog(current, parent), PixelAspectDialog.chosen)

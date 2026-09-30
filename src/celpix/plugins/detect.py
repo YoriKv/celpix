@@ -162,6 +162,22 @@ def content_kind_for(registry: Registry, container_id: str) -> ContentKind:
     return ContentKind.PIXELS
 
 
+def stage_write_enabled(
+    registry: Registry, stage: Stage, plugin_id: str, *, missing: bool = False
+) -> bool:
+    """Whether ``stage``'s plugin ``plugin_id`` has a write half — can put bytes
+    back the way it read them (:func:`~celpix.plugins.base.writes_back`).
+
+    ``missing`` answers for an id the registry does not have. The default is
+    :meth:`~celpix.plugins.registry.Registry.resolve_stage`'s: an entry opened
+    through a plugin this build lacks is view-only. A caller asking about
+    something other than an opened entry's write may owe a different answer.
+    """
+    resolved, writes = registry.resolve_stage(stage, plugin_id)
+    # Found, the id comes back as given; missing, the stage's pass-through does.
+    return writes if resolved == plugin_id else missing
+
+
 def container_write_enabled(registry: Registry, container_id: str) -> bool:
     """Whether bytes read through ``container_id`` may be written back at all.
 
@@ -170,7 +186,7 @@ def container_write_enabled(registry: Registry, container_id: str) -> bool:
     (:meth:`~celpix.plugins.registry.Registry.resolve_stage`). The rule and its
     reasoning live on :class:`~celpix.plugins.base.ContainerPlugin`.
     """
-    return registry.resolve_stage(Stage.CONTAINER, container_id)[1]
+    return stage_write_enabled(registry, Stage.CONTAINER, container_id)
 
 
 def container_label(

@@ -38,13 +38,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
+from typing import Any
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QDialog,
-    QDialogButtonBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -63,7 +63,13 @@ from PySide6.QtWidgets import (
 from celpix.core.address import format_hex
 from celpix.project.workspace import CompositePiece, Entry, can_compose
 from celpix.ui.searchable_combo import SearchableComboBox
-from celpix.ui.theme import ERROR_INK, set_ink
+from celpix.ui.widgets import (
+    ErrorLabel,
+    add_labelled,
+    counted,
+    dialog_buttons,
+    run_modal,
+)
 
 __all__ = ["CompositeDialog", "CompositeParams"]
 
@@ -102,15 +108,13 @@ class CompositeParams:
     """What the dialog returns: a name, an ordered list of pieces, and whether the
     view reads as a colour table.
 
-    A plain object rather than a dataclass so it reads the same way
-    :class:`~celpix.project.workspace.SliceParams` does at the call site — the
-    dialog's result flows straight into an undo command without a field-by-field
-    copy.
-
-    ``pixel_preset_id`` is not the dialog's: it is the exact format the window
-    resolved ``palette`` to, filled in on the way to the undo stack so an undo
-    puts back the depth the user had rather than a fresh guess at one. Empty
-    means "leave the format alone".
+    Mutable, unlike :class:`~celpix.project.workspace.SliceParams`, because of
+    ``pixel_preset_id``, which is not the dialog's: it is the exact format the
+    window resolved ``palette`` to, set on the result on the way to the undo
+    stack so an undo puts back the depth the user had rather than a fresh guess
+    at one. Empty means "leave the format alone". Equality leaves it out for the
+    same reason — two answers the user gave the same way are the same answer,
+    whichever format the window then resolved them to.
     """
 
     def __init__(
@@ -140,14 +144,12 @@ class CompositeDialog(QDialog):
         *,
         entry: Entry,
         candidates: list[Entry],
-        tile_bytes: int,
-        unit_label: str = "Tile",
+        measure_unit: Callable[[bool], tuple[int, str]],
+        measure: Callable[[CompositePiece], CompositePiece],
         name: str = "",
         pieces: tuple[CompositePiece, ...] = (),
         palette: bool = False,
-        units: Callable[[bool], tuple[int, str]] | None = None,
         title: str = "New Composite View",
-        measure: Callable[[CompositePiece], CompositePiece] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -157,13 +159,17 @@ class CompositeDialog(QDialog):
         # what is accepted cannot disagree (``can_compose``): no composites, no
         # maps, no palettes, and never this entry itself.
         self._candidates = [e for e in candidates if can_compose(entry, e)]
-        self._tile_bytes = max(1, tile_bytes)
+        # Who answers the unit's size in bytes and its name, for the reading the
+        # dialog opens on and again whenever Pixel / Palette flips: the window's
+        # question, since only it knows which format each would pick. A unit is a
+        # tile for a tile window and a colour word for a colour table.
+        self._measure_unit = measure_unit
+        unit_bytes, unit_label = measure_unit(palette)
+        self._unit_bytes = max(1, unit_bytes)
         # Kept for the total under the list, which counts the same unit the second
         # position column does.
         self._unit_label = unit_label
-        # Who re-answers the tile size and unit when Pixel / Palette flips: the
-        # window's question, since only it knows which format each would pick.
-        self._units = units
+        # Sizes a source on its way into the list (:meth:`_on_source_picked`).
         self._measure = measure
         self._params: CompositeParams | None = None
 
@@ -198,9 +204,9 @@ class CompositeDialog(QDialog):
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
 
         self._total = QLabel()
-        self._error = QLabel()
-        set_ink(self._error, ERROR_INK)
-        self._error.hide()
+        self._error = ErrorLabel()
+        # The only check OK makes is on the name, so an edit there answers it.
+        self._name.textChanged.connect(self._error.dismiss)
 
         self._add_source = self._source_picker()
         self._add_blank = QPushButton("Add blank")
@@ -209,7 +215,7 @@ class CompositeDialog(QDialog):
             "Blank bytes cannot be painted on"
         )
         self._add_blank.clicked.connect(
-            lambda: self._append(CompositePiece(length=self._tile_bytes))
+            lambda: self._append(CompositePiece(length=self._unit_bytes))
         )
         self._up = QPushButton("Move up")
         self._up.clicked.connect(lambda: self._move(-1))
@@ -220,8 +226,7 @@ class CompositeDialog(QDialog):
 
         layout = QVBoxLayout(self)
         naming = QHBoxLayout()
-        naming.addWidget(QLabel("Name:"))
-        naming.addWidget(self._name)
+        add_labelled(naming, "Name:", self._name, self._name.toolTip())
         naming.addWidget(self._reading)
         layout.addLayout(naming)
         layout.addWidget(self._list)
@@ -238,12 +243,7 @@ class CompositeDialog(QDialog):
         buttons_row.addStretch(1)
         layout.addLayout(buttons_row)
         layout.addWidget(self._error)
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self._validate_and_accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        dialog_buttons(self, layout, self._validate_and_accept)
 
         for piece in pieces:
             self._append(piece)
@@ -292,9 +292,7 @@ class CompositeDialog(QDialog):
             # Measured on the way in, so the row and the total state the run's
             # real size rather than the 0 an unassembled piece carries — the
             # position column is only worth reading if it is already true.
-            if self._measure is not None:
-                piece = self._measure(piece)
-            self._append(piece)
+            self._append(self._measure(piece))
 
     def _append(self, piece: CompositePiece) -> None:
         item = QTreeWidgetItem(self._list)
@@ -303,7 +301,7 @@ class CompositeDialog(QDialog):
         if piece.is_pad:
             spin = QSpinBox()
             spin.setRange(1, MAX_PAD_BYTES)
-            spin.setSingleStep(max(1, self._tile_bytes))  # one tile a click
+            spin.setSingleStep(self._unit_bytes)  # one unit a click
             spin.setValue(max(1, piece.extent))
             spin.setToolTip("Length of the blank run in bytes")
             spin.valueChanged.connect(self._refresh)
@@ -360,18 +358,15 @@ class CompositeDialog(QDialog):
 
         A colour table's unit is a colour word and a tile window's a tile, and
         the two are different sizes — so the column, its heading, the total and
-        a blank run's step all change with it. Without a ``units`` answer the
-        dialog has nothing to re-measure against and keeps what it was opened on.
+        a blank run's step all change with it.
         """
-        if self._units is None:
-            return
-        tile_bytes, self._unit_label = self._units(self.is_palette())
-        self._tile_bytes = max(1, tile_bytes)
+        unit_bytes, self._unit_label = self._measure_unit(self.is_palette())
+        self._unit_bytes = max(1, unit_bytes)
         self._list.headerItem().setText(1, self._unit_label)
         for item in self._items():
             spin = self._list.itemWidget(item, 3)
             if isinstance(spin, QSpinBox):
-                spin.setSingleStep(self._tile_bytes)
+                spin.setSingleStep(self._unit_bytes)
         self._refresh()
 
     def _refresh(self) -> None:
@@ -390,14 +385,13 @@ class CompositeDialog(QDialog):
             # does not land on a tile boundary says so with a "+", which is the
             # only warning the dialog can give without reading anything.
             item.setText(0, format_hex(at))
-            tile, over = divmod(at, self._tile_bytes)
+            tile, over = divmod(at, self._unit_bytes)
             item.setText(1, f"{tile}+" if over else str(tile))
             if not piece.is_pad:
                 item.setText(3, format_hex(piece.extent))
             at += piece.extent
-        tiles = at // self._tile_bytes
-        unit = f"{self._unit_label.lower()}s"
-        self._total.setText(f"{format_hex(at, None)} bytes ({tiles} {unit})")
+        tiles = counted(at // self._unit_bytes, self._unit_label.lower())
+        self._total.setText(f"{format_hex(at, None)} bytes ({tiles})")
         self._sync_buttons()
 
     def _sync_buttons(self) -> None:
@@ -459,40 +453,15 @@ class CompositeDialog(QDialog):
     def _validate_and_accept(self) -> None:
         name = self._name.text().strip()
         if not name:
-            self._error.setText("A composite needs a name — it has no file to borrow.")
-            self._error.show()
+            self._error.fail("A composite needs a name — it has no file to borrow.")
             return
         self._params = CompositeParams(name, self.pieces(), self.is_palette())
         self.accept()
 
     @staticmethod
-    def get_composite(
-        parent: QWidget | None,
-        *,
-        entry: Entry,
-        candidates: list[Entry],
-        tile_bytes: int,
-        unit_label: str = "Tile",
-        name: str = "",
-        pieces: tuple[CompositePiece, ...] = (),
-        palette: bool = False,
-        units: Callable[[bool], tuple[int, str]] | None = None,
-        title: str = "New Composite View",
-        measure: Callable[[CompositePiece], CompositePiece] | None = None,
-    ) -> CompositeParams | None:
-        """Run the dialog modally; the validated parameters, or None on cancel."""
-        dialog = CompositeDialog(
-            entry=entry,
-            candidates=candidates,
-            tile_bytes=tile_bytes,
-            unit_label=unit_label,
-            name=name,
-            pieces=pieces,
-            palette=palette,
-            units=units,
-            title=title,
-            measure=measure,
-            parent=parent,
-        )
-        dialog.exec()
-        return dialog._params
+    def get_composite(parent: QWidget | None, **options: Any) -> CompositeParams | None:
+        """Run the dialog modally; the validated parameters, or None on cancel.
+
+        ``options`` are the dialog's own keywords.
+        """
+        return run_modal(CompositeDialog(parent=parent, **options), lambda d: d._params)

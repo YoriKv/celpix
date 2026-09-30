@@ -68,6 +68,7 @@ from __future__ import annotations
 
 from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
+from celpix.plugins.builtins._lz import corrupt
 
 HEADER_SIZE = 2
 XOR_FLAG = 0x8000
@@ -95,8 +96,7 @@ INLINE_RUN_BITS = 3
 INLINE_INDEX_BITS = 4
 
 
-def _fail(reason: str) -> ValueError:
-    return ValueError(f"corrupt Nemesis stream: {reason}")
+_fail = corrupt("Nemesis")
 
 
 class _BitReader:
@@ -634,8 +634,9 @@ def _seeds(rows: list[int]) -> list[tuple[int, list[int], list[Symbol], bool]]:
     modes are seeds rather than a separate outer choice because they compete on
     the same terms: XOR mode wins on art with vertical coherence and loses on art
     without it, which is the same kind of "where does this start" question a run
-    cap asks, and ranking them together is what lets the budget below be spent on
-    whichever sixteen look best rather than eight of each.
+    cap asks, and ranking them together is what lets the refinement budget
+    (:data:`REFINE_SEEDS`) go to whichever look best, whatever their mode, rather
+    than being split evenly between the two.
     """
     tiles = len(rows) // ROWS_PER_TILE
     out = []
@@ -657,10 +658,11 @@ def _seeds(rows: list[int]) -> list[tuple[int, list[int], list[Symbol], bool]]:
 def compress(data: bytes) -> bytes:
     """Encode 4bpp Mega Drive tiles as a Nemesis stream.
 
-    Both modes are built and the smaller kept: XOR mode wins on art with vertical
-    coherence and loses on art without it, the choice is one header bit, and the
-    encoder is cheap enough that guessing would only ever cost bytes.
-
+    Both modes are tried: XOR mode wins on art with vertical coherence and loses
+    on art without it, and the choice is one header bit, so guessing would only
+    ever cost bytes. Every seed of either mode is ranked together
+    (:func:`_seeds`), the cheapest :data:`REFINE_SEEDS` are refined, and the
+    smallest result is kept.
     """
     tile_bytes = ROWS_PER_TILE * ROW_BYTES
     if not data or len(data) % tile_bytes:
@@ -678,7 +680,6 @@ def compress(data: bytes) -> bytes:
         int.from_bytes(data[at : at + ROW_BYTES], "big")
         for at in range(0, len(data), ROW_BYTES)
     ]
-    tiles = len(rows) // ROWS_PER_TILE
     seeds = _seeds(rows)
     return min(
         (

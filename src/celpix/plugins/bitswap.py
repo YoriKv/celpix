@@ -45,8 +45,8 @@ from functools import lru_cache
 from celpix.core.address import format_hex
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
-from celpix.plugins._params import flag, only_keys, preset_identity
-from celpix.plugins.base import PluginInfo, check_declared_stage
+from celpix.plugins._params import adapter_spec, flag
+from celpix.plugins.base import reshape_info
 
 BITSWAP_ENGINE = "reshape.bitswap"
 
@@ -170,9 +170,7 @@ class BitswapReshape:
             forward, backward = backward, forward
         self._forward = forward
         self._backward = backward
-        self.info = PluginInfo(
-            id=plugin_id, name=name, stage=Stage.RESHAPE, category=category
-        )
+        self.info = reshape_info(plugin_id, name, category)
 
     def reshape(self, data: bytes, ctx: PipelineContext) -> bytes:
         return _permute(data, self._forward)
@@ -190,18 +188,9 @@ def bitswap_from_spec(spec: dict) -> BitswapReshape:
     keeps the preset self-describing and is what
     :data:`~celpix.plugins.discovery.RESHAPE_ENGINES` dispatches on.
     """
-    engine = spec.get("engine_id")
-    if engine != BITSWAP_ENGINE:
-        raise ValueError(
-            f"engine_id {engine!r} is not a reshape engine "
-            f"(expected {BITSWAP_ENGINE!r})"
-        )
-    check_declared_stage(spec, Stage.RESHAPE)
-    plugin_id, name, category = preset_identity(spec)
-    params = spec.get("params", {})
-    if not isinstance(params, dict):
-        raise ValueError("params must be a table")
-    only_keys(params, ("bits", "gather"))
+    plugin_id, name, category, params = adapter_spec(
+        spec, engine_id=BITSWAP_ENGINE, stage=Stage.RESHAPE, known=("bits", "gather")
+    )
     return BitswapReshape(
         plugin_id, name, params.get("bits"), flag(params, "gather"), category
     )

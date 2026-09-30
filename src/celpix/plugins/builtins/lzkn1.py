@@ -51,7 +51,15 @@ from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
 
 from . import _moduled
-from ._lz import FlagGroup, MatchFinder, copy_back
+from ._lz import (
+    ByteSource,
+    FlagGroup,
+    GroupReader,
+    MatchFinder,
+    Truncated,
+    copy_back,
+    corrupt,
+)
 
 HEADER_BYTES = 2
 SIZE_LIMIT = 0xFFFF
@@ -78,35 +86,7 @@ END_COST = 1 + 8
 OP_LITERAL, OP_SHORT, OP_LONG, OP_BLOCK = range(4)
 
 
-def _fail(reason: str) -> ValueError:
-    return ValueError(f"corrupt LZKN1 stream: {reason}")
-
-
-class _Truncated(Exception):
-    """The stream ran out mid-op — recoverable only under ``partial``."""
-
-
-class _Reader:
-    """Flag bits and bytes over one buffer, the flag byte fetched on demand."""
-
-    def __init__(self, data: bytes) -> None:
-        self._data = data
-        self.pos = HEADER_BYTES
-        self._flags = 1  # spent, so the first bit opens a byte
-
-    def byte(self) -> int:
-        if self.pos >= len(self._data):
-            raise _Truncated
-        value = self._data[self.pos]
-        self.pos += 1
-        return value
-
-    def flag(self) -> int:
-        if self._flags == 1:
-            self._flags = 0x100 | self.byte()
-        bit = self._flags & 1
-        self._flags >>= 1
-        return bit
+_fail = corrupt("LZKN1")
 
 
 def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]:
@@ -119,26 +99,29 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
     if len(data) < HEADER_BYTES:
         raise _fail(f"shorter than the {HEADER_BYTES}-byte size header")
     declared = int.from_bytes(data[:HEADER_BYTES], "big")
-    reader = _Reader(data)
+    # Flag bits LSB first over the bytes after the size header, the flag byte
+    # fetched on demand.
+    src = ByteSource(data, HEADER_BYTES)
+    flags = GroupReader(src, msb_first=False)
     out = bytearray()
     complete = False
     try:
         while True:
-            if not reader.flag():
-                out.append(reader.byte())
+            if not flags.bit():
+                out.append(src.byte())
             else:
-                op = reader.byte()
+                op = src.byte()
                 if op == END_OP:
                     complete = True
                     break
                 if op >= BLOCK_OP:
                     for _ in range(op - BLOCK_BIAS):
-                        out.append(reader.byte())
+                        out.append(src.byte())
                 else:
                     if op >= SHORT_OP:
                         distance, length = op & 0x0F, (op >> 4) - 6
                     else:
-                        distance = ((op & 0x60) << 3) | reader.byte()
+                        distance = ((op & 0x60) << 3) | src.byte()
                         length = (op & 0x1F) + LONG_MIN
                     if not 0 < distance <= len(out):
                         raise _fail(
@@ -148,13 +131,13 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
                     copy_back(out, distance, length)
             if len(out) > declared:
                 raise _fail(f"output passes the declared {declared:,} bytes")
-    except _Truncated:
+    except Truncated:
         if not partial:
             raise _fail(f"source ended after {len(out):,} bytes") from None
 
     if complete and len(out) != declared:
         raise _fail(f"decoded {len(out):,} bytes where the header says {declared:,}")
-    return bytes(out), reader.pos, complete
+    return bytes(out), src.pos, complete
 
 
 def _parse(data: bytes) -> list[tuple[int, int, int]]:
@@ -267,28 +250,7 @@ class Lzkn1Compression(PartialDecompression):
     _encode = staticmethod(compress)
 
 
-def decompress_moduled(
-    data: bytes, *, partial: bool = False
-) -> tuple[bytes, int, bool]:
-    """Unpack a size header and 4 KiB LZKN1 modules packed end to end."""
-    return _moduled.decompress(
-        data, decompress, padding=1, name="LZKN1 moduled", partial=partial
-    )
-
-
-def compress_moduled(data: bytes) -> bytes:
-    """Encode ``data`` as 4 KiB LZKN1 modules behind a size header."""
-    return _moduled.compress(data, compress, padding=1, name="LZKN1 moduled")
-
-
-class Lzkn1ModuledCompression(PartialDecompression):
-    info = PluginInfo(
-        id="compression.lzkn1-moduled",
-        name="LZKN1, moduled (4 KiB streams behind a size header)",
-        stage=Stage.COMPRESSION,
-        self_delimiting=True,  # the header's size fixes the module count
-        category="Sega",
-    )
-
-    _decode = staticmethod(decompress_moduled)
-    _encode = staticmethod(compress_moduled)
+# Packed end to end, each module a whole stream with its own size header.
+Lzkn1ModuledCompression, _MODULED = _moduled.moduled_plugin(Lzkn1Compression, "LZKN1")
+decompress_moduled = _MODULED.decompress
+compress_moduled = _MODULED.compress

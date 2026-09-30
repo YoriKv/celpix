@@ -6,10 +6,10 @@ and the front ones cover the back ones, so it is not a picture of what the file
 *holds*. This is that — one square per record, in frame order, repeats included
 (``docs/design/sprite-map.md`` §5).
 
-It is a `Qt.Tool` window on the animation player's pattern
-(:mod:`celpix.ui.animation_overlay`): floats above the main window, takes no
-taskbar slot, placed beside it on the first show and left where the user drags it
-after, with its layout kept across runs. The two are neighbours in the View menu
+It is a floating tool window (:class:`~celpix.ui.tool_window.ToolWindow`), like
+the animation player: floats above the main window, takes no taskbar slot,
+placed beside it on the first show and left where the user drags it after, with
+its layout kept across runs. The two are neighbours in the View menu
 and are the two second readings a sprite map has — but where the player is
 offered only on an object with a sequence to play, **every** sprite map has
 subsprites, so this one is offered on all of them.
@@ -18,8 +18,8 @@ subsprites, so this one is offered on all of them.
 here lays out the sheet of records; Cols on the binding bar lays out the strip of
 frames, and neither is a reading of the other. The panel reports Ctrl+wheel and
 space-drag and owns no state, while this window holds the level in its Zoom spin
-and the scrolling in its scroll area — the tile source panel's split
-(:mod:`celpix.ui.subsprite_panel`).
+and the scrolling in its scroll area — the split the tile source dock makes with
+its panel, here between this window and :mod:`celpix.ui.subsprite_panel`.
 
 **Presentation only.** It is handed a composed sheet, the records it covers and
 the one the canvas picked; it never reads the model
@@ -28,29 +28,29 @@ the one the canvas picked; it never reads the model
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, Signal
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
     QCheckBox,
     QHBoxLayout,
-    QLabel,
-    QScrollArea,
     QSpinBox,
-    QStatusBar,
-    QVBoxLayout,
     QWidget,
 )
 
+from celpix.ui.panzoom import (
+    PanZoomSurface,
+    SpacePanFilter,
+    mount_surface,
+    zoom_spin,
+)
 from celpix.ui.subsprite_panel import Box, Record, SubspritePanel
+from celpix.ui.tool_window import ToolWindow
 from celpix.ui.widgets import (
     Badge,
-    apply_badge,
-    pan_scroll_area,
-    zoom_anchored,
+    add_labelled,
 )
-from celpix.ui.window_layout import WindowLayout
 
 # Whole magnifications, like the animation player's and for its reason: there is
 # nothing to reduce — a square is one subsprite, not a file too big for the
@@ -64,60 +64,31 @@ DEFAULT_ZOOM = 3
 COLUMN_RANGE = (1, 64)
 DEFAULT_COLUMNS = 8
 
-# How long a burst of view refreshes coalesces into one recompose of the sheet.
-# The animation player's debounce, for its reason: the window refreshes on things
-# that arrive per pixel of a stroke, and one recompose per burst is the
-# difference between a window that is open and one that is in the way.
-REFRESH_DEBOUNCE_MS = 120
 
-
-class SubspriteWindow(QWidget):
+class SubspriteWindow(ToolWindow):
     """Floating sheet of one sprite map's subsprite records."""
 
-    #: Ask for the sheet to be recomposed — the entry underneath changed, or the
-    #: layout controls here moved. A signal rather than a direct call because the
-    #: composing half lives on the main window.
-    refresh_requested = Signal()
-
     def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent, Qt.WindowType.Tool)
-        self.setWindowTitle("Subsprites")
-        self._positioned = False
+        super().__init__(parent, "Subsprites", "layout/subsprite-window", (420, 480))
 
         self._panel = SubspritePanel()
-        self._panel.zoom_requested.connect(self._on_wheel_zoom)
-        self._panel.pan_requested.connect(self._pan)
-        self._scroll = QScrollArea()
-        self._scroll.setWidget(self._panel)
-        self._scroll.setAlignment(
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
-        )
-        self._scroll.setWidgetResizable(False)
-        # The backing around the sheet zooms with it: a short object laid 8 across
-        # leaves most of the window empty, and that is where the pointer sits.
-        self._panel.claim_background(self._scroll)
-
         self._columns = QSpinBox()
         self._columns.setRange(*COLUMN_RANGE)
         self._columns.setValue(DEFAULT_COLUMNS)
         self._columns.setKeyboardTracking(False)
-        self._columns.setToolTip(
-            "Subsprites per row of the sheet (Shift+Left/Right)\n"
-            "Independent of the canvas"
-        )
         self._columns.valueChanged.connect(lambda _v: self.refresh_requested.emit())
 
-        self._zoom = QSpinBox()
-        self._zoom.setRange(*ZOOM_RANGE)
-        self._zoom.setValue(DEFAULT_ZOOM)
-        self._zoom.setKeyboardTracking(False)
-        self._zoom.setSuffix("x")
-        self._zoom.setToolTip(
+        self._zoom = zoom_spin(
+            ZOOM_RANGE,
+            DEFAULT_ZOOM,
+            self._panel.set_zoom,
             "Sheet magnification (Ctrl+Scroll over the sheet)\n"
-            "Independent of the main view. Space+drag pans"
+            "Independent of the main view. Space+drag pans",
         )
-        self._zoom.valueChanged.connect(self._panel.set_zoom)
         self._panel.set_zoom(DEFAULT_ZOOM)
+        # The backing around the sheet zooms with it: a short object laid 8 across
+        # leaves most of the window empty, and that is where the pointer sits.
+        self._scroll = mount_surface(self._panel, spin=self._zoom)
 
         # Which of the two readings the sheet is (`pipeline.subsprite_sheet`).
         # On, the file's own listing — every record, in frame order. Off, the
@@ -137,8 +108,9 @@ class SubspriteWindow(QWidget):
         self._numbers.setChecked(True)
         # Takes no focus, the animation player's rule for its transport buttons:
         # space is this window's pan gesture and is claimed window-wide
-        # (:meth:`eventFilter`), so a focused checkbox could not toggle itself
-        # with it anyway — it would just wear a focus ring for nothing.
+        # (:class:`~celpix.ui.widgets.SpacePanFilter`), so a focused checkbox
+        # could not toggle itself with it anyway — it would just wear a focus
+        # ring for nothing.
         self._numbers.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._numbers.setToolTip(
             "Label each square with frame:subsprite\n"
@@ -148,45 +120,26 @@ class SubspriteWindow(QWidget):
 
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
-        header.addWidget(QLabel("Cols"))
-        header.addWidget(self._columns)
-        header.addWidget(QLabel("Zoom"))
-        header.addWidget(self._zoom)
+        add_labelled(
+            header,
+            "Cols",
+            self._columns,
+            "Subsprites per row of the sheet (Shift+Left/Right)\n"
+            "Independent of the canvas",
+        )
+        add_labelled(header, "Zoom", self._zoom, self._zoom.toolTip())
         header.addWidget(self._frames)
         header.addWidget(self._numbers)
         header.addStretch(1)
+        self.content.addLayout(header)
+        self.content.addWidget(self._scroll, 1)
 
-        self._status = QStatusBar()
-        self._status.setSizeGripEnabled(False)
-        self._badge = QLabel()
-        self._badge.hide()
-        self._status.addPermanentWidget(self._badge)
+        # Space pans wherever focus sits in here; Shift+Left/Right lays the
+        # sheet narrower or wider (:meth:`_columns_key`).
+        self._space_pan = SpacePanFilter(self, self._panel, extra_key=self._columns_key)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 6, 6, 0)
-        layout.addLayout(header)
-        layout.addWidget(self._scroll, 1)
-        layout.addWidget(self._status)
-        self.resize(420, 480)
-        # Kept across runs like the player's: the size that fits the object being
-        # read is the user's to find, and finding it again every time the window
-        # opens is the tax celpix.ui.window_layout exists to stop.
-        self._layout_memory = WindowLayout(self, "layout/subsprite-window")
-        # A remembered position counts as already placed (the tool windows'
-        # shared rule, :mod:`celpix.ui.decompress_overlay`).
-        self._positioned = self._layout_memory.restore()
-
-        self._pending = QTimer(self)
-        self._pending.setSingleShot(True)
-        self._pending.setInterval(REFRESH_DEBOUNCE_MS)
-        self._pending.timeout.connect(self.refresh_requested)
-
-        # The pan gesture's space key is taken off an application filter rather
-        # than a key event of this window, so it answers wherever focus sits in
-        # here — see eventFilter.
-        app = QApplication.instance()
-        if app is not None:
-            app.installEventFilter(self)
+    def _pixel_surface(self) -> PanZoomSurface:
+        return self._panel
 
     def columns(self) -> int:
         """How many squares across to compose the next sheet."""
@@ -226,15 +179,6 @@ class SubspriteWindow(QWidget):
         self._panel.set_captions(self._frames.isChecked() and self._numbers.isChecked())
 
     # -- presenting ----------------------------------------------------------
-    def set_pixel_aspect(self, aspect) -> None:  # noqa: ANN001 — a PixelAspect
-        """Draw at ``aspect`` — forwarded to the sheet of records.
-
-        One name on every holder of a pixel surface, so the window applies the
-        project's setting with a loop rather than by reaching through each of them
-        (:meth:`~celpix.ui.main_window.view_menu.ViewMenuMixin._sync_pixel_aspect`).
-        """
-        self._panel.set_pixel_aspect(aspect)
-
     def show_sheet(
         self,
         sheet: QImage,
@@ -260,57 +204,15 @@ class SubspriteWindow(QWidget):
         self.setWindowTitle(title)
         self._panel.set_sheet(sheet, records, boxes, cell_px, self.columns())
         self._panel.set_marked(marked)
-        self._status.showMessage(status)
-        apply_badge(self._badge, badge)
-        if not self.isVisible():
-            if not self._positioned and self.parentWidget() is not None:
-                anchor = self.parentWidget().frameGeometry().topRight()
-                self.move(anchor + QPoint(12, 0))
-                self._positioned = True
-            self.show()
-            self._panel.setFocus()
+        self.set_status(status, badge)
+        # The sheet takes the focus, so the column keys answer over the picture
+        # rather than over the header's spins (:meth:`_columns_key`).
+        self.present(focus=self._panel)
 
     def set_marked(self, record: Record | None) -> None:
         """Ring the record the canvas just picked. Cheap enough to call per press
         — it moves a ring, where :meth:`show_sheet` recomposes the picture."""
         self._panel.set_marked(record)
-
-    def set_status(self, status: str, badge: Badge | None = None) -> None:
-        self._status.showMessage(status)
-        apply_badge(self._badge, badge)
-
-    def request_refresh(self) -> None:
-        """Ask for the sheet to be recomposed shortly, coalescing a burst into one."""
-        if self.isVisible():
-            self._pending.start()
-
-    def hide_overlay(self) -> None:
-        """Hide — the entry on screen is not a sprite map, or was closed."""
-        self._pending.stop()
-        if self.isVisible():
-            self.hide()
-
-    def closeEvent(self, event) -> None:  # noqa: ANN001 — Qt override
-        """Closed from its own frame: drop the pan mode with it.
-
-        A space release landing anywhere else is a release this window never
-        sees, which would leave the panel holding an open hand and eating the
-        next press when it reopens.
-        """
-        self._pending.stop()
-        self._panel.set_pan_mode(False)
-        super().closeEvent(event)
-
-    # -- zoom and pan --------------------------------------------------------
-    def _on_wheel_zoom(self, steps: int, pos) -> None:  # noqa: ANN001 — QPointF
-        """Ctrl+wheel over the sheet, anchored on the pixel under the cursor."""
-        spin = self._zoom
-        new = min(max(spin.value() + steps, spin.minimum()), spin.maximum())
-        zoom_anchored(self._scroll, spin, new, pos)
-
-    def _pan(self, dx: int, dy: int) -> None:
-        """Shift the scroll view by a space-drag delta (device pixels)."""
-        pan_scroll_area(self._scroll, dx, dy)
 
     # -- the sheet's own width -----------------------------------------------
     #: Shift+arrow, the main window's Cols keys, in this window's terms.
@@ -337,43 +239,3 @@ class SubspriteWindow(QWidget):
             return False
         self._columns.setValue(self._columns.value() + delta)
         return True
-
-    # -- space arms the pan --------------------------------------------------
-    def eventFilter(self, obj, event) -> bool:  # noqa: ANN001 — Qt override
-        """Claim the space bar for the pan wherever focus sits in this window.
-
-        Filtered on the application rather than handled in ``keyPressEvent``,
-        because a key press goes to the focused widget alone: with focus on the
-        Zoom spin — where magnifying the sheet leaves it, and having magnified it
-        is the usual reason to want to pan — the press reached a widget that does
-        nothing with it. The animation player's rule, and the main window's
-        (:meth:`~celpix.ui.main_window.navigation.NavigationMixin.
-        _handle_space_pan`).
-
-        Any widget of *this* window and nothing outside it: only one window can
-        be the one being typed into.
-        """
-        et = event.type()
-        if et == QEvent.Type.WindowDeactivate and obj is self:
-            # A hold that outlives the window's activation: the release lands in
-            # whatever was raised over it and is never seen here.
-            self._panel.set_pan_mode(False)
-        elif (
-            et in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease)
-            and event.key() == Qt.Key.Key_Space
-            and isinstance(obj, QWidget)
-            and obj.window() is self
-        ):
-            # Auto-repeat is swallowed rather than acted on: holding space fires
-            # press after press, and each would re-arm a mode already on.
-            if not event.isAutoRepeat():
-                self._panel.set_pan_mode(et == QEvent.Type.KeyPress)
-            return True
-        elif (
-            et == QEvent.Type.KeyPress
-            and isinstance(obj, QWidget)
-            and obj.window() is self
-            and self._columns_key(event)
-        ):
-            return True
-        return super().eventFilter(obj, event)

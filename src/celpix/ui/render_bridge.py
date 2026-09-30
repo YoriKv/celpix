@@ -14,14 +14,15 @@ buffer is already ``Format_ARGB32``'s layout, so it is wrapped, not converted.
 One image carries one colour table, so a view with **pinned palette regions**
 (:mod:`celpix.core.paletteregions`) — where different tiles render through
 different palette rows — cannot express the row in the table. There the row
-travels in the indices instead and the table is the plain palette:
-:func:`render_pinned`.
+travels in the indices instead and the table is the plain palette —
+:func:`render` with ``palette_base`` 0 and the row width as ``row_stride``.
 """
 
 from __future__ import annotations
 
 from PySide6.QtGui import QColor, QImage, QPainter
 
+from celpix.core.argb_grid import ArgbGrid
 from celpix.core.palette import Palette
 
 TRANSPARENT = 0x00000000
@@ -46,8 +47,8 @@ def clear_zeros(table: list[int], stride: int) -> list[int]:
     ``stride`` is the width of one palette row in colours (``2**bpp``), because
     which entries mean "index 0" depends on whether the row is folded into the
     indices: at ``stride`` 256 only entry 0 is one (:func:`render`, where the row
-    lives in the table's offset), and at 16 every sixteenth is
-    (:func:`render_pinned`, where it lives in the indices).
+    lives in the table's offset), and at 16 every sixteenth is (pinned regions,
+    where it lives in the indices).
     """
     out = list(table)
     for at in range(0, len(out), max(1, stride)):
@@ -61,56 +62,34 @@ def render(
     palette_base: int = 0,
     *,
     transparent_zero: bool = False,
+    row_stride: int = 256,
 ) -> QImage:
     """Rasterize ``grid`` to a QImage.
 
-    An index grid resolves through ``palette`` (offset by ``palette_base``, so a
-    tile drawn for palette row *n* renders correctly, ``base = n * 2**bpp``). A
+    An index grid resolves through ``palette`` offset by ``palette_base``, so a
+    tile drawn for palette row *n* renders correctly (``base = n * 2**bpp``). A
     direct-color :class:`~celpix.core.argb_grid.ArgbGrid` already carries ARGB and
     is blitted straight to ``Format_ARGB32``, ignoring the palette.
 
-    ``transparent_zero`` clears index 0 (:func:`clear_zeros`). Only entry 0 is
-    cleared here: the whole table is already one palette row, offset by
-    ``palette_base``, so index 0 of *this* row is the only index 0 there is.
+    **Pinned palette regions** (:mod:`celpix.core.paletteregions`) render with
+    ``palette_base`` 0. There the row cannot live in the colour table, because one
+    image has one table and the whole point is that different tiles render
+    through different rows — so the row is folded into the *indices* upstream
+    (``IndexGrid.shifted``) and the table is the palette itself, unoffset. An
+    unpinned tile is shifted by the view's own row, so the two ways agree pixel
+    for pixel wherever nothing is pinned.
+
+    ``transparent_zero`` clears index 0 (:func:`clear_zeros`) every ``row_stride``
+    entries. With the row in the table's offset, entry 0 is the only index 0
+    there is, which the default of 256 expresses; with the row in the indices,
+    ``row_stride`` has to be one palette row in colours, or every other row's
+    blank pixels would stay opaque. ``row_stride`` is read for nothing else.
     """
     if grid.bytes_per_pixel == 4:
         return _render_argb(grid)
     # QRgb is 0xAARRGGBB — exactly what Palette stores — so colors pass straight
     # through. A too-short palette yields the magenta sentinel per Palette.color.
     table = [palette.color(palette_base + i) for i in range(256)]
-    if transparent_zero:
-        table = clear_zeros(table, 256)
-    return indexed_image(grid, table)
-
-
-def render_pinned(
-    grid,
-    palette: Palette,
-    row_stride: int = 0,
-    *,
-    transparent_zero: bool = False,
-) -> QImage:
-    """Rasterize ``grid`` when its indices already carry their palette row.
-
-    The counterpart of :func:`render` for a view with pinned palette regions
-    (:mod:`celpix.core.paletteregions`). There the row cannot live in the colour
-    table, because one image has one table and the whole point is that different
-    tiles render through different rows — so the row is folded into the *indices*
-    upstream (``IndexGrid.shifted``) and the table becomes the palette itself,
-    unoffset. An unpinned tile is shifted by the view's own row, so the two paths
-    agree pixel for pixel wherever nothing is pinned.
-
-    ``row_stride`` is one palette row in colours, and is needed **only** for
-    ``transparent_zero``: with the row in the indices, every ``row_stride``-th
-    entry is some row's index 0, and clearing entry 0 alone would leave every
-    other row's blank pixels opaque.
-
-    A direct-colour grid never carries indices, so it renders exactly as
-    :func:`render` would.
-    """
-    if grid.bytes_per_pixel == 4:
-        return _render_argb(grid)
-    table = [palette.color(i) for i in range(256)]
     if transparent_zero:
         table = clear_zeros(table, row_stride or 256)
     return indexed_image(grid, table)
@@ -187,3 +166,29 @@ def _render_argb(grid) -> QImage:
     # rows are 4-byte-aligned already (4 bytes/pixel). copy() so we own the buffer.
     image = QImage(bytes(grid.data), w, h, w * 4, QImage.Format.Format_ARGB32)
     return image.copy()
+
+
+def argb_grid_from_image(image: QImage) -> ArgbGrid:
+    """``image`` as the Qt-free direct-colour grid — :func:`_render_argb` reversed.
+
+    What the model side takes from any picture that arrives as a QImage: a PNG or
+    clipboard image on its way into the import pathway, and a GIF frame on its
+    way to the encoder. Converted to ``Format_ARGB32`` first, so one code path
+    handles every source format a foreign app might hand over (indexed GIFs,
+    16-bit, premultiplied), and the grid's layout then matches Qt's scanlines
+    byte for byte. Rows are copied one at a time because ``bytesPerLine`` may
+    exceed ``width * 4`` (Qt pads scanlines for alignment).
+    """
+    src = image.convertToFormat(QImage.Format.Format_ARGB32)
+    w, h = src.width(), src.height()
+    grid = ArgbGrid(w, h)
+    if w == 0 or h == 0:
+        return grid
+    stride = src.bytesPerLine()
+    buf = bytes(src.constBits())
+    row_bytes = w * 4
+    dst = grid.data
+    for y in range(h):
+        s0 = y * stride
+        dst[y * row_bytes : (y + 1) * row_bytes] = buf[s0 : s0 + row_bytes]
+    return grid

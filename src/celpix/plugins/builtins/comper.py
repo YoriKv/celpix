@@ -46,11 +46,13 @@ Format detail and provenance are in
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
 
 from . import _moduled
-from ._lz import FlagGroup, MatchFinder, copy_back
+from ._lz import FlagGroup, MatchFinder, copy_back, corrupt
 
 WINDOW_WORDS = 0x100
 MIN_WORDS = 2
@@ -61,8 +63,9 @@ def _name(comperx: bool) -> str:
     return "ComperX" if comperx else "Comper"
 
 
-def _fail(comperx: bool, reason: str) -> ValueError:
-    return ValueError(f"corrupt {_name(comperx)} stream: {reason}")
+_FAIL: dict[bool, Callable[[str], ValueError]] = {
+    comperx: corrupt(_name(comperx)) for comperx in (False, True)
+}
 
 
 class _Truncated(Exception):
@@ -108,8 +111,7 @@ def decompress(
                 distance = 0x100 - first
                 length = second + 1
             if distance * 2 > len(out):
-                raise _fail(
-                    comperx,
+                raise _FAIL[comperx](
                     f"match reaches {distance:,} words back "
                     f"into {len(out) // 2:,} words of output",
                 )
@@ -118,7 +120,7 @@ def decompress(
             copy_back(out, distance * 2, length * 2)
     except _Truncated:
         if not partial:
-            raise _fail(comperx, f"source ended after {len(out):,} bytes") from None
+            raise _FAIL[comperx](f"source ended after {len(out):,} bytes") from None
 
     return bytes(out), pos, complete
 
@@ -171,25 +173,6 @@ class _ComperBase(PartialDecompression):
         return compress(data, comperx=self._comperx)
 
 
-class _ComperModuledBase(_ComperBase):
-    def _decode(self, data: bytes, *, partial: bool) -> tuple[bytes, int, bool]:
-        return _moduled.decompress(
-            data,
-            super()._decode,
-            padding=1,
-            name=f"{_name(self._comperx)} moduled",
-            partial=partial,
-        )
-
-    def _encode(self, data: bytes) -> bytes:
-        return _moduled.compress(
-            data,
-            super()._encode,
-            padding=1,
-            name=f"{_name(self._comperx)} moduled",
-        )
-
-
 class ComperCompression(_ComperBase):
     info = PluginInfo(
         id="compression.comper",
@@ -211,22 +194,6 @@ class ComperXCompression(_ComperBase):
     )
 
 
-class ComperModuledCompression(_ComperModuledBase):
-    info = PluginInfo(
-        id="compression.comper-moduled",
-        name="Comper, moduled (4 KiB streams behind a size header)",
-        stage=Stage.COMPRESSION,
-        self_delimiting=True,  # the header's size fixes the module count
-        category="Sega",
-    )
-
-
-class ComperXModuledCompression(_ComperModuledBase):
-    _comperx = True
-    info = PluginInfo(
-        id="compression.comperx-moduled",
-        name="ComperX, moduled (4 KiB streams behind a size header)",
-        stage=Stage.COMPRESSION,
-        self_delimiting=True,  # the header's size fixes the module count
-        category="Sega",
-    )
+# Both packed end to end behind the size header.
+ComperModuledCompression, _ = _moduled.moduled_plugin(ComperCompression, "Comper")
+ComperXModuledCompression, _ = _moduled.moduled_plugin(ComperXCompression, "ComperX")

@@ -11,8 +11,8 @@ three things that make it its own format are all in how that word is handled::
 
     1            one literal byte follows
     0 0 h l      inline match: length ((h<<1)|l) + 2, one byte follows,
-                 distance 0x100 - byte                        (2..5 bytes back
-                                                               within 256)
+                 distance 0x100 - byte                        (length 2..5,
+                                                               distance 1..256)
     0 1          separate match: two bytes low, high follow
                    count = high & 7
                    count != 0   length = count + 2            (3..9)
@@ -64,7 +64,7 @@ from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
 
 from . import _moduled
-from ._lz import BitGroup, MatchFinder, copy_back
+from ._lz import BitGroup, MatchFinder, copy_back, corrupt
 
 DESC_BYTES = 2
 DESC_BITS = DESC_BYTES * 8
@@ -104,8 +104,7 @@ OP_LITERAL, OP_INLINE, OP_SHORT, OP_LONG = range(4)
 MAX_CANDIDATES = FULL_WINDOW
 
 
-def _fail(reason: str) -> ValueError:
-    return ValueError(f"corrupt Kosinski stream: {reason}")
+_fail = corrupt("Kosinski")
 
 
 class _Truncated(Exception):
@@ -120,9 +119,9 @@ class _Reader:
     descriptor word lands relative to the bytes around it.
     """
 
-    def __init__(self, data: bytes, pos: int = 0) -> None:
+    def __init__(self, data: bytes) -> None:
         self._data = data
-        self.pos = pos
+        self.pos = 0
         self._word = 0
         self._left = 0
         self._fill()
@@ -199,8 +198,6 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
         if not partial:
             raise _fail(f"source ended after {len(out):,} bytes") from None
 
-    if not complete and not partial:
-        raise _fail(f"source ended after {len(out):,} bytes")
     return bytes(out), reader.pos, complete
 
 
@@ -341,42 +338,11 @@ MODULE_PADDING = 16
 # header is still what a decode of one has to do.
 MODULED_SIZE_ALIAS = {0xA000: 0x8000}
 
-
-def decompress_moduled(
-    data: bytes, *, partial: bool = False
-) -> tuple[bytes, int, bool]:
-    """Unpack a moduled payload: a size header, then 4 KiB Kosinski modules."""
-    return _moduled.decompress(
-        data,
-        decompress,
-        padding=MODULE_PADDING,
-        name="Kosinski moduled",
-        partial=partial,
-        size_alias=MODULED_SIZE_ALIAS,
-    )
-
-
-def compress_moduled(data: bytes) -> bytes:
-    """Encode ``data`` as 4 KiB Kosinski modules behind a size header."""
-    return _moduled.compress(
-        data,
-        compress,
-        padding=MODULE_PADDING,
-        name="Kosinski moduled",
-        size_alias=MODULED_SIZE_ALIAS,
-    )
-
-
-class KosinskiModuledCompression(PartialDecompression):
-    info = PluginInfo(
-        id="compression.kosinski-moduled",
-        name="Kosinski, moduled (4 KiB streams behind a size header)",
-        stage=Stage.COMPRESSION,
-        # The header's size fixes how many modules follow, and each ends on its
-        # own marker, so the last one's end is the structure's.
-        self_delimiting=True,
-        category="Sega",
-    )
-
-    _decode = staticmethod(decompress_moduled)
-    _encode = staticmethod(compress_moduled)
+KosinskiModuledCompression, _MODULED = _moduled.moduled_plugin(
+    KosinskiCompression,
+    "Kosinski",
+    padding=MODULE_PADDING,
+    size_alias=MODULED_SIZE_ALIAS,
+)
+decompress_moduled = _MODULED.decompress
+compress_moduled = _MODULED.compress

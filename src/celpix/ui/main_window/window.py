@@ -91,20 +91,25 @@ from celpix.ui.font_alphabet_window import FontAlphabetWindow
 from celpix.ui.help_dialogs import AboutDialog, ShortcutGuide, shortcut_sections
 from celpix.ui.hex_view_panel import HexViewPanel
 from celpix.ui.main_window.animation import AnimationMixin
+from celpix.ui.main_window.arrangement import ArrangementMixin
+from celpix.ui.main_window.bindings import BindingsMixin
 from celpix.ui.main_window.capability_sync import CapabilitySyncMixin
 from celpix.ui.main_window.cell_props_bar import CellPropsMixin
 from celpix.ui.main_window.clipboard_ops import ClipboardOpsMixin
 from celpix.ui.main_window.color_editing import ColorEditingMixin
 from celpix.ui.main_window.compression import CompressionMixin
+from celpix.ui.main_window.containers import ContainersMixin
 from celpix.ui.main_window.disk_watch import DiskWatchMixin
 from celpix.ui.main_window.entries import EntriesMixin
 from celpix.ui.main_window.entry_clipboard import EntryClipboardMixin
 from celpix.ui.main_window.font_alphabet import FontAlphabetMixin
 from celpix.ui.main_window.history import HistoryMixin
+from celpix.ui.main_window.index_addressing import IndexAddressingMixin
 from celpix.ui.main_window.inputs import InputsMixin
 from celpix.ui.main_window.interpretation import (
     InterpretationMixin,
 )
+from celpix.ui.main_window.jumps import JumpsMixin
 from celpix.ui.main_window.navigation import NavigationMixin
 from celpix.ui.main_window.palette_dock import PaletteDockMixin
 from celpix.ui.main_window.palette_entry import PaletteEntryMixin
@@ -116,12 +121,15 @@ from celpix.ui.main_window.palette_source import (
 )
 from celpix.ui.main_window.palette_transfer import PaletteTransferMixin
 from celpix.ui.main_window.pixel_edit import PixelEditMixin
+from celpix.ui.main_window.plugins import PluginsMixin
+from celpix.ui.main_window.projects import ProjectsMixin
 from celpix.ui.main_window.rearrange import RearrangeMixin
 from celpix.ui.main_window.rendering import RenderingMixin
 from celpix.ui.main_window.selection import (
     SelectionMixin,
 )
 from celpix.ui.main_window.session import SessionMixin
+from celpix.ui.main_window.slices import SlicesMixin
 from celpix.ui.main_window.sprite_select import SpriteSelectMixin
 from celpix.ui.main_window.stamp_tool import StampToolMixin
 from celpix.ui.main_window.subsprites import SubspritesMixin
@@ -170,6 +178,8 @@ class MainWindow(
     FontAlphabetMixin,
     HistoryMixin,
     InterpretationMixin,
+    ArrangementMixin,
+    PluginsMixin,
     InputsMixin,
     PaletteSourceMixin,
     PaletteOffsetMixin,
@@ -185,7 +195,9 @@ class MainWindow(
     RearrangeMixin,
     PaletteRegionsMixin,
     SessionMixin,
+    BindingsMixin,
     TilemapBarMixin,
+    IndexAddressingMixin,
     TilemapEditMixin,
     CellPropsMixin,
     TileSourceDockMixin,
@@ -195,6 +207,10 @@ class MainWindow(
     RenderingMixin,
     ViewMenuMixin,
     EntriesMixin,
+    ProjectsMixin,
+    SlicesMixin,
+    JumpsMixin,
+    ContainersMixin,
     EntryClipboardMixin,
     WritingMixin,
     TransferMixin,
@@ -363,6 +379,8 @@ class MainWindow(
         # And the stamp tool, whose button the same toolbar builds and whose
         # armed flag _set_edit_mode reads on its way past.
         self._init_stamp()
+        # And the in-app cell clipboard, which the Edit actions' sync asks about.
+        self._init_tilemap_edit()
         # And the pinned palette regions, for the same reason: _refresh_view asks
         # them for every slot's palette row before it can draw anything.
         self._init_palette_regions()
@@ -1294,7 +1312,9 @@ class MainWindow(
         file_menu.addSeparator()
 
         # The four "carve something out of here" rows, each armed by what the
-        # current entry can give it (:meth:`_sync_entry_actions`).
+        # current entry can give it (:meth:`_set_file_actions_enabled`, and
+        # :meth:`_sync_selection_actions` for the selection's row), then vetoed
+        # while several rows are selected (:meth:`_sync_entry_scope`).
         self._new_slice_action = make_action(
             self,
             "&New Slice…",
@@ -1651,11 +1671,21 @@ class MainWindow(
     ) -> bool:
         """Ask before doing it; True where the user said go ahead.
 
-        The counterpart of :meth:`_alert` and the single surface for its kind:
+        The counterpart of :meth:`_alert` and the default surface for its kind:
         a gesture whose consequence reaches past what the user is looking at -
         one control re-declaring a *different* entry, an untick that discards a
         table - stops here first. Cancel is the answer to a dialog dismissed any
         other way, so a stray Escape can only ever leave things as they were.
+
+        A few prompts are their own dialogs, because verb/Cancel is the wrong
+        pair of answers for them: the **Yes/No** questions of a removal
+        (``_confirm_removal``) and of a re-read that discards edits
+        (``_confirm_reread_discard``); the offer to locate missing files, whose
+        "no" is "Not now" rather than a cancelled action; the disk-reload
+        prompt, whose "no" keeps the in-memory bytes (``_ask_disk_reload``); the
+        Write/Discard/Cancel of unsaved edits (``confirm_destructive``); and the
+        open-as pick (``_ask_content_kind``), which is a choice, not a
+        confirmation.
 
         ``accept`` labels the button that does the thing, because "OK" says
         nothing about what is about to happen. ``warn`` marks it as the lossy

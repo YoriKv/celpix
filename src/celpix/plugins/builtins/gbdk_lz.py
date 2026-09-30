@@ -42,7 +42,7 @@ from __future__ import annotations
 
 from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
-from celpix.plugins.builtins._lz import MatchFinder, copy_back
+from celpix.plugins.builtins._lz import MatchFinder, copy_back, corrupt
 
 END = 0x00
 BYTE_RUN, WORD_RUN, BACK_REF, LITERAL = 0x00, 0x40, 0x80, 0xC0
@@ -57,8 +57,7 @@ BACK_REF_COST = 3
 LITERAL_COST = 1
 
 
-def _fail(reason: str) -> ValueError:
-    return ValueError(f"corrupt GBDK LZ stream: {reason}")
+_fail = corrupt("GBDK LZ")
 
 
 def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]:

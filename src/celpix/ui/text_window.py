@@ -1,18 +1,17 @@
 """The text window — a fontmap's cells read, and typed, as words.
 
-A fontmap draws on the canvas as what it is: a grid of glyph tiles. That picture
+A fontmap draws on the canvas as what it is: a grid of letter tiles. That picture
 is correct and nearly useless for the one thing the entry exists for, because
 reading a sentence off a tile grid means reading it a character at a time in
 whatever width the view happens to be set to. This window is the second reading —
 the same cells as text — and the place they are edited by typing.
 
-It is a `Qt.Tool` window on the decompression overlay's pattern
-(:mod:`celpix.ui.decompress_overlay`): floats above the main window, takes no
-taskbar slot, placed beside it on the first show and left where the user drags it
-after. Below the text sits the same status bar and the same
-:class:`~celpix.ui.widgets.Badge` those two carry, and for the same reason — the
-text cannot show that one character of it has no code in this font, so it is said
-in words.
+It is a floating tool window (:class:`~celpix.ui.tool_window.ToolWindow`):
+floats above the main window, takes no taskbar slot, placed beside it on the
+first show and left where the user drags it after. Below the text sits the tool
+windows' status bar and :class:`~celpix.ui.widgets.Badge`, for the reason every
+one of them carries it — the text cannot show that one character of it has no
+code in this font, so it is said in words.
 
 **Presentation only.** It holds a string, the unit map that came with it, a
 command list and a budget; it never reads the model and never encodes anything.
@@ -68,14 +67,9 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QCheckBox,
-    QGridLayout,
-    QLabel,
     QMenu,
     QPlainTextEdit,
     QPushButton,
-    QSizePolicy,
-    QStatusBar,
-    QVBoxLayout,
     QWidget,
 )
 
@@ -87,13 +81,17 @@ from celpix.core.font import (
     unit_bounds,
     unit_spans,
 )
-from celpix.ui.widgets import (
-    Badge,
-    apply_badge,
+from celpix.ui.settings import (
     load_bool_setting,
     save_bool_setting,
 )
-from celpix.ui.window_layout import WindowLayout
+from celpix.ui.tool_window import ToolWindow
+from celpix.ui.widgets import (
+    Badge,
+    FlowButtonGrid,
+    SyncGuard,
+    make_action,
+)
 
 # How many command buttons the insert row lays out before it stops. A format with
 # a hundred named commands would otherwise build a hundred buttons, and the grid
@@ -119,83 +117,7 @@ WORD_WRAP_KEY = "view/text_word_wrap"
 # re-ticking a box is one click.
 
 
-class _CommandGrid(QWidget):
-    """The insert row, folded to the window's width.
-
-    A grid rather than a strip that scrolls sideways: the commands are the
-    format's whole vocabulary for punctuating this string, and one that has
-    scrolled out of sight is one the user has to go hunting for — a hidden name
-    is no better than an unlisted one. So every button is on screen at once and
-    the window grows a line at a time instead.
-
-    Columns are uniform and as wide as the widest caption needs, which keeps a
-    control table reading as a table; how many of them fit is the width divided
-    by that, recomputed as the window is dragged. The buttons stretch to fill,
-    so the last row of a short list lines up with the ones above it rather than
-    ending in a ragged edge.
-    """
-
-    def __init__(self, spacing: int, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._grid = QGridLayout(self)
-        self._grid.setContentsMargins(0, 0, 0, 0)
-        self._grid.setSpacing(spacing)
-        self._spacing = spacing
-        self._buttons: list[QPushButton] = []
-        self._columns = 0
-        # Vertically Minimum: the height is whatever the rows come to, and the
-        # text field above keeps the rest. Nothing here is worth a pixel the
-        # string could have had.
-        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
-
-    @property
-    def layout_(self) -> QGridLayout:
-        """The grid itself — the buttons in the order they were given."""
-        return self._grid
-
-    def set_buttons(self, buttons: list[QPushButton]) -> None:
-        for button in self._buttons:
-            self._grid.removeWidget(button)
-            button.setParent(None)
-            button.deleteLater()
-        self._buttons = buttons
-        for button in buttons:
-            # Expanding, so a column wider than the caption is filled rather than
-            # leaving the button floating in the middle of its cell.
-            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self._columns = 0  # nothing is placed yet, whatever the count was before
-        self._reflow()
-
-    def resizeEvent(self, event) -> None:  # noqa: ANN001, N802 — Qt override
-        super().resizeEvent(event)
-        self._reflow()
-
-    def _reflow(self) -> None:
-        """Lay the buttons out in as many columns as the current width holds."""
-        columns = self._fits()
-        if columns == self._columns:
-            return
-        self._columns = columns
-        # Taken out before being put back: adding a widget the layout already
-        # manages to a second cell leaves it in both, and the row it came from
-        # keeps its old height.
-        for button in self._buttons:
-            self._grid.removeWidget(button)
-        for at, button in enumerate(self._buttons):
-            self._grid.addWidget(button, *divmod(at, columns))
-        for column in range(self._grid.columnCount()):
-            self._grid.setColumnStretch(column, 1 if column < columns else 0)
-
-    def _fits(self) -> int:
-        """How many uniform columns the width holds — at least one, at most all."""
-        if not self._buttons:
-            return 1
-        widest = max(button.sizeHint().width() for button in self._buttons)
-        step = widest + self._spacing
-        return max(1, min(len(self._buttons), (self.width() + self._spacing) // step))
-
-
-class TextWindow(QWidget):
+class TextWindow(ToolWindow):
     """Presentation-only floating view of a fontmap's text, typed over in place."""
 
     #: The body after an edit, with whether it starts a new undo step, what to
@@ -212,20 +134,20 @@ class TextWindow(QWidget):
     #: caret. The canvas mirrors it, so a phrase picked out here is the run of
     #: cells highlighted there and not just the one the caret sits in.
     caret_moved = Signal(int, int)
-    #: Ctrl+Z / Ctrl+Y arrived here rather than at the main window, because a
-    #: `Qt.Tool` window is the active one and window-context shortcuts follow it.
+    #: Ctrl+Z / Ctrl+Y arrived here rather than at the main window. Qt keeps the
+    #: main window's shortcuts live over a `Qt.Tool` child, and the field claims
+    #: the two keys ahead of them the way a text input claims its editing keys,
+    #: so the press lands on the field (:class:`_TextEdit`) and is passed on
+    #: from there to the session's one stack.
     undo_requested = Signal()
     redo_requested = Signal()
-    #: The user shut the window from its own frame. Distinct from being hidden
-    #: because the entry stopped being a fontmap, which is celPix's decision and
-    #: says nothing about whether they want to see text again.
-    dismissed = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent, Qt.WindowType.Tool)
-        self.setWindowTitle("Text")
-        self._positioned = False
-        self._syncing = False
+        # A little below the main window's top edge, clear of its toolbars.
+        super().__init__(
+            parent, "Text", "layout/text-window", (460, 380), offset=QPoint(12, 40)
+        )
+        self._syncing = SyncGuard()
         self._title = ""
         # What the file says, what the field says, and which piece each character
         # of it belongs to. They agree except while a code is being composed or a
@@ -268,7 +190,7 @@ class TextWindow(QWidget):
         self._reported: tuple[int, int] = (0, 0)
         self._edit.left.connect(self._on_focus_out)
 
-        self._guide = _CommandGrid(3, self)
+        self._guide = FlowButtonGrid(3, self)
         self._guide_row = self._guide.layout_
         # The captions, tokens and descriptions the row was last built from, so a
         # refresh that says the same thing leaves the buttons standing
@@ -298,28 +220,13 @@ class TextWindow(QWidget):
         )
         self._insert_mode.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
-        self._status = QStatusBar()
-        self._status.setSizeGripEnabled(False)
-        self._badge = QLabel()
-        self._badge.hide()
-        self._status.addPermanentWidget(self._insert_mode)
-        self._status.addPermanentWidget(self._wrap)
-        self._status.addPermanentWidget(self._badge)
+        # Left of the badge the shell put in the permanent slot, so the badge
+        # stays at the far edge where every tool window wears it.
+        self._status.insertPermanentWidget(0, self._insert_mode)
+        self._status.insertPermanentWidget(1, self._wrap)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 6, 6, 0)
-        layout.addWidget(self._edit, 1)
-        layout.addWidget(self._guide)
-        layout.addWidget(self._status)
-        self.resize(460, 380)
-        # A size the user set is worth keeping: this is the window a fontmap is
-        # actually typed in, and the default is a starting point rather than an
-        # answer. Its own key - a window is remembered by what it is for, not by
-        # which instance of it is on screen.
-        self._layout_memory = WindowLayout(self, "layout/text-window")
-        # A remembered position counts as already placed (the tool windows'
-        # shared rule, :mod:`celpix.ui.decompress_overlay`).
-        self._positioned = self._layout_memory.restore()
+        self.content.addWidget(self._edit, 1)
+        self.content.addWidget(self._guide)
 
         # Ctrl+Return writes a code still being spelled without leaving the field,
         # because Return itself is a line break in the text and a fontmap's line
@@ -366,8 +273,7 @@ class TextWindow(QWidget):
         """
         self._flag_break = flag_break
         self.setWindowTitle(title)
-        self._status.showMessage(status)
-        apply_badge(self._badge, badge)
+        self.set_status(status, badge)
         self._build_guide(commands)
         force = force or title != self._title
         self._title = title
@@ -377,29 +283,16 @@ class TextWindow(QWidget):
             pass
         else:
             self._body, self._units, self._drafting = body, units, False
-            self._syncing = True
-            try:
+            with self._syncing:
                 at = self._edit.textCursor().position()
                 self._edit.setPlainText(body)
                 cursor = self._edit.textCursor()
                 cursor.setPosition(min(at, len(body)))
                 self._edit.setTextCursor(cursor)
-            finally:
-                self._syncing = False
             self._note_span()
             self._fresh = True
         self._committed, self._committed_units = body, units
-        if not self.isVisible():
-            if not self._positioned and self.parentWidget() is not None:
-                anchor = self.parentWidget().frameGeometry().topRight()
-                self.move(anchor + QPoint(12, 40))
-                self._positioned = True
-            self.show()
-
-    def set_status(self, status: str, badge: Badge | None = None) -> None:
-        """Update the budget line alone — what a keystroke changes."""
-        self._status.showMessage(status)
-        apply_badge(self._badge, badge)
+        self.present()
 
     def set_read_only(self, read_only: bool) -> None:
         """Lock the field where the entry's cells cannot be written back."""
@@ -424,8 +317,7 @@ class TextWindow(QWidget):
         it — the caret has been moved by something that was not a keystroke, and
         the next one starts a step of its own.
         """
-        self._syncing = True
-        try:
+        with self._syncing:
             cursor = self._edit.textCursor()
             cursor.setPosition(max(0, min(first, len(self.body))))
             cursor.setPosition(
@@ -434,8 +326,6 @@ class TextWindow(QWidget):
             )
             self._edit.setTextCursor(cursor)
             self._edit.ensureCursorVisible()
-        finally:
-            self._syncing = False
         self._note_span()
         self._fresh = True
 
@@ -452,21 +342,22 @@ class TextWindow(QWidget):
         below, and a key pressed after it must start a step of its own rather
         than merge into the one the caret has just been pulled out of.
         """
-        self._syncing = True
-        try:
+        with self._syncing:
             cursor = self._edit.textCursor()
             cursor.setPosition(max(0, min(at, len(self.body))))
             self._edit.setTextCursor(cursor)
-        finally:
-            self._syncing = False
         self._note_span()
         self._fresh = True
 
     def hide_overlay(self) -> None:
-        """Hide — the entry on screen is no longer a fontmap, or was closed."""
+        """Hide — the entry on screen is no longer a fontmap, or was closed.
+
+        A code still being spelled is written first, while the entry it was
+        typed into is the one that will take it.
+        """
         if self.isVisible():
             self._commit()
-            self.hide()
+        super().hide_overlay()
 
     # -- editing -----------------------------------------------------------
     def put(self, typed: str, *, label: str = "edit text") -> None:
@@ -771,16 +662,13 @@ class TextWindow(QWidget):
             self._body, self._units, first, last, typed, unit=unit
         )
         caret = first + len(typed) if caret is None else caret
-        self._syncing = True
-        try:
+        with self._syncing:
             cursor = self._edit.textCursor()
             cursor.setPosition(first)
             cursor.setPosition(last, QTextCursor.MoveMode.KeepAnchor)
             cursor.insertText(typed)
             cursor.setPosition(caret)
             self._edit.setTextCursor(cursor)
-        finally:
-            self._syncing = False
         self._note_span()
         self._report(was, caret, label)
 
@@ -854,7 +742,7 @@ class TextWindow(QWidget):
         self._commit()
         self.redo_requested.emit()
 
-    def commit_draft(self) -> None:
+    def commit_pending(self) -> None:
         """Write out a draft before the entry it was typed into is left.
 
         The window is filled for one entry at a time, and a ``[...]`` still being
@@ -876,14 +764,11 @@ class TextWindow(QWidget):
         (:attr:`_committed_units`).
         """
         at = self._edit.textCursor().position()
-        self._syncing = True
-        try:
+        with self._syncing:
             self._edit.setPlainText(self._committed)
             cursor = self._edit.textCursor()
             cursor.setPosition(min(at, len(self._committed)))
             self._edit.setTextCursor(cursor)
-        finally:
-            self._syncing = False
         self._note_span()
         self._body, self._units = self._committed, self._committed_units
         self._drafting, self._fresh = False, True
@@ -957,11 +842,11 @@ class TextWindow(QWidget):
         """Closing is a write: a code left half-spelled is still an edit.
 
         It is also the one gesture that says the user does not want this window,
-        which is why it is reported — :meth:`hide_overlay` is celPix putting it
-        away and means nothing of the sort.
+        which the shell reports (:attr:`~celpix.ui.tool_window.ToolWindow.
+        dismissed`) — :meth:`hide_overlay` is celPix putting it away and means
+        nothing of the sort.
         """
         self._commit()
-        self.dismissed.emit()
         super().closeEvent(event)
 
 
@@ -1050,9 +935,7 @@ class _TextEdit(QPlainTextEdit):
             ("&Paste", self._owner.paste, editable),
             ("Select &All", self.selectAll, bool(self.toPlainText())),
         ):
-            action = menu.addAction(caption)
-            action.setEnabled(enabled)
-            action.triggered.connect(slot)
+            make_action(menu, caption, slot, menu=menu, enabled=enabled)
         menu.exec(event.globalPos())
 
     def mousePressEvent(self, event) -> None:  # noqa: ANN001 — QMouseEvent

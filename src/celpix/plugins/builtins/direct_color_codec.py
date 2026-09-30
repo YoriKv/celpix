@@ -26,9 +26,9 @@ from celpix.core.argb_grid import ArgbGrid
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.plugins._byteops import or_all
-from celpix.plugins._params import byte_order
+from celpix.plugins._params import byte_order, integer
 from celpix.plugins.base import PluginInfo
-from celpix.plugins.builtins._fields import bit_width
+from celpix.plugins.builtins._fields import byte_width
 from celpix.plugins.builtins._mask import (
     ARGB_BYTE_LAYOUT,
     GRAY,
@@ -37,7 +37,7 @@ from celpix.plugins.builtins._mask import (
     encode_tables,
     layout_text,
 )
-from celpix.plugins.builtins._tile import flatten_tiles, require_whole_tiles
+from celpix.plugins.builtins._tile import flatten_tiles, require_whole_tiles, tile_dims
 
 
 class DirectColorCodec:
@@ -54,17 +54,10 @@ class DirectColorCodec:
     @staticmethod
     def _config(params: dict[str, Any]) -> tuple[int, str, dict[str, tuple[int, ...]]]:
         if "bytes_per_pixel" in params:
-            bpx = int(params["bytes_per_pixel"])
+            bpx = integer(params, "bytes_per_pixel")
         else:
-            # The layout already says how wide a pixel is; one that is not a
-            # whole number of bytes could not be strided over the buffer.
-            width = bit_width(layout_text(params))
-            if width % 8:
-                raise ValueError(
-                    f"a pixel has to be a whole number of bytes, and the layout "
-                    f"describes {width} bits"
-                )
-            bpx = width // 8
+            # The layout already says how wide a pixel is.
+            bpx = byte_width(layout_text(params), "a pixel")
         if bpx <= 0:
             raise ValueError("bytes_per_pixel must be positive")
         order = byte_order(params, "byte_order", "little")
@@ -80,11 +73,7 @@ class DirectColorCodec:
 
     @classmethod
     def _tile(cls, params: dict[str, Any]) -> tuple[int, int]:
-        width = int(params.get("tile_width", cls.TILE))
-        height = int(params.get("tile_height", cls.TILE))
-        if width <= 0 or height <= 0:
-            raise ValueError(f"tile size must be positive, got {width}x{height}")
-        return width, height
+        return tile_dims(params, default=cls.TILE, engine="direct-color")
 
     def bytes_per_tile(self, params: dict[str, Any]) -> int:
         w, h = self._tile(params)

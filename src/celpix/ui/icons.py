@@ -1,4 +1,4 @@
-"""The icon glyphs celPix draws, as codepoints in the bundled icon font.
+"""The icons celPix draws, as codepoints in the bundled icon font.
 
 Qt-free on purpose, so the tool and transform tables in :mod:`celpix.ui.tools`
 can name a button's face as plain data the way they already name its rasterizer
@@ -23,7 +23,7 @@ from __future__ import annotations
 from enum import Enum
 
 
-class Glyph(Enum):
+class Icon(Enum):
     """One icon in the bundled font. ``value`` is the character to draw."""
 
     # The drawing tools, and the color editor's pick button (which wears the

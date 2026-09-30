@@ -44,6 +44,7 @@ from itertools import accumulate
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.plugins.base import PluginInfo
+from celpix.plugins.builtins._tile import require_whole
 
 # Unit width in bytes -> its little-endian struct code. The two widths any
 # caller has: bytes, and the halfwords the GBA BIOS's 16-bit filter sums.
@@ -55,10 +56,7 @@ def _unit_format(data: bytes, width: int) -> tuple[str, int]:
     code = _UNIT_CODE.get(width)
     if code is None:
         raise ValueError(f"unit width must be 1 or 2 bytes, not {width}")
-    if len(data) % width:
-        raise ValueError(
-            f"{len(data):,} bytes are not a whole number of {width}-byte units"
-        )
+    require_whole(len(data), width, noun="unit")
     return f"<{len(data) // width}{code}", (1 << (8 * width)) - 1
 
 

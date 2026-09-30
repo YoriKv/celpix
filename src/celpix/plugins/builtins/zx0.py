@@ -59,7 +59,15 @@ from collections import deque
 
 from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
-from celpix.plugins.builtins._lz import BitGroup, MatchFinder, copy_back
+from celpix.plugins.builtins._lz import (
+    BitGroup,
+    ByteSource,
+    GroupReader,
+    MatchFinder,
+    Truncated,
+    copy_back,
+    corrupt,
+)
 
 MAX_OFFSET = 0x7F80
 # Where the offset's high part is 0 and so costs a single bit.
@@ -81,43 +89,21 @@ _INF = float("inf")
 _LITERALS, _REP, _NEW = range(3)
 
 
-def _fail(reason: str) -> ValueError:
-    return ValueError(f"corrupt ZX0 stream: {reason}")
+_fail = corrupt("ZX0")
 
 
-class _Truncated(Exception):
-    """The stream ran out mid-op — recoverable only under ``partial``."""
+def _gamma(bits: GroupReader, value: int = 1, invert: int = 0) -> int:
+    """One gamma-coded value: a continue bit, then (if it says go on) a value bit.
 
-
-class _Reader:
-    """Bits and bytes over one buffer, sharing a position (see the docstring)."""
-
-    def __init__(self, data: bytes) -> None:
-        self._data = data
-        self.pos = 0
-        self._bits = 0
-        self._left = 0
-
-    def byte(self) -> int:
-        if self.pos >= len(self._data):
-            raise _Truncated
-        value = self._data[self.pos]
-        self.pos += 1
-        return value
-
-    def bit(self) -> int:
-        if not self._left:
-            self._bits = self.byte()
-            self._left = 8
-        self._left -= 1
-        return (self._bits >> self._left) & 1
-
-    def gamma(self, value: int = 1, invert: int = 0) -> int:
-        while not self.bit():
-            value = (value << 1) | (self.bit() ^ invert)
-            if value > OUTPUT_CAP:
-                raise _fail("gamma code runs past any plausible value")
-        return value
+    ``invert`` flips the value bits, which is how the offset's high part is
+    stored; ``value`` seeds the code for the length whose first bit was read
+    ahead of it.
+    """
+    while not bits.bit():
+        value = (value << 1) | (bits.bit() ^ invert)
+        if value > OUTPUT_CAP:
+            raise _fail("gamma code runs past any plausible value")
+    return value
 
 
 def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]:
@@ -126,7 +112,9 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
     ``complete`` is false only when the buffer ran out before the end marker,
     which ``partial`` downgrades from an error to a short result.
     """
-    reader = _Reader(data)
+    # Bits and bytes share one cursor (see the module docstring).
+    src = ByteSource(data)
+    bits = GroupReader(src, msb_first=True)
     out = bytearray()
     offset = 1
     complete = False
@@ -134,33 +122,29 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
     try:
         while True:
             if not new_offset:
-                count = reader.gamma()
+                count = _gamma(bits)
                 if len(out) + count > OUTPUT_CAP:
                     raise _fail(f"output would exceed {OUTPUT_CAP:,} bytes")
-                start = reader.pos
-                if start + count > len(data):
-                    raise _Truncated
-                out += data[start : start + count]
-                reader.pos += count
-                new_offset = reader.bit()
+                out += src.take(count)
+                new_offset = bits.bit()
                 if not new_offset:
-                    length = reader.gamma()
+                    length = _gamma(bits)
                     _copy(out, offset, length)
-                    new_offset = reader.bit()
+                    new_offset = bits.bit()
                     continue
-            high = reader.gamma(invert=1)
+            high = _gamma(bits, invert=1)
             if high == END_HIGH:
                 complete = True
                 break
-            low = reader.byte()
+            low = src.byte()
             offset = ((high - 1) << 7) + (127 - (low >> 1)) + 1
-            length = 1 if low & 1 else reader.gamma((1 << 1) | reader.bit())
+            length = 1 if low & 1 else _gamma(bits, (1 << 1) | bits.bit())
             _copy(out, offset, length + 1)
-            new_offset = reader.bit()
-    except _Truncated:
+            new_offset = bits.bit()
+    except Truncated:
         if not partial:
             raise _fail(f"source ended after {len(out):,} bytes") from None
-    return bytes(out), reader.pos, complete
+    return bytes(out), src.pos, complete
 
 
 def _copy(out: bytearray, offset: int, length: int) -> None:

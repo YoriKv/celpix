@@ -28,7 +28,6 @@ from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QPainter, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
-    QDialogButtonBox,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -39,11 +38,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from celpix.ui.glyphs import Glyph
-from celpix.ui.icon_font import glyph_pixmap
+from celpix.core.palette import format_argb, parse_argb
+from celpix.ui.icon_font import icon_pixmap
+from celpix.ui.icons import Icon
 from celpix.ui.widgets import (
     CommittingLineEdit,
-    icon_cache_key,
+    IconBaker,
+    add_labelled,
+    dialog_buttons,
     signals_blocked,
 )
 
@@ -62,23 +64,7 @@ def _eyedropper_pixmap(color: QColor, size: int, ratio: float) -> QPixmap:
     button that picks a color off the canvas and the tool that does it are
     visibly the one gesture.
     """
-    return glyph_pixmap(Glyph.EYE_DROPPER, color, QSize(size, size), ratio)
-
-
-def parse_hex_color(text: str) -> int | None:
-    """``#AARRGGBB`` / ``#RRGGBB`` (``#`` optional) to an ARGB int, else None.
-
-    A 6-digit value is taken as opaque — the common case when typing a color
-    copied from anywhere else — so alpha only has to be spelled when it matters.
-    """
-    cleaned = text.strip().lstrip("#")
-    if len(cleaned) not in (6, 8):
-        return None
-    try:
-        value = int(cleaned, 16)
-    except ValueError:
-        return None
-    return value | 0xFF000000 if len(cleaned) == 6 else value
+    return icon_pixmap(Icon.EYE_DROPPER, color, QSize(size, size), ratio)
 
 
 class ColorSwatch(QWidget):
@@ -107,7 +93,7 @@ class ColorSwatch(QWidget):
         painter.end()
 
 
-class ColorEditor(QWidget):
+class ColorEditor(IconBaker, QWidget):
     """Channel sliders + hex + previews for one ARGB color."""
 
     # The edited color, on every change (drag included) — hosts apply live and
@@ -123,9 +109,6 @@ class ColorEditor(QWidget):
         self._color = 0xFF000000
         self._original = 0xFF000000
         self._quantize: Callable[[int], int] | None = None
-        # Set while pushing state into the inputs, so their change signals don't
-        # re-enter and fight the value being installed.
-        self._updating = False
 
         self._alpha = False  # no alpha input until a format says it stores one
         self._preview = ColorSwatch(QSize(72, 48))
@@ -176,7 +159,7 @@ class ColorEditor(QWidget):
         for widget in (self._labels["A"], self._sliders["A"], self._spins["A"]):
             widget.setVisible(False)
 
-        self._hex = CommittingLineEdit(parse_hex_color, self._hex_text)
+        self._hex = CommittingLineEdit(parse_argb, self._hex_text)
         self._hex.setFixedWidth(80)  # widened by set_alpha_enabled when needed
         self._hex.setToolTip("#AARRGGBB, or #RRGGBB for an opaque color")
         self._hex.committed.connect(self._on_hex)
@@ -185,8 +168,7 @@ class ColorEditor(QWidget):
         self._pick.setCheckable(True)
         self._pick.setToolTip("Pick a color from the canvas or palette")
         self._pick.toggled.connect(self.pick_toggled)
-        self._icon_key = icon_cache_key(self)
-        self._refresh_pick_icon()
+        self._bake_if_stale()
 
         # Both previews sit in identically-shaped columns so their swatches line
         # up, and the pair is centred (stretch on both sides) — with the stored
@@ -214,8 +196,7 @@ class ColorEditor(QWidget):
         # The eyedropper sits right of the hex field — a compact icon toggle
         # beside the value it fills in, not a labelled button of its own.
         hex_row = QHBoxLayout()
-        hex_row.addWidget(QLabel("Hex:"))
-        hex_row.addWidget(self._hex)
+        add_labelled(hex_row, "Hex:", self._hex, self._hex.toolTip())
         hex_row.addWidget(self._pick)
         hex_row.addStretch(1)
 
@@ -226,8 +207,13 @@ class ColorEditor(QWidget):
 
         self._refresh_inputs()
 
-    def _refresh_pick_icon(self) -> None:
-        """(Re)paint the eyedropper mark in the current theme's button color."""
+    def _bake_icons(self) -> None:
+        """(Re)paint the eyedropper mark in the current theme's button color.
+
+        A pixmap baked in the palette's color at the display's resolution, so a
+        theme switch or a move to a differently scaled display re-renders it
+        (:class:`~celpix.ui.widgets.IconBaker`).
+        """
         color = self.palette().color(
             QPalette.ColorGroup.Active, QPalette.ColorRole.ButtonText
         )
@@ -235,17 +221,6 @@ class ColorEditor(QWidget):
             QIcon(_eyedropper_pixmap(color, 16, self.devicePixelRatioF()))
         )
         self._pick.setIconSize(QSize(16, 16))
-
-    def changeEvent(self, event) -> None:  # noqa: ANN001 — Qt override
-        # The eyedropper icon is a pixmap baked in the old palette's color at
-        # the old resolution; a theme switch or a move to a differently scaled
-        # display has to re-render it. Guarded on the key rather than the event,
-        # because Qt sends a burst of PaletteChange on startup alone.
-        super().changeEvent(event)
-        key = icon_cache_key(self)
-        if key != self._icon_key:
-            self._icon_key = key
-            self._refresh_pick_icon()
 
     # -- state -------------------------------------------------------------
     def color(self) -> int:
@@ -302,14 +277,11 @@ class ColorEditor(QWidget):
 
     # -- input handling ----------------------------------------------------
     def _on_channel(self, name: str, value: int) -> None:
-        if self._updating:
-            return
         shift = dict(_CHANNELS)[name]
         self._apply(self._color & ~(0xFF << shift) | (value & 0xFF) << shift)
 
     def _on_hex(self, argb: object) -> None:
-        if not self._updating:
-            self._apply(int(argb))
+        self._apply(int(argb))
 
     def revert(self) -> None:
         """Return to the color the editor opened on (the marked original).
@@ -331,18 +303,17 @@ class ColorEditor(QWidget):
         self.color_changed.emit(self._color)
 
     def _hex_text(self) -> str:
-        if self._alpha:
-            return f"#{self._color & 0xFFFFFFFF:08X}"
-        return f"#{self._color & 0xFFFFFF:06X}"
+        return format_argb(self._color, alpha=self._alpha)
 
     def _refresh_inputs(self) -> None:
-        self._updating = True
-        for name, shift in _CHANNELS:
-            value = (self._color >> shift) & 0xFF
-            self._sliders[name].setValue(value)
-            self._spins[name].setValue(value)
+        # Blocked, so pushing the color into the inputs does not come back as an
+        # edit of each channel in turn fighting the value being installed.
+        with signals_blocked(*self._sliders.values(), *self._spins.values()):
+            for name, shift in _CHANNELS:
+                value = (self._color >> shift) & 0xFF
+                self._sliders[name].setValue(value)
+                self._spins[name].setValue(value)
         self._hex.refresh()
-        self._updating = False
         self._preview.set_color(self._color)
         self._refresh_stored()
 
@@ -358,7 +329,7 @@ class ColorEditor(QWidget):
         self._show_stored(True)
         self._stored.set_color(stored)
         exact = stored == self._color
-        self._stored_note.setText(f"#{stored & 0xFFFFFFFF:08X}")
+        self._stored_note.setText(format_argb(stored))
         self._stored_approx.setVisible(not exact)
 
     def _show_stored(self, visible: bool) -> None:
@@ -399,24 +370,18 @@ class ColorEditorDialog(QDialog):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Edit color")
+        self.setWindowTitle("Edit Color")
         # Tool: floats above its parent without taking a taskbar slot.
         self.setWindowFlag(Qt.WindowType.Tool, True)
         self.editor = ColorEditor(self)
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.setCenterButtons(True)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.addWidget(self.editor)
-        layout.addWidget(buttons)
+        dialog_buttons(self, layout).setCenterButtons(True)
 
     def set_entry_label(self, label: str) -> None:
         """Name the palette entry being edited in the title bar."""
-        self.setWindowTitle(f"Edit color - {label}")
+        self.setWindowTitle(f"Edit Color - {label}")
 
     def reject(self) -> None:  # Qt override
         # Cancel (and Esc): undo back to the opening color, then close. Routed

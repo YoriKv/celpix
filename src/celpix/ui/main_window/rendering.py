@@ -28,11 +28,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
+from typing import TypeVar
 
 from celpix.core import ceil_div
 from celpix.core.arrangement import BlockLayout, tile_first_pixel
 from celpix.core.document import ViewOptions
 from celpix.core.palette import Palette
+from celpix.core.tilemap import Cell
 from celpix.pipeline import pipeline
 from celpix.ui import render_bridge
 from celpix.ui.canvas import ATTR_FLAGS_BIT, ATTR_PRIORITY_BIT
@@ -50,8 +52,14 @@ from celpix.ui.main_window.interpretation import (
     PALETTE_ROW_DIRECT_TIP,
     PALETTE_ROW_TIP,
 )
-from celpix.ui.undo_commands import ViewAxisCommand, ViewAxisState
+from celpix.ui.undo_commands import (
+    ViewAxisCommand,
+    ViewAxisState,
+    ViewToggleCommand,
+)
 from celpix.ui.widgets import signals_blocked
+
+_T = TypeVar("_T")
 
 
 class RenderingMixin:
@@ -220,6 +228,28 @@ class RenderingMixin:
             return
         self._refresh_view()
 
+    def _push_view_toggle(self, attr: str, text: str, on: bool) -> None:
+        """Push one of the entry's view switches, or land it if there is no entry.
+
+        The gesture half of :meth:`_apply_view_toggle`, shared by every switch
+        it lands (Show Rearranged Tiles, All Frames, Transparent 0), which
+        differ only in which field they drive and what the step is called. One
+        undo step each, because the project file keeps the setting. The guard
+        is the ordinary one: a box re-ticked to what it already shows is not a
+        gesture, and one moved by an undo apply is the apply.
+        """
+        if getattr(self, attr) == on or self._applying_undo:
+            return
+        entry = self._workspace.current
+        if self._doc is None or entry is None:
+            self._apply_view_toggle(attr, on)
+            return
+        self._push_command(
+            ViewToggleCommand(
+                self, entry, attr, text, before=getattr(self, attr), after=on
+            )
+        )
+
     def _view_rows(self) -> int:
         """Tile-rows the window actually shows - the Rows setting, or the file.
 
@@ -245,6 +275,44 @@ class RenderingMixin:
         # the data, and a trailing partial tile still renders (zero-padded).
         tiles = ceil_div(len(self._doc.pixel_data) - self._nudge, tb)
         return max(rows, ceil_div(tiles, max(1, self._columns.value())))
+
+    def _paint_grid(
+        self,
+        grid,  # noqa: ANN001 - an IndexGrid or ArgbGrid
+        *,
+        pinned: bool,
+        base: int | None = None,
+        transparent_zero: bool = False,
+    ):
+        """``grid`` as a QImage, through whichever colour table its indices need.
+
+        **The one place the table is chosen**, for every picture composed out of
+        the document: the live window, a rearranged window, a tilemap, and the
+        float and copy cut out of any of them. ``pinned`` says the palette row
+        is already folded into the indices (pinned palette regions, or a map
+        whose format gives cells a row), so the table is the palette itself and
+        must not offset again; otherwise the table starts at ``base``, the
+        view's own Palette Row unless the caller names another. Two copies of
+        this choice are how a float comes to draw a row away from the picture
+        it was lifted out of.
+
+        The row width goes to the pinned path always: it is read only by
+        ``transparent_zero``, which on that path has to clear every row's
+        index 0 rather than entry 0 alone.
+        """
+        assert self._doc is not None
+        space = self._index_space()
+        if pinned:
+            base = 0
+        elif base is None:
+            base = self._doc.view.palette_row * space
+        return render_bridge.render(
+            grid,
+            self._doc.palette,
+            base,
+            transparent_zero=transparent_zero,
+            row_stride=space if pinned else 256,
+        )
 
     def _render_arrangement(
         self,
@@ -278,10 +346,7 @@ class RenderingMixin:
         grid, filled = pipeline.decode_and_compose(
             pixel_bytes, engine, params, layout, two_dimensional, max_rows, biases
         )
-        if biases is not None:
-            return render_bridge.render_pinned(grid, self._doc.palette), filled
-        base = self._doc.view.palette_row * self._index_space()
-        return render_bridge.render(grid, self._doc.palette, base), filled
+        return self._paint_grid(grid, pinned=biases is not None), filled
 
     def _window_palette_rows(self, cols: int, rows: int) -> list[int | None] | None:
         """The **pinned** row of each visible slot, ``None`` where none is pinned.
@@ -298,7 +363,7 @@ class RenderingMixin:
         the picture has to be drawn through *something*; the row **labels** must not,
         or every unpinned tile in the window is numbered with the view's row — which
         is what the overlay is meant to distinguish the pinned few from
-        (:meth:`~celpix.ui.canvas.TileCanvas.set_palette_rows`). Reading the label
+        (:meth:`~celpix.ui.canvas.Canvas.set_palette_rows`). Reading the label
         off the recolour hid that for as long as Palette Row was 0, where the two agree.
 
         Returning **None for the whole list** on an unpinned document is
@@ -457,7 +522,8 @@ class RenderingMixin:
     def _settle_tilemap_width(self) -> None:
         """Let a tilemap that fixes its own width own Cols while it applies.
 
-        The tilemap counterpart of :meth:`_settle_bitmap_width_and_columns`, and
+        The tilemap counterpart of
+        :meth:`~...arrangement.ArrangementMixin._settle_bitmap_width_and_columns`, and
         it runs after that one for the same reason it exists: both take the column
         count over, and the last word has to be one of them. A tilemap wins
         wherever its width is not a preference at all
@@ -616,17 +682,8 @@ class RenderingMixin:
 
         A tilemap is **always drawn entire**. Its extent is the file's, not a
         window into a large bank, and paging a screen would hide the thing being
-        read (``docs/design/tilemap-entry.md`` §8).
-
-        Two colour-table paths, decided by whether the **format** gives a cell a
-        palette row. Where it does the row is already folded into the indices
-        upstream and the table must not offset again — the pinned-region path,
-        and the one every hardware map takes, including one whose cells all sit
-        on row 0: those zeros are the file's answer and stand until something
-        edits them. Where the format has no such field (a Game Boy map's bare
-        tile number, a converted screen's low byte) nothing has answered, and the
-        map indexes one block of the palette exactly as a pixel document does —
-        Palette Row picks which.
+        read (``docs/design/tilemap-entry.md`` §8). Which colour table it is
+        drawn through is :meth:`_tilemap_grid_image`'s choice.
         """
         assert self._doc is not None
         drawn = pipeline.tilemap_image(
@@ -669,16 +726,11 @@ class RenderingMixin:
         arguments within a day of existing.
         """
         assert self._doc is not None
-        clear = self._doc.view.transparent_zero
-        if self._doc.folds_palette_rows:
-            image = render_bridge.render_pinned(
-                grid, self._doc.palette, self._index_space(), transparent_zero=clear
-            )
-        else:
-            base = self._doc.view.palette_row * self._index_space()
-            image = render_bridge.render(
-                grid, self._doc.palette, base, transparent_zero=clear
-            )
+        image = self._paint_grid(
+            grid,
+            pinned=self._doc.folds_palette_rows,
+            transparent_zero=self._doc.view.transparent_zero,
+        )
         return render_bridge.paint_hidden(image, hidden)
 
     def _tile_id_labels(self) -> list[int | None] | None:
@@ -707,15 +759,27 @@ class RenderingMixin:
             return None
         if doc.is_sprite:
             return None
-        per_cell = doc.tiles_per_cell
-        labels: list[int | None] = []
-        # In the order the cells are *drawn*, since the labels are indexed by
-        # canvas slot: an assembled screen file draws its pages side by side, so
-        # a label taken in file order would number the wrong half of the picture.
-        for cell in doc.laid_out_cells:
-            labels.append(cell.index)
-            labels.extend([None] * (per_cell - 1))
-        return labels
+        return self._per_cell_slots(lambda cell: cell.index)
+
+    def _per_cell_slots(self, value_of: Callable[[Cell], _T | None]) -> list[_T | None]:
+        """``value_of`` each cell, by canvas **tile** slot, once per cell.
+
+        The shape every per-cell overlay hands the canvas (the tile IDs, the
+        attribute badges, the palette-row numbers): indexed by tile slot because
+        that is the space the canvas places in, so a cell covering a 2x2 metatile
+        carries its value on its first slot and None on the other three, and the
+        label is drawn once per cell. Walked in the order the cells are *drawn*
+        (``Document.laid_out_cells``): an assembled screen file draws its pages
+        side by side, so values taken in file order would land on the wrong half
+        of the picture.
+        """
+        assert self._doc is not None
+        pad = [None] * (self._doc.tiles_per_cell - 1)
+        slots: list[_T | None] = []
+        for cell in self._doc.laid_out_cells:
+            slots.append(value_of(cell))
+            slots.extend(pad)
+        return slots
 
     def _cell_attr_marks(self) -> list[int | None] | None:
         """The attribute badges for each visible cell, by canvas slot — or None.
@@ -742,17 +806,16 @@ class RenderingMixin:
         flags = "flags" in fields
         if not priority and not flags:
             return None
-        per_cell = doc.tiles_per_cell
-        marks: list[int | None] = []
-        for cell in doc.laid_out_cells:
+
+        def mark(cell: Cell) -> int | None:
             mask = 0
             if priority and cell.priority:
                 mask |= ATTR_PRIORITY_BIT
             if flags and cell.flags:
                 mask |= ATTR_FLAGS_BIT
-            marks.append(mask or None)
-            marks.extend([None] * (per_cell - 1))
-        return marks
+            return mask or None
+
+        return self._per_cell_slots(mark)
 
     def _line_end_slots(self) -> frozenset[int]:
         """The canvas slots whose cell ends a line — a **fontmap** only.
@@ -827,12 +890,9 @@ class RenderingMixin:
         doc = self._doc
         if doc is None or doc.is_sprite or not doc.cells_carry_palette_rows:
             return None
-        per_cell = doc.tiles_per_cell
-        labels: list[int | None] = []
-        for cell in doc.laid_out_cells:
-            labels.append(self._drawn_palette_row(cell.palette_row))
-            labels.extend([None] * (per_cell - 1))
-        return labels
+        return self._per_cell_slots(
+            lambda cell: self._drawn_palette_row(cell.palette_row)
+        )
 
     def _sync_palette_row(self) -> None:
         """Say what Palette Row means here — the view's row, or the row being picked.
@@ -884,15 +944,11 @@ class RenderingMixin:
         nothing behind them are exactly the ones past the last tile.
         """
         assert self._doc is not None
-        view = self._doc.view
         window_tiles = layout.columns * rows
         tiles = self._decode_run(self._offset, window_tiles) or []
         biases = self._window_biases(layout.columns, rows)
         grid = pipeline.compose_tiles(tiles, layout, rows, biases)
-        if biases is not None:
-            return render_bridge.render_pinned(grid, self._doc.palette), len(tiles)
-        base = view.palette_row * self._index_space()
-        return render_bridge.render(grid, self._doc.palette, base), len(tiles)
+        return self._paint_grid(grid, pinned=biases is not None), len(tiles)
 
     def _refresh_view(self) -> None:
         assert self._doc is not None
@@ -964,7 +1020,7 @@ class RenderingMixin:
             # window keeps one answer per entry and the box that sets it is
             # hidden where it does not apply, so there is nothing here to gate.
             show_all_frames=self._show_all_frames,
-            # Only the tilemap render reads it (:meth:`_tilemap_render`), and the
+            # Only the tilemap render reads it (:meth:`_tilemap_grid_image`), and the
             # box that sets it is hidden everywhere else — stored for every entry
             # all the same, on the same rule as the frame count above: the window
             # keeps one answer per entry rather than a second place to gate it.
@@ -980,7 +1036,7 @@ class RenderingMixin:
         if current is not None:
             self._resync_glyph_layouts(current)
             # Cols again, for a table other maps stamp from at the width it is
-            # viewed at (:meth:`~...session.SessionMixin._resync_chain_widths`).
+            # viewed at (:meth:`~...bindings.BindingsMixin._resync_chain_widths`).
             self._resync_chain_widths(current)
         # Deferred decode: only the visible window's bytes are sliced, then decoded
         # and laid out by the shared arrangement path (2D reflow / block layout).

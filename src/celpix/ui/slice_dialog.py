@@ -56,52 +56,100 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from os.path import basename, getsize
+from typing import Any
 
 from PySide6.QtCore import QEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
-    QDialogButtonBox,
     QFormLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QSpinBox,
     QToolButton,
     QWidget,
 )
 
-from celpix.core.address import format_hex, parse_hex
+from celpix.core.address import format_hex
 from celpix.core.capabilities import ContentKind
-from celpix.core.errors import PipelineError, Stage
-from celpix.pipeline import pipeline
+from celpix.core.errors import Stage
 from celpix.pipeline.pathway import DEFAULT_SLOT_FILL, SlotFill
 from celpix.plugins.base import NO_COMPRESSION, NO_RESHAPE
 from celpix.plugins.registry import Registry
 from celpix.project.workspace import SliceParams, default_slice_name
-from celpix.ui.glyphs import Glyph
-from celpix.ui.icon_font import glyph_icon
-from celpix.ui.new_file_dialog import MAX_COLUMNS, MAX_ROWS, SIZE_CAPTIONS
+from celpix.ui.icon_font import icon_qicon
+from celpix.ui.icons import Icon
 from celpix.ui.searchable_combo import SearchableComboBox, fill_stage_combo
-from celpix.ui.theme import ERROR_INK, set_ink
+from celpix.ui.size_row import GROWTH_TIPS, UnitCountRow
 from celpix.ui.widgets import (
     PRESET_COMBO_WIDTH,
     SHORT_COMBO_WIDTH,
     CompactComboBox,
-    value_spin,
+    ErrorLabel,
+    add_form_row,
+    dialog_buttons,
+    hex_field,
+    hex_value,
+    run_modal,
 )
 
-__all__ = ["SliceDialog", "SliceParams"]
+__all__ = ["SliceDialog", "SliceParams", "validate_slice_region"]
 
+# What the Size row counts, per kind a slice can unpack to. The last line is
+# the slice's own: unlike a file, a compressed slice sits in a slot.
 _SIZE_TIPS = {
-    ContentKind.PIXELS: "Tiles the slice unpacks to\n"
-    "Growing appends blank tiles; shrinking drops the last ones\n"
-    "The re-packed stream must still fit Length",
-    ContentKind.TILEMAP: "Cells the slice unpacks to\n"
-    "Growing appends empty cells; shrinking drops the last ones\n"
-    "The re-packed stream must still fit Length",
+    kind: f"{noun} the slice unpacks to\n{GROWTH_TIPS[kind]}\n"
+    "The re-packed stream must still fit Length"
+    for kind, noun in ((ContentKind.PIXELS, "Tiles"), (ContentKind.TILEMAP, "Cells"))
 }
+
+
+def validate_slice_region(
+    offset: int | None,
+    length: int | None,
+    *,
+    region_size: int,
+    matched: bool,
+    length_typed: bool,
+    compression_id: str,
+    reshape_id: str,
+    noun: str,
+) -> tuple[int, int | None] | str:
+    """``(offset, length)`` a slice may be cut at, or why it may not.
+
+    The dialog's whole region check, kept apart from the widgets so it reads as
+    the rules it is. ``offset``/``length`` are the parsed boxes (``None`` where
+    blank or unreadable), ``region_size`` what the offsets count in, ``matched``
+    whether Match parent size owns the length, ``length_typed`` whether the
+    Length box held anything, and ``noun`` names the region in a message
+    ("the file's", "the region's", a parent slice's).
+    """
+    if offset is None:
+        return "Offset is not a valid address."
+    if matched:
+        # The parent's answer, not the box's: the box shows it, but it is
+        # measured again here so a file that changed while the dialog was open
+        # cannot hand back a length it no longer has.
+        length = region_size - offset if offset < region_size else None
+    elif length_typed:
+        if length is None or length <= 0:
+            return "Length is not a valid byte count."
+    elif reshape_id != NO_RESHAPE:
+        # A reshape's boundaries are fractions of the region's length, so a
+        # decompressor-discovered extent (measured in reshaped space) would
+        # re-bound the window and change the permutation itself.
+        return (
+            "A reshaped slice needs a length — its extent defines "
+            "the reshape, so nothing can discover it."
+        )
+    elif compression_id == NO_COMPRESSION:
+        # A raw slice without an extent is just the file from that offset —
+        # require the bound that makes it a slice (and its writes slot-safe).
+        return "A raw slice needs a length (compressed ones can discover it)."
+    if offset >= region_size or (length is not None and offset + length > region_size):
+        return f"Region runs past {noun} end ({format_hex(region_size, None)} bytes)."
+    return offset, length
 
 
 def _pinned(*widgets: QWidget) -> QWidget:
@@ -170,12 +218,9 @@ class SliceDialog(QDialog):
         self._extent = extent
         self._source = source
         self._params: SliceParams | None = None
-        self._registry = registry
-        # The size row's baseline: what the slice unpacks to now, under the
-        # compression it has now. ``None`` (New Slice, or a count nobody could
-        # take) leaves the row out entirely.
-        self._units_before = units
-        self._codec_id = codec_id
+        # The Size row (``units``, measured by ``codec_id``) counts what the
+        # slice unpacks to under the compression it has *now*; ``None`` (New
+        # Slice, or a count nobody could take) leaves the row out entirely.
         self._compression_before = compression_id
 
         # Echoed back untouched when the row is not offered, so an edit round-trips
@@ -199,13 +244,19 @@ class SliceDialog(QDialog):
 
         self._name = QLineEdit(name)
         self._name.setToolTip("Name in the Files list\nBlank uses the placeholder")
-        self._offset = QLineEdit(format_hex(offset, prefix=False))
-        self._offset.setToolTip("File offset (hex; $ and 0x prefixes accepted)")
-        self._length = QLineEdit(
-            format_hex(length, prefix=False) if length is not None else ""
+        # A nested slice's offset counts in its parent's unpacked bytes, not in
+        # any file, so the tooltip says which the box is counting in.
+        self._offset = hex_field(
+            "Start, in the parent slice's unpacked bytes"
+            if extent is not None
+            else "Start, as an offset into the file",
+            offset,
         )
-        self._length.setToolTip(
-            "Byte length (hex)\nBlank lets the decompressor find the end"
+        self._length = hex_field(
+            "Byte length\n"
+            "Blank lets a compressed slice's decompressor find the end;\n"
+            "a raw or reshaped slice needs one",
+            length,
         )
         self._match_parent = QCheckBox("Match parent size")
         self._match_parent.setToolTip(
@@ -247,20 +298,25 @@ class SliceDialog(QDialog):
             self._slot_fill.addItem(label, data)
         self._slot_fill.setCurrentIndex(max(0, self._slot_fill.findData(slot_fill)))
 
-        self._size_units: QSpinBox | None = None
-        self._size_note = QLabel()
+        # The Size row, where there is a count to offer; ``_size_row`` is the
+        # form's field either way, so the row can be hidden without a special
+        # case for its absence.
+        self._size: UnitCountRow | None = None
         if units is not None and content_kind in _SIZE_TIPS:
-            self._size_units = value_spin(
-                min(1, units),
-                max(MAX_COLUMNS * MAX_ROWS, units),
+            self._size = UnitCountRow(
+                content_kind,
+                codec_id,
+                registry,
                 units,
+                _SIZE_TIPS[content_kind],
                 self._refresh_size,
+                noun="bytes unpacked",
             )
-            self._size_units.setToolTip(_SIZE_TIPS[content_kind])
-        self._size_row = _pinned(
-            *((self._size_units,) if self._size_units else ()), self._size_note
-        )
-        self._size_caption = SIZE_CAPTIONS.get(content_kind, "Size:")
+            self._size_row = _pinned(self._size.spin, self._size.note)
+            self._size_caption = self._size.caption.text()
+        else:
+            self._size_row = QWidget()
+            self._size_caption = "Size:"
 
         # The badge the codecs toolbar wears beside its own compression picker,
         # doing the same job here: a codec's inputs are as much a part of "how
@@ -272,7 +328,7 @@ class SliceDialog(QDialog):
         self._inputs_badge = QToolButton()
         self._inputs_badge.setAutoRaise(True)
         self._inputs_badge.setIcon(
-            glyph_icon(Glyph.INPUTS, self.palette(), ratio=self.devicePixelRatioF())
+            icon_qicon(Icon.INPUTS, self.palette(), ratio=self.devicePixelRatioF())
         )
         self._inputs_badge.setFixedHeight(self._decompress.sizeHint().height())
         self._inputs_badge.setToolTip(
@@ -292,9 +348,7 @@ class SliceDialog(QDialog):
             "An unbound required input opens the slice degraded"
         )
 
-        self._error = QLabel()
-        set_ink(self._error, ERROR_INK)
-        self._error.hide()
+        self._error = ErrorLabel()
 
         # The name placeholder previews the generated default and tracks the
         # coordinate fields, so leaving the name blank never surprises.
@@ -317,16 +371,21 @@ class SliceDialog(QDialog):
         # and, unlike the coordinates, it is the one field the parent's answer can
         # be wrong about.
         if content_row is not None:
-            form.addRow("Content:", content_row)
-        form.addRow("Name:", self._name)
-        form.addRow("Offset:", self._offset)
-        form.addRow("Length:", self._length)
+            add_form_row(form, "Content:", content_row, buddy=self._content)
+        add_form_row(form, "Name:", self._name)
+        add_form_row(form, "Offset:", self._offset)
+        add_form_row(form, "Length:", self._length)
         form.addRow("", self._match_parent)
-        form.addRow("Reshape:", reshape_row)
-        form.addRow("Compression:", codec_row)
-        form.addRow("Inputs:", self._inputs)
-        form.addRow("Spare room:", self._slot_fill_row)
-        form.addRow(self._size_caption, self._size_row)
+        add_form_row(form, "Reshape:", reshape_row, buddy=self._reshape)
+        add_form_row(form, "Compression:", codec_row, buddy=self._decompress)
+        add_form_row(form, "Inputs:", self._inputs)
+        add_form_row(form, "Spare room:", self._slot_fill_row, buddy=self._slot_fill)
+        add_form_row(
+            form,
+            self._size_caption,
+            self._size_row,
+            buddy=self._size.spin if self._size is not None else None,
+        )
         form.addRow(self._error)
         # Connected here rather than beside the other combo signals above,
         # because the row can only be shown or hidden once it is in a layout.
@@ -340,27 +399,14 @@ class SliceDialog(QDialog):
         self._match_parent.toggled.connect(self._sync_length)
         self._offset.textChanged.connect(self._sync_length)
         self._sync_length()
-        # QFormLayout builds the caption widgets itself, so copy each field's
-        # tooltip onto its caption - hovering either half then answers the same.
-        for field in (
-            *((content_row,) if content_row is not None else ()),
-            self._name,
-            self._offset,
-            self._length,
-            reshape_row,
-            codec_row,
-            self._slot_fill_row,
-            self._size_row,
-        ):
-            label = form.labelForField(field)
-            if label is not None:
-                label.setToolTip(field.toolTip())
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self._validate_and_accept)
-        buttons.rejected.connect(self.reject)
-        form.addRow(buttons)
+        # A message about a field the user has since changed would read as a
+        # complaint about the new value, so any edit the checks read takes it down.
+        for line in (self._offset, self._length):
+            line.textChanged.connect(self._error.dismiss)
+        self._match_parent.toggled.connect(self._error.dismiss)
+        for combo in (self._reshape, self._decompress):
+            combo.currentIndexChanged.connect(self._error.dismiss)
+        dialog_buttons(self, form, self._validate_and_accept)
 
     def _region_size(self) -> int:
         """How many bytes the slice's offsets count in: the parent slice's
@@ -385,12 +431,12 @@ class SliceDialog(QDialog):
             return
         if self._typed_length is None:
             self._typed_length = self._length.text()
-        offset = parse_hex(self._offset.text())
+        offset = hex_value(self._offset)
         try:
             size = self._region_size()
         except OSError:
             size = None  # OK says so, in the stat's own words
-        if offset is None or size is None or not 0 <= offset < size:
+        if offset is None or size is None or offset >= size:
             self._length.setText("")
             return
         self._length.setText(format_hex(size - offset, prefix=False))
@@ -437,16 +483,10 @@ class SliceDialog(QDialog):
             self._slot_fill_row, self._decompress.currentData() != NO_COMPRESSION
         )
 
-    def _byte_size(self, units: int) -> int | None:
-        """``units`` in unpacked bytes, or ``None`` where the codec would not say."""
-        if not self._codec_id:
-            return None
-        try:
-            return pipeline.blank_size(
-                self._content_kind, self._codec_id, units, self._registry
-            )
-        except PipelineError:
-            return None
+    @property
+    def _size_units(self):  # noqa: ANN202 — QSpinBox | None
+        """The Size row's spin, where there is one."""
+        return self._size.spin if self._size is not None else None
 
     def _refresh_size(self, *_args: object) -> None:
         """Show the size row under a compression scheme, and say what it comes to.
@@ -455,50 +495,30 @@ class SliceDialog(QDialog):
         still the right question, it just cannot be answered until the new
         reading is applied.
         """
-        spin = self._size_units
         compressed = self._decompress.currentData() != NO_COMPRESSION
-        self._form.setRowVisible(self._size_row, spin is not None and compressed)
-        if spin is None or self._units_before is None:
+        self._form.setRowVisible(self._size_row, self._size is not None and compressed)
+        if self._size is None:
             return
         if self._decompress.currentData() != self._compression_before:
-            spin.setEnabled(False)
-            self._size_note.setText("apply the new compression first")
-            return
-        size = self._byte_size(spin.value())
-        before = self._byte_size(self._units_before)
-        spin.setEnabled(size is not None)
-        if size is None or before is None:
-            self._size_note.setText("this format reports no size")
-        elif size == before:
-            self._size_note.setText(f"{size:,} bytes unpacked")
+            self._size.show_reason("Apply the new compression first.")
         else:
-            self._size_note.setText(f"{size:,} bytes unpacked (now {before:,})")
+            self._size.show_bytes()
 
     def resize_units(self) -> int | None:
         """The count to resize to, or ``None`` where no resize was asked for.
 
-        Compared in bytes, as the container dialog's row is, so a count that
+        Compared in bytes (:meth:`UnitCountRow.resize_units`), so a count that
         works out to the length the slice already unpacks to asks for nothing.
         """
-        spin = self._size_units
-        if (
-            spin is None
-            or not spin.isEnabled()
-            or self._decompress.currentData() == NO_COMPRESSION
-            or self._units_before is None
-        ):
+        if self._size is None or self._decompress.currentData() == NO_COMPRESSION:
             return None
-        size = self._byte_size(spin.value())
-        if size is None or size == self._byte_size(self._units_before):
-            return None
-        return spin.value()
+        return self._size.resize_units()
 
     def _refresh_placeholder(self) -> None:
-        offset = parse_hex(self._offset.text())
-        if offset is None or offset < 0:
+        offset = hex_value(self._offset)
+        if offset is None:
             return  # keep the last valid preview while the offset is mid-edit
-        length_text = self._length.text().strip()
-        length = parse_hex(length_text) if length_text else None
+        length = hex_value(self._length)
         self._name.setPlaceholderText(
             default_slice_name(
                 offset,
@@ -508,17 +528,7 @@ class SliceDialog(QDialog):
             )
         )
 
-    def _fail(self, message: str) -> None:
-        self._error.setText(message)
-        self._error.show()
-
     def _validate_and_accept(self) -> None:
-        offset = parse_hex(self._offset.text())
-        if offset is None or offset < 0:
-            self._fail("Offset is not a valid address.")
-            return
-        compression_id = self._decompress.currentData()
-        reshape_id = self._reshape.currentData()
         if self._extent is not None:
             noun = f"{self._source or 'parent slice'}'s"
         else:
@@ -526,38 +536,25 @@ class SliceDialog(QDialog):
         try:
             size = self._region_size()
         except OSError as exc:
-            self._fail(f"Cannot stat the file: {exc}")
+            self._error.fail(f"Cannot stat the file: {exc}")
             return
+        compression_id = self._decompress.currentData()
+        reshape_id = self._reshape.currentData()
         matched = self._match_parent.isChecked()
-        length_text = self._length.text().strip()
-        length: int | None = None
-        if matched:
-            # The parent's answer, not the box's: the box shows it, but it is
-            # measured again here so a file that changed while the dialog was
-            # open cannot hand back a length it no longer has.
-            length = size - offset if offset < size else None
-        elif length_text:
-            length = parse_hex(length_text)
-            if length is None or length <= 0:
-                self._fail("Length is not a valid byte count.")
-                return
-        elif reshape_id != NO_RESHAPE:
-            # A reshape's boundaries are fractions of the region's length, so a
-            # decompressor-discovered extent (measured in reshaped space) would
-            # re-bound the window and change the permutation itself.
-            self._fail(
-                "A reshaped slice needs a length — its extent defines "
-                "the reshape, so nothing can discover it."
-            )
+        region = validate_slice_region(
+            hex_value(self._offset),
+            hex_value(self._length),
+            region_size=size,
+            matched=matched,
+            length_typed=bool(self._length.text().strip()),
+            compression_id=compression_id,
+            reshape_id=reshape_id,
+            noun=noun,
+        )
+        if isinstance(region, str):
+            self._error.fail(region)
             return
-        elif compression_id == NO_COMPRESSION:
-            # A raw slice without an extent is just the file from that offset —
-            # require the bound that makes it a slice (and its writes slot-safe).
-            self._fail("A raw slice needs a length (compressed ones can discover it).")
-            return
-        if offset >= size or (length is not None and offset + length > size):
-            self._fail(f"Region runs past {noun} end ({format_hex(size, None)} bytes).")
-            return
+        offset, length = region
         # Default name from the *validated* values, not the placeholder text.
         name = self._name.text().strip() or default_slice_name(
             offset, length, compression_id, reshape_id
@@ -589,57 +586,18 @@ class SliceDialog(QDialog):
 
     @staticmethod
     def get_slice(
-        parent: QWidget | None,
-        registry: Registry,
-        *,
-        paths: tuple[str, ...],
-        offset: int = 0,
-        length: int | None = None,
-        compression_id: str = NO_COMPRESSION,
-        reshape_id: str = NO_RESHAPE,
-        slot_fill: SlotFill = DEFAULT_SLOT_FILL,
-        match_parent: bool = False,
-        name: str = "",
-        title: str = "New Slice",
-        content_kind: ContentKind = ContentKind.PIXELS,
-        choose_content: bool = False,
-        inputs_hint: Callable[[str], str] | None = None,
-        edit_inputs: Callable[[SliceDialog, str], None] | None = None,
-        units: int | None = None,
-        codec_id: str = "",
-        extent: int | None = None,
-        source: str = "",
+        parent: QWidget | None, registry: Registry, **options: Any
     ) -> SliceParams | None:
         """Run the dialog modally; the validated parameters, or None on cancel.
 
-        ``units`` (with the ``codec_id`` that measures it) offers the Size row:
-        what a compressed slice unpacks to now. Its answer comes back as
-        :attr:`SliceParams.units`, ``None`` unless a different size was asked for.
-
-        ``extent`` and ``source`` are for a slice **nested** in another: the
-        length of that slice's decoded bytes, which bounds the offsets in place
-        of the files' size, and its name.
+        ``options`` are the dialog's own keywords. ``units`` (with the
+        ``codec_id`` that measures it) offers the Size row: what a compressed
+        slice unpacks to now. Its answer comes back as
+        :attr:`SliceParams.units`, ``None`` unless a different size was asked
+        for. ``extent`` and ``source`` are for a slice **nested** in another:
+        the length of that slice's decoded bytes, which bounds the offsets in
+        place of the files' size, and its name.
         """
-        dialog = SliceDialog(
-            registry,
-            paths=paths,
-            offset=offset,
-            length=length,
-            compression_id=compression_id,
-            reshape_id=reshape_id,
-            slot_fill=slot_fill,
-            match_parent=match_parent,
-            name=name,
-            title=title,
-            content_kind=content_kind,
-            choose_content=choose_content,
-            inputs_hint=inputs_hint,
-            edit_inputs=edit_inputs,
-            units=units,
-            codec_id=codec_id,
-            extent=extent,
-            source=source,
-            parent=parent,
+        return run_modal(
+            SliceDialog(registry, parent=parent, **options), lambda d: d._params
         )
-        dialog.exec()
-        return dialog._params

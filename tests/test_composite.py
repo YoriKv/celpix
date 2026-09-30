@@ -553,7 +553,8 @@ def test_the_dialog_lays_out_the_index_space_and_refuses_a_composite(
     dialog = CompositeDialog(
         entry=composite,
         candidates=list(window._workspace.entries),
-        tile_bytes=TILE,
+        measure_unit=lambda _palette: (TILE, "Tile"),
+        measure=lambda piece: piece,
         name="window",
         pieces=(
             CompositePiece(first, measured=TILE * 4),
@@ -848,7 +849,7 @@ def test_the_dialogs_palette_choice_refiles_and_undoes_to_the_exact_depth(
     window._edit_composite(composite)
 
     assert asked[0]["palette"] is False
-    assert asked[0]["units"](True)[1] == "Color"
+    assert asked[0]["measure_unit"](True)[1] == "Color"
     assert window._pixel_preset_id() == VIEW_AS_PALETTE_PRESET
     palettes = panel._sections[ContentKind.PALETTE]
     assert panel._items[composite].parent() is palettes
@@ -1075,7 +1076,8 @@ def test_ok_on_an_unchanged_list_with_a_pad_changes_nothing(qtbot, tmp_path) -> 
     dialog = CompositeDialog(
         entry=composite,
         candidates=list(window._workspace.entries),
-        tile_bytes=TILE,
+        measure_unit=lambda _palette: (TILE, "Tile"),
+        measure=lambda piece: piece,
         name=composite.name,
         pieces=composite.pieces,
     )

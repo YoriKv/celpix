@@ -2,9 +2,11 @@
 
 This mixin is the brain of pixel mode. It owns the edit-mode switch, the active
 tool, the pen color, and the machinery that turns a canvas gesture into an
-undoable edit — plus the floating pixel selection and pixel clipboard
-(:mod:`~celpix.ui.main_window.pixel_edit` continues into the selection/transform
-dispatch those files carry). It is a slice of
+undoable edit — plus the floating pixel selection and pixel clipboard, whose
+pixel-mode branches of the shared gestures live with those gestures in
+:mod:`~celpix.ui.main_window.clipboard_ops`,
+:mod:`~celpix.ui.main_window.selection` and
+:mod:`~celpix.ui.main_window.transform`. It is a slice of
 :class:`~celpix.ui.main_window.window.MainWindow`, so it reaches the window's
 live ``_doc`` and reuses
 :class:`~celpix.ui.main_window.tile_bytes.TileBytesMixin`'s decode/encode helpers
@@ -48,6 +50,7 @@ from PySide6.QtWidgets import QApplication
 from celpix.core import ceil_div, draw
 from celpix.core.arrangement import split_grid
 from celpix.core.errors import PipelineError
+from celpix.core.palette import format_argb
 from celpix.core.quantize import QuantizeReport
 from celpix.core.tilemap import cell_orientation
 from celpix.core.tilerearrangement import unapply_orientation
@@ -817,7 +820,7 @@ class PixelEditMixin:
         self._point_source_at_pixel(x, y)
         if self._is_direct_color():
             self._pen_argb = value
-            self.statusBar().showMessage(f"Picked color #{value & 0xFFFFFFFF:08X}.")
+            self.statusBar().showMessage(f"Picked color {format_argb(value)}.")
         else:
             # Against the row the pixel is *shown* through, which inside a pinned
             # palette region is not the view's own (see _pinned_palette_base).
@@ -1465,7 +1468,9 @@ class PixelEditMixin:
         if image is None:
             self.statusBar().showMessage("Nothing on the clipboard to paste here.")
             return
-        region, _report = self._fit_pixel_region(clipboard.image_to_argb(image))
+        region, _report = self._fit_pixel_region(
+            render_bridge.argb_grid_from_image(image)
+        )
         self._float_region(region, "paste pixels")
         self.statusBar().showMessage(
             "Pasted as a floating selection. Drag to place; Esc sets it down."
@@ -1690,8 +1695,8 @@ class PixelEditMixin:
 
         A float and a pixel copy are both cut out of the picture on screen, so both
         resolve back through the table that picture was rendered with
-        (:meth:`~...rendering.RenderingMixin._tilemap_grid_image` makes the same
-        choice for the base). On a map whose cells carry palette rows the composed
+        (:meth:`~...rendering.RenderingMixin._paint_grid`, the choice the base
+        was drawn through too). On a map whose cells carry palette rows the composed
         indices are **absolute** — :func:`~celpix.pipeline.pipeline.expand_cells`
         folded the row in — so offsetting them by the view's Palette Row on top of that
         renders the region however many rows further on the spin happens to sit,
@@ -1706,16 +1711,9 @@ class PixelEditMixin:
         match on.
         """
         assert self._doc is not None
-        if self._folds_palette_rows():
-            return render_bridge.render_pinned(
-                grid,
-                self._doc.palette,
-                self._index_space(),
-                transparent_zero=transparent_zero,
-            )
-        return render_bridge.render(
+        return self._paint_grid(
             grid,
-            self._doc.palette,
-            self._palette_base(),
+            pinned=self._folds_palette_rows(),
+            base=self._palette_base(),
             transparent_zero=transparent_zero,
         )

@@ -31,7 +31,7 @@ from __future__ import annotations
 from PySide6.QtCore import QByteArray, QEvent, QObject, QTimer
 from PySide6.QtWidgets import QDockWidget, QMainWindow, QWidget
 
-from celpix.ui.widgets import settings
+from celpix.ui.settings import settings
 
 # Passed to saveState/restoreState so a stored arrangement is only ever applied
 # to the build that can make sense of it. Bump this when a change would make an

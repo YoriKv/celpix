@@ -13,18 +13,26 @@ the view decodes only the visible window of tiles on demand (via
 ``pipeline.decode_window``). The bytes are the source of truth — an edit encodes the
 changed tiles back into them (``pipeline.encode_tiles``) and Write compresses and
 writes the buffer as it stands.
+
+Two things the document holds but does not define live beside it and are
+re-exported here: a chained map's hops and their resolution
+(:mod:`celpix.core.cellchain`), and fitting typed text to a fontmap's region
+(:mod:`celpix.core.textfit`).
 """
 
 from __future__ import annotations
 
 from bisect import bisect_left
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from itertools import islice
 
 from celpix.core import ceil_div
 from celpix.core.arrangement import BlockLayout
+
+# CellChain, resolve_chain and TextFit are re-exported: callers reach a chain
+# and a text fit through the document that holds them.
+from celpix.core.cellchain import CellChain, resolve_chain
 from celpix.core.context import (
     KEY_SOURCE_OFFSET,
     KEY_TILEMAP_ANIMATIONS,
@@ -40,18 +48,17 @@ from celpix.core.font import FontAlphabet, Text
 from celpix.core.palette import Palette, palette_row_count
 from celpix.core.paletteregions import PaletteRegions
 from celpix.core.sprite import DEFAULT_SUBSPRITE_TILES, drawn_frames
+from celpix.core.textfit import TextFit, fit_text
 from celpix.core.tilemap import (
     NO_CELL,
     Cell,
     Geometry,
     IndexAddressing,
     column_order,
-    expand_stamps,
     index_corner,
     page_assemblies,
     page_order,
     record_order,
-    resolve_cell,
     resolve_pages_across,
     stamp_origin,
     tile_run,
@@ -68,23 +75,23 @@ class GridMode(str, Enum):
     """Which scale the canvas's grid is drawn at, when it is shown at all.
 
     The grid always has two levels — a fine one and a stronger one a step up
-    from it — and this picks what the fine one counts. It is **one setting for
-    the whole project**, not per entry: it says how the user wants to look at
-    pixels, which does not change from one file to the next, so it rides on the
-    :class:`~celpix.project.workspace.Workspace` beside the pixel-format filter
-    rather than in :class:`ViewOptions`. ``value`` is the stable string
-    persisted in the project file (str-valued for exactly that reason, like
-    :class:`~celpix.project.workspace.PaletteMode`).
+    from it — and this picks what the fine one counts. It is a **local
+    preference**, kept in QSettings (``view/grid_scale``, beside the grid's
+    other keys in ``ui/main_window/view_menu.py``) rather than in
+    :class:`ViewOptions` or the project file: how someone wants to look at
+    pixels is a property of the person looking and does not change from one
+    file to the next. ``value`` is the stable string that setting stores
+    (str-valued for exactly that reason).
 
     - ``TILE`` — fine on every tile, coarse on the 8×8-tile square.
     - ``PIXEL`` — fine on every image pixel, coarse on every tile. Only useful
       zoomed in, and the canvas drops the pixel level again when the zoom is too
       low for it to read as a lattice rather than a wash.
 
-    ``Workspace.block_grid`` moves the coarse level of *either* onto the
-    arrangement's own block, and ``Workspace.show_grid`` is the on/off switch
-    over both — kept apart from the scale so that turning the grid off and on
-    again brings back the scale it was last read at.
+    Two sibling preferences complete it: ``view/block_grid`` moves the coarse
+    level of *either* onto the arrangement's own block, and ``view/grid_shown``
+    is the on/off switch over both — kept apart from the scale so that turning
+    the grid off and on again brings back the scale it was last read at.
     """
 
     TILE = "tile"
@@ -253,265 +260,22 @@ class ViewOptions:
 
 
 @dataclass(frozen=True)
-class CellChain:
-    """The tilemap a chained map's cells are coordinates into, and how to read it.
+class Refusal:
+    """One thing a document draws differently from what its formats asked for.
 
-    Held on the document rather than looked up per edit, which is what makes
-    resolution a **model** operation: a restamp rebuilds
-    :attr:`Document.resolved_cells` from what is already here
-    (:meth:`Document.resolve`), with no workspace and no reload, so the new stamp
-    is on screen as soon as the cell changes.
-
-    ``source`` is the other map's cell list as it stood when this one was bound.
-    Editing *that* map replaces its list rather than mutating it, so the host
-    re-points the chain of anything drawing through it
-    (``docs/design/tilemap-entry.md`` §3.1) — a snapshot that silently aged would
-    be worse than one that is refreshed on the one event that invalidates it.
-
-    ``carry_rows`` is the *referring* format's answer to
-    :meth:`~celpix.plugins.base.TilemapCodecPlugin.has_palette_rows`, which is not
-    the same question as :attr:`Document.cells_carry_palette_rows` — that one is
-    true if either side of the chain states rows, because it gates the view's
-    palette row. This one says whose row wins per cell.
-
-    ``stamp`` is how many source cells one coordinate names, and it is
-    **whichever side states it, the referrer first**: a format whose coordinates
-    always name a fixed stamp declares one, and so does a format whose own cell
-    covers several units, which over a map can only be several of its cells
-    (``project/documents.py``, ``chain_stamp_cells``). Otherwise it is the
-    source's answer — a panel states its stamp size in its own header and the
-    layout's file does not know it, so the same layout draws differently against
-    a differently divided panel. ``(1, 1)`` is the ordinary chain, where one
-    coordinate names one cell and there is no stamp to expand.
-
-    ``source_columns`` and ``stamp_column_major`` are the **source's** alone,
-    whoever sized the stamp: a stamp is a rectangle cut out of the source as the
-    source lays its cells out. ``source_columns`` is the step between a stamp's
-    rows (:func:`~celpix.core.tilemap.expand_stamps`) — the stride the source
-    publishes for its records, else its width — and where its stamps are stored
-    down each column, the step between a stamp's columns instead
-    (:func:`~celpix.core.tilemap.stamp_offset`).
-
-    ``dense`` is the **referrer's** alone, set from the referring format rather
-    than read off the source's context. It says whether this
-    file holds one entry per *stamp* or one per drawn position, and no source
-    could know: the same panel is stamped by a layout with a slot per position,
-    and would be stamped by a metatile map with a slot per stamp, and the panel's
-    header says nothing about either. It is a constant of the referring format,
-    so the format's preset declares it (``docs/design/tilemap-entry.md`` §3.1).
-
-    ``base`` is the **binding's**, the chained reading of
-    :attr:`Document.tile_base_index`, and it counts what this hop's coordinates
-    count: coordinate N names source cell ``base + N`` where N is a corner, and
-    the corner of stamp ``base + N`` where it counts stamps
-    (:func:`~celpix.core.tilemap.index_corner`). A table of 32x32 records
-    numbering its 16x16s from partway into their own table needs it for the
-    reason a map numbering its tiles from partway into a bank does. Signed,
-    like the tile base, and a coordinate it pushes out of the source draws blank.
-
-    ``through`` is the **source's own** chain, where the source is itself a map
-    drawing through a map — a field map whose byte names a 2x2 of 16x16 stamps,
-    each of those a 2x2 of tiles. Snapshotted with ``source`` and re-pointed with
-    it, so a chain is a list of hops (:attr:`hops`) held entirely on the
-    referrer, and resolving it (:func:`resolve_chain`) needs no document but this
-    one. None for the ordinary chain, whose source's cells are tile numbers.
-
-    ``geometry`` is how this hop's coordinates **number** the source: None where
-    a coordinate is the source cell at its stamp's corner, and a
-    :data:`~celpix.core.tilemap.Geometry` where it counts stamps — record 20 of a
-    packed 2x2 table is cell 80 (:class:`~celpix.core.tilemap.IndexAddressing`).
-    Converted after the base is added and before the stamp walk, and still
-    converted where the stamp degrades to one cell (:attr:`Document.stamp_cells`):
-    the entry names its stamp's corner cell either way, never the cell its
-    number happens to be.
-    The binding's and the referrer's to state, the source's to shape
-    (``project/documents.py``, ``index_reading``).
+    Held as parts so the status line and the entry's notice are two layouts of
+    one wording (:attr:`Document.refusals`): ``summary`` names what was not
+    done, ``why`` the reason, ``instead`` what the picture does in its place.
     """
 
-    source: list[Cell]
-    carry_rows: bool = True
-    stamp: tuple[int, int] = (1, 1)
-    source_columns: int = 0
-    dense: bool = False
-    stamp_column_major: bool = False
-    base: int = 0
-    through: CellChain | None = None
-    geometry: Geometry | None = None
-
-    def source_cell(self, index: int) -> int:
-        """The source cell coordinate ``index`` names first — its stamp's
-        corner once the base is added in the index's own count
-        (:func:`~celpix.core.tilemap.index_corner`). Where it lands may be
-        outside the source."""
-        return index_corner(index, self.geometry, self.base)
+    summary: str
+    why: str
+    instead: str
 
     @property
-    def hops(self) -> Iterator[CellChain]:
-        """This hop, then each source's own, down to the one whose cells are tiles."""
-        hop: CellChain | None = self
-        while hop is not None:
-            yield hop
-            hop = hop.through
-
-    @property
-    def growth(self) -> tuple[int, int]:
-        """How much wider and taller the hops **after** this one make the picture.
-
-        A dense hop draws one entry as a whole stamp of positions, so each one
-        multiplies the picture by its stamp; a sparse hop has an entry per
-        position already and multiplies nothing (:func:`resolve_chain`). ``(1,
-        1)`` for a chain one hop deep.
-        """
-        across = down = 1
-        hop = self.through
-        while hop is not None:
-            if hop.dense:
-                across *= max(1, hop.stamp[0])
-                down *= max(1, hop.stamp[1])
-            hop = hop.through
-        return across, down
-
-    @property
-    def sparse_below(self) -> bool:
-        """Whether a hop **after** this one is a sparse stamped map.
-
-        A sparse map holds an entry per drawn position with only its stamps'
-        corners meaningful, and which positions those are depends on the width
-        the map itself is resolved at. Handed a referrer's cells instead, a
-        sparse hop snaps them to corners the source never wrote, so the entry a
-        position draws and the entry a click on it edits part company. A sparse
-        map is an end product; a chain that draws through one is refused
-        (:attr:`Document.stamp_refusal`).
-        """
-        return any(
-            not hop.dense and hop.stamp != (1, 1) for hop in islice(self.hops, 1, None)
-        )
-
-    @property
-    def drawn_stamp(self) -> tuple[int, int]:
-        """How many drawn positions one entry covers once every hop is resolved.
-
-        This hop's stamp grown by the later ones (:attr:`growth`) — a field-map
-        byte naming a 2x2 of stamps, each a 2x2 of tiles, is a 4x4 on screen.
-        What the chain *states*; whether it can be laid out is the document's
-        question (:attr:`Document.stamp_cells`).
-        """
-        (across, down), (grow_across, grow_down) = self.stamp, self.growth
-        return max(1, across) * grow_across, max(1, down) * grow_down
-
-
-def resolve_chain(
-    cells: list[Cell],
-    chain: CellChain,
-    columns: int,
-    *,
-    stamped: bool = True,
-    carry_rows: bool | None = None,
-    dense: bool | None = None,
-) -> list[Cell]:
-    """``cells`` resolved through every hop of ``chain``, in drawn order.
-
-    **The** resolution walk: the map (:meth:`Document.resolve`) and every
-    single-stamp preview — the tile source sheet, the stamp tool's ghost, the
-    tile readout — go through it, so a preview and the map cannot resolve one
-    coordinate two different ways (``docs/design/tilemap-entry.md`` §3.1).
-
-    Each hop takes a list of cells in drawn order at ``columns`` entries across
-    and hands the next hop the same, which is what makes depth free: the output
-    of a hop is the *source's* cells with the entry's attributes composed on
-    (:func:`~celpix.core.tilemap.resolve_cell`), and a source's cells are the
-    next hop's entries — coordinates again until the last hop, whose cells are
-    tile numbers. A dense hop grows the grid by its stamp, so the width the next
-    hop reads its entries at grows with it. A sparse stamped hop after the first
-    has no width of its own to snap at here, so a chain holding one is never
-    resolved stamped (:attr:`CellChain.sparse_below`, :attr:`Document.stamp_cells`).
-
-    ``stamped`` False is the degraded chain (:attr:`Document.stamp_cells`): every
-    hop resolves one coordinate to one cell — the corner of the stamp it counts
-    to, where the hop is ordinal-addressed (:attr:`CellChain.geometry`), since
-    that is the cell the entry names. ``carry_rows`` and ``dense``
-    override the **first** hop's, for a preview whose referrer is synthetic (no
-    row of its own to carry) and a single entry (dense whatever the file is).
-
-    A row carries **down** the chain: once a referrer with a palette-row field
-    has stated one, a later hop whose own format has none must not replace it
-    with the bottom table's — so a hop carries rows if it or any hop before it
-    does.
-    """
-    if carry_rows is not None:
-        chain = replace(chain, carry_rows=carry_rows)
-    if dense is not None:
-        chain = replace(chain, dense=dense)
-    carry = False
-    for hop in chain.hops:
-        carry = carry or hop.carry_rows
-        stamp = hop.stamp if stamped else (1, 1)
-        geometry = hop.geometry
-        if stamp == (1, 1):
-            # One cell per entry, and under ordinal addressing — degraded or
-            # one-cell — still its stamp's corner: entry n draws that cell,
-            # never cell n.
-            cells = [
-                resolve_cell(
-                    cell, hop.source, carry_rows=carry, at=hop.source_cell(cell.index)
-                )
-                for cell in cells
-            ]
-            continue
-        cells = expand_stamps(
-            cells,
-            hop.source,
-            columns,
-            stamp,
-            hop.source_columns,
-            carry_rows=carry,
-            dense=hop.dense,
-            column_major=hop.stamp_column_major,
-            base=hop.base,
-            geometry=geometry,
-        )
-        if hop.dense:
-            columns = max(1, columns) * max(1, stamp[0])
-    return cells
-
-
-@dataclass(frozen=True)
-class TextFit:
-    """A typed string's codes cut and filled to exactly the region it lands in.
-
-    What :meth:`Document.fit_text` hands back, and the text window's two readers
-    of it — the write and the budget line — take it from one place so they
-    cannot disagree about where the region ends (``docs/design/fontmap-entry.md``
-    §5). ``codes`` and ``ends`` are what the cells become; ``lost_codes`` and
-    ``lost_ends`` are what came off, kept so they can be read back as text and
-    said out loud. ``used``, ``room`` and ``over`` are counted in ``unit``:
-    ``"cells"`` on a fixed-width region, ``"bytes"`` on a mixed-width one, where
-    a two-byte letter costs two.
-    """
-
-    codes: list[int]
-    ends: list[bool]
-    lost_codes: list[int]
-    lost_ends: list[bool]
-    used: int
-    room: int
-    over: int
-    unit: str
-
-
-def _cut(widths: Sequence[int], start: int, stop: int, room: int) -> tuple[int, int]:
-    """How many of ``widths[start:stop]`` fit in ``room`` bytes, and their bytes.
-
-    Whole cells off the front and none after the first that does not fit: a
-    letter cannot be half written, and one skipped for a narrower one behind it
-    would move text the user placed.
-    """
-    spent = 0
-    at = start
-    while at < stop and spent + widths[at] <= room:
-        spent += widths[at]
-        at += 1
-    return at - start, spent
+    def note(self) -> str:
+        """The status-line sentence."""
+        return f"{self.summary} - {self.why}; {self.instead}."
 
 
 @dataclass
@@ -676,11 +440,11 @@ class Document:
     # one whose top bits are both a sub-table and a palette row. A plain callable
     # rather than the engine and its params, because what applies it is this
     # Qt-free model and it holds no registry
-    # (:func:`~celpix.pipeline._stage._cell_settler`).
+    # (:func:`~celpix.pipeline._stage.cell_settler`).
     cell_settler: Callable[[list[Cell]], list[Cell]] | None = None
     # Each cell's byte width, for a format where they differ — text of one- and
     # two-byte codes — bound at decode like the settle and for the same reason
-    # (:func:`~celpix.pipeline._stage._cell_widths`). None where every cell is
+    # (:func:`~celpix.pipeline._stage.cell_widths`). None where every cell is
     # :attr:`cell_bytes`, which is every other format, so the readouts that
     # turn cells into bytes cost those one ``is None``
     # (:meth:`~celpix.plugins.base.TilemapCodecPlugin.cell_widths`).
@@ -716,8 +480,8 @@ class Document:
     # the controls that say so.
     text_layout: bool = False
     # What this fontmap's codes *say*: the font's own run and named codes with
-    # this stream's control codes laid over them (:func:`~celpix.pipeline.
-    # pipeline.load_font_alphabet`). None where nothing is bound or the font has
+    # this stream's control codes laid over them (:func:`~celpix.core.font.
+    # font_alphabet`). None where nothing is bound or the font has
     # no table yet, which is not an error — the text then reads as hex, and every
     # code still round-trips.
     font_alphabet: FontAlphabet | None = None
@@ -1007,99 +771,18 @@ class Document:
     ) -> TextFit:
         """``codes`` cut and filled to exactly this fontmap's region.
 
-        **The region is always exactly full** (``docs/design/fontmap-entry.md``
-        §5): the overrun comes off the end and whatever the string gave up is
-        filled with ``blank``. Counted in cells on a fixed-width region — the
-        cell count is the slot there. Counted in **bytes** where the format says
-        its cells differ (:attr:`cell_widths`), since that is what the slot is
-        fixed in: a string that trades one-byte letters for two-byte ones keeps
-        fewer cells, one that trades back keeps more, and either way the save
-        writes exactly the bytes the slot has and a reload reads back exactly
-        these cells. The cell count moves; nothing past the region does.
-
-        On a mixed-width region the **fill is one byte**: ``blank`` where it
-        is, and code zero where it is not — a font whose space is a two-byte
-        letter, or a lead byte that would pair with whatever followed it. A
-        remainder can be one byte, and only a one-byte fill can meet every
-        remainder exactly.
-
-        A **name table** (:attr:`line_bytes`) keeps each record full instead of
-        the region: typed line *k* is fitted to record *k*, so a name run long
-        loses its own tail rather than pushing into the next name, and one
-        typed short is padded where it stands. Lines past the last record are
-        lost whole, and records no line reached are filled blank.
+        The region's cells, their widths (:attr:`cell_widths`) and its record
+        size (:attr:`line_bytes`) handed to :func:`~celpix.core.textfit.fit_text`,
+        which says how the cut and the fill are made.
         """
         cells = self.cells or []
-        codes, ends = list(codes), list(ends)
-        have = self._byte_widths(cells)
-        widths = None
-        if have is not None:
-            pairs = zip(codes, ends, strict=True)
-            widths = self._byte_widths([Cell(index=c, ends_line=e) for c, e in pairs])
-        if have is None or widths is None:
-            count = len(cells)
-            return TextFit(
-                codes[:count] + [blank] * (count - len(codes)),
-                ends[:count] + [False] * (count - len(ends)),
-                codes[count:],
-                ends[count:],
-                len(codes),
-                count,
-                max(0, len(codes) - count),
-                "cells",
-            )
-        pair = self._byte_widths([Cell(index=blank), Cell(index=blank)])
-        fill = blank if pair is not None and pair[0] == 1 else 0
-        size = self.line_bytes
-        room = sum(have)
-        # The typed cells as (first, stop) spans, each fitted to a slot of
-        # ``size`` bytes: one span and one slot for a stream, a span per typed
-        # line and a slot per record for a name table.
-        if size:
-            lines: list[tuple[int, int]] = []
-            start = 0
-            for at, end in enumerate(ends):
-                if end:
-                    lines.append((start, at + 1))
-                    start = at + 1
-            if start < len(codes):
-                lines.append((start, len(codes)))
-            records = sum(1 for cell in cells if cell.ends_line)
-            room = records * size
-        else:
-            lines, records, size = [(0, len(codes))], 1, room
-        out_codes: list[int] = []
-        out_ends: list[bool] = []
-        lost_codes: list[int] = []
-        lost_ends: list[bool] = []
-        over = 0
-        for record in range(max(records, len(lines))):
-            first, stop = lines[record] if record < len(lines) else (0, 0)
-            if record >= records:
-                kept = spent = 0
-            else:
-                kept, spent = _cut(widths, first, stop, size)
-                out_codes += codes[first : first + kept] + [fill] * (size - spent)
-                if self.line_bytes:
-                    # A record's line ends where it fills, whichever cell that
-                    # now is: the typed break may have gone with a cut tail, or
-                    # stand before the fill that pads the record out.
-                    cut = kept + size - spent
-                    out_ends += [False] * (cut - 1) + [True]
-                else:
-                    out_ends += ends[first : first + kept] + [False] * (size - spent)
-            lost_codes += codes[first + kept : stop]
-            lost_ends += ends[first + kept : stop]
-            over += sum(widths[first + kept : stop])
-        return TextFit(
-            out_codes,
-            out_ends,
-            lost_codes,
-            lost_ends,
-            sum(widths),
-            room,
-            over,
-            "bytes",
+        return fit_text(
+            cells,
+            codes,
+            ends,
+            blank,
+            widths_of=self._byte_widths,
+            line_bytes=self.line_bytes,
         )
 
     @property
@@ -1328,31 +1011,43 @@ class Document:
         return "stamp" if self.chain is not None else "metatile"
 
     @property
-    def refusal_notes(self) -> tuple[str, ...]:
+    def refusals(self) -> tuple[Refusal, ...]:
         """What this document draws differently from what its formats asked
-        for, one status-line sentence each — empty where nothing was refused.
+        for — empty where nothing was refused.
 
         :attr:`stamp_refusal` first, then :attr:`addressing_refusal`, each
         saying what the picture does instead. The one wording of both: the app
-        puts them on the status line, and a headless load collects them as
-        problems, so a script hears a refusal as a user does.
+        puts them on the status line (:attr:`refusal_notes`) and on the entry's
+        notices, and a headless load collects them as problems, so a script
+        hears a refusal as a user does.
         """
-        notes: list[str] = []
+        found: list[Refusal] = []
         chain, why = self.chain, self.stamp_refusal
         if why is not None and chain is not None:
             across, down = chain.drawn_stamp
-            notes.append(
-                f"{across}x{down} stamps not resolved - {why}; "
-                "drawing one cell per entry."
+            found.append(
+                Refusal(
+                    f"{across}x{down} stamps not resolved",
+                    why,
+                    "each entry draws one cell",
+                )
             )
         why = self.addressing_refusal
         if why is not None:
             unit = self.ordinal_unit
-            notes.append(
-                f"Indices not counted as {unit}s - {why}; "
-                f"reading each as its {unit}'s corner."
+            found.append(
+                Refusal(
+                    f"Indices not counted as {unit}s",
+                    why,
+                    f"each index is read as its {unit}'s corner",
+                )
             )
-        return tuple(notes)
+        return tuple(found)
+
+    @property
+    def refusal_notes(self) -> tuple[str, ...]:
+        """:attr:`refusals` as status-line sentences, one each."""
+        return tuple(r.note for r in self.refusals)
 
     @property
     def stamp_tiles(self) -> tuple[int, int]:

@@ -1,14 +1,14 @@
 """SNES Mode 7 VRAM split — separate the interleaved tile pixels and BG map.
 
 Mode 7 VRAM interleaves two byte streams within each 16-bit word: the 128x128 BG
-map's char numbers in the low (even-address) bytes and the 8bpp tile pixels in the
+map's tile numbers in the low (even-address) bytes and the 8bpp tile pixels in the
 high (odd-address) bytes, so an 8x8 tile is 64 odd bytes inside a 128-byte span
 (``docs/graphics-formats-reference/snes-hardware-notes.md``). ROMs usually store
 Mode 7 graphics already split, but VRAM dumps and savestates are interleaved, so
 neither half is viewable as-is.
 
 ``reshape`` reorders to *odd bytes then even bytes*, putting the pixel bytes first
-(view them with the 8bpp chunky preset) and the char numbers in the second half.
+(view them with the 8bpp chunky preset) and the tile numbers in the second half.
 ``unshape`` re-interleaves exactly, so the round trip is byte-exact and write-back
 preserves both halves. It is a Reshape rather than a codec stride parameter
 because a codec skipping the map bytes could not reproduce them on encode; a

@@ -15,12 +15,13 @@ from typing import Any
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.index_grid import IndexGrid
+from celpix.plugins._params import integer
 from celpix.plugins.base import PluginInfo
 from celpix.plugins.builtins._tile import check_tile_size, require_whole_tiles
 
 
 class PackedStraddlingCodec:
-    """3bpp/6bpp linear codec; ``bpp`` selects the fixed packing."""
+    """3bpp/6bpp packed tiles whose fields straddle bytes; ``bpp`` picks the packing."""
 
     info = PluginInfo(
         id="codec.pixel.packed-straddling",
@@ -32,7 +33,7 @@ class PackedStraddlingCodec:
 
     @classmethod
     def _bpp(cls, params: dict[str, Any]) -> int:
-        bpp = int(params["bpp"])
+        bpp = integer(params, "bpp")
         if bpp not in (3, 6):
             raise ValueError(f"packed-straddling codec supports bpp 3 or 6, got {bpp}")
         return bpp

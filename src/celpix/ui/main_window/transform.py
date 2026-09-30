@@ -69,7 +69,7 @@ from celpix.core.tilerearrangement import (
     TILE_ROTATE_CCW,
     TILE_ROTATE_CW,
 )
-from celpix.ui.icon_font import glyph_icon
+from celpix.ui.icon_font import icon_qicon
 from celpix.ui.main_window.capability_sync import Gesture
 from celpix.ui.main_window.selection import SELECTION_SHAPE_KEY, SelectionShape
 from celpix.ui.tools import TRANSFORM_SPECS, EditMode, TransformSpec
@@ -487,14 +487,14 @@ class TransformMixin:
         """Paint one group's four icons in the theme's button-text colour.
 
         The disabled face matters here more than anywhere: the buttons are
-        disabled whenever nothing is selected (:func:`glyph_icon` says why it is
+        disabled whenever nothing is selected (:func:`icon_qicon` says why it is
         baked).
         """
         palette = QApplication.palette()
         ratio = self.devicePixelRatioF()
         for spec, action in zip(TRANSFORM_SPECS, group.actions, strict=True):
             action.setIcon(
-                glyph_icon(spec.icon, palette, size=_TRANSFORM_ICON, ratio=ratio)
+                icon_qicon(spec.icon, palette, size=_TRANSFORM_ICON, ratio=ratio)
             )
 
     def _bake_transform_icons(self) -> None:

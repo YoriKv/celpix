@@ -93,6 +93,7 @@ from celpix.core.context import (
 )
 from celpix.core.errors import Stage
 from celpix.plugins.base import InputKind, InputSpec, PluginInfo
+from celpix.plugins.builtins._lz import corrupt
 from celpix.plugins.builtins._rle import pack_runs
 
 #: The input key the part count is bound under — a compatibility surface, like
@@ -100,8 +101,6 @@ from celpix.plugins.builtins._rle import pack_runs
 INPUT_PARTS = "interleave"
 #: Tile data: one part per bitplane.
 TILE_PARTS = 4
-#: A tilemap: one part per byte of the 2-byte cell.
-TILEMAP_PARTS = 2
 #: The input key the decoded length is bound under.
 INPUT_SIZE = "size"
 #: The input keys of the size word ahead of a stream.
@@ -128,8 +127,7 @@ _MIN_RUN = 3
 _MAX_PART = 0x10000
 
 
-def _fail(reason: str) -> ValueError:
-    return ValueError(f"corrupt Phantasy Star RLE stream: {reason}")
+_fail = corrupt("Phantasy Star RLE")
 
 
 @dataclass(frozen=True)

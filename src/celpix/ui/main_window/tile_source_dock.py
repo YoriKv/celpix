@@ -26,7 +26,6 @@ from dataclasses import replace
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDockWidget,
-    QHBoxLayout,
     QLabel,
     QPushButton,
     QScrollArea,
@@ -34,7 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from celpix.core.document import resolve_chain
+from celpix.core.cellchain import resolve_chain
 from celpix.core.tilemap import (
     Cell,
     CellGrid,
@@ -44,6 +43,7 @@ from celpix.core.tilemap import (
 from celpix.pipeline import pipeline
 from celpix.project.workspace import TileSource
 from celpix.ui import render_bridge
+from celpix.ui.main_window.palette_dock import _ROW_GAP, _ROW_MARGIN, _dock_row
 from celpix.ui.tile_source_panel import TileSourcePanel
 from celpix.ui.widgets import (
     add_labelled,
@@ -52,12 +52,6 @@ from celpix.ui.widgets import (
     value_spin,
     zoom_anchored,
 )
-
-# The dock's rows carry no vertical margin of their own, and its inset matches
-# the palette dock's - the two share a tab bar, so a row that sat on a different
-# rhythm would show the moment the tabs were switched.
-_ROW_GAP = 4
-_ROW_MARGIN = 4
 
 # How wide the sheet opens. 16 across is the width every tile bank is read at
 # elsewhere in the editor (and the width the palette grid uses for its own
@@ -131,8 +125,10 @@ class TileSourceDockMixin:
         )
         self._tile_source_zoom.setSuffix("x")
 
-        header = QHBoxLayout()
-        header.setContentsMargins(_ROW_MARGIN, 0, _ROW_MARGIN, 0)
+        # The palette dock's rows, rhythm and inset, shared rather than restated:
+        # the two docks share a tab bar, so a row that sat on a different rhythm
+        # would show the moment the tabs were switched.
+        header = _dock_row()
         add_labelled(
             header,
             "Cols",
@@ -167,10 +163,7 @@ class TileSourceDockMixin:
         # map's cells (:meth:`_sync_set_base_tile`).
         self._set_base_tile_button = QPushButton("Set Base Tile")
         self._set_base_tile_button.clicked.connect(self._on_set_base_tile)
-        button_row = QHBoxLayout()
-        button_row.setContentsMargins(_ROW_MARGIN, 0, _ROW_MARGIN, 0)
-        button_row.addWidget(self._set_base_tile_button)
-        button_row.addStretch(1)
+        button_row = _dock_row(self._set_base_tile_button)
 
         container = QWidget()
         column = QVBoxLayout(container)
@@ -218,7 +211,7 @@ class TileSourceDockMixin:
 
         Needs a pick, a tilemap, and a binding to hang it on. A **chained** map
         qualifies: its cells are coordinates into another map's cells and its
-        base shifts those the same way (:attr:`~celpix.core.document.CellChain.
+        base shifts those the same way (:attr:`~celpix.core.cellchain.CellChain.
         base`), so the picked stamp becomes the one coordinate 0 names.
 
         A **sprite object** is not one. Its records are not cells, but they hold
@@ -281,7 +274,7 @@ class TileSourceDockMixin:
         The one number a pick means that survives the IDs being re-counted or
         re-based: the source cell a chained map's stamp starts at, or the bank
         tile a metatile does, through the arithmetic every reader shares
-        (:meth:`~celpix.core.document.CellChain.source_cell`,
+        (:meth:`~celpix.core.cellchain.CellChain.source_cell`,
         :meth:`~celpix.core.document.Document.index_origin`).
         """
         doc, tile_id = self._doc, self._source_tile_id
@@ -299,7 +292,7 @@ class TileSourceDockMixin:
         or nothing where no ID does.
 
         For a change of what the IDs count
-        (:meth:`~...tilemap_bar.TilemapBarMixin._on_index_addressing_change`):
+        (:meth:`~...index_addressing.IndexAddressingMixin._on_index_addressing_change`):
         the pick is kept on the picture rather than on the number, under the
         base as the change left it. Counting units, a place inside a unit
         rather than at its corner has no ID, and the pick is dropped rather than
@@ -328,7 +321,7 @@ class TileSourceDockMixin:
         doc, entry = self._doc, self._workspace.current
         # The binding bar's own noun for what the base counts, so the button
         # and the spin beside the binding never name the number differently
-        # (:meth:`~...tilemap_bar.TilemapBarMixin._index_noun`).
+        # (:meth:`~...index_addressing.IndexAddressingMixin._index_noun`).
         tilemap = doc is not None and doc.is_tilemap and entry is not None
         noun = self._index_noun(entry) if tilemap else "tile"
         cells = tilemap and self._base_counts_cells(entry)
@@ -355,14 +348,24 @@ class TileSourceDockMixin:
         # which come back through here - `_tile_source_pushing` marks those
         # echoes, which must not throw away the record they are echoing.
         if not self._tile_source_pushing:
-            if self._source_cell is not None:
-                # A sheet pick displacing a held record takes its attributes
-                # over as the row's settings (`_set_source_tile` seeds the
-                # same way; this path cannot route through it).
-                self._seed_stamp_attrs(self._source_cell)
+            # `_set_source_tile` seeds the same way; this path cannot route
+            # through it.
+            self._displace_held_record()
             self._source_cell = None
             self._stamp_brush = None
         self._source_tile_id = tile_id
+        self._after_pick_change()
+
+    def _displace_held_record(self) -> None:
+        """A sheet pick displacing a held record takes its attributes over as
+        the row's settings, so the setup made on that record carries
+        (:meth:`~...cell_props_bar.CellPropsMixin._seed_stamp_attrs`)."""
+        if self._source_cell is not None:
+            self._seed_stamp_attrs(self._source_cell)
+
+    def _after_pick_change(self) -> None:
+        """Converge everything that follows the held pick: the readout, Set
+        Base, the stamp preview and the property row."""
         self._refresh_tile_source_details()
         self._sync_set_base_tile()
         self._sync_stamp_preview()
@@ -401,11 +404,8 @@ class TileSourceDockMixin:
             # clears. The other settings stay; a record landing ignores them,
             # and the next sheet pick re-seeds them from the record anyway.
             self._stamp_attrs.pop("visible", None)
-        elif self._source_cell is not None:
-            # A sheet pick displacing a held record takes its attributes over
-            # as the row's settings, so the setup made on that record carries
-            # (:meth:`~...cell_props_bar.CellPropsMixin._seed_stamp_attrs`).
-            self._seed_stamp_attrs(self._source_cell)
+        else:
+            self._displace_held_record()
         self._source_tile_id = tile_id
         self._source_cell = cell
         self._stamp_brush = area
@@ -414,10 +414,7 @@ class TileSourceDockMixin:
             self._tile_source_panel.select_id(tile_id)
         finally:
             self._tile_source_pushing = False
-        self._refresh_tile_source_details()
-        self._sync_set_base_tile()
-        self._sync_stamp_preview()
-        self._sync_cell_props()
+        self._after_pick_change()
 
     def _on_tile_source_area_picked(self, rows: list) -> None:
         """A right drag over the sheet: hold the swept rectangle as the stamp.
@@ -447,17 +444,13 @@ class TileSourceDockMixin:
             for x, tile_id in enumerate(row):
                 if tile_id is not None:
                     grid.set(x, y, Cell(index=tile_id))
-        if self._source_cell is not None:
-            # Displacing a held record: its attributes become the settings
-            # every square of this sweep lands with, as on any sheet pick.
-            self._seed_stamp_attrs(self._source_cell)
+        # A displaced record's attributes become the settings every square of
+        # this sweep lands with, as on any sheet pick.
+        self._displace_held_record()
         self._source_tile_id = rows[0][0]
         self._source_cell = None
         self._stamp_brush = grid
-        self._refresh_tile_source_details()
-        self._sync_set_base_tile()
-        self._sync_stamp_preview()
-        self._sync_cell_props()
+        self._after_pick_change()
         self.statusBar().showMessage(
             f"Picked {grid.width}x{grid.height} tiles. Click to stamp "
             "from the top-left."
@@ -477,10 +470,7 @@ class TileSourceDockMixin:
         self._source_cell = None
         self._stamp_brush = None
         self._tile_source_panel.clear_selection()
-        self._refresh_tile_source_details()
-        self._sync_set_base_tile()
-        self._sync_stamp_preview()
-        self._sync_cell_props()
+        self._after_pick_change()
 
     def _point_source_at_pixel(self, x: int, y: int) -> None:
         """Pick the tile canvas pixel ``(x, y)`` was drawn from, if a cell drew it.
@@ -578,7 +568,7 @@ class TileSourceDockMixin:
         # expand_cells` has already folded it into the indices, exactly as it
         # does for a format that states rows of its own. Shifting the table too
         # would apply the row twice and draw the bank in row 2n.
-        image = render_bridge.render_pinned(sheet.grid, doc.palette)
+        image = render_bridge.render(sheet.grid, doc.palette)
         # The stamp, not the cell: where a source states a stamp size an ID names
         # the whole stamp, so the click target has to be the whole stamp too.
         across, down = doc.stamp_tiles
@@ -802,10 +792,10 @@ class TileSourceDockMixin:
                     for at, cell in enumerate(doc.cells or [])
                     if cell.index == tile_id and doc.cell_is_read(at)
                 ),
-                "stamp" if doc.is_indirect else "cell",
+                self._cell_noun(),
             )
         # What the ID counts, in the bar's own word for it
-        # (:meth:`~...tilemap_bar.TilemapBarMixin._index_noun`).
+        # (:meth:`~...index_addressing.IndexAddressingMixin._index_noun`).
         entry = self._workspace.current
         noun = (self._index_noun(entry) if entry is not None else "tile").capitalize()
         chain = doc.chain

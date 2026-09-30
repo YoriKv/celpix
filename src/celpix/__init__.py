@@ -27,3 +27,7 @@ __version__ = "1.2.2"
 # location) and the Qt-side preference store (:func:`celpix.ui.widgets.settings`)
 # need it, and they must agree.
 APP_NAME = "celPix"
+
+# What celPix is, in one sentence: the command line's description and the About
+# box both say it, so they say it the same way.
+APP_TAGLINE = "A graphics viewer and editor for romhacking and research."

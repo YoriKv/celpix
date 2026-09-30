@@ -27,7 +27,6 @@ from os.path import basename
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
-    QDialogButtonBox,
     QHeaderView,
     QLabel,
     QTableWidget,
@@ -38,8 +37,9 @@ from PySide6.QtWidgets import (
 
 from celpix.core.notices import Notice
 from celpix.pipeline.pipeline import ContainerReport
-from celpix.plugins.base import ContainerField, format_size
+from celpix.plugins.base import ContainerField
 from celpix.ui.theme import WARNING_INK, set_ink
+from celpix.ui.widgets import dialog_buttons, size_text
 
 __all__ = ["ContainerInfoDialog"]
 
@@ -47,17 +47,6 @@ __all__ = ["ContainerInfoDialog"]
 # the screen. A tile bank's report is short; a container with a lot to say (and a
 # third-party one may) must not push the OK button past the bottom edge.
 _VISIBLE_ROWS = 16
-
-
-def _size(count: int) -> str:
-    """A byte count in both forms — ``"8 KiB (8192 bytes)"`` — where they differ.
-
-    The round form is what a size is quoted in and the exact one is what a reader
-    checks an offset against, so a payload gets both. A count that is not a whole
-    multiple already *is* its exact form, and saying it twice reads as a bug.
-    """
-    pretty = format_size(count)
-    return pretty if pretty.endswith("bytes") else f"{pretty} ({count} bytes)"
 
 
 def _summary_fields(report: ContainerReport) -> tuple[ContainerField, ...]:
@@ -90,7 +79,7 @@ def _summary_fields(report: ContainerReport) -> tuple[ContainerField, ...]:
     fields.append(
         ContainerField(
             "Source",
-            _size(report.source_size),
+            size_text(report.source_size),
             "What the container was handed: the whole file, never a\n"
             "pre-cut window, since where the payload begins is the\n"
             "container's own answer.",
@@ -99,7 +88,7 @@ def _summary_fields(report: ContainerReport) -> tuple[ContainerField, ...]:
     fields.append(
         ContainerField(
             "Payload",
-            _size(report.payload_size),
+            size_text(report.payload_size),
             "What came back out and went on to be decoded. Less than\n"
             "the source wherever framing was stripped; the difference\n"
             "is what a save has to put back.",
@@ -159,10 +148,7 @@ class ContainerInfoDialog(QDialog):
 
         self._fill(report)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.rejected.connect(self.reject)
-        buttons.accepted.connect(self.accept)
-        layout.addWidget(buttons)
+        dialog_buttons(self, layout, close_only=True)
 
         # Room for a value and its field name without eliding either, measured in
         # characters so it follows the font rather than a pixel guess.

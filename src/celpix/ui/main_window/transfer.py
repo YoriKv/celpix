@@ -41,7 +41,7 @@ from celpix.project.workspace import (
     export_basename,
     exportable_entries,
 )
-from celpix.ui import clipboard, export
+from celpix.ui import export, render_bridge
 from celpix.ui.main_window.palette_source import PALETTE_EXTENSIONS
 from celpix.ui.tools import EditMode
 from celpix.ui.widgets import ask_save_path, counted, make_action
@@ -198,6 +198,12 @@ class TransferMixin:
             opens.append((path, kind))
         self._open_dropped(opens)
 
+    def open_paths(self, opens: list[tuple[str, ContentKind | None]]) -> None:
+        """Open each ``(path, kind)`` as a drop of those files would — the entry
+        point for a caller outside the window (the command line). ``kind`` None
+        leaves the container to answer (:meth:`_open_dropped`)."""
+        self._open_dropped(opens)
+
     def _open_dropped(self, opens: list[tuple[str, ContentKind | None]]) -> None:
         """Open each dropped file as ``kind`` — every one becomes an entry, and
         the last is shown.
@@ -281,10 +287,12 @@ class TransferMixin:
         except PipelineError as exc:
             self._report(exc)
             return
-        if export.save_png(image, path):
-            self.statusBar().showMessage(f"Exported {entry.name} to {path}.")
-        else:
+        try:
+            export.save_png(image, path)
+        except OSError:
             self._alert(f"Could not write {path}.", title="celPix - export")
+        else:
+            self.statusBar().showMessage(f"Exported {entry.name} to {path}.")
 
     def _export_raw(self, entry: Entry | None) -> None:
         """Export ``entry``'s decoded bytes as a raw binary."""
@@ -397,10 +405,12 @@ class TransferMixin:
             except PipelineError:
                 failed.append(entry.name)
                 continue
-            if export.save_png(image, str(Path(folder) / f"{base}.png")):
-                written += 1
-            else:
+            try:
+                export.save_png(image, str(Path(folder) / f"{base}.png"))
+            except OSError:
                 failed.append(entry.name)
+            else:
+                written += 1
         noun = "file(s)" if raw else "image(s)"
         message = f"Exported {written} {noun} to {folder}."
         if failed:
@@ -568,16 +578,15 @@ class TransferMixin:
         the view, as a paste does.
         """
         assert self._doc is not None
-        if self._refuse_import():
-            return
-        image = QImage(path)
-        if image.isNull():
-            self._alert(f"Could not read {path} as an image.", title="celPix - import")
+        image = self._load_import_image(path)
+        if image is None:
             return
         if image.width() == 0 or image.height() == 0:
-            self.statusBar().showMessage(f"{Path(path).name} has no pixels to import.")
+            self._say_nothing_to_import(path)
             return
-        region, report = self._fit_pixel_region(clipboard.image_to_argb(image))
+        region, report = self._fit_pixel_region(
+            render_bridge.argb_grid_from_image(image)
+        )
         self._set_edit_mode(EditMode.PIXEL)
         self._float_region(region, "import image", position)
         note = self._fit_note(report)
@@ -612,19 +621,35 @@ class TransferMixin:
         its own step to take first can ask before taking it.
         """
         assert self._doc is not None
+        image = self._load_import_image(path)
+        if image is None:
+            return None
+        incoming = importer.import_argb(
+            render_bridge.argb_grid_from_image(image), self._import_target()
+        )
+        if not incoming.tiles:
+            self._say_nothing_to_import(path)
+            return None
+        return incoming
+
+    def _load_import_image(self, path: str) -> QImage | None:
+        """The image at ``path``, or None — with the reason already given — when
+        this view refuses an import or the file is not an image.
+
+        The refusals both import routes meet before either knows what the image
+        holds; what counts as "no pixels" is each route's own, and it is said
+        through :meth:`_say_nothing_to_import`.
+        """
         if self._refuse_import():
             return None
         image = QImage(path)
         if image.isNull():
             self._alert(f"Could not read {path} as an image.", title="celPix - import")
             return None
-        incoming = importer.import_argb(
-            clipboard.image_to_argb(image), self._import_target()
-        )
-        if not incoming.tiles:
-            self.statusBar().showMessage(f"{Path(path).name} has no pixels to import.")
-            return None
-        return incoming
+        return image
+
+    def _say_nothing_to_import(self, path: str) -> None:
+        self.statusBar().showMessage(f"{Path(path).name} has no pixels to import.")
 
     def _land_import_png(
         self, anchor: int, path: str, incoming: importer.ImportedTiles

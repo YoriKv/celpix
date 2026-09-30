@@ -53,8 +53,14 @@ from __future__ import annotations
 
 from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
+from celpix.plugins.builtins._gba_bios import (
+    ALIGNMENT,
+    HEADER_SIZE,
+    read_header,
+    write_header,
+)
+from celpix.plugins.builtins._lz import corrupt
 from celpix.plugins.builtins._rle import pack_runs
-from celpix.plugins.builtins.gba_lz77 import ALIGNMENT, HEADER_SIZE, MAX_DECOMPRESSED
 
 RLE_TYPE = 0x30  # high nibble 3 = run-length, low nibble reserved as 0
 
@@ -64,8 +70,7 @@ MAX_RUN = 0x7F + MIN_RUN  # 130
 MAX_LITERAL = 0x7F + 1  # 128
 
 
-def _fail(reason: str) -> ValueError:
-    return ValueError(f"corrupt GBA RLE stream: {reason}")
+_fail = corrupt("GBA RLE")
 
 
 def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]:
@@ -75,16 +80,12 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
     size was produced. With ``partial`` a buffer that ends mid-stream yields the
     prefix decoded so far instead of raising.
     """
-    if len(data) < HEADER_SIZE:
-        raise _fail(f"shorter than the {HEADER_SIZE}-byte header")
-    if data[0] != RLE_TYPE:
-        raise _fail(
-            f"type byte {data[0]:#04x} is not an RLE header "
-            "(high nibble 3, low nibble reserved as 0)"
-        )
-    target = int.from_bytes(data[1:HEADER_SIZE], "little")
-    if target == 0:
-        raise _fail("declared decompressed size is zero")
+    target = read_header(
+        data,
+        types=(RLE_TYPE,),
+        what="an RLE header (high nibble 3, low nibble reserved as 0)",
+        fail=_fail,
+    )
 
     body = len(data) - HEADER_SIZE
     if not partial and target > body // 2 * MAX_RUN:
@@ -119,17 +120,7 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
 
 def compress(data: bytes) -> bytes:
     """Encode raw bytes as a BIOS RLE stream (header + packets, no padding)."""
-    n = len(data)
-    if n == 0:
-        # A zero size is what decompress refuses, so writing one would save a
-        # stream this plugin cannot open again.
-        raise ValueError("GBA BIOS RLE has no encoding for an empty payload")
-    if n > MAX_DECOMPRESSED:
-        raise ValueError(
-            f"input is {n:,} bytes; the 24-bit size field holds {MAX_DECOMPRESSED:,}"
-        )
-    out = bytearray([RLE_TYPE])
-    out += n.to_bytes(3, "little")
+    out = write_header(RLE_TYPE, len(data), what="GBA BIOS RLE")
     pack_runs(
         data,
         out,

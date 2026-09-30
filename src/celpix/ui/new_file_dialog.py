@@ -22,9 +22,9 @@ because a file's size in bytes is what the format's own tooling quotes back and
 what a hardware slot is measured in — and because it is the one thing that makes
 a wrong codec obvious before the file exists.
 
-The cols/rows ranges are the **view's**, not the format's: a sheet 600 tiles
-across can be created but never looked at, and a size the window cannot show is
-not a file anybody asked for.
+The cols/rows ranges are this dialog's own, not the format's
+(:mod:`celpix.ui.size_row`): the user is picking a size to *start* at, and a
+slip of the keyboard should not make a file of hundreds of megabytes.
 
 What this dialog does not do is pick the path. The caller runs the ordinary save
 picker afterwards, so a new file is named where every other written file is.
@@ -33,6 +33,7 @@ picker afterwards, so a new file is named where every other written file is.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from PySide6.QtWidgets import (
     QComboBox,
@@ -62,21 +63,19 @@ from celpix.ui.searchable_combo import (
     preset_rows,
     tilemap_codec_label,
 )
+from celpix.ui.size_row import MAX_COLORS, MAX_COLUMNS, MAX_ROWS, SIZE_CAPTIONS
 from celpix.ui.theme import WARNING_INK, set_ink
-from celpix.ui.widgets import PRESET_COMBO_WIDTH, signals_blocked, value_spin
+from celpix.ui.widgets import (
+    PRESET_COMBO_WIDTH,
+    add_form_row,
+    dialog_buttons,
+    run_modal,
+    signals_blocked,
+    size_text,
+    value_spin,
+)
 
-__all__ = ["NewFileDialog", "NewFileParams", "SIZE_CAPTIONS"]
-
-# The grid's limits are the view's own (the Cols and Rows spins on the
-# interpretation bar): a file bigger than the window can show is still a file,
-# but it is not one this gesture should make silently — the user is picking a
-# size to work at.
-MAX_COLUMNS = 512
-MAX_ROWS = 256
-# A palette is a run rather than a grid, so it is bounded by what a palette is
-# instead: 4096 is sixteen 256-color CGRAM dumps' worth, comfortably past every
-# hardware palette celPix reads.
-MAX_COLORS = 4096
+__all__ = ["SIZE_CAPTIONS", "NewFileDialog", "NewFileParams"]
 
 # A 16x16 sheet is a screen's worth of tiles at every depth, and 256 colors is a
 # whole CGRAM dump — the sizes the rest of the app already opens on.
@@ -103,12 +102,6 @@ _SIZE_TIPS = {
     ContentKind.PIXELS: "Tiles across and down",
     ContentKind.TILEMAP: "Cells across and down",
     ContentKind.PALETTE: "Number of colors",
-}
-
-SIZE_CAPTIONS = {
-    ContentKind.PIXELS: "Tiles:",
-    ContentKind.TILEMAP: "Cells:",
-    ContentKind.PALETTE: "Colors:",
 }
 
 _CODEC_STAGES = {
@@ -145,7 +138,6 @@ class NewFileDialog(QDialog):
         self,
         registry: Registry,
         *,
-        content_kind: ContentKind = ContentKind.PIXELS,
         pixel_preset_id: str = "",
         palette_preset_id: str = "",
         parent: QWidget | None = None,
@@ -176,7 +168,6 @@ class NewFileDialog(QDialog):
             ("Tilemap", ContentKind.TILEMAP),
         ):
             self._content.addItem(label, data)
-        self._content.setCurrentIndex(max(0, self._content.findData(content_kind)))
 
         self._container = SearchableComboBox(PRESET_COMBO_WIDTH)
         self._container.setToolTip(_CONTAINER_TIP)
@@ -205,32 +196,16 @@ class NewFileDialog(QDialog):
         self._note.setWordWrap(True)
         set_ink(self._note, WARNING_INK)
 
-        self._size_caption = QLabel()
         form = QFormLayout(self)
-        form.addRow("Content:", self._content)
-        form.addRow("Container:", self._container)
-        form.addRow("Codec:", self._codec)
-        form.addRow(self._size_caption, self._size_field)
+        add_form_row(form, "Content:", self._content)
+        add_form_row(form, "Container:", self._container)
+        add_form_row(form, "Codec:", self._codec)
+        # Captioned and tipped per content kind (:meth:`_apply_content_kind`).
+        self._size_caption = add_form_row(form, "", self._size_field)
         form.addRow("", self._size)
         form.addRow(self._note)
-        for field, tip in (
-            (self._content, _CONTENT_TIP),
-            (self._container, _CONTAINER_TIP),
-            (self._codec, _CODEC_TIP),
-        ):
-            # QFormLayout builds the caption widgets itself, so copy each field's
-            # tooltip onto its caption — hovering either half then answers the same.
-            label = form.labelForField(field)
-            if label is not None:
-                label.setToolTip(tip)
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
+        buttons = dialog_buttons(self, form, self._accept)
         self._ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
-        buttons.accepted.connect(self._accept)
-        buttons.rejected.connect(self.reject)
-        form.addRow(buttons)
 
         self._content.currentIndexChanged.connect(self._apply_content_kind)
         self._container.currentIndexChanged.connect(self._refresh)
@@ -297,8 +272,15 @@ class NewFileDialog(QDialog):
             widget.setVisible(grid)
         self._colors.setVisible(not grid)
         self._size_caption.setText(SIZE_CAPTIONS[kind])
+        self._size_caption.setBuddy(self._colors if not grid else self._columns)
         tip = _SIZE_TIPS[kind]
-        for widget in (self._columns, self._rows, self._colors, self._size_caption):
+        for widget in (
+            self._columns,
+            self._rows,
+            self._colors,
+            self._size_field,
+            self._size_caption,
+        ):
             widget.setToolTip(tip)
         self._refresh()
 
@@ -339,11 +321,7 @@ class NewFileDialog(QDialog):
         # The round form and the exact count, unless they are the same phrase:
         # a slot is quoted in KiB and a codec's arithmetic in bytes, and a file
         # that is not a round multiple only has the second.
-        exact = f"{size:,} bytes"
-        pretty = format_size(size)
-        self._size.setText(
-            exact if pretty.endswith(" bytes") else f"{pretty} ({exact})"
-        )
+        self._size.setText(size_text(size))
         self._note.setText(note)
         self._note.setVisible(bool(note))
         self._ok.setEnabled(True)
@@ -394,20 +372,12 @@ class NewFileDialog(QDialog):
 
     @staticmethod
     def get_params(
-        parent: QWidget | None,
-        registry: Registry,
-        *,
-        content_kind: ContentKind = ContentKind.PIXELS,
-        pixel_preset_id: str = "",
-        palette_preset_id: str = "",
+        parent: QWidget | None, registry: Registry, **options: Any
     ) -> NewFileParams | None:
-        """Run the dialog modally; the settled parameters, or None on cancel."""
-        dialog = NewFileDialog(
-            registry,
-            content_kind=content_kind,
-            pixel_preset_id=pixel_preset_id,
-            palette_preset_id=palette_preset_id,
-            parent=parent,
+        """Run the dialog modally; the settled parameters, or None on cancel.
+
+        ``options`` are the dialog's own keywords.
+        """
+        return run_modal(
+            NewFileDialog(registry, parent=parent, **options), lambda d: d._params
         )
-        dialog.exec()
-        return dialog._params

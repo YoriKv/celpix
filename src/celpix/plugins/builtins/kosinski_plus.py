@@ -48,7 +48,7 @@ from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
 
 from . import _moduled
-from ._lz import BitGroup, copy_back
+from ._lz import BitGroup, ByteSource, GroupReader, Truncated, copy_back, corrupt
 from .kosinski import (
     DISTANCE_HIGH,
     FULL_WINDOW,
@@ -68,36 +68,7 @@ LONG_MAX = 0xFF + LONG_BIAS
 END_MARKER = (0xF0, 0x00, 0x00)
 
 
-def _fail(reason: str) -> ValueError:
-    return ValueError(f"corrupt Kosinski+ stream: {reason}")
-
-
-class _Truncated(Exception):
-    """The stream ran out mid-op — recoverable only under ``partial``."""
-
-
-class _Reader:
-    """Descriptor bits and payload bytes, the descriptor fetched only on demand."""
-
-    def __init__(self, data: bytes) -> None:
-        self._data = data
-        self.pos = 0
-        self._flags = 0
-        self._left = 0
-
-    def byte(self) -> int:
-        if self.pos >= len(self._data):
-            raise _Truncated
-        value = self._data[self.pos]
-        self.pos += 1
-        return value
-
-    def bit(self) -> int:
-        if not self._left:
-            self._flags = self.byte()
-            self._left = 8
-        self._left -= 1
-        return (self._flags >> self._left) & 1
+_fail = corrupt("Kosinski+")
 
 
 def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]:
@@ -107,41 +78,44 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
     buffer ran out before the end marker, which ``partial`` downgrades from an
     error to a short result.
     """
-    reader = _Reader(data)
+    # Descriptor bits and payload bytes share one cursor, the descriptor byte
+    # fetched only on demand.
+    src = ByteSource(data)
+    desc = GroupReader(src, msb_first=True)
     out = bytearray()
     complete = False
     try:
         while True:
-            if reader.bit():
-                out.append(reader.byte())
+            if desc.bit():
+                out.append(src.byte())
                 continue
-            if reader.bit():
-                high = reader.byte()
-                low = reader.byte()
+            if desc.bit():
+                high = src.byte()
+                low = src.byte()
                 count = high & COUNT_MASK
                 if count:
                     length = SHORT_BIAS - count
                 else:
-                    count = reader.byte()
+                    count = src.byte()
                     if not count:
                         complete = True
                         break
                     length = count + LONG_BIAS
                 distance = FULL_WINDOW - (((high & DISTANCE_HIGH) << 5) | low)
             else:
-                distance = INLINE_WINDOW - reader.byte()
-                length = ((reader.bit() << 1) | reader.bit()) + INLINE_MIN
+                distance = INLINE_WINDOW - src.byte()
+                length = desc.bits(2) + INLINE_MIN
             if distance > len(out):
                 raise _fail(
                     f"match reaches {distance:,} bytes back "
                     f"into {len(out):,} bytes of output"
                 )
             copy_back(out, distance, length)
-    except _Truncated:
+    except Truncated:
         if not partial:
             raise _fail(f"source ended after {len(out):,} bytes") from None
 
-    return bytes(out), reader.pos, complete
+    return bytes(out), src.pos, complete
 
 
 def compress(data: bytes) -> bytes:
@@ -184,20 +158,6 @@ def compress(data: bytes) -> bytes:
     return bytes(out)
 
 
-def decompress_moduled(
-    data: bytes, *, partial: bool = False
-) -> tuple[bytes, int, bool]:
-    """Unpack a size header and 4 KiB Kosinski+ modules packed end to end."""
-    return _moduled.decompress(
-        data, decompress, padding=1, name="Kosinski+ moduled", partial=partial
-    )
-
-
-def compress_moduled(data: bytes) -> bytes:
-    """Encode ``data`` as 4 KiB Kosinski+ modules behind a size header."""
-    return _moduled.compress(data, compress, padding=1, name="Kosinski+ moduled")
-
-
 class KosinskiPlusCompression(PartialDecompression):
     info = PluginInfo(
         id="compression.kosinski-plus",
@@ -211,14 +171,9 @@ class KosinskiPlusCompression(PartialDecompression):
     _encode = staticmethod(compress)
 
 
-class KosinskiPlusModuledCompression(PartialDecompression):
-    info = PluginInfo(
-        id="compression.kosinski-plus-moduled",
-        name="Kosinski+, moduled (4 KiB streams behind a size header)",
-        stage=Stage.COMPRESSION,
-        self_delimiting=True,  # the header's size fixes the module count
-        category="Sega",
-    )
-
-    _decode = staticmethod(decompress_moduled)
-    _encode = staticmethod(compress_moduled)
+# Packed end to end, unlike Kosinski's 16-byte module boundaries.
+KosinskiPlusModuledCompression, _MODULED = _moduled.moduled_plugin(
+    KosinskiPlusCompression, "Kosinski+"
+)
+decompress_moduled = _MODULED.decompress
+compress_moduled = _MODULED.compress

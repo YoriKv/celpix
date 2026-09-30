@@ -51,9 +51,11 @@ from celpix.core.errors import Stage
 from celpix.plugins._byteops import or_all
 from celpix.plugins.base import PluginInfo
 from celpix.plugins.builtins._bits import bit_expansion, bit_packing
+from celpix.plugins.builtins._lz import corrupt
 
 # int: LZ16 tile-row count for decode, when known. Recorded back after a
-# successful probe so later stages (and a future UI) can see what was used.
+# successful probe so later stages and the compression panel can see what was
+# used.
 KEY_LZ16_ROWS = "lz16.rows"
 
 ROW_PIXELS = 128
@@ -71,8 +73,7 @@ _PLANE_OFFSET = (0, 1, 16, 17)
 _PROBE_MAX_ROWS = 64
 
 
-def _fail(reason: str) -> ValueError:
-    return ValueError(f"corrupt LZ16 stream: {reason}")
+_fail = corrupt("LZ16")
 
 
 def _decode_pixel_rows(

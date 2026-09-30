@@ -32,7 +32,7 @@ circulation spells it one of those four ways, so all four are read rather than a
 winner being picked.
 
 Each engine supplies its own legend — :mod:`~celpix.plugins.builtins._mask` for
-colour components, :mod:`~celpix.plugins.builtins.tilemap_codec` for cell fields
+colour components, :mod:`~celpix.plugins.builtins._cell_layout` for cell fields
 — and a preset may override it, which is what lets a layout keep the mnemonics
 of the note it was copied from (``c`` and ``t`` for the two chunks of an SNES
 tile number). The result is the chunk masks and their ``(shift, width)`` pairs
@@ -43,8 +43,9 @@ first.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from functools import cache
+from typing import Any
 
 # Ignored entirely: a diagram is grouped so its bits can be counted, and where
 # the groups fall is the author's business.
@@ -61,6 +62,52 @@ Field = tuple[tuple[int, ...], tuple[tuple[int, int], ...]]
 def bit_width(text: str) -> int:
     """How many bits the layout describes, grouping ignored."""
     return sum(1 for char in text if char not in _SEPARATORS)
+
+
+def layout_param(
+    params: Mapping[str, Any], *, what: str, retired: Collection[str] = ()
+) -> str:
+    """The preset's ``fields`` layout, which every engine reading one requires.
+
+    ``what`` names the things the layout places, for the error. ``retired`` are
+    keys an older spelling of the preset used for the same thing; one present
+    in place of ``fields`` is named as not read, since a preset written that way
+    otherwise fails with nothing pointing at the key it does have.
+    """
+    text = params.get("fields")
+    if not isinstance(text, str):
+        unread = sorted(key for key in retired if key in params)
+        note = f" ({', '.join(unread)}: not read)" if unread else ""
+        raise ValueError(
+            f"the preset does not say where {what} sit - give "
+            f"`fields`, one letter per bit, most significant first{note}"
+        )
+    return text
+
+
+def byte_width(
+    text: str, what: str, *, source: str = "the layout", empty_ok: bool = True
+) -> int:
+    """How many whole bytes the layout ``text`` describes.
+
+    A value that is not a whole number of bytes cannot be strided over a buffer,
+    so it is refused naming ``what`` it was meant to be and the ``source`` that
+    described it. ``empty_ok`` false refuses a layout of no bits at all too.
+    """
+    width = bit_width(text)
+    if width % 8 or (not width and not empty_ok):
+        raise ValueError(
+            f"{what} has to be a whole number of bytes, and {source} "
+            f"describes {width} bits"
+        )
+    return width // 8
+
+
+def limit(field: Field | None) -> int | None:
+    """The highest value a field can hold — all its chunks' bits set."""
+    if field is None:
+        return None
+    return (1 << sum(width for _, width in field[1])) - 1
 
 
 def resolve_legend(

@@ -783,7 +783,7 @@ def test_a_chain_of_any_depth_resolves_and_only_a_loop_is_refused(
     assert window._doc.is_indirect and window._doc.stamp_cells == (1, 1)
     assert window.statusBar().currentMessage() == (
         "4x4 stamps not resolved - the last table's cells are metatiles; "
-        "drawing one cell per entry."
+        "each entry draws one cell."
     )
 
 

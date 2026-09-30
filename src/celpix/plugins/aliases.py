@@ -29,9 +29,10 @@ Two rules keep the table honest, both checked by the tests:
   single-hop reader of this dict would get wrong. So the table stays **flat**,
   and the walk below is a backstop rather than the mechanism.
 
-Project files are also rewritten as they are re-saved
-(:func:`celpix.project.projectfile.current_ids`), so a project touched after an
-upgrade stops depending on this table. One that is never re-saved keeps working
+Project files are also rewritten as they are re-saved — every stored id is
+forwarded on load (:func:`celpix.project.projectfile._plugin_id`), so the next
+save writes the current one — and a project touched after an upgrade stops
+depending on this table. One that is never re-saved keeps working
 through it indefinitely, which is the point.
 
 **Preset parameters** are the same kind of surface one level down: a user's own

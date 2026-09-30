@@ -19,8 +19,8 @@ knowable only from outside the stream — the TIFF strip byte count, the ILBM ch
 size, a game's pointer table — and *any* byte sequence decodes as valid PackBits.
 Two consequences:
 
-- ``KEY_DECOMPRESS_COMPLETE`` is never reported. A decode that runs to the end of
-  the buffer means "the buffer ran out", not "the structure ended", and claiming
+- ``KEY_DECOMPRESS_COMPLETE`` is never reported true. A decode that runs to the
+  end of the buffer means "the buffer ran out", not "the structure ended", and claiming
   otherwise would let a slice created without a length backfill its extent as the
   whole rest of the file. Give a PackBits slice an explicit length.
 - The structure **scan** cannot find PackBits streams: its criterion is a complete
@@ -37,20 +37,17 @@ of ``c - 125`` (3..130). Both are the same idea with different arithmetic, and
 both belong to container formats celPix doesn't read, so this module implements
 the canonical byte-oriented scheme only.
 
-The encoder emits a run for every stretch of 3 or more equal bytes and packs
-everything else into literal packets, both capped at 128 bytes. Byte-identity with
+The encoder emits a run for every stretch of 3 or more equal bytes — and for a
+lone pair when no literal packet is open to absorb it, where the run is the
+cheaper form — and packs everything else into literal packets, both capped at 128
+bytes. Byte-identity with
 another packer's output is a non-goal; round-tripping is the contract.
 """
 
 from __future__ import annotations
 
-from celpix.core.context import (
-    KEY_COMPRESSED_SIZE,
-    KEY_DECOMPRESS_COMPLETE,
-    PipelineContext,
-)
 from celpix.core.errors import Stage
-from celpix.plugins.base import PluginInfo
+from celpix.plugins.base import PartialDecompression, PluginInfo
 from celpix.plugins.builtins._rle import pack_runs
 
 # Output bytes one packet can carry, literal or run.
@@ -123,7 +120,7 @@ def compress(data: bytes) -> bytes:
     return bytes(out)
 
 
-class PackBitsCompression:
+class PackBitsCompression(PartialDecompression):
     info = PluginInfo(
         id="compression.packbits",
         name="PackBits (TIFF / ILBM / MacPaint)",
@@ -134,13 +131,11 @@ class PackBitsCompression:
         category="Generic",
     )
 
-    def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
+    # Never complete, and the partial flag changes nothing: with no end marker,
+    # "we decoded to here" is not "the structure ends here" (see the module
+    # docstring), and every buffer already decodes as far as it goes.
+    def _decode(self, data: bytes, *, partial: bool) -> tuple[bytes, int, bool]:
         out, consumed = decompress(data)
-        ctx.set(KEY_COMPRESSED_SIZE, consumed)
-        # Never complete: with no end marker, "we decoded to here" is not "the
-        # structure ends here" (see the module docstring).
-        ctx.set(KEY_DECOMPRESS_COMPLETE, False)
-        return out
+        return out, consumed, False
 
-    def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
-        return compress(data)
+    _encode = staticmethod(compress)

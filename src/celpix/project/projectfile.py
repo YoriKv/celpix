@@ -13,12 +13,16 @@ Loading yields ready-to-adopt :class:`~celpix.project.workspace.Entry` objects
 with their documents unloaded (lazy, as in a live session); view/palette state
 rides on the entries' pending fields until first activation. The UI applies
 the result with :meth:`~celpix.project.workspace.Workspace.replace`.
+
+An older file is walked forward to the current schema first
+(:mod:`celpix.project.migrations`), and the clipboard form of copied entries —
+these same entry records plus the positions a paste resolves — is
+:mod:`celpix.project.clipboard_payload`, re-exported here.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from os import listdir
@@ -40,20 +44,30 @@ from celpix.core.aspect import PixelAspect
 from celpix.core.aspect import parse as parse_aspect
 from celpix.core.capabilities import ContentKind
 from celpix.core.document import ViewOptions
-from celpix.core.errors import Stage
 from celpix.core.font import HOLE, TEMPLATES, Glyph, glyphs_from_spec
+from celpix.core.palette import format_argb
 from celpix.core.paletteregions import PaletteRegion, PaletteRegions
 from celpix.core.tilemap import IndexAddressing
 from celpix.core.tilerearrangement import TileRearrangement
 from celpix.pipeline.pathway import DEFAULT_SLOT_FILL, SlotFill
 from celpix.plugins.aliases import current_id
 from celpix.plugins.base import (
+    DEFAULT_PALETTE_PRESET,
+    DEFAULT_PIXEL_PRESET,
     NO_COMPRESSION,
     NO_RESHAPE,
     RAW_CONTAINER,
-    STAGE_DEFAULT_PRESET,
 )
 from celpix.plugins.registry import Registry
+from celpix.project.clipboard_payload import (
+    CLIPBOARD_VERSION,
+    CopiedEntry,
+    entries_from_payload,
+    entries_payload,
+    inputs_from_payload,
+    inputs_payload,
+    payload_session,
+)
 from celpix.project.inputs import (
     Bindings,
     InputBinding,
@@ -61,6 +75,7 @@ from celpix.project.inputs import (
     RegionBinding,
     prune_bindings,
 )
+from celpix.project.migrations import _migrated
 from celpix.project.workspace import (
     CompositePiece,
     Entry,
@@ -77,12 +92,33 @@ from celpix.project.workspace import (
     path_exists,
 )
 
+# The project file's public surface, with the clipboard form beside it: a copy
+# is this module's own entry records plus positions
+# (:mod:`celpix.project.clipboard_payload`), so a caller reaches both here.
+__all__ = [
+    "CLIPBOARD_VERSION",
+    "PROJECT_EXTENSION",
+    "PROJECT_VERSION",
+    "CopiedEntry",
+    "LoadedProject",
+    "ProjectError",
+    "entries_from_payload",
+    "entries_payload",
+    "inputs_from_payload",
+    "inputs_payload",
+    "load_project",
+    "payload_session",
+    "project_dict",
+    "save_project",
+]
+
 # A bump means "the schema changed shape", and every bump earns a migration in
-# :data:`_MIGRATIONS` below, so an older project opens as the file it would be
-# if it had been written today. Key-level tolerance still covers everything a
-# migration does not: unknown keys are ignored and missing ones take defaults.
-# A *newer* file has no migration to run — the reader can only fall back on that
-# tolerance, which is what the version buys the UI its warning for.
+# :data:`~celpix.project.migrations._MIGRATIONS`, so an older project opens as
+# the file it would be if it had been written today. Key-level tolerance still
+# covers everything a migration does not: unknown keys are ignored and missing
+# ones take defaults. A *newer* file has no migration to run — the reader can
+# only fall back on that tolerance, which is what the version buys the UI its
+# warning for.
 #
 # Renamed plugin and preset **ids** are handled outside this number, and are
 # translated at every version (:func:`_plugin_id`). They are not a schema
@@ -101,13 +137,6 @@ _LEGACY_PRESET_RUNS: dict[str, tuple[str, int]] = {
     "alphabet.ascii-upper": (TEMPLATES[0][2], TEMPLATES[0][1]),
     "alphabet.ascii": (TEMPLATES[1][2], TEMPLATES[1][1]),
 }
-
-# Fallbacks for a hand-authored project that omits preset ids entirely — the
-# same built-ins a fresh window starts on, so a minimal project still renders,
-# and the same ones an entry naming a *missing* format falls back to
-# (:func:`~celpix.project.workspace.repair_presets`).
-_DEFAULT_PIXEL_PRESET = STAGE_DEFAULT_PRESET[Stage.INTERPRET_PIXEL]
-_DEFAULT_PALETTE_PRESET = STAGE_DEFAULT_PRESET[Stage.INTERPRET_PALETTE]
 
 
 class ProjectError(Exception):
@@ -144,173 +173,11 @@ class LoadedProject:
     #: their maps' indices count — true of every file from before version 7
     #: until :func:`~celpix.project.documents.count_bases_in_units` re-counts
     #: them in the index's unit. That needs the registry the migration has not
-    #: got (:func:`_migrate_6_to_7`), so whoever opens the project calls it once
-    #: its registry is final; it clears this, because a base already re-counted
-    #: would be re-counted again as if it were still elements.
+    #: got (:func:`~celpix.project.migrations._migrate_6_to_7`), so whoever
+    #: opens the project calls it once its registry is final; it clears this,
+    #: because a base already re-counted would be re-counted again as if it were
+    #: still elements.
     bases_count_elements: bool = False
-
-
-# -- migrations -----------------------------------------------------------
-#
-# One entry per version bump, keyed by the version it *reads*: ``_MIGRATIONS[n]``
-# takes a document written at version ``n`` and returns it at ``n + 1``. They run
-# in sequence, so a version-1 file opened by a version-7 build is walked forward
-# one step at a time and no migration ever has to know about more than the bump
-# it was written for.
-#
-# A migration only ever rewrites what a *rename or reshape* moved. It is not the
-# place for a defaulted key or a widened range: reading those is already the
-# tolerance in :func:`_view_from` and its neighbours, and duplicating it here
-# would leave two answers to maintain for the same question.
-
-
-#: The v1 spelling of a view's :attr:`~celpix.core.document.ViewOptions.palette_row`.
-#: A migration is the one place an *old* name has to survive verbatim, so it is
-#: named here rather than typed inline — a project-wide rename of the current
-#: spelling would otherwise quietly turn the migration below into a no-op.
-_V1_PALETTE_ROW_KEY = "subpalette_row"
-
-
-def _migrate_1_to_2(data: dict[str, object]) -> dict[str, object]:
-    """v1 → v2: a view's ``subpalette_row`` is spelled ``palette_row``.
-
-    The UI settled on one noun for the row a view draws through — the same
-    "palette row" a cell, a sprite piece and the base offset already used — and
-    the stored key followed it. Same meaning, same range: only the spelling
-    moved, so an untouched v1 project opens exactly as it was left.
-    """
-    for entry in data.get("entries", []):
-        if not isinstance(entry, dict):
-            continue
-        view = entry.get("view")
-        if isinstance(view, dict) and _V1_PALETTE_ROW_KEY in view:
-            # setdefault, not an unconditional write: a hand-edited file holding
-            # both spellings is answered by the new one, which is what the reader
-            # would have used anyway.
-            view.setdefault("palette_row", view[_V1_PALETTE_ROW_KEY])
-            del view[_V1_PALETTE_ROW_KEY]
-    return data
-
-
-def _migrate_2_to_3(data: dict[str, object]) -> dict[str, object]:
-    """v2 → v3: entries may carry ``inputs`` — what they bind to the data their
-    plugins declare they need from outside their own bytes.
-
-    Purely additive, so there is nothing to rewrite: a v2 file is a v3 file
-    with no bindings in it. The bump exists for the other direction — a v2 build
-    opening a v3 project drops every binding on its next save, and the number
-    is what makes it warn before it does (``docs/design/project-format.md`` §2).
-    """
-    return data
-
-
-def _migrate_3_to_4(data: dict[str, object]) -> dict[str, object]:
-    """v3 → v4: bindings, presets and palettes may use what a v3 build does not
-    know — the RLE codec's ``size_word`` inputs, a sprite record's ``arrays``, an
-    Offset palette on a composite (read from its first piece's file), and a
-    palette read out of **another entry**'s bytes (``palette_mode: "entry"``
-    beside ``palette: {"entry": <position>, "offset": N}``,
-    ``docs/design/palette-editing.md``).
-
-    Purely additive, so there is nothing to rewrite: every v3 file means the
-    same at v4. A v3 composite could not hold an Offset palette through the UI,
-    and one written by hand now reads the offset it names rather than falling
-    back to the default colours. The bump exists for the other direction, as
-    2 → 3's did. A v3 build fails those slices with a misleading message, draws
-    those frames scrambled, parses the unknown palette mode as ``default``, and
-    **drops the size-word bindings and the palette's entry reference on its next
-    save**. The number is what makes it warn before it does
-    (``docs/design/project-format.md`` §2).
-    """
-    return data
-
-
-def _migrate_4_to_5(data: dict[str, object]) -> dict[str, object]:
-    """v4 → v5: a registered palette file is a document of its own — it opens as
-    a sheet of swatches and can be sliced (``docs/design/palette-editing.md``
-    §2). A PALETTE entry may carry a ``session`` and a ``view``, a slice or
-    bookmark cut from one says so with ``"parent": "palette"``, and ``current``
-    may name a PALETTE entry.
-
-    Purely additive, so there is nothing to rewrite: every v4 file means the
-    same at v5. The bump exists for the other direction, as 3 → 4's did. A v4
-    build reads a palette's slice as a slice of a graphics file over the same
-    path, and **drops its ``parent`` on its next save**, after which even this
-    build reopens it as a graphics file's slice. The number is what makes it warn
-    before it does (``docs/design/project-format.md`` §2).
-    """
-    return data
-
-
-def _migrate_5_to_6(data: dict[str, object]) -> dict[str, object]:
-    """v5 → v6: an input binding may be a bare string — a **choice** input's
-    option key (``docs/design/plugin-inputs.md`` §3) — and a slice may be cut
-    from another slice, ``"parent": "slice"`` with a ``parent_index``
-    (``docs/design/slices-and-parents.md`` §6).
-
-    Purely additive, so there is nothing to rewrite: every v5 file means the
-    same at v6. The bump exists for the other direction, as 4 → 5's did. A v5
-    build skips a string binding as malformed, so the entry decodes with the
-    choice's default rather than the option bound, and reads a nested slice as
-    a slice of the file, its offset landing in the wrong bytes — and **drops
-    both the binding and the parent on its next save**. The number is what
-    makes it warn before it does (``docs/design/project-format.md`` §2).
-    """
-    return data
-
-
-def _migrate_6_to_7(data: dict[str, object]) -> dict[str, object]:
-    """v6 → v7: a tile binding may say how its map's indices number what they
-    draw — ``tile_source.addressing``, ``"corner"`` or ``"ordinal"``
-    (:class:`~celpix.core.tilemap.IndexAddressing`) — its ``base_index``
-    counts in that unit, and a **palette** entry's ``inputs``, its compression
-    preview's bindings, are read back.
-
-    Nothing to rewrite here, though one number changes meaning: a v6 base
-    counted cells or tiles even where the index counted records, and a v7 base
-    counts records there. Which maps those are, and how many cells a record
-    is, is a question for the registry, which a migration does not have — so
-    :func:`load_project` only flags them
-    (:attr:`LoadedProject.bases_count_elements`), and whoever opens the project
-    re-counts them once its registry is final
-    (:func:`~celpix.project.documents.count_bases_in_units`).
-
-    The bump also serves the other direction, as 5 → 6's did. A v6 build
-    ignores ``addressing``, so a map whose binding overrides its format's
-    reading counts every index the format's way and draws the wrong tiles,
-    reads a record base as cells, and never reads a palette entry's
-    ``inputs``, so its preview decodes with the codec's defaults — and **drops
-    both on its next save**. The number is what makes it warn before it does
-    (``docs/design/project-format.md`` §2).
-    """
-    return data
-
-
-_MIGRATIONS: dict[int, Callable[[dict[str, object]], dict[str, object]]] = {
-    1: _migrate_1_to_2,
-    2: _migrate_2_to_3,
-    3: _migrate_3_to_4,
-    4: _migrate_4_to_5,
-    5: _migrate_5_to_6,
-    6: _migrate_6_to_7,
-}
-
-
-def _migrated(data: dict[str, object]) -> tuple[dict[str, object], int | None]:
-    """``data`` walked forward to :data:`PROJECT_VERSION`, and where it started.
-
-    The second element is the version the file claimed when it needed migrating,
-    and ``None`` when it did not — which is also the answer for a file from the
-    future, since there is nothing to walk it forward *with*. Its own version
-    survives on the document for the caller to report.
-    """
-    stated = _int(data.get("version"), 1)
-    version = stated
-    while (migration := _MIGRATIONS.get(version)) is not None:
-        data = migration(data)
-        version += 1
-        data["version"] = version
-    return data, stated if version != stated else None
 
 
 # -- saving ----------------------------------------------------------------
@@ -512,7 +379,7 @@ def _entry_dict(
         # Only when picked: the swatch view's color format is the stage default
         # until someone chooses another, and a project that never opened the
         # view stays byte-identical to one written before it existed.
-        if session.palette_view_preset_id != _DEFAULT_PALETTE_PRESET:
+        if session.palette_view_preset_id != DEFAULT_PALETTE_PRESET:
             data["session"]["palette_view_preset_id"] = session.palette_view_preset_id
     # A loaded document carries the live state; a never-activated entry may
     # still hold state a previous load restored into its pending fields.
@@ -658,7 +525,7 @@ def _palette_dict(
     palette rather than to whatever now sits at a stale index.
     """
     if palette.colors is not None:
-        return {"colors": [f"#{color & 0xFFFFFFFF:08X}" for color in palette.colors]}
+        return {"colors": [format_argb(color) for color in palette.colors]}
     if palette.path is not None:
         return {"path": _store_path(palette.path, base_dir), "offset": palette.offset}
     if palette.entry is not None or mode is PaletteMode.ENTRY:
@@ -668,223 +535,6 @@ def _palette_dict(
         # an offset into this entry's own file.
         return {"entry": positions.get(id(palette.entry), -1), "offset": palette.offset}
     return {"offset": palette.offset}
-
-
-# -- the clipboard form (docs/design/project-format.md §6a) ----------------
-#: Bumped only on an incompatible change to the payload below. A copy taken by
-#: another build reads as "nothing to paste" rather than as garbage entries.
-CLIPBOARD_VERSION = 1
-
-
-@dataclass(frozen=True)
-class CopiedEntry:
-    """One entry off the clipboard, plus the two positions it was written with.
-
-    ``source_index`` is where it sat in the list it was copied from, and
-    ``tile_source`` / ``tile_source_index`` its tile binding and the position
-    that binding named there (``None`` / ``-1`` for a map that is unbound, and
-    for everything that is not a map).
-
-    **Neither number is a reference to a live list**, and reading one as though
-    it were is the mistake the whole clipboard path is arranged to avoid: the
-    rows are the user's to rearrange, so a position recorded when a copy was
-    taken names something else entirely by the time it is pasted. They are a
-    **join between the records of one payload** — both written in a single
-    :func:`entries_payload` call against one snapshot — so all they can answer is
-    "was the bank copied along with the map?". A bank that was *not* copied is
-    matched by identity instead, outside this file, where the object still exists
-    (:data:`~celpix.ui.clipboard._COPIED_BINDINGS`).
-
-    The binding is handed back **beside** the entry rather than on it for the
-    reason :func:`_bind_tile_sources` leaves an unresolvable one at ``None``: a
-    :class:`~celpix.project.workspace.TileSource` that says it is bound and names
-    no entry is a state nothing downstream expects.
-    """
-
-    entry: Entry
-    source_index: int
-    tile_source: TileSource | None
-    tile_source_index: int
-    #: One position per piece of a copied **composite**, in order — the same join
-    #: as ``tile_source_index`` and read the same way, ``-1`` for a pad and for a
-    #: source that was not part of the copy. A composite's pieces are entries and
-    #: an entry is not a value, so without this a pasted composite arrives with
-    #: its list emptied (``docs/design/composite-entry.md``).
-    piece_sources: tuple[int, ...] = ()
-    #: The position an **ENTRY-mode palette** named, or ``None`` on a row whose
-    #: palette comes from anywhere else — the same join again, for the fourth
-    #: kind of reference a row can hold (``docs/design/palette-editing.md``).
-    #: ``-1`` for a source that was not part of the copy. ``None`` rather than
-    #: ``-1`` for "no such reference", so a row with an ordinary palette is left
-    #: alone instead of having one resolved onto it.
-    palette_source_index: int | None = None
-    #: One ``(plugin id, key, position)`` per **input binding** that names an
-    #: entry, in the order :func:`~celpix.project.inputs.iter_bindings` walks
-    #: them — the same join again, for the third kind of reference a row can
-    #: hold (``docs/design/plugin-inputs.md`` §3). ``-1`` for a source that
-    #: was not part of the copy.
-    input_sources: tuple[tuple[str, str, int], ...] = ()
-    #: The position a **nested slice**'s parent slice sat at, or ``None`` on
-    #: every row that is not one — the same join again, for the reference that
-    #: says which slice this one was cut from. ``-1`` for a parent that was not
-    #: part of the copy.
-    parent_source_index: int | None = None
-    #: How deep the row's **parent** sits: ``0`` for a child of a file or a
-    #: palette, ``1`` for one nested in a slice of a file, and so on. Not a
-    #: position, and not a join — the one thing a paste places a lone child by,
-    #: since a kept offset counts from the same kind of buffer only at the same
-    #: depth (``docs/design/slices-and-parents.md`` §6).
-    parent_depth: int = 0
-
-
-def _parent_depth(entry: Entry) -> int:
-    """How many slice links sit between ``entry`` and its file — the links it
-    can see, on a broken chain, and each of them once on a circular one."""
-    depth = 0
-    seen = {id(entry)}
-    node = entry
-    while node.parent_kind is EntryKind.SLICE:
-        depth += 1
-        parent = node.parent_entry
-        if parent is None or id(parent) in seen:
-            break
-        seen.add(id(parent))
-        node = parent
-    return depth
-
-
-def entries_payload(
-    entries: list[Entry], all_entries: list[Entry], session: str
-) -> dict[str, object]:
-    """``entries`` as a clipboard payload — the project form, absolute-pathed.
-
-    Deliberately the *same* per-entry shape a project file holds: a copied entry
-    is a copied reference plus its settings, which is exactly what
-    :func:`_entry_dict` already states, and one writer means a paste can never
-    carry less than a save does. What differs is only what a position can be
-    resolved against, which is what ``session`` and the two indices below are
-    for.
-
-    ``session`` is a token identifying the running editor, and what it buys is
-    named on :class:`CopiedEntry`: it says the entry objects this process
-    remembered alongside the payload are the ones this payload means. A paste
-    into another process has only the payload, and resolves bindings no further
-    than the copy itself carries.
-    """
-    positions = {id(entry): i for i, entry in enumerate(all_entries)}
-    written = []
-    for entry in entries:
-        data = _entry_dict(entry, None, positions)
-        data["source_index"] = positions.get(id(entry), -1)
-        # Here and not in :func:`_entry_dict`: a project states the chain whole
-        # in ``parent_index``, where a lone copied child has only this left.
-        if entry.kind in (EntryKind.SLICE, EntryKind.BOOKMARK):
-            data["parent_depth"] = _parent_depth(entry)
-        written.append(data)
-    return {
-        "version": CLIPBOARD_VERSION,
-        "session": session,
-        "entries": written,
-    }
-
-
-def entries_from_payload(raw: object) -> list[CopiedEntry]:
-    """A clipboard payload back into entries — ``[]`` for anything unusable.
-
-    Tolerant per entry exactly as :func:`load_project` is: one unreadable record
-    is dropped and the rest of the paste still lands. The whole payload is
-    refused only where it is not ours to read at all — the wrong shape, or a
-    version this build has no meaning for.
-    """
-    if not isinstance(raw, dict) or raw.get("version") != CLIPBOARD_VERSION:
-        return []
-    records = raw.get("entries")
-    if not isinstance(records, list):
-        return []
-    out = []
-    for record in records:
-        if not isinstance(record, dict):
-            continue
-        try:
-            entry = _entry_from_dict(record, "")
-        except Exception:  # noqa: BLE001 — a garbage entry degrades, never aborts
-            continue
-        binding = _tile_source(record)
-        pieces = _pieces_from(record)
-        # The pieces themselves ride on the entry; only the entry each one names
-        # has to come back beside it, for the reason the binding does.
-        entry.pieces = tuple(piece for piece, _at in pieces)
-        # The bindings ride on the entry too, and the ones naming an entry are
-        # handed back beside it the same way; the paste resolves or drops them.
-        input_sources = entry._pending_input_sources
-        entry._pending_input_sources = ()
-        # A nested record is at least one level down whatever it says, so one
-        # written without the key reads as exactly that.
-        floor = 1 if entry.parent_kind is EntryKind.SLICE else 0
-        depth = max(_int(record.get("parent_depth"), 0) or 0, floor)
-        out.append(
-            CopiedEntry(
-                entry=entry,
-                source_index=_int(record.get("source_index"), -1),
-                tile_source=binding[0] if binding is not None else None,
-                tile_source_index=binding[1] if binding is not None else -1,
-                piece_sources=tuple(at for _piece, at in pieces),
-                palette_source_index=_palette_entry_index(record),
-                input_sources=input_sources,
-                parent_source_index=(
-                    _int(record.get("parent_index"), -1)
-                    if entry.parent_kind is EntryKind.SLICE
-                    else None
-                ),
-                parent_depth=depth,
-            )
-        )
-    return out
-
-
-def _palette_entry_index(raw: dict) -> int | None:
-    """The entry position an entry-shaped ``palette`` block named, else ``None``.
-
-    Handed back beside the record for the reason every other cross-entry
-    reference is: the entry it names may not exist here at all, and a
-    :class:`~celpix.project.workspace.PaletteSource` naming nothing is what the
-    restore already degrades on.
-    """
-    palette = raw.get("palette")
-    if not isinstance(palette, dict) or "entry" not in palette:
-        return None
-    return _int(palette.get("entry"), -1)
-
-
-def inputs_payload(entry: Entry, all_entries: list[Entry], session: str) -> dict:
-    """One entry's input bindings as a clipboard payload (Copy Inputs).
-
-    The same per-plugin form the project file writes, so a paste lands exactly
-    what a save would, and the same ``session`` token :func:`entries_payload`
-    carries: a binding naming an entry is resolved through the objects the
-    copying process remembered, when the paste is in that process.
-    """
-    positions = {id(e): i for i, e in enumerate(all_entries)}
-    return {
-        "version": CLIPBOARD_VERSION,
-        "session": session,
-        "inputs": _inputs_dict(entry, positions, None),
-    }
-
-
-def inputs_from_payload(
-    raw: object,
-) -> tuple[dict[str, Bindings], list[tuple[str, str, int]]]:
-    """A Copy Inputs payload back into bindings, plus the named positions in
-    the order the copying side numbered them; empty for anything unusable."""
-    if not isinstance(raw, dict) or raw.get("version") != CLIPBOARD_VERSION:
-        return {}, []
-    return _inputs_from(raw)
-
-
-def payload_session(raw: object) -> str:
-    """The session token a payload was written by — ``""`` when it has none."""
-    return _str(raw.get("session"), "") if isinstance(raw, dict) else ""
 
 
 # -- loading ---------------------------------------------------------------
@@ -923,7 +573,7 @@ def load_project(path: str) -> LoadedProject:
     _bind_palette_entries(data.get("entries", []), parsed)
     _bind_inputs(data.get("entries", []), parsed)
     index = _int(data.get("current"), -1)
-    current = parsed[index] if 0 <= index < len(parsed) else None
+    current = _parsed_at(parsed, index)
     if current is not None and not current.kind.has_document:
         # A bookmark can't be shown; a hand-edited index degrades.
         current = None
@@ -988,7 +638,7 @@ def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
             path=path,
             container_id=_plugin_id(raw.get("container_id"), RAW_CONTAINER),
             palette_preset_id=_plugin_id(
-                raw.get("palette_preset_id"), _DEFAULT_PALETTE_PRESET
+                raw.get("palette_preset_id"), DEFAULT_PALETTE_PRESET
             ),
             # A palette never opened as a sheet stores no session, and must come
             # back without one: :func:`_session_from` builds a default graphics
@@ -1078,7 +728,8 @@ def _font_from(raw: dict) -> dict[str, object]:
     still has (:data:`~celpix.core.font.TEMPLATES`). A project naming one of them
     opens with its text still readable; a project naming any other is left with
     an empty run, which is the ordinary "no alphabet yet" state and reads as hex.
-    Deletable once alpha projects have been re-saved.
+    Kept rather than migrated: it is a tolerance on read that costs nothing, and
+    a project re-saved here no longer names a preset at all.
     """
     font = raw.get("font")
     if not isinstance(font, dict):
@@ -1124,17 +775,19 @@ def _session_from(raw: object) -> EntrySession:
     # The session's selection fields stay at their defaults: a project doesn't
     # store a selection, and one written by an earlier version is read past like
     # any other key this version doesn't use — an entry opens with nothing
-    # selected either way.
+    # selected either way. A hand-authored project may omit the preset ids
+    # entirely; they fall back to the formats a fresh window starts on, so a
+    # minimal project still renders.
     data = raw if isinstance(raw, dict) else {}
     return EntrySession(
-        pixel_preset_id=_plugin_id(data.get("pixel_preset_id"), _DEFAULT_PIXEL_PRESET),
+        pixel_preset_id=_plugin_id(data.get("pixel_preset_id"), DEFAULT_PIXEL_PRESET),
         palette_preset_id=_plugin_id(
-            data.get("palette_preset_id"), _DEFAULT_PALETTE_PRESET
+            data.get("palette_preset_id"), DEFAULT_PALETTE_PRESET
         ),
         palette_mode=PaletteMode.parse(data.get("palette_mode")),
         preview_compression_id=_plugin_id(data.get("compression_id"), NO_COMPRESSION),
         palette_view_preset_id=_plugin_id(
-            data.get("palette_view_preset_id"), _DEFAULT_PALETTE_PRESET
+            data.get("palette_view_preset_id"), DEFAULT_PALETTE_PRESET
         ),
     )
 
@@ -1232,6 +885,12 @@ def _tile_source(raw: dict) -> tuple[TileSource, int] | None:
     return source, _int(data.get("entry_index"), -1)
 
 
+def _parsed_at(parsed: list[Entry | None], at: int | None) -> Entry | None:
+    """The entry a stored position names, or None when it names none — a
+    hand-edited index out of range, or a dropped entry's slot."""
+    return parsed[at] if at is not None and 0 <= at < len(parsed) else None
+
+
 def _bind_slice_parents(raw_entries: list, parsed: list[Entry | None]) -> None:
     """Point every nested slice at the parent slice its stored position named.
 
@@ -1249,7 +908,7 @@ def _bind_slice_parents(raw_entries: list, parsed: list[Entry | None]) -> None:
         if entry is None or entry.parent_kind is not EntryKind.SLICE:
             continue
         at = _int(raw.get("parent_index"), -1) if isinstance(raw, dict) else -1
-        target = parsed[at] if at is not None and 0 <= at < len(parsed) else None
+        target = _parsed_at(parsed, at)
         if target is None or target is entry or target.kind is not EntryKind.SLICE:
             continue
         entry.parent_entry = target
@@ -1290,7 +949,7 @@ def _bind_tile_sources(raw_entries: list, parsed: list[Entry | None]) -> None:
         if found is None:
             continue
         source, at = found
-        target = parsed[at] if 0 <= at < len(parsed) else None
+        target = _parsed_at(parsed, at)
         entry.tile_source = replace(source, entry=target) if target else None
 
 
@@ -1423,7 +1082,7 @@ def _bind_inputs(raw_entries: list, parsed: list[Entry | None]) -> None:
         if entry is None or not isinstance(raw, dict):
             continue
         for plugin_id, key, at in entry._pending_input_sources:
-            target = parsed[at] if 0 <= at < len(parsed) else None
+            target = _parsed_at(parsed, at)
             bindings = entry.inputs.get(plugin_id)
             if bindings is None or key not in bindings:
                 continue
@@ -1538,7 +1197,7 @@ def _bind_composite_pieces(raw_entries: list, parsed: list[Entry | None]) -> Non
             continue
         pieces = []
         for piece, at in _pieces_from(raw):
-            target = parsed[at] if 0 <= at < len(parsed) else None
+            target = _parsed_at(parsed, at)
             usable = target is not None and can_compose(entry, target)
             pieces.append(replace(piece, entry=target if usable else None))
         entry.pieces = tuple(pieces)
@@ -1574,7 +1233,7 @@ def _bind_palette_entries(raw_entries: list, parsed: list[Entry | None]) -> None
             continue
         palette = raw.get("palette")
         at = _int(palette.get("entry"), -1) if isinstance(palette, dict) else -1
-        target = parsed[at] if at is not None and 0 <= at < len(parsed) else None
+        target = _parsed_at(parsed, at)
         if target is None or not can_supply_palette(entry, target):
             continue
         source.entry = target
@@ -1651,6 +1310,9 @@ def _palette_from(raw: object, base_dir: str) -> PaletteSource | None:
         return None
     colors = raw.get("colors")
     if isinstance(colors, list):
+        # Not :func:`~celpix.core.palette.parse_argb`: the file's colours are the
+        # 32-bit values themselves, read at any digit count, where that one reads
+        # what a person typed and so takes six digits as opaque.
         try:
             parsed = [int(str(color).lstrip("#"), 16) & 0xFFFFFFFF for color in colors]
         except ValueError:

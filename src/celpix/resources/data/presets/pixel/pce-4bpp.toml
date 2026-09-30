@@ -1,6 +1,6 @@
 # Alias of `snes-4bpp` that files the format under the NEC block too (its own
 # entry names it as a Nintendo console format). Same codec/params, a distinct id
-# so both listings coexist — this is the VDC's own character format, and the one
+# so both listings coexist — this is the VDC's own tile format, and the one
 # most PC Engine backgrounds use, so a reader who knows only their machine finds
 # it under their machine. The unusual PCE readings are `pce-4bpp-flat-planes` and
 # `pce-4bpp-sprite`; see snes-4bpp.toml for the layout.

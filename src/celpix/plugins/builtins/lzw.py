@@ -50,6 +50,7 @@ from celpix.core.context import (
 )
 from celpix.core.errors import Stage
 from celpix.plugins.base import InputKind, InputSpec, PluginInfo
+from celpix.plugins.builtins._lz import corrupt
 
 MAX_WIDTH = 16
 
@@ -117,8 +118,7 @@ class Params:
         return min(self.max_bits, max(self.initial_bits, need))
 
 
-def _fail(reason: str) -> ValueError:
-    return ValueError(f"corrupt LZW stream: {reason}")
+_fail = corrupt("LZW")
 
 
 class _Reader:
@@ -292,8 +292,9 @@ class LzwCompression:
         id="compression.lzw",
         name="LZW (code width, bit order and special codes as inputs)",
         stage=Stage.COMPRESSION,
-        # with an end code it is; without one the slice sets the extent and a
-        # scan, which counts only complete streams, finds nothing
+        # The answer for unbound inputs; the real one is the end code's
+        # (``delimits_itself``), since a variant without one has no end of its
+        # own — the slice sets the extent and a scan finds nothing to complete.
         self_delimiting=True,
         category="Generic",
         inputs=(
@@ -371,6 +372,12 @@ class LzwCompression:
             ),
         ),
     )
+
+    @staticmethod
+    def delimits_itself(inputs: dict) -> bool:
+        """Only a variant with an end code ends where its bytes say
+        (:func:`celpix.plugins.base.self_delimiting`)."""
+        return params_from(inputs).end_code is not None
 
     def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
         params = params_from(ctx.get(KEY_INPUTS) or {})

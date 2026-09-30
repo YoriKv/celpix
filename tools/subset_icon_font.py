@@ -2,9 +2,9 @@
 """Rebuild the bundled icon font from the upstream face, keeping only our glyphs.
 
 celPix ships Material Symbols Outlined cut down to the codepoints in
-:class:`celpix.ui.glyphs.Glyph` — tens of KB where the upstream variable font
+:class:`celpix.ui.icons.Icon` — tens of KB where the upstream variable font
 is 10.6 MB. That subset is a build artifact checked into the tree, so **a new
-``Glyph`` member is not in the shipped font until this is re-run**; it will draw
+``Icon`` member is not in the shipped font until this is re-run**; it will draw
 as nothing until then (``tests/test_icon_font.py`` fails loudly when it does).
 
 The codepoints come from the enum itself rather than a list kept alongside it,
@@ -36,9 +36,9 @@ TARGET = REPO / "src" / "celpix" / "resources" / "fonts" / "material-symbols-sub
 def codepoints() -> list[str]:
     """The codepoints celPix draws, as the ``U+XXXX`` strings pyftsubset wants."""
     sys.path.insert(0, str(REPO / "src"))
-    from celpix.ui.glyphs import Glyph  # noqa: PLC0415 - needs the path set above
+    from celpix.ui.icons import Icon  # noqa: PLC0415 - needs the path set above
 
-    return [f"U+{ord(glyph.value):04X}" for glyph in Glyph]
+    return [f"U+{ord(glyph.value):04X}" for glyph in Icon]
 
 
 def main() -> int:

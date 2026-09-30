@@ -38,14 +38,8 @@ and share a base class carrying the one encoder.
 
 from __future__ import annotations
 
-from celpix.core.context import (
-    KEY_COMPRESSED_SIZE,
-    KEY_DECOMPRESS_COMPLETE,
-    KEY_DECOMPRESS_PARTIAL,
-    PipelineContext,
-)
 from celpix.core.errors import Stage
-from celpix.plugins.base import PluginInfo
+from celpix.plugins.base import PartialDecompression, PluginInfo
 from celpix.plugins.builtins._rle import pack_runs
 
 # Largest byte count one fill or literal control byte can safely encode. 0x7F and
@@ -133,7 +127,7 @@ def compress(data: bytes) -> bytes:
     return bytes(out)
 
 
-class _KonamiRle:
+class _KonamiRle(PartialDecompression):
     """Shared base: the two schemes differ only in how ``decompress`` reads them.
 
     Encoding is the portable subset every variant accepts, so it lives here and
@@ -142,20 +136,17 @@ class _KonamiRle:
 
     fds: bool
 
-    def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
+    def _decode(self, data: bytes, *, partial: bool) -> tuple[bytes, int, bool]:
         out, consumed, complete = decompress(data, fds=self.fds)
         # A buffer that ran out before the 0xFF terminator is a prefix, and only
         # a caller that said the buffer may cut the structure short (the view
         # preview) gets one back. Anywhere else — a slice read, the scan — it is
         # the failure it looks like, or the scan would hit on any byte at all.
-        if not complete and not ctx.get(KEY_DECOMPRESS_PARTIAL):
+        if not complete and not partial:
             raise ValueError("corrupt Konami RLE stream: no 0xFF terminator")
-        ctx.set(KEY_COMPRESSED_SIZE, consumed)
-        ctx.set(KEY_DECOMPRESS_COMPLETE, complete)
-        return out
+        return out, consumed, complete
 
-    def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
-        return compress(data)
+    _encode = staticmethod(compress)
 
 
 class KonamiNesRle(_KonamiRle):

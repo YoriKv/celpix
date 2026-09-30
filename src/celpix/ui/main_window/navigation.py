@@ -54,9 +54,9 @@ from celpix.core.address import (
 )
 from celpix.core.capabilities import Capability
 from celpix.project.workspace import EntryKind
-from celpix.ui.glyphs import Glyph
 from celpix.ui.hex_view_panel import HexDumpView
-from celpix.ui.icon_font import glyph_icon
+from celpix.ui.icon_font import icon_qicon
+from celpix.ui.icons import Icon
 from celpix.ui.palette_panel import PalettePanel
 from celpix.ui.undo_commands import (
     OffsetMoveCommand,
@@ -317,7 +317,7 @@ class NavigationMixin:
         # platform's art, so the row changed shape with the widget style and sat
         # at a different weight from the marks beside it. The four arrows are
         # baked pixmaps, which is why they are collected for _rebake_icons.
-        self._step_arrows: list[tuple[QPushButton, Glyph]] = []
+        self._step_arrows: list[tuple[QPushButton, Icon]] = []
         for text, glyph, tip, handler in (
             (
                 "Pg Dn",
@@ -327,13 +327,13 @@ class NavigationMixin:
             ),
             (
                 "",
-                Glyph.ARROW_DOWN,
+                Icon.ARROW_DOWN,
                 "Down one row (Down)\nOne block row in a block pattern",
                 lambda: self._nav_rows(self._row_step()),
             ),
             (
                 "",
-                Glyph.ARROW_UP,
+                Icon.ARROW_UP,
                 "Up one row (Up)\nOne block row in a block pattern",
                 lambda: self._nav_rows(-self._row_step()),
             ),
@@ -343,10 +343,10 @@ class NavigationMixin:
                 "Up one page (PgUp)",
                 lambda: self._nav_rows(-self._view_rows()),
             ),
-            ("", Glyph.ARROW_LEFT, "Back one tile (Left)", lambda: self._nav_tiles(-1)),
+            ("", Icon.ARROW_LEFT, "Back one tile (Left)", lambda: self._nav_tiles(-1)),
             (
                 "",
-                Glyph.ARROW_RIGHT,
+                Icon.ARROW_RIGHT,
                 "Forward one tile (Right)",
                 lambda: self._nav_tiles(1),
             ),
@@ -397,7 +397,7 @@ class NavigationMixin:
         palette = QApplication.palette()
         ratio = self.devicePixelRatioF()
         for button, glyph in self._step_arrows:
-            button.setIcon(glyph_icon(glyph, palette, ratio=ratio))
+            button.setIcon(icon_qicon(glyph, palette, ratio=ratio))
 
     def _tile_offset_bar_style(self) -> str:
         """Accent-colored QSS for the file-position bar.

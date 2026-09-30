@@ -28,9 +28,9 @@ the game's pointer table says it does. Every loader seen turns a *byte* length i
 length by up to seven bytes — which is why :func:`compress` refuses a partial
 block rather than inventing a padding rule. Same framing problem as
 :mod:`~celpix.plugins.builtins.packbits`, and the same three consequences:
-``KEY_DECOMPRESS_COMPLETE`` is never reported, the structure scan cannot find
-these streams, and an unbounded read is stopped by :data:`_MAX_OUT` rather than by
-anything in the data. Give a slice an explicit length.
+``KEY_DECOMPRESS_COMPLETE`` is never reported true, the structure scan cannot
+find these streams, and an unbounded read is stopped by :data:`_MAX_OUT` rather
+than by anything in the data. Give a slice an explicit length.
 
 **Confirmed in six titles**, by matching the decompressor in the cartridge and
 decoding its own pointer tables: Super Ghouls 'N Ghosts (1991), Mega Man X,
@@ -57,13 +57,8 @@ or from a pointer table.
 
 from __future__ import annotations
 
-from celpix.core.context import (
-    KEY_COMPRESSED_SIZE,
-    KEY_DECOMPRESS_COMPLETE,
-    PipelineContext,
-)
 from celpix.core.errors import Stage
-from celpix.plugins.base import PluginInfo
+from celpix.plugins.base import PartialDecompression, PluginInfo
 
 # Output bytes one mask byte covers. The format's single structural constant:
 # block size, mask width and the encoder's run window are all this number.
@@ -130,7 +125,7 @@ def compress(data: bytes) -> bytes:
     return bytes(out)
 
 
-class CapcomMask8Compression:
+class CapcomMask8Compression(PartialDecompression):
     info = PluginInfo(
         id="compression.capcom-mask8",
         name="Capcom 8-byte mask RLE (SNES)",
@@ -141,13 +136,11 @@ class CapcomMask8Compression:
         category="Nintendo",
     )
 
-    def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
+    # Never complete, and the partial flag changes nothing: with no end marker,
+    # "we decoded to here" is not "the structure ends here" (see the module
+    # docstring), and every buffer already decodes as far as it goes.
+    def _decode(self, data: bytes, *, partial: bool) -> tuple[bytes, int, bool]:
         out, consumed = decompress(data)
-        ctx.set(KEY_COMPRESSED_SIZE, consumed)
-        # Never complete: with no end marker, "we decoded to here" is not "the
-        # structure ends here" (see the module docstring).
-        ctx.set(KEY_DECOMPRESS_COMPLETE, False)
-        return out
+        return out, consumed, False
 
-    def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
-        return compress(data)
+    _encode = staticmethod(compress)

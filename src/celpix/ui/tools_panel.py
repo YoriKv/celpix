@@ -13,16 +13,16 @@ Each button is a fixed square showing an icon only. The face comes from a glyph 
 the bundled icon font where one exists (pencil, fill bucket, eyedropper) or a shape
 the panel paints for the geometry tools (line/rect/ellipse and their filled variants,
 plus the selection marquee), so those share one size and padding. Both are
-rasterized here and tinted to the palette's text color — in its enabled *and*
-disabled shades, so the rail visibly goes dead outside pixel mode — which is how
-the panel tracks the theme and the display's pixel ratio; see
-:meth:`_rebuild_icons`.
+rasterized here and tinted to the palette's button-text color — in its enabled
+*and* disabled shades, so the rail visibly goes dead outside pixel mode — which is
+how the panel tracks the theme and the display's pixel ratio; see
+:meth:`_bake_icons`.
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QRect, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QIcon, QPainter, QPalette, QPen, QPixmap
+from PySide6.QtCore import QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
     QGridLayout,
@@ -31,9 +31,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from celpix.ui.icon_font import glyph_mask
+from celpix.ui.icon_font import icon_mask, mask_icon
 from celpix.ui.tools import TOOL_SPECS, Tool, ToolSpec
-from celpix.ui.widgets import icon_cache_key, stamped
+from celpix.ui.widgets import IconBaker
 
 # A single vertical column: the panel is a rail down the right edge of the canvas,
 # so the nine tools read top-to-bottom like a paint program's toolbox.
@@ -46,27 +46,12 @@ _BUTTON = 30
 _ICON = 20
 
 
-def _tinted(mask: QPixmap, color, ratio: float) -> QPixmap:
-    """``mask`` recolored to ``color`` and stamped with ``ratio``.
-
-    The ratio is what makes the finished pixmap measure ``_ICON`` in layout units
-    however many device pixels it was rasterized at; the recolor itself is the
-    app's shared one.
-    """
-    pixmap = stamped(mask, color)
-    pixmap.setDevicePixelRatio(ratio)
-    return pixmap
-
-
-class ToolsPanel(QWidget):
+class ToolsPanel(IconBaker, QWidget):
     tool_selected = Signal(object)  # the picked Tool
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._buttons: dict[Tool, QToolButton] = {}
-        # The (palette, device-pixel-ratio) the current icons were baked against;
-        # a change to either invalidates them (see _rebuild_icons).
-        self._icon_key: tuple[int, float] | None = None
         # Exclusive group: exactly one tool is active, and clicking another
         # unchecks the last without any bookkeeping here.
         self._group = QButtonGroup(self)
@@ -95,7 +80,7 @@ class ToolsPanel(QWidget):
             self._group.addButton(button)
             grid.addWidget(button, i, 0)
             self._buttons[spec.tool] = button
-        self._rebuild_icons()
+        self._bake_if_stale()
         # Start on the pen without announcing it — the controller seeds its own
         # tool state from the same default, and overrides it while in tile mode.
         self._buttons[Tool.PENCIL].setChecked(True)
@@ -110,68 +95,43 @@ class ToolsPanel(QWidget):
             button.setChecked(True)
 
     # -- icons ---------------------------------------------------------------
-    def changeEvent(self, event: QEvent) -> None:  # Qt override
-        # Both bakes are invalidated from outside: a theme switch swaps the
-        # palette out from under the tint, and a move to a differently scaled
-        # display invalidates the resolution. The second one matters more than
-        # it looks: the icons are laid out on exact integer pixels (the
-        # marquee's ants especially), so a pixmap baked at the wrong ratio is
-        # *smooth-scaled* by Qt to fit - blurring the dashes and drifting them
-        # off the centre they were placed on. The panel is built before the
-        # window is shown, so this is also how it picks up the real ratio.
-        super().changeEvent(event)
-        if event.type() in (
-            QEvent.Type.PaletteChange,
-            QEvent.Type.DevicePixelRatioChange,
-            QEvent.Type.ScreenChangeInternal,
-        ):
-            self._rebuild_icons()
-
-    def _rebuild_icons(self) -> None:
+    def _bake_icons(self) -> None:
         """(Re)bake every tool icon against the current palette and pixel ratio.
 
-        The tint and resolution are baked into each pixmap, so a plain cache kept
-        across a theme switch or a drag to a differently scaled monitor would show
-        yesterday's color at the wrong size. Guarding on the (palette, ratio) key
-        makes the frequent PaletteChange storm on startup a no-op after the first.
+        Both are invalidated from outside (:class:`~celpix.ui.widgets.IconBaker`):
+        a theme switch swaps the palette out from under the tint, and a move to a
+        differently scaled display invalidates the resolution. The second matters
+        more than it looks: the icons are laid out on exact integer pixels (the
+        marquee's ants especially), so a pixmap baked at the wrong ratio is
+        *smooth-scaled* by Qt to fit - blurring the dashes and drifting them off
+        the centre they were placed on. The panel is built before the window is
+        shown, so this is also how it picks up the real ratio.
         """
         palette = self.palette()
-        color = palette.color(QPalette.ColorGroup.Active, QPalette.ColorRole.ButtonText)
-        off = palette.color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText)
         ratio = self.devicePixelRatioF()
-        key = icon_cache_key(self)
-        if key == self._icon_key:
-            return
-        self._icon_key = key
         for spec in TOOL_SPECS:
-            self._buttons[spec.tool].setIcon(self._tool_icon(spec, color, off, ratio))
+            self._buttons[spec.tool].setIcon(self._tool_icon(spec, palette, ratio))
 
-    def _tool_icon(self, spec: ToolSpec, color, disabled, ratio: float) -> QIcon:
+    def _tool_icon(self, spec: ToolSpec, palette, ratio: float) -> QIcon:  # noqa: ANN001
         """The tool's face in the enabled and disabled tints, rasterized at ``ratio``.
 
-        Both sources feed one recolor path: an alpha mask (the PNG's own alpha, or
-        the shape painted onto a transparent square) is filled with the tint via
-        SourceIn. So a bundled icon and a painted primitive land on-theme with the
-        same weight. The pixmap carries its device ratio, so it still measures
-        ``_ICON`` in layout units.
+        Both sources feed one recolor path (:func:`~celpix.ui.icon_font.mask_icon`):
+        an alpha mask — the icon font's glyph, or the shape painted onto a
+        transparent square — tinted through its alpha. So a font mark and a
+        painted primitive land on-theme with the same weight.
 
         **The disabled face is baked, not left to Qt.** The rail is dead outside
-        pixel mode, and the style's automatic disabled pixmap fades a *flat
-        silhouette* by so little that the greyed-out rail still read as live —
-        a toolbox inviting clicks that do nothing. Tinting the same mask with the
-        palette's disabled ButtonText is the fade the rest of the UI uses for a
-        control that is off, so the rail dims with the toolbars beside it.
+        pixel mode, and the style's automatic disabled pixmap fades a flat
+        silhouette by so little that the greyed-out rail still read as live — a
+        toolbox inviting clicks that do nothing.
         """
-        mask = self._tool_mask(spec, round(_ICON * ratio))
-        icon = QIcon(_tinted(mask, color, ratio))
-        icon.addPixmap(_tinted(mask, disabled, ratio), QIcon.Mode.Disabled)
-        return icon
+        return mask_icon(self._tool_mask(spec, round(_ICON * ratio)), palette, ratio)
 
     def _tool_mask(self, spec: ToolSpec, box: int) -> QPixmap:
         """The tool's mark as ink on transparency, ``box`` device pixels square.
 
-        Untinted: only the alpha shape matters, since every tint is stamped
-        through it by :func:`_tinted`.
+        Untinted: only the alpha shape matters, since every tint is filled
+        through it (:func:`~celpix.ui.icon_font.tinted`).
 
         The icon font already returns a fitted, centred mask, so a glyph tool is
         that call and nothing else; the geometry tools are painted onto a mask of
@@ -179,7 +139,7 @@ class ToolsPanel(QWidget):
         the same column.
         """
         if spec.icon is not None:
-            return glyph_mask(spec.icon, QSize(box, box))
+            return icon_mask(spec.icon, QSize(box, box))
         mask = QPixmap(box, box)
         mask.fill(Qt.GlobalColor.transparent)
         painter = QPainter(mask)

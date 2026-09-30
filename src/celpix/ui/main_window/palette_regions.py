@@ -58,6 +58,8 @@ the right way round for a feature whose job is "colour what I am looking at".
 
 from __future__ import annotations
 
+from functools import partial
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence
 
@@ -72,7 +74,6 @@ from celpix.ui.widgets import (
     counted,
     load_bool_setting,
     make_action,
-    save_bool_setting,
 )
 
 # QSettings keys for the two "show me the pins" toggles. Local preferences rather
@@ -192,7 +193,11 @@ class PaletteRegionsMixin:
         self._show_palette_regions_action = make_action(
             self,
             "S&how Pinned Palette Colors",
-            self._set_show_palette_regions,
+            partial(
+                self._persist_view_toggle,
+                SHOW_PALETTE_REGIONS_KEY,
+                "_show_palette_regions",
+            ),
             tip="Draw pinned regions in their own palette rows (Shift+P)\n"
             "Off draws the whole view in one row",
             shortcut=QKeySequence("Shift+P"),
@@ -215,7 +220,9 @@ class PaletteRegionsMixin:
         self._show_palette_rows_action = make_action(
             self,
             "Show Palette &Rows",
-            self._set_show_palette_rows,
+            partial(
+                self._persist_view_toggle, SHOW_PALETTE_ROWS_KEY, "_show_palette_rows"
+            ),
             tip="Label each tile with its palette row\n"
             "Pinned rows on a pixel view, cell rows on a tilemap",
             checkable=True,
@@ -226,12 +233,17 @@ class PaletteRegionsMixin:
         # map's cells and a sprite's parts obey as much as a pinned row does. It
         # sits with these two because it is the same kind of thing — a way of
         # reading what is loaded, remembered app-wide and written to no project.
+        # Every reader of a named row asks the document rather than the member
+        # (`Document.palette_row_wrap`), so the refresh the toggle runs is what
+        # lands it.
         #
         # Mnemonic "W": free in this menu, where "S", "P", "h" and "l" are taken.
         self._wrap_palette_rows_action = make_action(
             self,
             "&Wrap Palette Rows",
-            self._set_wrap_palette_rows,
+            partial(
+                self._persist_view_toggle, WRAP_PALETTE_ROWS_KEY, "_wrap_palette_rows"
+            ),
             tip="Wrap palette rows pushed past either end by Base Row\n"
             "Off clamps them at the first or last row",
             checkable=True,
@@ -273,31 +285,6 @@ class PaletteRegionsMixin:
             self._unpin_all,
             tip="Remove every pinned region",
         )
-
-    def _set_show_palette_rows(self, on: bool) -> None:
-        save_bool_setting(SHOW_PALETTE_ROWS_KEY, on)
-        self._show_palette_rows = on
-        if self._doc is not None:
-            self._refresh_view()
-
-    def _set_show_palette_regions(self, on: bool) -> None:
-        save_bool_setting(SHOW_PALETTE_REGIONS_KEY, on)
-        self._show_palette_regions = on
-        if self._doc is not None:
-            self._refresh_view()
-
-    def _set_wrap_palette_rows(self, on: bool) -> None:
-        """Turn the base's wraparound on or off, and redraw through it.
-
-        The refresh is what lands it: the flag reaches the model in the view
-        options ``_refresh_view`` captures, and every reader of a named row asks
-        the document rather than this member
-        (:meth:`~celpix.core.document.Document.palette_row_wrap`).
-        """
-        save_bool_setting(WRAP_PALETTE_ROWS_KEY, on)
-        self._wrap_palette_rows = on
-        if self._doc is not None:
-            self._refresh_view()
 
     def _sync_pin_actions(self) -> None:
         """Enable the gestures only when there is a selection to act on, and word
@@ -603,7 +590,7 @@ class PaletteRegionsMixin:
         **Index 0 on a sprite object is the one exception**, and it is a symmetry
         rather than a special case: the sprite blit composes 0 *unbiased* — it is
         the hole a piece leaves for whatever is behind it, not a colour of its row
-        (:func:`~celpix.pipeline.pipeline._transparent_shift`) — so what comes back
+        (:func:`~celpix.pipeline.render._transparent_shift`) — so what comes back
         off it is 0 whatever row the destination is on. Matched by colour instead,
         a hole became whichever entry of the row looked most like the palette's
         first: transparency turned opaque by being cleared, or by being moved.

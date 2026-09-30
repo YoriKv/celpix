@@ -40,6 +40,8 @@ from celpix.plugins.base import (
     splice,
 )
 
+from ._container_fields import checksum_field, untouched_field
+
 MAGIC = b"SEGA"
 # " SEGA MEGA DRIVE" is as common as "SEGA MEGA DRIVE " and TMSS accepts both.
 MAGIC_AT = (0x100, 0x101)
@@ -131,20 +133,18 @@ class MdRomContainer:
         raw = source.data
         if is_disc_image(raw):
             return (
-                ContainerField(
+                untouched_field(
                     "Header",
                     "Mega-CD disc image",
-                    "A disc, not a cartridge: no checksum a game sums\n"
-                    "A save writes the bytes through untouched",
+                    "A disc, not a cartridge: no checksum a game sums",
                 ),
             )
         if len(raw) < SUM_START or not has_header(raw):
             return (
-                ContainerField(
+                untouched_field(
                     "Header",
                     "no SEGA marker at $100",
-                    "No marker, no checksum to keep current\n"
-                    "A save writes the bytes through untouched",
+                    "No marker, no checksum to keep current",
                 ),
             )
         name = raw[CONSOLE_NAME].decode("ascii", "replace").strip()
@@ -158,11 +158,11 @@ class MdRomContainer:
                 "Cartridge header: console name, titles, serial,\n"
                 "the checksum below and the ROM and RAM ranges",
             ),
-            ContainerField(
+            checksum_field(
                 "Checksum",
-                f"${stored:04X} stored, ${computed:04X} computed"
-                + (" - matches" if stored == computed else " - stale"),
-                "Sum of the big-endian words from $200 to the ROM end\n"
+                stored,
+                computed,
+                detail="Sum of the big-endian words from $200 to the ROM end\n"
                 "Not checked by the console, but by many games at boot\n"
                 "Recomputed on save",
             ),

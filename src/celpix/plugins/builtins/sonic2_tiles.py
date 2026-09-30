@@ -58,6 +58,7 @@ from __future__ import annotations
 from celpix.core.address import format_hex
 from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
+from celpix.plugins.builtins._lz import corrupt
 
 TILE_BYTES = 32
 HEADER = b"\x01\x00"
@@ -67,8 +68,7 @@ _MAX_WORD = 0xFFFF
 ZERO, RAW, MASKED, XORED = range(4)
 
 
-def _fail(reason: str) -> ValueError:
-    return ValueError(f"corrupt Sonic 2 tile stream: {reason}")
+_fail = corrupt("Sonic 2 tile")
 
 
 def _xor_pass(tile: bytearray, steps: range) -> None:

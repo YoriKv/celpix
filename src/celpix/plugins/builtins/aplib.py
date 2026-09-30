@@ -32,7 +32,7 @@ order their bits are read::
 Three things about that are easy to get wrong, and all three are silent:
 
 - **The block form's distance bias depends on the previous op.** After a
-  literal, a tiny or a short (the "LWM" of the reference decoder) the high
+  literal or a tiny (the "LWM" of the reference decoder is clear) the high
   byte is ``gamma - 3``, because ``gamma == 2`` then means the repeat form;
   after a block or a short it is ``gamma - 2``. Fix the bias at either value
   and the first block after a literal decodes to a wrong distance rather than
@@ -51,9 +51,10 @@ distance 1 are the RLE ops).
 
 The encoder is a **shortest-path parse over both decoder states**: ``cost[i]``
 is priced twice, once for "the op before ``i`` was a block" and once for "it
-was not", because the block form's own cost differs between the two and the
-tiny/short/literal forms all reset the state. The repeat form is not planned —
-its cost depends on which distance the *path* last used, which is not a
+was not", because the block form's own cost differs between the two. The
+literal and tiny forms clear the state and the short form sets it, as a block
+does, so only the block's own price depends on it. The repeat form is not
+planned — its cost depends on which distance the *path* last used, which is not a
 property of a position — but is taken whenever the planned block happens to
 reuse the previous one's distance, since the state after it is the same.
 Round-tripping is the contract, not byte-identity with any particular packer.
@@ -66,7 +67,15 @@ from __future__ import annotations
 
 from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
-from celpix.plugins.builtins._lz import BitGroup, MatchFinder, copy_back
+from celpix.plugins.builtins._lz import (
+    BitGroup,
+    ByteSource,
+    GroupReader,
+    MatchFinder,
+    Truncated,
+    copy_back,
+    corrupt,
+)
 
 # Where the block form's length adjustments switch, and the tiny/short reaches.
 FAR_DISTANCE = 32000
@@ -93,12 +102,7 @@ BLOCK_HEAD_COST = 2 + 8  # the two tag bits and the distance's low byte
 OP_LITERAL, OP_TINY, OP_SHORT, OP_BLOCK = range(4)
 
 
-def _fail(reason: str) -> ValueError:
-    return ValueError(f"corrupt aPLib stream: {reason}")
-
-
-class _Truncated(Exception):
-    """The stream ran out mid-op — recoverable only under ``partial``."""
+_fail = corrupt("aPLib")
 
 
 def _length_delta(distance: int) -> int:
@@ -117,42 +121,15 @@ def _gamma_bits(value: int) -> int:
     return 2 * (value.bit_length() - 1)
 
 
-class _Reader:
-    """Tag bits and payload bytes over one buffer, sharing a position.
-
-    They have to share it: the tag byte is fetched lazily, at the first bit
-    read after the previous one is spent, so where it lands relative to the
-    operand bytes around it is decided by the order of reads.
-    """
-
-    def __init__(self, data: bytes) -> None:
-        self._data = data
-        self.pos = 0
-        self._tag = 0
-        self._left = 0
-
-    def byte(self) -> int:
-        if self.pos >= len(self._data):
-            raise _Truncated
-        value = self._data[self.pos]
-        self.pos += 1
-        return value
-
-    def bit(self) -> int:
-        if not self._left:
-            self._tag = self.byte()
-            self._left = 8
-        self._left -= 1
-        return (self._tag >> self._left) & 1
-
-    def gamma(self) -> int:
-        value = 1
-        while True:
-            value = (value << 1) | self.bit()
-            if not self.bit():
-                return value
-            if value > OUTPUT_CAP:
-                raise _fail("gamma code runs past any plausible value")
+def _gamma(tags: GroupReader) -> int:
+    """One gamma-coded value off the tag bits: a value bit, then a continue bit."""
+    value = 1
+    while True:
+        value = (value << 1) | tags.bit()
+        if not tags.bit():
+            return value
+        if value > OUTPUT_CAP:
+            raise _fail("gamma code runs past any plausible value")
 
 
 def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]:
@@ -164,8 +141,11 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
     """
     if not data:
         raise _fail("empty source")
-    reader = _Reader(data)
-    out = bytearray((reader.byte(),))
+    # Tag bits and payload bytes share one cursor: the tag byte is fetched
+    # lazily, so where it lands among the operand bytes is the order of reads.
+    src = ByteSource(data)
+    tags = GroupReader(src, msb_first=True)
+    out = bytearray((src.byte(),))
     after_block = False  # the reference decoder's LWM, inverted
     last_distance = 0
     complete = False
@@ -182,23 +162,23 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
 
     try:
         while True:
-            if not reader.bit():
-                out.append(reader.byte())
+            if not tags.bit():
+                out.append(src.byte())
                 after_block = False
-            elif not reader.bit():
-                value = reader.gamma()
+            elif not tags.bit():
+                value = _gamma(tags)
                 if not after_block and value == 2:
                     distance = last_distance
-                    length = reader.gamma()
+                    length = _gamma(tags)
                 else:
                     high = value - (2 if after_block else 3)
-                    distance = (high << 8) | reader.byte()
-                    length = reader.gamma() + _length_delta(distance)
+                    distance = (high << 8) | src.byte()
+                    length = _gamma(tags) + _length_delta(distance)
                     last_distance = distance
                 copy(distance, length)
                 after_block = True
-            elif not reader.bit():
-                value = reader.byte()
+            elif not tags.bit():
+                value = src.byte()
                 distance = value >> 1
                 if distance == 0:
                     complete = True
@@ -207,19 +187,17 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
                 last_distance = distance
                 after_block = True
             else:
-                distance = 0
-                for _ in range(4):
-                    distance = (distance << 1) | reader.bit()
+                distance = tags.bits(4)
                 if distance:
                     copy(distance, 1)
                 else:
                     out.append(0)
                 after_block = False
-    except _Truncated:
+    except Truncated:
         if not partial:
             raise _fail(f"source ended after {len(out):,} bytes") from None
 
-    return bytes(out), reader.pos, complete
+    return bytes(out), src.pos, complete
 
 
 # -- compression ------------------------------------------------------------

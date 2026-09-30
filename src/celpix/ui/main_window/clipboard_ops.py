@@ -128,11 +128,12 @@ class ClipboardOpsMixin:
         """Render a copied run the way the canvas shows it.
 
         A linear run is laid out through the view's own arrangement, so a blocked
-        view copies a 16×16 metatile as a square rather than as a strip of four
-        tiles. A **rectangle** is already in screen order, so it composes plainly
-        at its own width - re-applying the block layout would scramble it. Colors
-        are the canvas's - no forced index-0 transparency, so a copy that goes out
-        to an image editor and comes back matches its own palette exactly.
+        view copies a 2×2 tile block as a 16×16 square rather than as a strip of
+        four tiles. A **rectangle** is already in screen order, so it composes
+        plainly at its own width - re-applying the block layout would scramble it.
+        Colors are the canvas's - no forced index-0 transparency, so a copy that
+        goes out to an image editor and comes back matches its own palette
+        exactly.
 
         ``biases`` carries pinned palette regions, one per tile in ``tiles``, so a
         copy of a pinned region leaves in the colours it was shown in. It applies
@@ -223,9 +224,9 @@ class ClipboardOpsMixin:
         picture it shows, anchored at the selection's cell - the same landing
         Import from PNG gives it. A celPix **tile** payload follows the
         selection shape: in Rectangle it is laid down as a rectangle of its own
-        width down from the anchor cell - copy a 2×2 metatile, click anywhere,
-        and it lands as a 2×2 metatile - while in Linear shape a paste is what
-        it has always been: a contiguous run.
+        width down from the anchor cell - copy a 2×2 rectangle of tiles, click
+        anywhere, and it lands as a 2×2 rectangle - while in Linear shape a
+        paste is a contiguous run.
         """
         if self._doc is None:
             return
@@ -355,7 +356,9 @@ class ClipboardOpsMixin:
             return ImportedTiles(), False
         # A foreign image has no tile grid of its own; import_argb cuts it in
         # reading order at its own pixel width in whole tiles.
-        return importer.import_argb(clipboard.image_to_argb(image), target), True
+        return importer.import_argb(
+            render_bridge.argb_grid_from_image(image), target
+        ), True
 
     @staticmethod
     def _fit_note(report: QuantizeReport) -> str:

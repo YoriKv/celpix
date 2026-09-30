@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from PySide6.QtWidgets import QApplication, QMessageBox, QToolButton
+from PySide6.QtWidgets import QApplication, QToolButton
 
 from celpix.core.errors import Stage
 from celpix.plugins.base import NO_COMPRESSION
@@ -55,8 +55,8 @@ from celpix.project.inputs import (
 )
 from celpix.project.workspace import Entry, EntryKind
 from celpix.ui import clipboard
-from celpix.ui.glyphs import Glyph
-from celpix.ui.icon_font import glyph_icon
+from celpix.ui.icon_font import icon_qicon
+from celpix.ui.icons import Icon
 from celpix.ui.inputs_window import InputsWindow, Problems
 from celpix.ui.theme import WARNING_INK
 from celpix.ui.undo_commands import InputsEditCommand
@@ -110,8 +110,8 @@ class InputsMixin:
             ),
         ):
             badge.setIcon(
-                glyph_icon(
-                    Glyph.EXCLAMATION if problem else Glyph.INPUTS,
+                icon_qicon(
+                    Icon.EXCLAMATION if problem else Icon.INPUTS,
                     QApplication.palette(),
                     ratio=self.devicePixelRatioF(),
                     color=WARNING_INK if problem else None,
@@ -442,13 +442,11 @@ class InputsMixin:
             e for e, _ in changed if e.kind is not EntryKind.FILE and (e.pixel_dirty)
         ]
         if dirty:
-            answer = QMessageBox.question(
-                self,
+            if not self._confirm_reread_discard(
                 "celPix - inputs",
-                f"Changing the inputs re-reads {counted(len(dirty), 'entry')} from "
-                "disk, discarding unsaved changes. Continue?",
-            )
-            if answer != QMessageBox.StandardButton.Yes:
+                "Changing the inputs",
+                counted(len(dirty), "entry"),
+            ):
                 return
         self._push_command(
             InputsEditCommand(
@@ -502,7 +500,7 @@ class InputsMixin:
     def _input_dependents(self, owners: list[Entry]) -> list[Entry]:
         """Every open entry with a binding naming one of ``owners`` — the
         audience for a change to their bytes, the composite's rule one hop
-        over (:meth:`~...session.SessionMixin._reassemble_composites`)."""
+        over (:meth:`~...bindings.BindingsMixin._reassemble_composites`)."""
         stale = {id(e) for owner in owners for e in self._region_of(owner)}
         return [
             entry

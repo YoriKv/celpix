@@ -27,7 +27,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import NamedTuple
+from typing import NamedTuple, TypeVar
 
 from celpix.core import ceil_div, transform
 from celpix.core.arrangement import (
@@ -37,16 +37,20 @@ from celpix.core.arrangement import (
     reflow_2d,
     scatter_2d,
 )
+from celpix.core.cellchain import resolve_chain
 from celpix.core.context import PipelineContext
-from celpix.core.document import Document, resolve_chain
+from celpix.core.document import Document
 from celpix.core.errors import Pathway, PipelineError, Stage
+from celpix.core.grid import PixelGrid
 from celpix.core.index_grid import IndexGrid
 from celpix.core.sprite import Frame, Subsprite, frame_bounds
 from celpix.core.tilemap import Cell, index_span
-from celpix.pipeline._stage import _run, tile_params
+from celpix.pipeline._stage import run_stage, tile_params
 from celpix.pipeline.metrics import palette_row_size
 from celpix.plugins.base import PixelCodecPlugin
 from celpix.plugins.registry import Registry
+
+Grid = TypeVar("Grid", bound=PixelGrid)
 
 
 def decode_window(
@@ -80,7 +84,7 @@ def decode_window(
         doc.pixel_config.interpret_preset_id, PixelCodecPlugin
     )
     params = tile_params(doc, engine, preset.params)
-    return _run(
+    return run_stage(
         Stage.INTERPRET_PIXEL,
         Pathway.PIXEL,
         lambda: engine.decode(window, params, PipelineContext()),
@@ -236,7 +240,7 @@ def encode_tiles(
         doc.pixel_config.interpret_preset_id, PixelCodecPlugin
     )
     params = tile_params(doc, engine, preset.params)
-    blob = _run(
+    blob = run_stage(
         Stage.INTERPRET_PIXEL,
         Pathway.PIXEL,
         lambda: engine.encode(tiles, params, PipelineContext()),
@@ -340,17 +344,16 @@ def compose_tiles(
     because this is where both render routes meet and where slot *k* is still
     identifiable as ``tiles[k]`` — after composition the tiles are one buffer and
     the block layout has scattered them. Direct-colour grids are left alone: they
-    carry their own ARGB and index no palette. ``None`` (the default) composes
-    exactly as before, which is every path that has nothing pinned.
+    carry their own ARGB and index no palette. ``None`` (the default) leaves
+    every tile's indices as they are, which is every path that has nothing
+    pinned.
     """
     if biases:
         # Indexed by slot rather than zipped: a short bias list must leave the
         # remaining tiles composed as they are, not truncate the window to it.
         count = len(biases)
         tiles = [
-            tile.shifted(biases[i])
-            if i < count and biases[i] and tile.bytes_per_pixel == 1
-            else tile
+            _shifted(tile, biases[i]) if i < count else tile
             for i, tile in enumerate(tiles)
         ]
     cols = layout.columns
@@ -494,6 +497,28 @@ def tilemap_tiles(
     return expand_cells(doc, reg, doc.laid_out_cells, doc.drawn_columns or columns)
 
 
+def _oriented(tile: Grid, flip_h: bool, flip_v: bool) -> Grid:
+    """``tile`` mirrored as a cell or subsprite states — horizontal first, the
+    order every render path draws in."""
+    if flip_h:
+        tile = transform.flip_horizontal(tile)
+    if flip_v:
+        tile = transform.flip_vertical(tile)
+    return tile
+
+
+def _shifted(tile: Grid, shift: int) -> Grid:
+    """``tile`` with its palette row folded into the indices
+    (:meth:`~celpix.core.index_grid.IndexGrid.shifted`).
+
+    Direct-colour grids carry their own ARGB and index no palette, so there is
+    no row to fold into them and they come back as they are.
+    """
+    if shift and isinstance(tile, IndexGrid):
+        return tile.shifted(shift)
+    return tile
+
+
 def expand_cells(
     doc: Document,
     reg: Registry,
@@ -568,14 +593,7 @@ def expand_cells(
                 tile = drawn.get(key)
                 if tile is None:
                     tile = source[index] if 0 <= index < count else blank
-                    if flip_h:
-                        tile = transform.flip_horizontal(tile)
-                    if flip_v:
-                        tile = transform.flip_vertical(tile)
-                    if shift and tile.bytes_per_pixel == 1:
-                        # Direct-colour grids carry their own ARGB and index no
-                        # palette, so there is no row to fold into them.
-                        tile = tile.shifted(shift)
+                    tile = _shifted(_oriented(tile, flip_h, flip_v), shift)
                     drawn[key] = tile
                 run.append(tile)
             runs[(cell.index, cell.palette_row, flip_h, flip_v)] = run
@@ -910,7 +928,7 @@ def tile_source_image(
     panel — what is on offer has to be what will land.
 
     A **chained** map's ID is a position in the map it stamps from, so the cell
-    is that source cell **resolved** (:func:`~celpix.core.document.resolve_chain`)
+    is that source cell **resolved** (:func:`~celpix.core.cellchain.resolve_chain`)
     rather than a bare index: a stamp is its tile *plus* its attributes, and
     previewing it without them would show a picture the stamp does not make.
     Where the source states a **stamp size**, an ID names a whole stamp of its
@@ -938,7 +956,7 @@ def tile_source_image(
         cells = [Cell(index=at, palette_row=palette_row) for at in ids]
     else:
         # The stamp a coordinate names, walked by the resolution's own walk
-        # (:func:`~celpix.core.document.resolve_chain`) through every hop, one
+        # (:func:`~celpix.core.cellchain.resolve_chain`) through every hop, one
         # entry at a time — one cell per ID wherever nothing is stamped. The
         # referrer here is synthetic — the sheet enumerates what *could* be
         # stamped, and no real entry stands behind the coordinate — so it
@@ -1002,11 +1020,7 @@ def glyph_sheet(
             slot = run[at] if at < len(run) else -1
             tile = drawn.get(slot)
             if tile is None:
-                tile = tiles[slot] if 0 <= slot < len(tiles) else blank
-                # Direct-colour grids carry their own ARGB and index no palette,
-                # so there is no row to fold into them.
-                if shift and tile.bytes_per_pixel == 1:
-                    tile = tile.shifted(shift)
+                tile = _shifted(tiles[slot] if 0 <= slot < len(tiles) else blank, shift)
                 drawn[slot] = tile
             out.append(tile)
     placed = BlockLayout(max(1, columns) * across, across, down, "row")
@@ -1025,7 +1039,7 @@ def glyph_sheet(
 SPRITE_SHEET_PIXELS = 64 << 20  # a genuine object's sheet is ~100x under this
 
 
-def _check_sprite_extent(pixels: int, what: str) -> None:
+def check_sprite_extent(pixels: int, what: str) -> None:
     if pixels <= SPRITE_SHEET_PIXELS:
         return
     raise PipelineError(
@@ -1140,7 +1154,7 @@ def sprite_image(
     # The exact allocation, checked before it is made: the read is bounded on an
     # estimate (:func:`load_tilemap_data`), and this is where the tile size the
     # map is *bound* to, and the columns the view is laid out at, finally join it.
-    _check_sprite_extent(
+    check_sprite_extent(
         across * width * sheet.down * height,
         f"a {across * width}x{sheet.down * height} pixel sprite sheet",
     )
@@ -1192,11 +1206,7 @@ def _draw_subsprite(
         index += doc.tile_base_index
         if not 0 <= index < len(source):
             continue
-        tile = source[index]
-        if sub.flip_h:
-            tile = transform.flip_horizontal(tile)
-        if sub.flip_v:
-            tile = transform.flip_vertical(tile)
+        tile = _oriented(source[index], sub.flip_h, sub.flip_v)
         _blit(
             image,
             tile,
@@ -1312,7 +1322,7 @@ def subsprite_sheet(
     on the pixel lattice the art is drawn on.
 
     ``columns`` is in squares, and every number here is derived from the object,
-    so the sheet is bounded like the strip is (:func:`_check_sprite_extent`):
+    so the sheet is bounded like the strip is (:func:`check_sprite_extent`):
     point a subsprite cell format at bytes that are not it and the record count,
     not just the offsets, is whatever the bytes divide into.
     """
@@ -1340,7 +1350,7 @@ def subsprite_sheet(
     # draw nothing on, the same answer :func:`~celpix.core.sprite.frame_bounds`
     # gives an object with no subsprites.
     rows_of_cells = max(1, ceil_div(len(records), columns))
-    _check_sprite_extent(
+    check_sprite_extent(
         columns * cell_w * rows_of_cells * cell_h,
         f"a {columns * cell_w}x{rows_of_cells * cell_h} pixel subsprite sheet",
     )

@@ -37,7 +37,7 @@ from __future__ import annotations
 from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
 
-from ._lz import copy_back
+from ._lz import copy_back, corrupt
 from .lzss_ring import MIN_MATCH, RING_SIZE, compress_body
 
 HEADER_BYTES = 2
@@ -45,8 +45,7 @@ SIZE_LIMIT = 0xFFFF
 RING_START = 0xFEE
 
 
-def _fail(reason: str) -> ValueError:
-    return ValueError(f"corrupt Saxman stream: {reason}")
+_fail = corrupt("Saxman")
 
 
 def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]:

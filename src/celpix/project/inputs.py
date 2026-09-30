@@ -41,8 +41,9 @@ from celpix.core.errors import PipelineError, Stage
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import (
+    DEFAULT_PIXEL_PRESET,
+    DEFAULT_TILEMAP_PRESET,
     INPUT_STAGES,
-    STAGE_DEFAULT_PRESET,
     FileRef,
     InputKind,
     InputSpec,
@@ -567,7 +568,7 @@ def _source_bytes(
         data, ctx = pipeline.read_region(
             PathwayConfig(
                 source=FileRef(entry.paths),
-                interpret_preset_id=STAGE_DEFAULT_PRESET[Stage.INTERPRET_PIXEL],
+                interpret_preset_id=DEFAULT_PIXEL_PRESET,
             ),
             registry,
         )
@@ -586,14 +587,13 @@ def _view_bytes(
     preset = (
         entry.session.pixel_preset_id
         if entry.session is not None
-        else STAGE_DEFAULT_PRESET[Stage.INTERPRET_PIXEL]
+        else DEFAULT_PIXEL_PRESET
     )
     if entry.content_kind is ContentKind.TILEMAP:
         data, ctx = pipeline.read_region(
             ws.tilemap_config_for(
                 entry,
-                entry.tilemap_preset_id
-                or STAGE_DEFAULT_PRESET[Stage.INTERPRET_TILEMAP],
+                entry.tilemap_preset_id or DEFAULT_TILEMAP_PRESET,
                 registry,
                 workspace,
             ),

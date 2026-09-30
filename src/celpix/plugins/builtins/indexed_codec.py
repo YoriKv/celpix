@@ -24,6 +24,7 @@ from typing import Any
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.palette import MISSING_COLOR, Palette
+from celpix.plugins._params import integer
 from celpix.plugins.base import PluginInfo
 
 _MAX_COLORS = 256  # every index one entry byte can hold (bytes_per_entry)
@@ -88,7 +89,7 @@ class IndexedColorCodec:
 
     @staticmethod
     def _shared_every(params: dict[str, Any]) -> int:
-        every = int(params.get("shared_every", 0) or 0)
+        every = integer(params, "shared_every", 0)
         if every < 0:
             raise ValueError(f"shared_every must be 0 or positive, got {every}")
         return every

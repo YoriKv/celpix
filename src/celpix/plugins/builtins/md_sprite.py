@@ -2,7 +2,7 @@
 
 The fourth sprite-object codec, and the first whose subsprites are **not square**.
 A Mega Drive sprite carries the VDP's own size nibble, ``(w - 1) << 2 | (h - 1)``,
-so one record covers anything from one tile to a 4x4 block — and its tiles run
+so one record covers anything from one tile to a 4x4 rectangle — and its tiles run
 **down each column** before starting the next, which is the opposite of the
 row-major walk every grid format takes. Those two facts are what put this in code
 rather than in a parameter table for the packed engine
@@ -48,6 +48,7 @@ from celpix.core.sprite import Frame, Subsprite
 from celpix.core.tilemap import Cell, CellOp
 from celpix.plugins._params import byte_order, flag, one_of
 from celpix.plugins.base import PluginInfo
+from celpix.plugins.builtins._cell_answers import mirror
 
 MD_SPRITE_ENGINE = "codec.tilemap.md-sprite"
 
@@ -256,9 +257,6 @@ class MdSpriteCodec:
             )
         ]
 
-    def has_palette_rows(self, params: dict[str, Any]) -> bool:
-        return True
-
     def index_limit(self, params: dict[str, Any]) -> int:
         return _INDEX
 
@@ -276,5 +274,4 @@ class MdSpriteCodec:
         Flipping one piece in place leaves the mirrored layout as the file wrote
         it, which is the answer that loses nothing.
         """
-        mirror = {CellOp.FLIP_H: Cell.flipped_h, CellOp.FLIP_V: Cell.flipped_v}.get(op)
-        return mirror(cell) if mirror is not None else None
+        return mirror(cell, op)

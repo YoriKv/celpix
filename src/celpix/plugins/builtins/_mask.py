@@ -45,7 +45,7 @@ from __future__ import annotations
 from functools import cache
 from typing import Any
 
-from celpix.plugins.builtins._fields import parse_layout, resolve_legend
+from celpix.plugins.builtins._fields import layout_param, parse_layout, resolve_legend
 
 # Where each component sits in the little-endian ARGB pixel buffer both grids use
 # (bytes B, G, R, A) — the byte plane a table reads or writes.
@@ -168,14 +168,7 @@ def color_masks(params: dict[str, Any], width: int) -> dict[str, tuple[int, ...]
 
 def layout_text(params: dict[str, Any]) -> str:
     """The preset's ``fields`` layout, which both colour codecs require."""
-    text = params.get("fields")
-    if not isinstance(text, str):
-        unread = " (`masks` is not read)" if "masks" in params else ""
-        raise ValueError(
-            "the preset does not say where the color components sit - give "
-            f"`fields`, one letter per bit, most significant first{unread}"
-        )
-    return text
+    return layout_param(params, what="the color components", retired=("masks",))
 
 
 def shift_widths(

@@ -1135,6 +1135,7 @@ def test_palette_panel_drag_scrubs_selection_and_clamps(qtbot) -> None:
 
 
 def test_palette_clipboard_round_trip_and_hex_parsing(qtbot) -> None:
+    from celpix.core.palette import find_argb
     from celpix.ui import clipboard
 
     clipboard.put_colors([0xFF112233, 0x80FF0000])
@@ -1145,12 +1146,12 @@ def test_palette_clipboard_round_trip_and_hex_parsing(qtbot) -> None:
     assert clipboard.color_text(0x80112233) == "#80112233"
     # Foreign hex text: 6-digit is opaque, 8-digit carries alpha, junk ignored,
     # and a longer hex run is not a color token.
-    assert clipboard._parse_hex_colors("#ff0000 00ff00 zz 80112233") == [
+    assert find_argb("#ff0000 00ff00 zz 80112233") == [
         0xFFFF0000,
         0xFF00FF00,
         0x80112233,
     ]
-    assert clipboard._parse_hex_colors("deadbeefcafe") == []
+    assert find_argb("deadbeefcafe") == []
 
 
 def test_palette_panel_copy_paste_keys_emit(qtbot) -> None:
@@ -2663,7 +2664,7 @@ def test_a_palette_entrys_container_can_be_corrected(qtbot, tmp_path, monkeypatc
 
     # Repick it as plain bytes, as a user correcting a wrong guess would.
     monkeypatch.setattr(
-        "celpix.ui.main_window.entries.ContainerDialog.edit_container",
+        "celpix.ui.main_window.containers.ContainerDialog.edit_container",
         lambda *a, **k: ContainerEdit(RAW_CONTAINER, entry.paths, entry.reshape_id),
     )
     window._change_container_for(entry)

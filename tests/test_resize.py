@@ -247,8 +247,7 @@ def test_size_row_never_clamps_a_file_bigger_than_the_grid_could_state(qtbot) ->
 def test_size_row_is_dead_for_a_joined_region(qtbot) -> None:
     dialog = _dialog("a.bin", units=16)
     qtbot.addWidget(dialog)
-    dialog._paths.append("b.bin")
-    dialog._rebuild_rows()
+    dialog._files.set_paths([*dialog.paths(), "b.bin"])
     assert not dialog._size_units.isEnabled()
     assert "2 files" in dialog._size.text()
     assert dialog.resize_units() is None

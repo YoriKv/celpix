@@ -61,6 +61,7 @@ from celpix.plugins.base import (
     splice,
 )
 
+from ._container_fields import checksum_field, untouched_field
 from .containers import snes_copier_header_len
 
 # Where the internal header may sit in the headerless image, and the low nibbles
@@ -226,11 +227,10 @@ class SnesRomContainer:
         if header is None:
             return (
                 copier,
-                ContainerField(
+                untouched_field(
                     "Header",
                     "no internal header found",
-                    "Nothing at $7FC0, $FFC0 or $40FFC0 reads as a header\n"
-                    "A save writes the bytes through untouched",
+                    "Nothing at $7FC0, $FFC0 or $40FFC0 reads as a header",
                 ),
             )
         stored = _word(image, header + CHECKSUM)
@@ -249,23 +249,19 @@ class SnesRomContainer:
                 "Position is the board's, found by scoring candidates\n"
                 "on checksum pair, map mode, title and size",
             ),
-            ContainerField(
+            checksum_field(
                 "Checksum",
-                f"${stored:04X} stored, ${computed:04X} computed"
-                + (" - matches" if stored == computed else " - stale"),
-                "Sum of every byte in the image\n"
+                stored,
+                computed,
+                detail="Sum of every byte in the image\n"
                 "Stale after any tile edit; recomputed on save\n"
                 "Checked by emulators and ROM databases",
             ),
-            ContainerField(
+            checksum_field(
                 "Complement",
-                f"${complement:04X}"
-                + (
-                    " - matches"
-                    if complement == computed ^ 0xFFFF
-                    else f", ${computed ^ 0xFFFF:04X} correct"
-                ),
-                "The checksum with every bit flipped, stored beside it\n"
+                complement,
+                computed ^ 0xFFFF,
+                detail="The checksum with every bit flipped, stored beside it\n"
                 "A save rewrites the two together",
             ),
             ContainerField(

@@ -1,4 +1,8 @@
-"""The decompression preview overlay — a floating window over the raw view.
+"""The decompression preview — a floating window beside the raw view.
+
+(:class:`DecompressOverlay` is a tool window beside the view, not drawn over it;
+the class name and the ``layout/decompress-preview`` settings key are what the
+rest of the code and a user's stored layout know it by.)
 
 When a compression scheme is selected, the main canvas keeps showing the file's
 *raw* bytes; this tool window answers "what would decompressing from the current
@@ -7,79 +11,50 @@ of a parallel run of the pixel-interpret and palette paths over the
 decompressed window bytes) or tells it to hide — it owns no model and makes no
 decisions beyond presentation.
 
-It is a `Qt.Tool` window: it floats above the main window, moves with the
-session, and never takes a taskbar slot. The user can drag it wherever they
-like; the first show places it beside the main window, after that its position
-is left alone.
+It is a floating tool window (:class:`~celpix.ui.tool_window.ToolWindow`): it
+floats above the main window, moves with the session, and never takes a taskbar
+slot. The first show places it beside the main window; after that its position
+is the user's.
 
-Below the preview sits a **status bar**, the one place the decode's own state
-surfaces: the sizes on the left, and on the right a
+Below the preview sits the tool windows' **status bar**, the one place the
+decode's own state surfaces: the sizes on the left, and on the right a
 :class:`~celpix.ui.widgets.Badge` for the state the picture itself can't show —
 that what is on screen is only as much as the current view window fed the
 decompressor. The picture looks equally plausible either way, which is exactly
-why it needs saying in words. The badge is shared with the animation player,
-which has the same problem (:mod:`celpix.ui.animation_overlay`).
+why it needs saying in words.
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QImage
-from PySide6.QtWidgets import (
-    QLabel,
-    QScrollArea,
-    QStatusBar,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtWidgets import QScrollArea, QWidget
 
 from celpix.core.document import GridMode, ViewOptions
 from celpix.ui.canvas import Canvas, GridStyle
-from celpix.ui.widgets import Badge, apply_badge
-from celpix.ui.window_layout import WindowLayout
+from celpix.ui.panzoom import PanZoomSurface
+from celpix.ui.tool_window import ToolWindow
+from celpix.ui.widgets import Badge
 
+# ``Badge`` is re-exported for the callers that build this window's badges
+# without otherwise needing the widgets module.
 __all__ = ["Badge", "DecompressOverlay"]
 
 
-class DecompressOverlay(QWidget):
+class DecompressOverlay(ToolWindow):
     """Presentation-only floating preview of a decompressed view window."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent, Qt.WindowType.Tool)
-        self.setWindowTitle("Decompressed view")
-        self._positioned = False
-
+        super().__init__(
+            parent, "Decompressed", "layout/decompress-preview", (420, 420)
+        )
         self._canvas = Canvas()
         scroll = QScrollArea()
         scroll.setWidget(self._canvas)
         scroll.setWidgetResizable(False)
+        self.content.addWidget(scroll, 1)
 
-        self._status = QStatusBar()
-        self._status.setSizeGripEnabled(False)
-        # The badge rides in the permanent (right-hand) slot so its text never
-        # pushes the sizes out of view; the tooltip carries the explanation.
-        self._badge = QLabel()
-        self._badge.hide()
-        self._status.addPermanentWidget(self._badge)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 6, 6, 0)
-        layout.addWidget(scroll, 1)
-        layout.addWidget(self._status)
-        self.resize(420, 420)
-        self._layout_memory = WindowLayout(self, "layout/decompress-preview")
-        # A remembered position counts as already placed: the beside-the-main-
-        # window move below is for a window nobody has put anywhere yet.
-        self._positioned = self._layout_memory.restore()
-
-    def set_pixel_aspect(self, aspect) -> None:  # noqa: ANN001 — a PixelAspect
-        """Draw at ``aspect`` — forwarded to the canvas it holds.
-
-        One name on every holder of a pixel surface, so the window applies the
-        project's setting with a loop rather than by reaching through each of them
-        (:meth:`~celpix.ui.main_window.view_menu.ViewMenuMixin._sync_pixel_aspect`).
-        """
-        self._canvas.set_pixel_aspect(aspect)
+    def _pixel_surface(self) -> PanZoomSurface:
+        return self._canvas
 
     def show_result(
         self,
@@ -100,8 +75,7 @@ class DecompressOverlay(QWidget):
         annotates it, or None when the decode has nothing to add.
         """
         self.setWindowTitle(title)
-        self._status.showMessage(status)
-        apply_badge(self._badge, badge)
+        self.set_status(status, badge)
         tw, th = tile_size
         self._canvas.set_tile_size(tw, th)
         self._canvas.set_zoom(view.zoom)
@@ -110,18 +84,8 @@ class DecompressOverlay(QWidget):
         )
         self._canvas.set_grid(*grid)
         self._canvas.set_image(image)
-        if not self.isVisible():
-            if not self._positioned and self.parentWidget() is not None:
-                anchor = self.parentWidget().frameGeometry().topRight()
-                self.move(anchor + QPoint(12, 0))
-                self._positioned = True
-            self.show()
+        self.present()
 
     def set_grid_style(self, style: GridStyle) -> None:
         """Follow the app-wide grid style, which the main window owns."""
         self._canvas.set_grid_style(style)
-
-    def hide_overlay(self) -> None:
-        """Hide (compression off, or the current window doesn't decompress)."""
-        if self.isVisible():
-            self.hide()

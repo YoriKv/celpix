@@ -13,9 +13,10 @@ A chunk is an optional `GBIX` global-index block followed by::
 
     +0   4  "PVRT"
     +4   4  length_field   -> chunk ends at pvrt + 8 + length_field
-    +8   1  pixel format   (ARGB1555 / RGB565 / ARGB4444 / YUV422 / bump /
-    +9   1  data format     RGB555 / YUV420 / ARGB8888)
-    +10  2  reserved       (twiddled / VQ / palettised / rectangle / stride...)
+    +8   1  pixel format   ARGB1555 / RGB565 / ARGB4444 / YUV422 / bump /
+                           RGB555 / YUV420 / ARGB8888
+    +9   1  data format    twiddled / VQ / palettised / rectangle / stride...
+    +10  2  reserved
     +12  2  width
     +14  2  height
     +16  .. payload
@@ -42,11 +43,12 @@ first; ``KEY_COMPRESSED_SIZE`` then reports the *compressed* member's length,
 which is the slot a save-back has to fit.
 
 **What round-trips.** Twiddled, linear/stride and palettised (PAL4/PAL8)
-textures re-encode. VQ is decode-only for now — rebuilding a codebook is a
-quantisation problem, not a byte transform — and mipmapped textures expose their
-**base level** only. Both stay editable: the whole original chunk is kept on the
-context and the re-encoded base level is spliced back into it, so the GBIX, the
-header, the smaller mip levels and a VQ codebook all survive untouched.
+textures re-encode. Mipmapped textures expose their **base level** only and stay
+editable: the whole original chunk is kept on the context and the re-encoded base
+level is spliced back into it, so the GBIX, the header and the smaller mip levels
+survive untouched. VQ is view-only — rebuilding a codebook is a quantisation
+problem, not a byte transform — so a VQ texture decodes, says so in a notice, and
+refuses a save rather than writing a codebook that no longer matches.
 """
 
 from __future__ import annotations

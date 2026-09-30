@@ -21,6 +21,7 @@ from PySide6.QtWidgets import QMenu
 
 from celpix.core.document import Document
 from celpix.core.errors import PipelineError
+from celpix.core.palette import format_argb
 from celpix.pipeline import pipeline
 from celpix.project.workspace import (
     Entry,
@@ -63,7 +64,8 @@ class ColorEditingMixin:
             g = (argb >> 8) & 0xFF
             b = argb & 0xFF
             text = (
-                f"Palette Row {row} · Color {color} (${color:X}) · #{argb:08X}\n"
+                f"Palette Row {row} · Color {color} (${color:X})"
+                f" · {format_argb(argb)}\n"
                 f"R {r}  G {g}  B {b}  A {a}"
             )
         # Runs on every view refresh (navigation included) - skip the label

@@ -1,9 +1,9 @@
-# Converted screen (STD) cell — one byte, character number only.
+# Converted screen (STD) cell — one byte, tile number only.
 #
 # The converter that writes these keeps the low byte of each screen cell and
 # throws the high one away, so the palette row, the priority bit and both flips
 # are gone from the file: an 8-bit number is all there is to read, and a
-# character number above 255 did not survive the conversion either.
+# tile number above 255 did not survive the conversion either.
 # See docs/graphics-formats-reference/scgcad-formats.md §10.
 id = "preset.tilemap.scgcad-std"
 name = "Converted screen (STD, index only)"

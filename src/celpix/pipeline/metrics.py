@@ -25,7 +25,7 @@ from celpix.core import ceil_div
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Pathway, Stage
 from celpix.core.palette import Palette
-from celpix.pipeline._stage import _run
+from celpix.pipeline._stage import run_stage
 from celpix.plugins.base import ColorCodecPlugin, PixelCodecPlugin, TilemapCodecPlugin
 from celpix.plugins.registry import Registry
 
@@ -40,7 +40,7 @@ def palette_entry_size(preset_id: str, reg: Registry) -> int:
     conversion.
     """
     engine, preset = reg.engine_for(preset_id, ColorCodecPlugin)
-    return _run(
+    return run_stage(
         Stage.INTERPRET_PALETTE,
         Pathway.PALETTE,
         lambda: engine.bytes_per_entry(preset.params),
@@ -60,7 +60,7 @@ def palette_entries_per_unit(preset_id: str, reg: Registry) -> int:
         return 1
     return max(
         1,
-        _run(
+        run_stage(
             Stage.INTERPRET_PALETTE,
             Pathway.PALETTE,
             lambda: per_unit(preset.params),
@@ -138,7 +138,9 @@ def quantize_palette(palette: Palette, preset_id: str, reg: Registry) -> Palette
         data = engine.encode(palette, preset.params, ctx)
         return engine.decode(data, preset.params, ctx)
 
-    return _run(Stage.INTERPRET_PALETTE, Pathway.PALETTE, _round_trip, plugin=preset.id)
+    return run_stage(
+        Stage.INTERPRET_PALETTE, Pathway.PALETTE, _round_trip, plugin=preset.id
+    )
 
 
 def palette_has_alpha(preset_id: str, reg: Registry) -> bool:
@@ -166,18 +168,18 @@ def pixel_is_direct_color(preset_id: str, reg: Registry) -> bool:
     """
     engine, preset = reg.engine_for(preset_id, PixelCodecPlugin)
 
-    def _probe() -> bool:
+    def probe() -> bool:
         blank = bytes(engine.bytes_per_tile(preset.params))
         tiles = engine.decode(blank, preset.params, PipelineContext())
         return bool(tiles) and tiles[0].bytes_per_pixel == 4
 
-    return _run(Stage.INTERPRET_PIXEL, Pathway.PIXEL, _probe, plugin=preset.id)
+    return run_stage(Stage.INTERPRET_PIXEL, Pathway.PIXEL, probe, plugin=preset.id)
 
 
 def pixel_tile_bytes(preset_id: str, reg: Registry) -> int:
     """How many bytes one tile of ``preset_id`` occupies.
 
-    The same number :func:`~celpix.pipeline._stage._pixel_geometry` puts on a
+    The same number :func:`~celpix.pipeline._stage.pixel_geometry` puts on a
     document, asked of a preset alone — for a caller that has to size a run of
     tiles *before* there is a config to build a document from. A **composite**
     entry's blank pads are that caller: a gap in an assembled tile window is
@@ -189,7 +191,7 @@ def pixel_tile_bytes(preset_id: str, reg: Registry) -> int:
     every tile after it when the view changed.
     """
     engine, preset = reg.engine_for(preset_id, PixelCodecPlugin)
-    return _run(
+    return run_stage(
         Stage.INTERPRET_PIXEL,
         Pathway.PIXEL,
         lambda: engine.bytes_per_tile(preset.params),
@@ -207,7 +209,7 @@ def tilemap_cell_bytes(preset_id: str, reg: Registry) -> int:
     (``docs/design/new-file.md``).
     """
     engine, preset = reg.engine_for(preset_id, TilemapCodecPlugin)
-    return _run(
+    return run_stage(
         Stage.INTERPRET_TILEMAP,
         Pathway.TILEMAP,
         lambda: engine.bytes_per_cell(preset.params),
@@ -235,7 +237,7 @@ def pixel_bpp(preset_id: str, reg: Registry) -> int:
             raise ValueError(f"tile {w}x{h} has no pixels")
         return ceil_div(engine.bytes_per_tile(preset.params) * 8, pixels)
 
-    return _run(Stage.INTERPRET_PIXEL, Pathway.PIXEL, _bpp, plugin=preset.id)
+    return run_stage(Stage.INTERPRET_PIXEL, Pathway.PIXEL, _bpp, plugin=preset.id)
 
 
 def palette_row_size(preset_id: str, reg: Registry) -> int:

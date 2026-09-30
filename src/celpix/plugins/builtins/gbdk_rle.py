@@ -36,6 +36,7 @@ from __future__ import annotations
 
 from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
+from celpix.plugins.builtins._lz import corrupt
 from celpix.plugins.builtins._rle import pack_runs
 
 END = 0x00
@@ -46,8 +47,7 @@ MAX_PACKET = 127
 MIN_RUN = 3
 
 
-def _fail(reason: str) -> ValueError:
-    return ValueError(f"corrupt GBDK RLE stream: {reason}")
+_fail = corrupt("GBDK RLE")
 
 
 def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]:

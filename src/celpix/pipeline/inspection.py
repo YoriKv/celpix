@@ -33,7 +33,7 @@ from celpix.core.context import (
 )
 from celpix.core.errors import Stage
 from celpix.core.notices import KEY_NOTICES, Notice, notices
-from celpix.pipeline._stage import _acquire
+from celpix.pipeline._stage import acquire_source
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import ContainerField, ContainerPlugin, ReadSource
 from celpix.plugins.registry import Registry
@@ -97,7 +97,7 @@ def inspect_container(cfg: PathwayConfig, reg: Registry) -> ContainerReport:
     name = plugin.info.name
     paths = tuple(cfg.source.paths)
     try:
-        source, files = _acquire(cfg.source)
+        source, files = acquire_source(cfg.source)
     except OSError as exc:
         return ContainerReport(cfg.container_id, name, paths, 0, 0, 0, error=str(exc))
     ctx = PipelineContext()

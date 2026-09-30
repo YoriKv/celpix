@@ -12,7 +12,9 @@ and :func:`copy_back` live here too — the one piece of a decoder that is genui
 common to every scheme, since a back-reference is the only op they all share.
 Most of them also interleave groups of bits with their bytes, which is
 :class:`BitGroup` — and :class:`FlagGroup` over it, for the schemes that spend one
-bit per op — and several share one greedy parse, :func:`parse_greedy`.
+bit per op — and several share one greedy parse, :func:`parse_greedy`. The read
+side of that interleave is :class:`ByteSource` and :class:`GroupReader`, which
+raise :class:`Truncated` where a buffer runs out mid-op.
 
 **Overlap is the part worth stating.** A match may legally reach past the position
 being encoded, into bytes the decoder has not produced yet, because every one of
@@ -33,7 +35,7 @@ price every position before it knows which it will use.
 from __future__ import annotations
 
 from bisect import bisect_left
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Literal
 
 # How many recent positions sharing a prefix a scheme tests by default. Highly
@@ -52,6 +54,105 @@ _PREFIX_LEVELS = (4, 8, 16, 32, 64, 128)
 # A short chain costs less to walk than the extra index costs to keep, and most
 # prefixes of most data never get this far.
 _LEVELS_FROM = 32
+
+
+def corrupt(name: str) -> Callable[[str], ValueError]:
+    """The ``_fail`` a codec builds its errors with: ``corrupt <name> stream: <why>``.
+
+    One spelling for every scheme, so the prefix a user reads in a failed decode —
+    and the text the tests match — cannot drift from module to module. It returns
+    the error rather than raising it so each call site keeps its own ``raise … from
+    None`` and the traceback points at the decoder, not here.
+    """
+    prefix = f"corrupt {name} stream: "
+
+    def fail(reason: str) -> ValueError:
+        return ValueError(prefix + reason)
+
+    return fail
+
+
+class Truncated(ValueError):
+    """The stream ran out mid-op — recoverable only under ``partial``.
+
+    A :class:`ValueError`, so one that is not caught still reads as the corrupt
+    stream it is to everything above the codec. Every decoder that raises it
+    catches it first, to return the prefix under ``partial`` or to raise its own
+    ``source ended`` error otherwise.
+    """
+
+
+class ByteSource:
+    """The bytes of one stream, read forward through one shared cursor.
+
+    Shared because the interleaved schemes read their bit groups out of the same
+    stream as their operands (:class:`GroupReader`): where a group byte lands
+    among the bytes around it is decided by the order of reads. :attr:`pos` is
+    how far the decode has consumed, which is what a decoder reports back. A read
+    past the end raises :class:`Truncated` *without* moving the cursor, so a
+    partial decode's ``consumed`` stops before the op that did not fit.
+    """
+
+    __slots__ = ("_data", "pos")
+
+    def __init__(self, data: bytes, pos: int = 0) -> None:
+        self._data = data
+        self.pos = pos
+
+    def byte(self) -> int:
+        """The next byte."""
+        pos = self.pos
+        if pos >= len(self._data):
+            raise Truncated
+        self.pos = pos + 1
+        return self._data[pos]
+
+    def take(self, count: int) -> bytes:
+        """The next ``count`` bytes, all of them or none."""
+        start = self.pos
+        if start + count > len(self._data):
+            raise Truncated
+        self.pos = start + count
+        return self._data[start : start + count]
+
+
+class GroupReader:
+    """Bits taken eight at a time from the same stream as the bytes.
+
+    The decode half of :class:`BitGroup`, for the schemes that fetch their group
+    byte **lazily** — at the first bit read after the previous group is spent,
+    never before — which is what puts a group byte *after* the operands of the
+    ops before it. ``msb_first`` reads each byte from its top bit down, as
+    :class:`BitGroup` writes it. The schemes whose groups are wider, fetched
+    eagerly or padded when short keep readers of their own.
+    """
+
+    __slots__ = ("_group", "_left", "_msb", "_src")
+
+    def __init__(self, src: ByteSource, *, msb_first: bool) -> None:
+        self._src = src
+        self._msb = msb_first
+        self._group = 0
+        self._left = 0
+
+    def bit(self) -> int:
+        """The next bit, fetching a new group byte when the last one is spent."""
+        if not self._left:
+            self._group = self._src.byte()
+            self._left = 8
+        self._left -= 1
+        if self._msb:
+            return (self._group >> self._left) & 1
+        bit = self._group & 1
+        self._group >>= 1
+        return bit
+
+    def bits(self, count: int) -> int:
+        """The next ``count`` bits as one number, the first read the highest."""
+        value = 0
+        for _ in range(count):
+            value = (value << 1) | self.bit()
+        return value
 
 
 def copy_from(out: bytearray, start: int, length: int) -> None:
