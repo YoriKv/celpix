@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.2.1 - unreleased
+## v1.2.1 - 2026-09-30
 
 - Tooltip, shortcuts, and other text updates
 - Lots more tilemap fixes
