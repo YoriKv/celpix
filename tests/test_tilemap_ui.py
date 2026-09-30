@@ -2181,10 +2181,13 @@ def test_selecting_a_cell_does_not_hand_back_import_from_png(qtbot, tmp_path) ->
     """``_sync_edit_actions`` runs on every selection change and the gating pass
     does not, so a veto applied at the end of the last render was handed straight
     back by the next click on a cell - and the row stayed live until something
-    re-rendered."""
+    re-rendered. An unbound map is the one that vetoes: it has no bank for the
+    imported pixels to land in."""
     from celpix.core.tilemap import Cell
 
-    window, _ = _bound_tilemap(qtbot, tmp_path, [Cell(index=1), Cell(index=2)])
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1), Cell(index=2)])))
     assert not window._import_png_action.isEnabled()
     window._select_tiles(0, 0)
     assert not window._import_png_action.isEnabled()
@@ -2463,37 +2466,28 @@ def test_every_kind_can_do_the_gestures_it_implements() -> None:
     assert set(sync._GESTURE_CAPABILITY) == set(sync.Gesture)
 
 
-def test_a_dropped_png_is_refused_on_a_tilemap(qtbot, tmp_path) -> None:
-    """The Import action is capability-gated, but a drop is a gesture with no
-    control to disable - and a tilemap's ``pixel_data`` is the *bound* entry's
-    art, so an unguarded import painted over another file and marked the wrong
-    entry dirty for a change its Write could never emit."""
+def test_a_dropped_png_is_refused_on_an_unbound_tilemap(qtbot, tmp_path) -> None:
+    """The Import action is gated, but a drop is a gesture with no control to
+    disable - and a map with nothing bound has no bank for imported pixels to
+    land in, so an unguarded drop would float a picture that can never set down."""
     from PySide6.QtGui import QImage
 
     from celpix.core.tilemap import Cell
-    from celpix.project.workspace import TileMode, TileSource
 
     window = MainWindow()
     qtbot.addWidget(window)
-    window._load_pixel(str(_make_snes_file(tmp_path)))
     window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
-    entry = window._workspace.current
-    entry.tile_source = TileSource(
-        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
-    )
-    window._reload_tilemap(entry)
     png = tmp_path / "picture.png"
     image = QImage(16, 16, QImage.Format.Format_ARGB32)
     image.fill(0xFF00FF00)
     image.save(str(png))
 
-    before, depth = window._doc.pixel_data, window._undo_stack.count()
+    depth = window._undo_stack.count()
     window._import_dropped_png(str(png))
 
-    assert window._doc.pixel_data == before  # the bank it borrows is untouched
+    assert window._float_grid is None
     assert window._undo_stack.count() == depth
-    assert not entry.pixel_dirty
-    assert "Import into its tile source" in window.statusBar().currentMessage()
+    assert "no tile source" in window.statusBar().currentMessage()
 
 
 def test_a_sprite_map_offers_a_size_pair_and_nothing_else_does(qtbot, tmp_path) -> None:

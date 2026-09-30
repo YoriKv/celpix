@@ -203,7 +203,10 @@ class SelectionMixin:
         # four above are - the Edit menu and the canvas menu show one action.
         self._import_png_action = QAction("&Import from PNG…", self)
         self._import_png_action.setToolTip(
-            "Convert an image to this format and paste it\nat the selected tile"
+            "Convert an image to this format and paste it\n"
+            "at the selected tile.\n"
+            "On a tilemap it pastes as floating pixels,\n"
+            "written into the tiles the map points at."
         )
         self._import_png_action.triggered.connect(self._import_png_here)
         self._import_png_action.setEnabled(False)
@@ -395,9 +398,7 @@ class SelectionMixin:
         # because this method runs on every selection change and that pass does
         # not — a veto it applied at the end of the last render would be handed
         # back by the next click on a cell (``capability_sync._GATED_IN_PLACE``).
-        self._import_png_action.setEnabled(
-            has_doc and self._can(Capability.IMPORT_IMAGE)
-        )
+        self._import_png_action.setEnabled(self._import_available())
         self._select_all_action.setEnabled(has_doc)
         self._sync_entry_scope()  # a veto that runs after every owner
 

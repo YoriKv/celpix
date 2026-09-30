@@ -5,7 +5,8 @@ entry that was never shown - the window loads it on demand. Import is the
 reverse and shares the clipboard's pathway
 (:mod:`celpix.pipeline.importer`), so an image arrives identically whether it
 came off disk or through a paste: quantized to the active palette row, cut on the
-view's arrangement, stamped as a block.
+view's arrangement, stamped as a block. A tilemap takes an image as a pixel-mode
+paste instead - a floating selection whose pixels land in the bound tiles.
 
 Drag-and-drop lives here because a drop is a transfer too, and it decides *what
 kind* of file arrived: a project replaces the workspace, a PNG is imported into
@@ -42,6 +43,7 @@ from celpix.project.workspace import (
 )
 from celpix.ui import clipboard, export
 from celpix.ui.main_window.palette_source import PALETTE_EXTENSIONS
+from celpix.ui.tools import EditMode
 from celpix.ui.widgets import ask_save_path, counted, make_action
 
 
@@ -433,7 +435,8 @@ class TransferMixin:
         palette, bit depth and arrangement the view is showing, and the result
         has to be visible and undoable in the same session as any other edit. The
         image then lands as a block anchored at tile 0, so the file reads back
-        exactly as the picture looks.
+        exactly as the picture looks. On a tilemap the image floats in at the
+        map's top-left corner instead (:meth:`_float_import_png`).
         """
         if entry is None or not entry.kind.has_document:
             return
@@ -445,6 +448,10 @@ class TransferMixin:
             return
         path = self._choose_import_png()
         if path is None:
+            return
+        if self._doc.is_tilemap:
+            # A map is always shown entire, so there is no view to move first.
+            self._float_import_png(path, (0, 0))
             return
         # Read and checked before the view moves: the move is an undo step of its
         # own, and an import refused after it would leave that step behind with
@@ -472,7 +479,16 @@ class TransferMixin:
         path = self._choose_import_png()
         if path is None:
             return
-        self._import_png_at(self._paste_anchor(), path)
+        self._import_png_here_from(path)
+
+    def _import_png_here_from(self, path: str) -> None:
+        """Import ``path`` where a paste would land it: stamped over the
+        selection's anchor, or on a tilemap, floating over the view."""
+        assert self._doc is not None
+        if self._doc.is_tilemap:
+            self._float_import_png(path)
+        else:
+            self._import_png_at(self._paste_anchor(), path)
 
     def _import_dropped_png(self, path: str) -> None:
         """A PNG dropped on the window, imported where the canvas menu would.
@@ -488,7 +504,7 @@ class TransferMixin:
                 "the graphic on screen."
             )
             return
-        self._import_png_at(self._paste_anchor(), path)
+        self._import_png_here_from(path)
 
     def _choose_import_png(self) -> str | None:
         """Ask for the image to import; None if the dialog was cancelled."""
@@ -500,28 +516,69 @@ class TransferMixin:
         )
         return path or None
 
+    def _import_available(self) -> bool:
+        """Whether an image can be brought into the document on screen.
+
+        The kind's answer sharpened by the document's, as the brush's is: a
+        tilemap imports by pasting pixels into its bound bank
+        (:meth:`_float_import_png`), so a map with nothing bound has nowhere for
+        them to go — the same answer :meth:`_pixel_edit_available` gives.
+        """
+        if self._doc is None or not self._can(Capability.IMPORT_IMAGE):
+            return False
+        return not self._doc.is_tilemap or self._pixel_edit_available()
+
     def _refuse_import(self) -> bool:
         """True — with the reason on the status bar — when an image cannot land.
 
-        The capability check every import passes through, here rather than on the
-        actions alone: **a drop is a gesture without a control**, so disabling
-        ``_import_png_action`` leaves it ungated. On a tilemap that mattered more
-        than a stray message would suggest — ``pixel_data`` there is the *bound*
-        entry's tile bytes (:class:`~celpix.core.document.Document`), so an import
-        painted over another entry's art, marked the map dirty for it, and left
-        the change unsaveable: a tilemap's Write puts back cells.
-
-        Bringing a picture into a map means matching it against the bound tiles,
-        which is a quantize-to-tiles problem the pixel importer does not solve
-        (``docs/design/tilemap-entry.md`` §4). So the answer is the entry the
-        tiles live in, which is where the ordinary importer already works.
+        The check every import passes through, here rather than on the actions
+        alone: **a drop is a gesture without a control**, so disabling
+        ``_import_png_action`` leaves it ungated.
         """
-        if self._can(Capability.IMPORT_IMAGE):
+        if self._import_available():
             return False
         self.statusBar().showMessage(
-            "A tilemap has no pixels. Import into its tile source instead."
+            "This tilemap has no tile source to import into. Bind one first."
         )
         return True
+
+    def _float_import_png(
+        self, path: str, position: tuple[int, int] | None = None
+    ) -> None:
+        """Bring the image at ``path`` into a tilemap as pasted pixels.
+
+        Exactly what copying the PNG and pasting it in pixel mode does: the image
+        is fitted to the map's colours and arrives as a floating selection, to be
+        dragged into place before it lands. Where it sets down, each pixel goes
+        to whichever bank tile the cell under it names, as a brush's would
+        (``docs/design/tilemap-entry.md`` §8.4). Stamping it as tiles, as a pixel
+        entry's import does, would write the bank in *storage* order and ignore
+        the cells entirely.
+
+        Pixel mode is switched on first — a float lives only there — but only
+        once the image has been read, so a refused import leaves the mode alone.
+        ``position`` is the float's top-left; without one it arrives centred on
+        the view, as a paste does.
+        """
+        assert self._doc is not None
+        if self._refuse_import():
+            return
+        image = QImage(path)
+        if image.isNull():
+            self._alert(f"Could not read {path} as an image.", title="celPix - import")
+            return
+        if image.width() == 0 or image.height() == 0:
+            self.statusBar().showMessage(f"{Path(path).name} has no pixels to import.")
+            return
+        region, report = self._fit_pixel_region(clipboard.image_to_argb(image))
+        self._set_edit_mode(EditMode.PIXEL)
+        self._float_region(region, "import image", position)
+        note = self._fit_note(report)
+        self.statusBar().showMessage(
+            f"Imported {Path(path).name} as a floating selection"
+            + (f" - {note}" if note else "")
+            + ". Drag to place; Esc sets it down."
+        )
 
     def _import_png_at(self, anchor: int, path: str) -> None:
         """Fit the image at ``path`` into this view and stamp it from ``anchor``.

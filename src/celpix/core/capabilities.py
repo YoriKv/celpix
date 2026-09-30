@@ -147,18 +147,22 @@ CAPABILITIES: dict[ContentKind, frozenset[Capability]] = {
     # particular map has a bank to paint into (`docs/design/tilemap-entry.md` §8.1;
     # `_pixel_edit_available` is the finer answer).
     #
-    # Six deliberate absences. PALETTE_REGIONS: a cell
+    # IMPORT_IMAGE rides on PIXEL_EDIT and shares its wrinkle. An image imported
+    # into a map is **pasted pixels**, not matched against the bound tiles: it
+    # arrives as a floating selection over the picture, exactly as a pixel-mode
+    # paste of the same PNG would, and each pixel lands in whichever bank tile the
+    # cell under it names. The finer answer is the same one too — a map with no
+    # bank has nowhere for the float to set down (`docs/design/import.md`).
+    #
+    # Five deliberate absences. PALETTE_REGIONS: a cell
     # already names its own palette row, so pinning a row over a span would be a
     # second, conflicting answer to a question the file has already answered —
     # which is why PALETTE_ROW is here instead, the same gesture landing in the
     # cells the file already answers with (`docs/design/palette-editing.md` §3).
     # TILE_REARRANGE: a rearrangement is display state precisely because it moves
-    # no bytes, and moving a cell *is* the byte edit. IMPORT_IMAGE: bringing a
-    # picture in would mean matching it against the bound tiles, which is a
-    # quantize-to-tiles problem and not the pixel importer's — and unlike a brush
-    # it has no cell under it to say which tile a given pixel belongs to.
+    # no bytes, and moving a cell *is* the byte edit.
     #
-    # NAVIGATION is the fourth: a tilemap is always shown entire, so there is no
+    # NAVIGATION is the third: a tilemap is always shown entire, so there is no
     # window to move through it and no offset to jump to. The row count and the
     # position bar address a coordinate space it does not have
     # (``docs/design/tilemap-entry.md`` §8). COMPRESSION_SCAN follows it out for
@@ -174,7 +178,7 @@ CAPABILITIES: dict[ContentKind, frozenset[Capability]] = {
     # codec refuses the rotations, so the buttons stay disabled today; a format
     # that grows the bit enables them without this table moving.
     #
-    # TILE_ARRANGEMENT is the last of the six, and the plainest: the Pattern picker
+    # TILE_ARRANGEMENT is the last of the five, and the plainest: the Pattern picker
     # and the block/order/2D axes beneath it say how a *linear run of bytes* is
     # cut into tiles and grouped on screen. A tilemap places nothing linearly —
     # the picture is its cells over a bank, and what groups its tiles is the
@@ -198,6 +202,7 @@ CAPABILITIES: dict[ContentKind, frozenset[Capability]] = {
         Capability.CELL_ROTATE,
         Capability.CELL_LABELS,
         Capability.EXPORT_IMAGE,
+        Capability.IMPORT_IMAGE,
         Capability.TILEMAP_CODEC,
         Capability.PALETTE_CODEC,
         Capability.TILE_BINDING,

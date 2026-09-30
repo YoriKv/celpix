@@ -175,13 +175,16 @@ def test_the_yi_sample_project_reads_all_of_its_streams() -> None:
     same 74 glyphs and disagree only about the top four codes: `$FF` ends a page
     on `storybook font`, opens a level name's first line on `level-name font`
     (which breaks on `$FD`, the storybook's row prefix), and is an escape prefix
-    on the plain `message font` the boxes and the ending text read through, which
-    therefore names nothing at all.
+    on the `message font` the boxes and the ending text read through.
 
-    Asserting all four in one test is the point — any one alone would pass with
-    the readings collapsed onto each other. The two one-byte streams share the
-    shipped `text-8bit` preset, which is what that split buys: a cell format that
-    states only where the bits go is reusable, and a table of codes is not.
+    The boxes read that prefix as a **lead byte** (`lead_codes`), so each `FF xx`
+    control word is one cell the message font names; the ending text's `FF 0A`
+    draws the byte after it without testing it, so it cannot pair and stays on
+    one-byte cells. Asserting all four in one test is the point — any one alone
+    would pass with the readings collapsed onto each other. The one-byte streams
+    share the shipped `text-8bit` preset, which is what that split buys: a cell
+    format that states only where the bits go is reusable, and a table of codes
+    is not.
 
     The credits are a fifth stream and a fourth font entry, tested separately
     below: their codes are not these codes at all.
@@ -191,19 +194,20 @@ def test_the_yi_sample_project_reads_all_of_its_streams() -> None:
     story, story_exact = _read(workspace, registry, "storybook intro")
     assert story.startswith("A long, long time ago ...")
     assert "baby Mario and Yoshi." in story
-    # The positioning codes are named, so each reads as a word - and each one's
-    # *parameter* still reads as its own hex, which is the whole of what naming
-    # buys and does not buy (fontmap-entry.md §5: no per-command arity).
+    # The positioning codes are named without a `params` count, so each reads
+    # as a word and its parameter as its own hex.
     assert "[line][$02][set-row][$10][set-column][$38]This is a story about" in story
 
     boxes, boxes_exact = _read(workspace, registry, "message boxes")
-    # A 16-bit `$XXFF` control split by a one-byte cell. Ugly, and exactly right:
-    # this is the format the text form was argued against, kept here as evidence.
-    assert boxes.startswith("[$FF][$05]This paradise is[$FF][$06]Yoshi's Island,")
+    # Each `FF xx` control word is one lead-code cell: `$10E` breaks the line.
+    assert boxes.startswith(
+        "[line-1]This paradise is[line-2]Yoshi's Island,[line-3]where all the"
+    )
+    assert "[$FF]" not in boxes
 
     ending, ending_exact = _read(workspace, registry, "ending text")
-    # The same 16-bit controls, and the one region of the four whose prose
-    # therefore starts at cell zero with nothing in front of it.
+    # The same 16-bit controls, read a byte at a time: `FF 0A` draws the byte
+    # after it as a glyph, which a lead code would swallow.
     assert ending.startswith("Thus, due to the marvelous[$FF][$0A]team work of")
 
     names, names_exact = _read(workspace, registry, "level names")

@@ -1052,8 +1052,9 @@ class Document:
         fill = blank if pair is not None and pair[0] == 1 else 0
         size = self.line_bytes
         room = sum(have)
-        # One stream, or one record per line: a list of (first, stop, bytes)
-        # slots the typed cells are fitted to in turn.
+        # The typed cells as (first, stop) spans, each fitted to a slot of
+        # ``size`` bytes: one span and one slot for a stream, a span per typed
+        # line and a slot per record for a name table.
         if size:
             lines: list[tuple[int, int]] = []
             start = 0

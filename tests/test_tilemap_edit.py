@@ -3576,7 +3576,8 @@ def test_pasting_pixels_into_a_map_lands_the_colours_that_were_copied(
     assert len({base.get(x, 0) // 16 for x in range(32)}) > 1
     window._pixel_copy()
 
-    region = window._take_pixel_clipboard()
+    window._pixel_paste()
+    region = window._float_grid
     assert region is not None
     copied = [base.get(x, y) for y in range(8) for x in range(32)]
     assert [region.get(x, y) for y in range(8) for x in range(32)] == copied
@@ -3620,6 +3621,51 @@ def test_a_float_lands_on_the_colours_it_shows_not_the_offsets_it_holds(
     }
     assert shown == {grey}
     assert landed.get(0, 0) == 48 + 2  # row 3's own grey, not its offset 5
+
+
+def test_import_png_on_a_map_pastes_pixels_through_its_cells(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """Import from PNG on a tilemap is a pixel-mode paste of the file: a float
+    that lands in whichever bank tile each cell names. Stamping it as tiles, as a
+    pixel entry does, would fill the bank in storage order and ignore the map."""
+    from PySide6.QtGui import QImage
+    from PySide6.QtWidgets import QFileDialog
+
+    from celpix.core.tilemap import Cell
+
+    window, entry = _bound_tilemap(
+        qtbot, tmp_path, [Cell(index=5), Cell(index=2)], maker=_pnl_file
+    )
+    bank = window._workspace.entries[0]
+    assert window._edit_mode is EditMode.TILE
+    window._sync_edit_actions()
+    assert window._import_png_action.isEnabled()
+
+    left, right = window._doc.palette.color(3), window._doc.palette.color(9)
+    image = QImage(16, 8, QImage.Format.Format_ARGB32)
+    image.fill(left)
+    for y in range(8):
+        for x in range(8, 16):
+            image.setPixel(x, y, right)
+    png = str(tmp_path / "import.png")
+    assert image.save(png)
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (png, ""))
+    )
+    before = bytes(bank.doc.pixel_data)
+
+    window._import_png_into(entry)
+    assert window._edit_mode is EditMode.PIXEL
+    assert window._float_grid is not None and window._float_pos == (0, 0)
+    assert bytes(bank.doc.pixel_data) == before  # in the air, nothing written yet
+    window._commit_float()
+
+    assert set(_bank_tile(window, bank, 5).data) == {3}
+    assert set(_bank_tile(window, bank, 2).data) == {9}
+    window._undo_stack.undo()  # the landing
+    window._undo_stack.undo()  # the float
+    assert bytes(bank.doc.pixel_data) == before
 
 
 def test_a_lifted_float_keeps_the_colours_the_pixels_were_shown_in(

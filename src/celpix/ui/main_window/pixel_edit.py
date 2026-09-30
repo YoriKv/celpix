@@ -48,6 +48,7 @@ from PySide6.QtWidgets import QApplication
 from celpix.core import ceil_div, draw
 from celpix.core.arrangement import split_grid
 from celpix.core.errors import PipelineError
+from celpix.core.quantize import QuantizeReport
 from celpix.core.tilemap import cell_orientation
 from celpix.core.tilerearrangement import unapply_orientation
 from celpix.pipeline import importer, pipeline
@@ -1460,15 +1461,32 @@ class PixelEditMixin:
         """
         if self._doc is None:
             return
-        region = self._take_pixel_clipboard()
-        if region is None:
+        image = clipboard.take_image()
+        if image is None:
             self.statusBar().showMessage("Nothing on the clipboard to paste here.")
             return
+        region, _report = self._fit_pixel_region(clipboard.image_to_argb(image))
+        self._float_region(region, "paste pixels")
+        self.statusBar().showMessage(
+            "Pasted as a floating selection. Drag to place; Esc sets it down."
+        )
+
+    def _float_region(
+        self, region, text: str, position: tuple[int, int] | None = None
+    ) -> None:  # noqa: ANN001 — an IndexGrid or ARGB grid
+        """Put ``region`` in the air as a new floating selection, one undo step.
+
+        Shared by a pixel paste and by Import from PNG on a tilemap, which is
+        the same gesture with the picture coming off disk. ``position`` is the
+        float's top-left; without one it arrives centred on the view.
+        """
         self._settle_marquee_gesture()
         self._commit_float()  # set any live float down first (its own step)
         before = None if self._marquee is None else QRect(self._marquee)
         self._float_grid = region
-        self._float_pos = self._centred_position(region.width, region.height)
+        self._float_pos = position or self._centred_position(
+            region.width, region.height
+        )
         self._float_source_rect = None  # a paste lifted nothing, so it owes no hole
         self._sync_float_marquee()
         self._show_float()
@@ -1477,15 +1495,9 @@ class PixelEditMixin:
         if SPEC_BY_TOOL[self._tool].gesture is not Gesture.MARQUEE:
             self._on_tool_selected(Tool.SELECT)
         self._push_pixel_interaction(
-            before,
-            self._marquee,
-            "paste pixels",
-            after_float=FloatState(region),
+            before, self._marquee, text, after_float=FloatState(region)
         )
         self._after_pixel_change()
-        self.statusBar().showMessage(
-            "Pasted as a floating selection. Drag to place; Esc sets it down."
-        )
 
     def _centred_position(self, width: int, height: int) -> tuple[int, int]:
         """Top-left for a ``width``×``height`` region centred on the viewport.
@@ -1527,20 +1539,15 @@ class PixelEditMixin:
         assert self._doc is not None
         clipboard.put(None, self._region_image(region, transparent_zero=False))
 
-    def _take_pixel_clipboard(self):
-        """The clipboard image as a region grid fitted to this view, or None.
+    def _fit_pixel_region(self, argb):  # noqa: ANN001, ANN202 — a grid and its fit
+        """An ARGB image as a region grid fitted to this view, with its report.
 
         Direct-color views take the ARGB straight; indexed views quantize each
         pixel to the candidate colours (the same importer path a PNG paste uses).
         """
-        image = clipboard.take_image()
-        if image is None:
-            return None
-        argb = clipboard.image_to_argb(image)
         if self._is_direct_color():
-            return argb
-        grid, _report = importer.quantize_grid(argb, self._pixel_import_target())
-        return grid
+            return argb, QuantizeReport()
+        return importer.quantize_grid(argb, self._pixel_import_target())
 
     def _pixel_import_target(self) -> importer.ImportTarget:
         """The colours an incoming pixel region is fitted to.
@@ -1695,7 +1702,7 @@ class PixelEditMixin:
         base has it, or the pixels it hides would come back opaque under a
         selection that is only hovering. The **clipboard** wants it off: a copy
         leaves as a picture to be matched back against this palette
-        (:meth:`_take_pixel_clipboard`), and a transparent pixel has no colour to
+        (:meth:`_fit_pixel_region`), and a transparent pixel has no colour to
         match on.
         """
         assert self._doc is not None

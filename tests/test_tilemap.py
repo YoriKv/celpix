@@ -611,9 +611,6 @@ def test_the_kinds_differ_where_the_design_says_they_do() -> None:
     # to — the kind says a brush belongs here and `_pixel_edit_available` says
     # whether this particular map has a bank to paint into.
     assert Capability.PIXEL_EDIT in tilemap
-    # ...but not a picture to bring *in*: an import has no cell under it to say
-    # which tile a given pixel belongs to.
-    assert Capability.IMPORT_IMAGE not in tilemap
     # A cell already names its own palette row, so pinning one over a span would
     # be a second, conflicting answer to a question the file has answered.
     assert Capability.PALETTE_REGIONS not in tilemap
