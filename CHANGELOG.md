@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.2.0 - unreleased
+## v1.2.0 - 2026-09-29
 
 - Added tilemap *Index unit* that allows a tilemap to switch between indexing cells or whole records (stampes/metatiles/etc)
 - Reworked the entire tilemap pathway to support switching index types
