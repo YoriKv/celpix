@@ -8,8 +8,8 @@
 #   first byte. The entry is the table: a save writes back only the offsets.
 #   The frames are read out of the entry's Frames input, a region starting at
 #   the table and long enough to hold every frame it names, because tables
-#   often share frames and store no length. Sprite maps open read-only in the
-#   app.
+#   often share frames and store no length. A sprite map's pixels are
+#   editable through the bound bank; its records are not.
 #
 #   A frame is a header holding its part count, then the parts. Frames and
 #   parts take every parameter of _sprite-record.toml (record, frame_header,

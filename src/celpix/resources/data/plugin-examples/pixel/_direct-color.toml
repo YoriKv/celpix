@@ -1,4 +1,4 @@
-# Example preset: `codec.pixel.direct-color` — pixels that carry their own colour.
+# Example preset: `codec.pixel.direct-color` — pixels that carry their own color.
 #
 # To use: copy, remove the leading "_", edit, press F5. See _planar.toml for
 # what a preset is.
@@ -10,14 +10,14 @@
 #
 #   Round trip: a channel of 8 bits or fewer is exact. Bits no field names are
 #   written as zero. A channel wider than 8 bits loses its low bits. A painted
-#   colour is quantised to the channel width.
+#   color is quantized to the channel width.
 #
 # SHIPPED PRESETS ON THIS ENGINE
 #   dc-rgb565        2 bytes little-endian, `rrrr rggg gggb bbbb`.
 #   dc-argb8888-be   4 bytes big-endian, alpha in the top byte.
 #   dc-i8            `vvvv vvvv`: one intensity byte (N64 I8 textures).
 #   dc-ia8           `vvvv aaaa`: intensity and alpha.
-#   dc-snes-direct   `bbgg grrr`: the SNES direct-colour byte.
+#   dc-snes-direct   `bbgg grrr`: the SNES direct-color byte.
 
 id = "preset.pixel.example-direct-color"
 name = "Example direct color RGB565"

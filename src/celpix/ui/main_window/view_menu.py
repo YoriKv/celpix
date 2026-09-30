@@ -150,8 +150,8 @@ class ViewMenuMixin:
         """
         self._show_tile_ids_action = QAction("Show Tile I&Ds", self, checkable=True)
         self._show_tile_ids_action.setToolTip(
-            "Number each cell with the tile it names, in hex\n"
-            "The file's own number, before Base tile is applied"
+            "Label each cell with the tile index it stores, in hex\n"
+            "Shown before Base tile is applied"
         )
         self._show_tile_ids = load_bool_setting(TILE_IDS_KEY, False)
         self._show_tile_ids_action.setChecked(self._show_tile_ids)
@@ -186,8 +186,7 @@ class ViewMenuMixin:
             "Show &Cell Attributes", self, checkable=True
         )
         self._show_cell_attrs_action.setToolTip(
-            "Badge each cell whose priority or flags are set\n"
-            "The two fields the picture cannot show otherwise"
+            "Badge each cell whose priority or flags are set"
         )
         self._show_cell_attrs = load_bool_setting(CELL_ATTRS_KEY, False)
         self._show_cell_attrs_action.setChecked(self._show_cell_attrs)
@@ -266,7 +265,7 @@ class ViewMenuMixin:
         """
         self._text_action = QAction("Te&xt...", self)
         self._text_action.setToolTip(
-            "Read and edit this text run as words,\ntyped through the font's alphabet"
+            "Read and edit this text run through the font's alphabet"
         )
         self._text_action.triggered.connect(self._show_text)
         self._text_action.setEnabled(False)
@@ -286,7 +285,7 @@ class ViewMenuMixin:
         """
         self._font_alphabet_action = QAction("&Font Alphabet...", self)
         self._font_alphabet_action.setToolTip(
-            "Say which character each of this font's tiles draws"
+            "Set which character each of this font's tiles draws"
         )
         self._font_alphabet_action.triggered.connect(self._show_font_alphabet)
         self._font_alphabet_action.setEnabled(False)
@@ -311,7 +310,7 @@ class ViewMenuMixin:
         """
         self._entire_file = QAction("&Entire File", self, checkable=True)
         self._entire_file.setToolTip(
-            "Show the whole file at once, ignoring Rows\nSlow on big files"
+            "Show the whole file, ignoring Rows\nSlow on large files"
         )
         self._entire_file.setChecked(load_bool_setting(ENTIRE_FILE_KEY, False))
         self._entire_file.toggled.connect(self._on_entire_file_change)
@@ -349,8 +348,8 @@ class ViewMenuMixin:
         """
         self._pixel_aspect_action = QAction("Pixel As&pect…", self)
         self._pixel_aspect_action.setToolTip(
-            "The shape one pixel is drawn at, for the whole project\n"
-            "A 640x200 screen's pixel is twice as tall as it is wide"
+            "Width:height ratio pixels are drawn at, project-wide\n"
+            "For displays with non-square pixels, e.g. 640x200"
         )
         self._pixel_aspect_action.triggered.connect(self._on_pixel_aspect)
         view_menu.addAction(self._pixel_aspect_action)
@@ -515,7 +514,7 @@ class ViewMenuMixin:
             "&Grid",
             self._on_grid_change,
             menu=view_menu,
-            tip="Overlay a grid (zoom >= 2)",
+            tip="Overlay a grid (G)\nDrawn at zoom 2 and above",
             shortcut=QKeySequence("G"),
             context=Qt.ShortcutContext.WidgetShortcut,
             checkable=True,
@@ -568,7 +567,7 @@ class ViewMenuMixin:
         sequences = QKeySequence.keyBindings(QKeySequence.StandardKey.ZoomIn)
         sequences.append(QKeySequence("Ctrl+="))
         zoom_in.setShortcuts(sequences)
-        zoom_in.setToolTip("Zoom in (Ctrl++)")
+        zoom_in.setToolTip("Zoom in (Ctrl++ or Ctrl+=)")
         zoom_in.triggered.connect(lambda: self._zoom_steps(1))
         view_menu.addAction(zoom_in)
         zoom_out = QAction("Zoom &Out\tCtrl + Scroll Down", self)
@@ -616,13 +615,12 @@ class ViewMenuMixin:
                 (
                     GridMode.TILE,
                     "&Tile",
-                    "Grey lines on every tile, blue every\n8 tiles",
+                    "Grey lines every tile, blue lines every 8 tiles",
                 ),
                 (
                     GridMode.PIXEL,
                     "Pi&xel",
-                    "Grey lines on every pixel, blue on every tile\n"
-                    "(needs a high zoom)",
+                    "Grey lines every pixel, blue lines every tile\nNeeds a high zoom",
                 ),
             ),
             load_enum_setting(GRID_SCALE_KEY, GridMode.TILE),
@@ -634,8 +632,7 @@ class ViewMenuMixin:
         # being a scale of its own, so it is on or off beside any of them.
         self._block_grid = QAction("&Block Grid", self, checkable=True)
         self._block_grid.setToolTip(
-            "Put the blue lines on the arrangement's Block W×H\n"
-            "instead of the default 8-tile square"
+            "Blue lines every Block W×H of the arrangement\ninstead of every 8 tiles"
         )
         self._block_grid.setChecked(load_bool_setting(BLOCK_GRID_KEY, False))
         self._block_grid.toggled.connect(self._on_grid_change)

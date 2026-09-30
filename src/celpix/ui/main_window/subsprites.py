@@ -120,10 +120,8 @@ class SubspritesMixin:
             return None
         return Badge(
             f"{len(sizes)} sizes",
-            "This object's subsprites are not all one size, and a\n"
-            "sheet has one square. Each square is the largest of\n"
-            "them and a smaller piece is centred in it, so the\n"
-            "space around a piece is the square, not the record.",
+            "Subsprites of several sizes: every square is the\n"
+            "largest size, with smaller pieces centered in it",
         )
 
     def _sync_subsprites(self) -> None:

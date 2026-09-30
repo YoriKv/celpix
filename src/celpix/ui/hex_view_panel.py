@@ -655,10 +655,8 @@ class HexViewPanel(QWidget):
         self._needle: bytes | None = None
 
         goto_tip = (
-            "Scroll the dump to an address, written the way\n"
-            "the navbar writes one. The canvas does not move —\n"
-            "this jumps the dump only.\n"
-            "Enter to jump."
+            "Scroll the dump to an address, in the navbar's format\n"
+            "The canvas does not move. Enter to jump"
         )
         self._goto = QLineEdit()
         self._goto.setPlaceholderText("address")
@@ -670,10 +668,10 @@ class HexViewPanel(QWidget):
         goto_label.setToolTip(goto_tip)
 
         find_tip = (
-            "Find bytes in the file: hex digits (4e 45 53, 4e4553,\n"
-            '$4e $45 $53), or characters in quotes ("NES").\n'
-            "Enter finds the next match, Shift+Enter the previous;\n"
-            "the search wraps around the end of the file."
+            "Find bytes: hex digits (4e 45 53, 4e4553, $4e $45 $53)\n"
+            'or text in quotes ("NES")\n'
+            "Enter finds the next match, Shift+Enter the previous\n"
+            "Wraps at the end of the file"
         )
         self._find = QLineEdit()
         self._find.setPlaceholderText('bytes or "text"')
@@ -701,9 +699,8 @@ class HexViewPanel(QWidget):
 
         self._follow = QCheckBox("Follow &selection")
         self._follow.setToolTip(
-            "Scroll the dump to whatever is selected on the canvas.\n"
-            "Off, the dump stays where you left it and the selection\n"
-            "is only tinted when it happens to be on screen."
+            "Scroll the dump to the canvas selection\n"
+            "Off, the selection is only tinted when in view"
         )
         self._follow.setChecked(load_bool_setting(FOLLOW_SELECTION_KEY, True))
         self._follow.toggled.connect(self._on_follow_toggled)

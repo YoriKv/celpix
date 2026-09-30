@@ -322,10 +322,9 @@ class WritingMixin:
         )
         if not writable:
             self._alert(
-                f"{entry.name} is view-only - one of the stages it reads through "
-                "has no way to write back (a compression scheme with no "
-                "compressor, a reshape with no inverse, a missing plugin), so it "
-                "can't be saved.",
+                f"{entry.name} is view-only: a stage it reads through cannot write "
+                "back (a compression scheme with no compressor, a reshape with no "
+                "inverse, or a missing plugin).",
                 title="celPix - write",
             )
             return
@@ -860,9 +859,8 @@ class WritingMixin:
             f"• {child.name}: {self._refusal_of(child, root)}" for child in left
         )
         self._alert(
-            f"{root.name} was written, but the unsaved changes in "
-            f"{counted(len(left), 'slice')} could not go with it and are still "
-            f"unsaved:\n\n{lines}\n\nMake them fit and write again.",
+            f"{root.name} was written, but {counted(len(left), 'slice')} did not "
+            f"fit and remain unsaved:\n\n{lines}\n\nMake them fit and write again.",
             title="celPix - write",
         )
 
@@ -915,8 +913,7 @@ class WritingMixin:
                 else f"{Path(entry.path).name}, which is no longer open"
             )
             self._alert(
-                f"{entry.name} is a region of {what}, so there is nothing to "
-                "write it through.",
+                f"{entry.name} is a region of {what}. Cannot write.",
                 title="celPix - write",
             )
             return False

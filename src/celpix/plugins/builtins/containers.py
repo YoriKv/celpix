@@ -243,9 +243,8 @@ class INesContainer:
                 ContainerField(
                     "Header",
                     "not an iNES image",
-                    "The first four bytes are not NES\\x1a, so there is no\n"
-                    "header to read and no CHR ROM to find. The file is\n"
-                    "handed on whole, exactly as a plain binary would be.",
+                    "Bytes 0-3 are not NES\\x1a: no header, no CHR ROM\n"
+                    "The whole file is passed on as a plain binary",
                 ),
             )
         trainer = bool(raw[6] & 0x04)
@@ -255,36 +254,30 @@ class INesContainer:
             ContainerField(
                 "Header",
                 "NES 2.0, 16 bytes" if layout.nes2 else "iNES, 16 bytes",
-                "Bytes 0-15, holding the bank counts and flags below.\n"
-                "Skipped on read and preserved on write, so a save\n"
-                "leaves the cartridge's own metadata alone.",
+                "Bytes 0-15: the bank counts and flags below\n"
+                "Skipped on read, preserved on write",
             ),
             ContainerField(
                 "Trainer",
                 "present, 512 bytes (flag 6 bit 2)"
                 if trainer
                 else "none (flag 6 bit 2 clear)",
-                "A 512-byte block some dumps carry between the header\n"
-                "and the program. Counted into where the PRG banks\n"
-                "start, so a trainer that went unnoticed would put the\n"
-                "tiles 512 bytes off.",
+                "512-byte block between the header and the PRG banks\n"
+                "Counted into where the PRG banks start",
             ),
             ContainerField(
                 "PRG banks",
                 _banks(layout.prg_size, 16384),
-                "Program ROM, 16 KiB each. Not graphics, but their\n"
-                "total is what the CHR ROM starts after - this is the\n"
-                "arithmetic that finds the tiles.",
+                "Program ROM, 16 KiB each\nTheir total sets where the CHR ROM starts",
             ),
             ContainerField(
                 "CHR banks",
                 _banks(layout.chr_size, 8192)
                 if layout.chr_size
                 else "0 - CHR-RAM cartridge",
-                "Tile ROM, 8 KiB each: the payload this container is\n"
-                "after. Zero means CHR-RAM: the program copies its tiles\n"
-                "out of PRG ROM at runtime, so everything after the\n"
-                "header is shown and the art is among the program banks.",
+                "Tile ROM, 8 KiB each: the payload\n"
+                "0 = CHR-RAM: the art is in the PRG banks,\n"
+                "and everything after the header is passed on",
             ),
         ]
         end = "end of file" if length is None else format_hex(start + length)
@@ -292,9 +285,8 @@ class INesContainer:
             ContainerField(
                 "Payload span",
                 f"{format_hex(start)} to {end}",
-                "The bytes handed on to be decoded. A save splices back\n"
-                "over exactly this range, the header and program banks\n"
-                "coming through untouched.",
+                "Bytes passed on to be decoded\n"
+                "A save writes back over exactly this range",
             )
         )
         return tuple(fields)
@@ -386,23 +378,18 @@ class SmdContainer:
             ContainerField(
                 "Copier header",
                 f"{self._HEADER} bytes, skipped",
-                "The .smd wrapper's own metadata, which this container\n"
-                "never decodes. Preserved as it stands on write rather\n"
-                "than regenerated.",
+                ".smd wrapper metadata, not decoded\nPreserved as-is on write",
             ),
             ContainerField(
                 "Deinterleaved blocks",
                 f"{blocks} x 16 KiB ({format_size(blocks * self._BLOCK)})",
-                "Each block stores all its odd bytes and then all its\n"
-                "even ones; the two halves are woven back together one\n"
-                "block at a time, which is why the count matters.",
+                "Each block stores its odd bytes, then its even bytes\n"
+                "The halves are re-woven one block at a time",
             ),
             ContainerField(
                 "Trailing bytes",
                 f"{tail} (dropped)" if tail else "none",
-                "A partial block at the end cannot be reassembled - the\n"
-                "odd/even split is defined per whole block - so it is not\n"
-                "shown here, and a save leaves those bytes as they are.",
+                "A partial block cannot be reassembled\nNot shown; left as-is on save",
             ),
         )
 
@@ -489,23 +476,21 @@ class CopierHeaderContainer:
             ContainerField(
                 "File length",
                 f"{size} ({format_size(size)})",
-                "The whole of what identifies a copier header: a cart is\n"
-                "a whole number of KiB, so a file exactly 512 bytes over\n"
-                "one has 512 bytes in front of the image.",
+                "A cart is a whole number of KiB; a file 512 bytes\n"
+                "over has a copier header in front of the image",
             ),
             ContainerField(
                 "Size rule",
                 "matches - headered" if headered else "does not match",
-                "512 bytes are skipped either way, this container having\n"
-                "been chosen by hand. Where the rule does not match, that\n"
-                "removes 512 real bytes from the front of the image.",
+                "512 bytes are skipped either way\n"
+                "Where the rule does not match, that removes\n"
+                "512 real bytes from the front of the image",
             ),
             ContainerField(
                 "Copier header",
                 f"{COPIER_HEADER} bytes, skipped",
-                "Duplicator metadata this container never decodes, so a\n"
-                "save preserves it and the file stays the dump it was.\n"
-                "Skipping it lines every published ROM offset up.",
+                "Duplicator metadata, not decoded; preserved on save\n"
+                "Skipping it lines published ROM offsets up",
             ),
         )
 
@@ -598,22 +583,18 @@ class SnesInterleavedContainer:
             ContainerField(
                 "Copier header",
                 f"{header} bytes, skipped" if header else "none",
-                "Spotted by the same size rule the copier-header\n"
-                "container uses, and skipped before deinterleaving so\n"
-                "the bank halves line up on the image itself.",
+                "Detected by the copier-header size rule\n"
+                "Skipped before deinterleaving",
             ),
             ContainerField(
                 "Deinterleaved banks",
                 f"{banks} x 64 KiB ({format_size(banks * bank)})",
-                "Every bank's upper 32 KiB half sits in the first region\n"
-                "of the file and every lower half in the second, so the\n"
-                "split is global rather than per block.",
+                "All upper 32 KiB halves first, then all lower halves\n"
+                "The split is global, not per block",
             ),
             ContainerField(
                 "Trailing bytes",
                 f"{body - banks * bank} (dropped)" if body - banks * bank else "none",
-                "The upper/lower split is defined across whole banks, so\n"
-                "a partial one at the end cannot be placed. Not shown\n"
-                "here, and left exactly as they are on save.",
+                "A partial bank cannot be placed\nNot shown; left as-is on save",
             ),
         )

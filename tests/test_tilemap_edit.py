@@ -1728,6 +1728,43 @@ def test_the_cols_keys_widen_the_sheet_while_it_holds_the_focus(
     assert window._tile_source_columns.value() == sheet_cols + 1
 
 
+def test_the_bare_arrows_step_the_sheet_pick_while_it_holds_the_focus(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """The app-wide filter takes every arrow for the view, so the sheet's own
+    keyPressEvent only ever sees one if the filter yields it - and it must yield
+    the bare arrows alone: Shift+Left/Right stays the sheet's Cols, which the
+    filter answers itself. focusWidget is monkeypatched as above."""
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+    from PySide6.QtWidgets import QApplication
+
+    from celpix.core.tilemap import Cell
+
+    window, _ = _shown_tile_source(qtbot, tmp_path, [Cell(index=1)])
+    panel = window._tile_source_panel
+    panel._select(0)
+    offset = window._offset
+    sheet_cols = window._tile_source_columns.value()
+    monkeypatch.setattr(QApplication, "focusWidget", staticmethod(lambda: panel))
+
+    def press(key, mods=Qt.KeyboardModifier.NoModifier):
+        return window._handle_nav_key(QKeyEvent(QEvent.Type.KeyPress, key, mods))
+
+    assert not press(Qt.Key.Key_Right)  # yielded to the sheet
+    panel.keyPressEvent(
+        QKeyEvent(
+            QEvent.Type.KeyPress, Qt.Key.Key_Right, Qt.KeyboardModifier.NoModifier
+        )
+    )
+    assert panel.selected_id() == 1
+    assert window._offset == offset
+
+    assert press(Qt.Key.Key_Right, Qt.KeyboardModifier.ShiftModifier)
+    assert window._tile_source_columns.value() == sheet_cols + 1
+    assert panel.selected_id() == 1
+
+
 def test_clicking_the_backing_puts_the_focus_on_the_sheet(qtbot, tmp_path) -> None:
     """The grey around a short sheet is the sheet as far as a user is concerned.
 

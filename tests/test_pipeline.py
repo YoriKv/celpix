@@ -422,6 +422,9 @@ def test_a_code_format_carries_its_optional_codec_methods() -> None:
         def cell_fields(self):
             return {"index": 1023, "visible": 1}
 
+        def counts_records(self):
+            return True
+
     bare, _ = adapt_format(_Bare(), Stage.INTERPRET_TILEMAP)
     rich, _ = adapt_format(_Rich(), Stage.INTERPRET_TILEMAP)
     assert not hasattr(bare, "index_limit")
@@ -435,6 +438,11 @@ def test_a_code_format_carries_its_optional_codec_methods() -> None:
     assert not hasattr(bare, "cell_fields")
     assert rich.has_visibility({}) is True
     assert rich.cell_fields({}) == {"index": 1023, "visible": 1}
+    # The engine's word on its index, which the host reads off the engine and
+    # nowhere else: unforwarded, a format's record-number index is read as a
+    # corner and its record keys warned about as unread.
+    assert not hasattr(bare, "counts_records")
+    assert rich.counts_records({}) is True
 
     class _Packed:
         info = FormatInfo(id="format.palette.packed", name="packed")
@@ -523,6 +531,12 @@ def test_a_broken_optional_probe_degrades_instead_of_failing_the_load(
     rows = loaded("has_palette_rows", lambda: 1 / 0)
     assert rows.palette_rows is True
     assert notices(rows.ctx)[0].is_warning
+
+    # A limit that is not all ones is still a field that many bits wide: an index
+    # counting in fours tops out at 252, and a mask of 252 would clear the +1..+3
+    # a metatile's walk adds to reach its other tiles.
+    assert loaded("index_limit", lambda: 252).index_mask == 0xFF
+    assert loaded("index_limit", lambda: 0x3FF).index_mask == 0x3FF
 
     # A well-formed answer still comes through, and says nothing.
     fine = loaded("palette_row_granularity", lambda: (2, 2))

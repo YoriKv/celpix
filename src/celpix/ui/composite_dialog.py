@@ -174,9 +174,8 @@ class CompositeDialog(QDialog):
         self._reading.addItem("Palette", True)
         self._reading.setCurrentIndex(1 if palette else 0)
         self._reading.setToolTip(
-            "Pixel: a tile window, read at a pixel format.\n"
-            "Palette: a color table, one swatch per color,\n"
-            "filed with the palettes and applied like one."
+            "• Pixel - a tile window, read in a pixel format\n"
+            "• Palette - a color table, listed with the palettes"
         )
 
         self._list = QTreeWidget()
@@ -189,9 +188,8 @@ class CompositeDialog(QDialog):
         self._list.setUniformRowHeights(True)
         self._list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._list.setToolTip(
-            "The runs this view is assembled from, in order.\n"
-            "Byte N of the view is byte N of whichever run covers it,\n"
-            "so the order here is the index space a tilemap sees."
+            "Runs the view is assembled from, in order\n"
+            "Byte N of the view is byte N of the run covering it"
         )
         header = self._list.header()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -208,8 +206,7 @@ class CompositeDialog(QDialog):
         self._add_blank = QPushButton("Add blank")
         self._add_blank.setToolTip(
             "Append a run of blank bytes, for a hole in the window\n"
-            "being reproduced. Nothing owns those bytes, so they\n"
-            "cannot be painted on."
+            "Blank bytes cannot be painted on"
         )
         self._add_blank.clicked.connect(
             lambda: self._append(CompositePiece(length=self._tile_bytes))
@@ -280,10 +277,8 @@ class CompositeDialog(QDialog):
             picker.setToolTip("No other pixel entries are open")
             return picker
         picker.setToolTip(
-            "Append a run holding the whole of another open entry.\n"
-            "A run may be narrowed to a byte range of that entry's\n"
-            "resolved data, which is how part of a compressed blob\n"
-            "is reached - but only the project file states one today."
+            "Append a run holding the whole of another open entry\n"
+            "A byte range of the entry can be set in the project file"
         )
         picker.activated.connect(self._on_source_picked)
         return picker
@@ -310,7 +305,7 @@ class CompositeDialog(QDialog):
             spin.setRange(1, MAX_PAD_BYTES)
             spin.setSingleStep(max(1, self._tile_bytes))  # one tile a click
             spin.setValue(max(1, piece.extent))
-            spin.setToolTip("How many blank bytes this run stands for")
+            spin.setToolTip("Length of the blank run in bytes")
             spin.valueChanged.connect(self._refresh)
             self._list.setItemWidget(item, 3, spin)
             item.setText(2, "(blank)")

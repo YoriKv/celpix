@@ -51,7 +51,9 @@ Four rules the window itself enforces, each of which is about not lying:
   fixed run of cells, and the main window keeps it exactly full — cutting off what
   runs past the end and filling what a string gives up. The readout here is live
   so the cost of what is being typed is visible while it is being typed, and it
-  says out loud when a word has been pushed off the end to pay for it.
+  says out loud when a word has been pushed off the end to pay for it. Where a
+  character can be one byte or two the run is fixed in **bytes**, and the readout
+  counts them: overtyping a one-byte letter with a two-byte one costs a byte.
 """
 
 from __future__ import annotations
@@ -275,9 +277,8 @@ class TextWindow(QWidget):
 
         self._wrap = QCheckBox("Wrap")
         self._wrap.setToolTip(
-            "Fold long lines to the window's width\n"
-            "Off, a line ends where the string's own line-break\n"
-            "code says it does, and nowhere else"
+            "Wrap long lines to the window width\n"
+            "Off breaks lines only at the string's line-break codes"
         )
         self._wrap.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._wrap.setChecked(load_bool_setting(WORD_WRAP_KEY, False))
@@ -290,12 +291,10 @@ class TextWindow(QWidget):
         # one of them.
         self._insert_mode = QCheckBox("Insert")
         self._insert_mode.setToolTip(
-            "Type into the string instead of over it\n"
-            "Off, a key replaces the character it lands on and\n"
-            "Backspace blanks one to a space, so the text always\n"
-            "costs the cells its region has\n"
-            "On, a run longer than its region cannot be written\n"
-            "Always starts off"
+            "Insert characters instead of overwriting them\n"
+            "Off: typing replaces the character under the cursor\n"
+            "and Backspace blanks one, so the length never changes\n"
+            "On: text longer than the region cannot be written"
         )
         self._insert_mode.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 

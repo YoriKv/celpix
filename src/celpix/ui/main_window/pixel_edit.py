@@ -1484,7 +1484,7 @@ class PixelEditMixin:
         )
         self._after_pixel_change()
         self.statusBar().showMessage(
-            "Pasted - drag it; it lands when the selection is cleared."
+            "Pasted as a floating selection. Drag to place; Esc sets it down."
         )
 
     def _centred_position(self, width: int, height: int) -> tuple[int, int]:

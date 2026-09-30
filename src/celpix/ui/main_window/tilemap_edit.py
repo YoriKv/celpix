@@ -555,7 +555,7 @@ class TilemapEditMixin:
             if len(spread) > len(picked):
                 across, down = doc.palette_row_granularity
                 note = (
-                    f" This format colours {across}x{down} cells at a time,"
+                    f" This format colors {across}x{down} cells at a time,"
                     f" so {counted(len(spread) - len(picked), 'more cell')} changed."
                 )
             self.statusBar().showMessage(

@@ -345,7 +345,7 @@ def test_text_past_the_end_of_its_region_is_cut_off_and_said_out_loud(
     window._on_text_committed("MUCH LONGER")
 
     assert [cell.index for cell in window._doc.cells] == [12, 20, 2]  # "MUC"
-    assert "'H LONGER' pushed off the end" in window.statusBar().currentMessage()
+    assert "'H LONGER' dropped" in window.statusBar().currentMessage()
 
 
 def test_a_character_the_font_lacks_is_written_as_a_blank(qtbot, tmp_path) -> None:
@@ -958,7 +958,7 @@ def test_the_insert_switch_gives_back_an_ordinary_text_field(qtbot, tmp_path) ->
     # of the region came off there and was reported.
     assert window._text.body == "CXA"
     assert [cell.index for cell in window._doc.cells] == [2, 23, 0]
-    assert "'B' pushed off the end" in window.statusBar().currentMessage()
+    assert "'B' dropped" in window.statusBar().currentMessage()
 
     # And Backspace removes rather than blanking in place: `A` is pulled along and
     # the cell it gave up at the end is filled with the blank.
@@ -1128,6 +1128,98 @@ def test_a_font_with_no_space_fills_freed_cells_with_zero(qtbot, tmp_path) -> No
     qtbot.keyClick(window._text._edit, Qt.Key.Key_Backspace)
 
     assert [cell.index for cell in window._doc.cells] == [2, 0, 0]
+
+
+# Final Fantasy VI (Japan)'s field text: leads $1C-$1F joining the next byte into
+# letters $100-$4FF (``_lead_codes``). 36 is the uppercase run's space.
+_LEAD_TEXT = {
+    "layout": "text",
+    "fields": "iiii iiii",
+    "lead_codes": [[0x1C, 0x1F]],
+    "lead_bias": 0x1B,
+}
+
+
+def _lead_fontmap(qtbot, tmp_path, codes, **params):
+    """A fontmap read through lead codes, so a letter is one byte or two."""
+    from celpix.core.errors import Stage
+    from celpix.plugins.base import Preset
+
+    window, bank, entry = _fontmap(qtbot, tmp_path, codes)
+    window._registry.register_preset(
+        Preset(
+            id="preset.tilemap.test-lead-text",
+            name="Text of one- and two-byte codes",
+            stage=Stage.INTERPRET_TILEMAP,
+            engine_id="codec.tilemap.packed",
+            params={**_LEAD_TEXT, **params},
+        )
+    )
+    entry.tilemap_preset_id = "preset.tilemap.test-lead-text"
+    entry.doc = None
+    window._activate_entry(bank)
+    window._activate_entry(entry)
+    return window, {**_LEAD_TEXT, **params}
+
+
+def _reads_back(window, params) -> bool:
+    """Whether the region's bytes decode to exactly the cells on screen."""
+    from celpix.core.context import PipelineContext
+    from celpix.plugins.builtins.tilemap_codec import TilemapCodec
+
+    doc = window._doc
+    return TilemapCodec().decode(doc.tilemap_data, params, PipelineContext()) == (
+        doc.cells
+    )
+
+
+def test_a_mixed_width_region_is_kept_full_in_its_bytes(qtbot, tmp_path) -> None:
+    """Where a letter is one byte or two, the slot is fixed in bytes, so that is
+    what typing keeps full - and the cell count moves instead.
+
+    Kept full in cells, kana typed over a kanji left the slot's old last byte
+    behind to read back as a cell nobody typed, and kanji typed over kana came to
+    more bytes than the slot and the save refused them. The budget and the hex
+    shading are the same question asked of the same widths.
+    """
+    window, params = _lead_fontmap(qtbot, tmp_path, [0x1C, 0x41, 2, 0, 1])
+    doc = window._doc
+    assert window._text_status(None)[0] == "5 bytes"
+    # "CA" sits after a two-byte letter, so it starts at byte 2, not 1.
+    assert doc.cell_byte_span(1, 2) == (2, 2)
+
+    window._on_text_committed("CABDE")  # five one-byte letters over four cells
+    assert [cell.index for cell in window._doc.cells] == [2, 0, 1, 3, 4]
+    assert window._doc.tilemap_data == bytes((2, 0, 1, 3, 4))
+    assert _reads_back(window, params)
+
+    typed = "[$141][$142][$143]"  # six bytes into five: the third letter is cut
+    line, badge = window._text_status(typed)
+    assert line == "6 / 5 bytes" and badge is not None and badge.text == "2 over"
+    window._on_text_committed(typed)
+    assert [cell.index for cell in window._doc.cells] == [0x141, 0x142, 36]
+    assert window._doc.tilemap_data == bytes((0x1C, 0x41, 0x1C, 0x42, 36))
+    assert _reads_back(window, params)
+    assert "dropped" in window.statusBar().currentMessage()
+
+
+def test_a_name_table_keeps_each_record_full_on_its_own(qtbot, tmp_path) -> None:
+    """A ``line_bytes`` table is fitted a record at a time: a name typed long
+    loses its own tail rather than pushing into the next name, and one typed
+    short is padded where it stands, its line ending where the record fills."""
+    window, params = _lead_fontmap(
+        qtbot, tmp_path, [0, 1, 2, 0x1C, 0x41, 3], line_bytes=3
+    )
+
+    window._on_text_committed("[$141][$142]\nAB")
+
+    cells = window._doc.cells
+    assert [(c.index, c.ends_line) for c in cells] == [
+        (0x141, False), (36, True),
+        (0, False), (1, False), (36, True),
+    ]  # fmt: skip
+    assert window._doc.tilemap_data == bytes((0x1C, 0x41, 36, 0, 1, 36))
+    assert _reads_back(window, params)
 
 
 def test_the_canvas_marks_where_a_fontmaps_lines_end(qtbot, tmp_path) -> None:

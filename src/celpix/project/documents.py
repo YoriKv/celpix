@@ -1169,6 +1169,10 @@ def chained_document(
         # metatile-id map is exactly this shape — a chain whose byte derives its
         # palette row from the record it names.
         cell_settler=loaded.settler,
+        # The byte widths are this entry's own as well: they measure the cells
+        # this entry's codec writes, not the ones they resolve to.
+        cell_widths=loaded.widths,
+        line_bytes=loaded.line_bytes,
         column_major=loaded.column_major,
     )
 
@@ -1258,6 +1262,8 @@ def tilemap_document(
         cells_carry_palette_rows=loaded.palette_rows,
         palette_row_granularity=loaded.row_granularity,
         cell_settler=loaded.settler,
+        cell_widths=loaded.widths,
+        line_bytes=loaded.line_bytes,
         column_major=loaded.column_major,
         text_layout=fontmap,
         font_alphabet=font_alphabet_for(registry, workspace, entry, loaded.cell_bytes),
@@ -1694,7 +1700,7 @@ def _palette_entry_colors(
     try:
         loaded = pipeline.load_palette(cfg, registry)
     except PipelineError as exc:
-        problems.append(f"{entry.name}: colours not decoded ({exc})")
+        problems.append(f"{entry.name}: colors not decoded ({exc})")
         return None
     # The dock's format on a palette file is the file's own, the one the colours
     # just decoded with — and so is the swatch view's, which reads the same

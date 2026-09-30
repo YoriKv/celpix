@@ -313,8 +313,8 @@ class TileBytesMixin:
         # comparing them pairwise would miss the loss entirely.
         if sum(len(k[1]) for k in kept) != sum(len(r[1]) for r in regions):
             self.statusBar().showMessage(
-                "Part of that edit fell on blank tiles this composite has no "
-                "source for, and was not applied."
+                "Edits on the composite's blank tiles were not applied: no "
+                "source holds them."
             )
         # A region differed as a whole and may not once clipped: a rectangle
         # whose only changed pixels were on the pad still spans the owned tile

@@ -172,7 +172,7 @@ def layout_text(params: dict[str, Any]) -> str:
     if not isinstance(text, str):
         unread = " (`masks` is not read)" if "masks" in params else ""
         raise ValueError(
-            "the preset does not say where the colour components sit - give "
+            "the preset does not say where the color components sit - give "
             f"`fields`, one letter per bit, most significant first{unread}"
         )
     return text

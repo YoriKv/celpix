@@ -18,7 +18,7 @@ writes the buffer as it stands.
 from __future__ import annotations
 
 from bisect import bisect_left
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from itertools import islice
@@ -475,6 +475,45 @@ def resolve_chain(
     return cells
 
 
+@dataclass(frozen=True)
+class TextFit:
+    """A typed string's codes cut and filled to exactly the region it lands in.
+
+    What :meth:`Document.fit_text` hands back, and the text window's two readers
+    of it — the write and the budget line — take it from one place so they
+    cannot disagree about where the region ends (``docs/design/fontmap-entry.md``
+    §5). ``codes`` and ``ends`` are what the cells become; ``lost_codes`` and
+    ``lost_ends`` are what came off, kept so they can be read back as text and
+    said out loud. ``used``, ``room`` and ``over`` are counted in ``unit``:
+    ``"cells"`` on a fixed-width region, ``"bytes"`` on a mixed-width one, where
+    a two-byte letter costs two.
+    """
+
+    codes: list[int]
+    ends: list[bool]
+    lost_codes: list[int]
+    lost_ends: list[bool]
+    used: int
+    room: int
+    over: int
+    unit: str
+
+
+def _cut(widths: Sequence[int], start: int, stop: int, room: int) -> tuple[int, int]:
+    """How many of ``widths[start:stop]`` fit in ``room`` bytes, and their bytes.
+
+    Whole cells off the front and none after the first that does not fit: a
+    letter cannot be half written, and one skipped for a narrower one behind it
+    would move text the user placed.
+    """
+    spent = 0
+    at = start
+    while at < stop and spent + widths[at] <= room:
+        spent += widths[at]
+        at += 1
+    return at - start, spent
+
+
 @dataclass
 class Document:
     pixel_data: bytes  # raw, decompressed pixel bytes — the whole file
@@ -639,6 +678,18 @@ class Document:
     # Qt-free model and it holds no registry
     # (:func:`~celpix.pipeline._stage._cell_settler`).
     cell_settler: Callable[[list[Cell]], list[Cell]] | None = None
+    # Each cell's byte width, for a format where they differ — text of one- and
+    # two-byte codes — bound at decode like the settle and for the same reason
+    # (:func:`~celpix.pipeline._stage._cell_widths`). None where every cell is
+    # :attr:`cell_bytes`, which is every other format, so the readouts that
+    # turn cells into bytes cost those one ``is None``
+    # (:meth:`~celpix.plugins.base.TilemapCodecPlugin.cell_widths`).
+    cell_widths: Callable[[list[Cell]], list[int] | None] | None = None
+    # The fixed record a name table stores each line in, or 0 where lines are
+    # as long as their text (:meth:`~celpix.plugins.base.TilemapCodecPlugin.
+    # line_bytes`). What makes the text window keep each record full rather
+    # than the region as a whole (:meth:`fit_text`).
+    line_bytes: int = 0
 
     # Whether this map's cells run down each column rather than across each row
     # (:func:`~celpix.core.tilemap.column_order`). A fact about the format, which
@@ -913,6 +964,142 @@ class Document:
         )
         self.text_cache = (cells, self.font_alphabet, text)
         return text
+
+    def _byte_widths(self, cells: list[Cell]) -> list[int] | None:
+        """Each of ``cells``'s byte widths, or None where every one is
+        :attr:`cell_bytes` — the whole of the fixed-width path's cost."""
+        measure = self.cell_widths
+        return None if measure is None else measure(cells)
+
+    def cell_byte_span(self, first: int, last: int) -> tuple[int, int]:
+        """Cells ``first..last``'s ``(start, length)`` in :attr:`tilemap_data`.
+
+        A multiplication for every fixed-width format. On a mixed-width one the
+        widths of the cells before ``first`` are summed instead, so a selection
+        after a two-byte letter shades the bytes it is actually drawn from rather
+        than landing one byte early for every such letter before it. Measured over
+        the whole list rather than a prefix because a cell's width can depend on
+        what follows it (:meth:`~celpix.plugins.base.TilemapCodecPlugin.
+        cell_widths`).
+        """
+        widths = self._byte_widths(self.cells or [])
+        if widths is None:
+            size = self.cell_bytes
+            return first * size, (last - first + 1) * size
+        return sum(widths[:first]), sum(widths[first : last + 1])
+
+    @property
+    def text_room(self) -> tuple[int, str]:
+        """How much a fontmap's region holds, and in what — cells, or bytes.
+
+        Bytes wherever the cells are not all one size: that is what the slot is
+        fixed in, and a count of cells there would hold a string of kanji to the
+        same number as one of kana half its length.
+        """
+        cells = self.cells or []
+        widths = self._byte_widths(cells)
+        if widths is None:
+            return len(cells), "cells"
+        return sum(widths), "bytes"
+
+    def fit_text(
+        self, codes: Sequence[int], ends: Sequence[bool], blank: int
+    ) -> TextFit:
+        """``codes`` cut and filled to exactly this fontmap's region.
+
+        **The region is always exactly full** (``docs/design/fontmap-entry.md``
+        §5): the overrun comes off the end and whatever the string gave up is
+        filled with ``blank``. Counted in cells on a fixed-width region — the
+        cell count is the slot there. Counted in **bytes** where the format says
+        its cells differ (:attr:`cell_widths`), since that is what the slot is
+        fixed in: a string that trades one-byte letters for two-byte ones keeps
+        fewer cells, one that trades back keeps more, and either way the save
+        writes exactly the bytes the slot has and a reload reads back exactly
+        these cells. The cell count moves; nothing past the region does.
+
+        On a mixed-width region the **fill is one byte**: ``blank`` where it
+        is, and code zero where it is not — a font whose space is a two-byte
+        letter, or a lead byte that would pair with whatever followed it. A
+        remainder can be one byte, and only a one-byte fill can meet every
+        remainder exactly.
+
+        A **name table** (:attr:`line_bytes`) keeps each record full instead of
+        the region: typed line *k* is fitted to record *k*, so a name run long
+        loses its own tail rather than pushing into the next name, and one
+        typed short is padded where it stands. Lines past the last record are
+        lost whole, and records no line reached are filled blank.
+        """
+        cells = self.cells or []
+        codes, ends = list(codes), list(ends)
+        have = self._byte_widths(cells)
+        widths = None
+        if have is not None:
+            pairs = zip(codes, ends, strict=True)
+            widths = self._byte_widths([Cell(index=c, ends_line=e) for c, e in pairs])
+        if have is None or widths is None:
+            count = len(cells)
+            return TextFit(
+                codes[:count] + [blank] * (count - len(codes)),
+                ends[:count] + [False] * (count - len(ends)),
+                codes[count:],
+                ends[count:],
+                len(codes),
+                count,
+                max(0, len(codes) - count),
+                "cells",
+            )
+        pair = self._byte_widths([Cell(index=blank), Cell(index=blank)])
+        fill = blank if pair is not None and pair[0] == 1 else 0
+        size = self.line_bytes
+        room = sum(have)
+        # One stream, or one record per line: a list of (first, stop, bytes)
+        # slots the typed cells are fitted to in turn.
+        if size:
+            lines: list[tuple[int, int]] = []
+            start = 0
+            for at, end in enumerate(ends):
+                if end:
+                    lines.append((start, at + 1))
+                    start = at + 1
+            if start < len(codes):
+                lines.append((start, len(codes)))
+            records = sum(1 for cell in cells if cell.ends_line)
+            room = records * size
+        else:
+            lines, records, size = [(0, len(codes))], 1, room
+        out_codes: list[int] = []
+        out_ends: list[bool] = []
+        lost_codes: list[int] = []
+        lost_ends: list[bool] = []
+        over = 0
+        for record in range(max(records, len(lines))):
+            first, stop = lines[record] if record < len(lines) else (0, 0)
+            if record >= records:
+                kept = spent = 0
+            else:
+                kept, spent = _cut(widths, first, stop, size)
+                out_codes += codes[first : first + kept] + [fill] * (size - spent)
+                if self.line_bytes:
+                    # A record's line ends where it fills, whichever cell that
+                    # now is: the typed break may have gone with a cut tail, or
+                    # stand before the fill that pads the record out.
+                    cut = kept + size - spent
+                    out_ends += [False] * (cut - 1) + [True]
+                else:
+                    out_ends += ends[first : first + kept] + [False] * (size - spent)
+            lost_codes += codes[first + kept : stop]
+            lost_ends += ends[first + kept : stop]
+            over += sum(widths[first + kept : stop])
+        return TextFit(
+            out_codes,
+            out_ends,
+            lost_codes,
+            lost_ends,
+            sum(widths),
+            room,
+            over,
+            "bytes",
+        )
 
     @property
     def folds_palette_rows(self) -> bool:

@@ -266,7 +266,7 @@ def test_a_nested_edit_that_outgrows_the_packed_slot_stays_dirty_and_is_said(
         assert entry.pixel_dirty and entry.doc is not None, entry.name
     assert not file.pixel_dirty
     alert = captured_alerts[-1][1]
-    assert "tight" in alert and "tiles" in alert and "still unsaved" in alert
+    assert "tight" in alert and "tiles" in alert and "remain unsaved" in alert
     assert rom.read_bytes() == before
 
 
@@ -303,7 +303,7 @@ def test_a_nested_edit_held_in_a_slice_that_will_not_open_stays_dirty_and_is_sai
     assert tiles.doc is not None
     assert "could not be opened" in (packed.fold_refused or "")
     alert = captured_alerts[-1][1]
-    assert "packed" in alert and "tiles" in alert and "still unsaved" in alert
+    assert "packed" in alert and "tiles" in alert and "remain unsaved" in alert
     assert rom.read_bytes() == before
     window._apply_pixel_bytes([(0, b"\x22")], ws.next_revision(), entry=file)
     assert tiles.doc is not None

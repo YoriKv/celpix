@@ -57,10 +57,11 @@ HOMEPAGE = "https://github.com/YoriKv/celpix"
 # question this section exists to answer.
 CANVAS_GESTURES: tuple[tuple[str, str], ...] = (
     ("Pan the view", "Hold Space + drag"),
-    ("Select a range of tiles", "Drag"),
-    ("Actions for the selection", "Right-click"),
+    ("Select a range of tiles (tile mode)", "Drag"),
+    ("Actions for the selection (tile mode)", "Right-click"),
     ("Square selection (Select tool)", "Shift + drag"),
     ("Select the whole tile (Select tool)", "Double-click"),
+    ("Move the pixel selection (Select tool)", "Drag inside it"),
     # One key, two answers, in the order the second only happens without the
     # first: Esc lands a float if one is in the air and clears the marquee if not.
     ("Set a floating selection down", "Esc"),
@@ -72,9 +73,10 @@ CANVAS_GESTURES: tuple[tuple[str, str], ...] = (
     ("Lay the picked tile down (Edit Tiles)", "Click or drag"),
     ("Pick the tile a cell names (Edit Tiles)", "Right-click"),
     ("Pick an area of cells as the stamp (Edit Tiles)", "Right-drag"),
-    # Not the canvas's own, but a mouse gesture the whole window answers to, and
-    # this is where someone looks for one. Its keys are on the Navigate menu.
+    # Not the canvas's own, but gestures the whole window answers to, and this
+    # is where someone looks for one. The history keys are on the Navigate menu.
     ("Back / forward through visited entries", "Mouse 4 / Mouse 5"),
+    ("Open dropped files (Ctrl asks their content)", "Drop / Ctrl + drop"),
 )
 
 # Keys a focused panel claims for itself, which is why they are not on the menu
@@ -83,36 +85,43 @@ CANVAS_GESTURES: tuple[tuple[str, str], ...] = (
 # palette's cursor rather than the tile selection behind the dock. The Tile
 # Source rows are the same story told about a key that is *also* bound
 # window-wide: Shift+Left/Right is the view's Cols on the Navigate menu, and the
-# sheet's own width while the sheet is the thing being typed into.
+# sheet's own width while the sheet is the thing being typed into. The filter
+# box's Ctrl+F is not here: it is Navigate > Find Entry, a window-wide action
+# the menu section already lists.
 PANEL_KEYS: tuple[tuple[str, str], ...] = (
-    ("Copy / paste a color", "Ctrl+C / Ctrl+V"),
-    ("Copy / paste a palette row", "Ctrl+Shift+C / Ctrl+Shift+V"),
-    ("Move the color selection", "Arrow keys"),
-    ("Step the tile pick", "Arrow keys"),
+    ("Copy / paste a color (Palette)", "Ctrl+C / Ctrl+V"),
+    ("Copy / paste a palette row (Palette)", "Ctrl+Shift+C / Ctrl+Shift+V"),
+    ("Move the color selection (Palette)", "Arrow keys"),
+    ("Edit a color (Palette)", "Double-click"),
+    ("Step the tile pick (Tile Source)", "Arrow keys"),
     ("Sweep tiles as one stamp (Tile Source)", "Right-drag"),
     ("Tile Source columns", "Shift+Left / Shift+Right"),
     ("Zoom / pan the tile sheet", "Ctrl + Scroll / Space + drag"),
     ("Extend the Files selection", "Shift+click / Shift+Up / Shift+Down"),
     ("Add or drop one Files row", "Ctrl+click"),
-    ("Reorder the selected Files rows", "Alt+Up / Alt+Down"),
+    ("Rename, jump to or apply a Files row", "Double-click"),
+    ("Reorder the selected Files rows", "Drag, or Alt+Up / Alt+Down"),
     ("Cut / copy / paste a Files row", "Ctrl+X / Ctrl+C / Ctrl+V"),
     ("Duplicate a Files row", "Ctrl+D"),
     ("Remove the selected Files entries", "Del"),
-    ("Filter the Files list", "Ctrl+F"),
+    ("Move the byte cursor (Hex)", "Arrows / PgUp / PgDn / Home / End"),
+    ("Extend the byte selection (Hex)", "Shift + the above, or Shift+click"),
+    ("Copy / select all / clear bytes (Hex)", "Ctrl+C / Ctrl+A / Esc"),
+    ("Find the next / previous match (Hex)", "Enter / Shift+Enter"),
 )
 
 # The floating windows — Text, Font Alphabet, Subsprites, Animation. They carry
-# no menu bar of their own, so nothing above can reach them, and the keys are
-# theirs only while the window is the active one: the main window's app-wide
-# filters are all gated on that. Undo names its two windows rather than being
-# written as a universal, because it is one: the Edit menu's Ctrl+Z cannot fire
-# from a separate top-level window, so it reaches the session's single stack
-# (``docs/design/undo-redo.md``) only from the two that claim the key back.
+# no menu bar of their own, but Qt keeps the main window's shortcuts live while
+# a ``Qt.Tool`` child of it is active, so the Edit and View sections above
+# still apply there; Undo/Redo reach the session's single stack
+# (``docs/design/undo-redo.md``) from every one of them. What is listed here is
+# only what the windows bind themselves, and only while the window is the
+# active one: the main window's app-wide filters are all gated on that.
 TOOL_WINDOW_KEYS: tuple[tuple[str, str], ...] = (
-    ("Undo / redo (Text, Font Alphabet)", "Ctrl+Z / Ctrl+Shift+Z"),
     ("Zoom the sheet", "Ctrl + Scroll"),
-    ("Pan the sheet (Subsprites, Animation)", "Hold Space + drag"),
+    ("Pan the sheet", "Hold Space + drag"),
     ("Sheet columns (Subsprites)", "Shift+Left / Shift+Right"),
+    ("Step the tile pick (Font Alphabet)", "Arrow keys"),
     ("Edit the row's text (Font Alphabet)", "Enter"),
     ("Fill the character down (Font Alphabet)", "Ctrl+V"),
     ("Write the code being typed (Text)", "Ctrl+Return"),
@@ -195,7 +204,7 @@ def shortcut_sections(window) -> list[tuple[str, list[tuple[str, str]]]]:  # noq
         (
             "Transform",
             [(spec.label, spec.key) for spec in TRANSFORM_SPECS]
-            + [("The block, not each tile", "Shift + the above")],
+            + [("The block, not each tile (tile mode)", "Shift + the above")],
         ),
     )
     sections.append(("Canvas", list(CANVAS_GESTURES)))

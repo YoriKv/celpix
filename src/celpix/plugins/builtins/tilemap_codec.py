@@ -67,6 +67,17 @@ Params:
   when the file holds one of ``page_counts`` whole pages, so a run of cells the
   hardware never produced keeps a width the user owns
   (:meth:`TilemapCodec.decode`).
+- ``side_fields`` / ``side_cells`` / ``side_key`` — bits of the cell kept in a
+  **side array** outside it, bound as the ``side_array`` input: one side word's
+  layout, how many cells a word covers, and whether a cell's word is found by
+  its ``"position"`` (default) or by its ``"index"`` — a per-metatile attribute
+  table. Explained under ``# -- the side array`` below.
+- ``lead_codes`` / ``lead_bias`` / ``operands`` / ``line_bytes`` — **text of
+  one- and two-byte codes**: lead bytes that join the byte after them into one
+  cell, the commands whose operand bytes are never read as leads, and
+  fixed-length records that are one line each. Only on a one-byte, index-only
+  cell, and the one place a cell is not a fixed number of bytes; explained in
+  :mod:`~celpix.plugins.builtins._lead_codes`.
 
 Encoding is deliberately lossy in exactly one direction: a value too wide for
 its field is masked rather than raising. A cell can arrive from a format with a
@@ -97,6 +108,11 @@ from celpix.plugins.builtins._fields import (
     bit_width,
     parse_layout,
     resolve_legend,
+)
+from celpix.plugins.builtins._lead_codes import (
+    LeadScheme,
+    lead_scheme,
+    wants_lead_scheme,
 )
 from celpix.plugins.builtins._mask import gather, scatter
 
@@ -201,11 +217,20 @@ def _placements(params: dict[str, Any]) -> dict[str, _Field]:
 # numbers are one array and whose palette rows are a fifth (Final Fantasy II,
 # Famicom), or a map kept as a tile array plus a parallel attribute array. The
 # preset says where those bits sit in one side word (`side_fields`) and how many
-# consecutive cells one word covers (`side_cells`); the bytes are the entry's
-# `side_array` input, bound to wherever the game keeps them. An input is never
-# written back, so the side bits are the array's: `settle_cells` re-derives them
-# after every edit, and `encode` refuses a list that disagrees rather than
-# dropping the difference.
+# cells one word covers (`side_cells`); the bytes are the entry's `side_array`
+# input, bound to wherever the game keeps them. An input is never written back,
+# so the side bits are the array's: `settle_cells` re-derives them after every
+# edit, and `encode` refuses a list that disagrees rather than dropping the
+# difference.
+#
+# Which word a cell reads is `side_key`. By **position** (the default) word *k*
+# covers cells `k * side_cells` onward, in cell order. By **index** it is the
+# word the cell's own index selects, `index // side_cells`: a per-tile or
+# per-metatile attribute table, where the colour belongs to the *graphic* and
+# follows it wherever the map puts it (Final Fantasy VI's field BG3, whose
+# palette row is bits 2-4 of a 64-byte table indexed by metatile number). The
+# index there is the field as stored — an ordinal preset's metatile number, not
+# a tile — and can have no bits in the side word, since it is what picks it.
 
 #: The preset parameter that turns the side array on, and names its bit layout.
 SIDE_FIELDS = "side_fields"
@@ -245,6 +270,30 @@ def _side_cells(params: dict[str, Any]) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 1:
         raise ValueError(f"side_cells must be a positive integer, got {value!r}")
     return value
+
+
+#: ``side_key``'s two words: which side word a cell reads (the comment above).
+_SIDE_KEYS = ("position", "index")
+
+
+def _by_index(params: dict[str, Any]) -> bool:
+    """Whether the side word is picked by the cell's index (``side_key``).
+
+    Checked wherever the side array is read, so a preset that cannot work
+    refuses its load rather than drawing something: an index with bits in the
+    side word would have to be known to find the word that completes it.
+    """
+    key = params.get("side_key", "position")
+    if key not in _SIDE_KEYS:
+        raise ValueError(f'side_key must be "position" or "index", got {key!r}')
+    if key != "index":
+        return False
+    if "index" in _side_masks(params):
+        raise ValueError(
+            'side_key = "index" picks the side word by the cell\'s index, so '
+            "side_fields cannot place bits of the index itself"
+        )
+    return True
 
 
 def _side_words(
@@ -334,6 +383,26 @@ def _cell_bytes(params: dict[str, Any]) -> int:
     return size
 
 
+def _lead_scheme(params: dict[str, Any]) -> LeadScheme | None:
+    """The preset's mixed-width text reading, or None on the fixed-width path.
+
+    The gate is a handful of key lookups, so a preset without the parameters —
+    every map there is — pays nothing else on the per-edit encode.
+    """
+    if not wants_lead_scheme(params):
+        return None
+    return lead_scheme(
+        params,
+        _cell_bytes(params),
+        {
+            name: limit
+            for name, field in _placements(params).items()
+            if (limit := _limit(field)) is not None
+        },
+        _side_text(params) is not None,
+    )
+
+
 def _publish_pages(cells: int, params: dict[str, Any], ctx: PipelineContext) -> None:
     """State the page geometry the format fixes, where this file has that shape.
 
@@ -406,9 +475,11 @@ class TilemapCodec:
                 # empty.
                 when_param=SIDE_FIELDS,
                 tooltip=(
-                    "The array holding the bits a cell keeps elsewhere:\n"
-                    "one word per side_cells cells, in cell order.\n"
-                    "Read-only - an edit never writes it back."
+                    "Array holding the bits a cell keeps elsewhere.\n"
+                    "By position: one word per side_cells cells,\n"
+                    "in cell order. By index: word index // side_cells,\n"
+                    "a per-tile or per-metatile attribute table.\n"
+                    "Read-only; edits are never written back."
                 ),
             ),
         ),
@@ -417,11 +488,16 @@ class TilemapCodec:
     def decode(
         self, data: bytes, params: dict[str, Any], ctx: PipelineContext
     ) -> list[Cell]:
+        if (lead := _lead_scheme(params)) is not None:
+            return lead.decode(data)  # cells of one or two bytes each
         size = _cell_bytes(params)
         order = byte_order(params, "endian", "little")
         fields = _layout(params)
         side = _side_words(params, ctx.get(KEY_INPUTS))
         per_word = _side_cells(params) if side else 1
+        # Keyed by index, the side word is found from the cell's own word: the
+        # index has no side bits (refused by _by_index), so it is whole there.
+        keyed = _by_index(params)
         above = size * 8
         cells: list[Cell] = []
         # A trailing partial cell is dropped rather than zero-padded: unlike a
@@ -430,7 +506,8 @@ class TilemapCodec:
         for at in range(0, len(data) - size + 1, size):
             word = int.from_bytes(data[at : at + size], order)
             if side:
-                unit = (at // size) // per_word
+                key = _get(word, fields["index"]) if keyed else at // size
+                unit = key // per_word
                 if unit < len(side):
                     word |= side[unit] << above
             cells.append(
@@ -457,6 +534,8 @@ class TilemapCodec:
     def encode(
         self, cells: list[Cell], params: dict[str, Any], ctx: PipelineContext
     ) -> bytes:
+        if (lead := _lead_scheme(params)) is not None:
+            return lead.encode(cells)
         size = _cell_bytes(params)
         order = byte_order(params, "endian", "little")
         fields = _layout(params)
@@ -475,6 +554,7 @@ class TilemapCodec:
         masks = _side_masks(params)
         side = _side_words(params, ctx.get(KEY_INPUTS)) if masks else ()
         per_word = _side_cells(params) if masks else 1
+        keyed = bool(masks) and _by_index(params)
         # The side bits any field places, so a side word's unplaced bits — the
         # replicated quadrants of an attribute byte — are not read as a claim.
         placed = 0
@@ -488,7 +568,9 @@ class TilemapCodec:
                 # value costs its high bits rather than the whole save.
                 word |= scatter(read(cell), *field)
             if masks:
-                unit = at // per_word
+                # The index as it will be stored, so the word it selects is the
+                # one a reload of these bytes reads.
+                unit = (_get(word, fields["index"]) if keyed else at) // per_word
                 stored = side[unit] if unit < len(side) else 0
                 if (word >> above) != stored & placed:
                     raise ValueError(
@@ -514,6 +596,10 @@ class TilemapCodec:
         gives back. Bits of a field that live in the cell's own word (an index's
         low bits beside a side-byte bank bit) are left as the user set them.
 
+        Keyed by index (``side_key``), the word is the one the cell's *current*
+        index selects, so a metatile moved or retyped takes its colour from the
+        table the way the hardware does.
+
         Cheap on the common case: one lookup per distinct side word, a compare per
         side field, and the same list back when nothing differs.
         """
@@ -524,10 +610,15 @@ class TilemapCodec:
         side = _side_words(params, inputs)
         per_word = _side_cells(params)
         above = _cell_bytes(params) * 8
+        # The index as encode will store it — masked to its field, as a value
+        # too wide for it is — so the word picked here is the one a save and a
+        # reload pick.
+        keyed = _by_index(params)
+        index_mask = _limit(fields.get("index")) or 0
         wanted: dict[int, dict[str, int]] = {}
         out: list[Cell] | None = None
         for at, cell in enumerate(cells):
-            unit = at // per_word
+            unit = ((cell.index & index_mask) if keyed else at) // per_word
             stored = side[unit] if unit < len(side) else 0
             want = wanted.get(stored)
             if want is None:
@@ -549,6 +640,18 @@ class TilemapCodec:
     def bytes_per_cell(self, params: dict[str, Any]) -> int:
         return _cell_bytes(params)
 
+    def cell_widths(
+        self, cells: list[Cell], params: dict[str, Any]
+    ) -> list[int] | None:
+        """Each cell's bytes where lead codes make them differ, else None."""
+        lead = _lead_scheme(params)
+        return None if lead is None else lead.widths(cells)
+
+    def line_bytes(self, params: dict[str, Any]) -> int:
+        """The record a ``line_bytes`` name table stores each line in, else 0."""
+        lead = _lead_scheme(params)
+        return 0 if lead is None else lead.line_bytes
+
     def cell_tiles(self, params: dict[str, Any]) -> tuple[int, int]:
         across, down = params.get("cell_tiles", (1, 1))
         if int(across) < 1 or int(down) < 1:
@@ -562,7 +665,11 @@ class TilemapCodec:
         field table already knows, so the answer comes out of the one place the
         layout is stated rather than a second that could disagree. A preset with no
         ``index`` describes a format whose cells reference nothing settable.
+        A two-byte letter is past the one-byte field, so lead codes answer with
+        the last of those instead.
         """
+        if (lead := _lead_scheme(params)) is not None:
+            return lead.top
         return _limit(_field(params, "index"))
 
     def palette_row_limit(self, params: dict[str, Any]) -> int | None:
@@ -586,7 +693,12 @@ class TilemapCodec:
         such a stream (:attr:`~celpix.core.font.FontAlphabet.flag_break`), and it
         has to know from the *format*, since this is the stream's punctuation
         and not the font's (``docs/design/fontmap-entry.md`` §4).
+
+        ``line_bytes`` records answer yes too: their line end is not a bit but a
+        record boundary, and a newline typed there costs no cell either.
         """
+        if (lead := _lead_scheme(params)) is not None:
+            return bool(lead.line_bytes)
         return _field(params, "terminator") is not None
 
     def has_palette_rows(self, params: dict[str, Any]) -> bool:
@@ -616,7 +728,13 @@ class TilemapCodec:
         same table for the same reason — a preset cannot disagree with itself.
         Keys are :class:`Cell` attribute names via :data:`_CELL_ATTR`; values
         are each field's :func:`_limit`.
+
+        Lead codes answer with the index alone, up to the last two-byte letter.
+        A ``line_bytes`` record's line end is where the record fills rather than
+        a bit, so it gets no control: set by hand it could only be refused.
         """
+        if (lead := _lead_scheme(params)) is not None:
+            return {"index": lead.top}
         side_only = _side_only(params)
         return {
             _CELL_ATTR[name]: limit

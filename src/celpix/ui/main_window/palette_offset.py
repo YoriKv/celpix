@@ -88,8 +88,8 @@ class PaletteOffsetMixin:
             and self._palette_offset_owner(entry) is None
         ):
             return (
-                "This composite view has no piece from a file to read a palette "
-                "from. Add one, or use File, Custom or Emulator mode here."
+                "This composite view has no file-backed run to read a palette "
+                "from. Add one, or use File, Custom or Emulator mode."
             )
         return None
 

@@ -144,22 +144,21 @@ class N64RomContainer:
             ContainerField(
                 "Header bytes",
                 " ".join(f"{byte:02X}" for byte in head),
-                "The same four header bytes in whichever order this dump\n"
-                "was made in - the only thing that says which of the\n"
-                "three it is, the suffix being no guarantee.",
+                "The same four header bytes in this dump's order\n"
+                "The only thing that says which of the three it is;\n"
+                "the suffix is no guarantee",
             ),
             ContainerField(
                 "Byte order",
                 order.get(width, "unrecognised - assumed native"),
-                "Read normalises the file to native order, which is what\n"
-                "every published N64 offset is quoted in and what the\n"
-                "tiles have to be in to decode.",
+                "Read normalizes the file to native order\n"
+                "Published N64 offsets are quoted in native order,\n"
+                "and the tiles only decode in it",
             ),
             ContainerField(
                 "Swap width",
                 f"{width}-byte groups reversed" if width else "none - read as it lies",
-                "Carried forward so the save can restore the order the\n"
-                "file arrived in: by then the bytes in hand are\n"
-                "normalised and no longer say which order that was.",
+                "Carried forward so a save restores the order the\n"
+                "file arrived in; the normalized bytes no longer say",
             ),
         )

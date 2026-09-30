@@ -149,10 +149,9 @@ class _Row(QWidget):
         for entry in self._sources:
             combo.addItem(entry.name, entry)
         combo.setToolTip(
-            "Where the bytes come from:\n"
-            "This file - the file this entry's bytes are in, by\n"
-            "absolute offset\n"
-            "An entry - that entry's resolved bytes, from 0"
+            "Source of the bytes:\n"
+            "• This file - the entry's own file, by absolute offset\n"
+            "• An entry - that entry's decoded bytes, from 0"
         )
         return combo
 
@@ -181,22 +180,21 @@ class RegionRow(_Row):
         super().__init__(spec, sources)
         self._source = self._source_combo()
         self._source.currentIndexChanged.connect(lambda _i: self.changed.emit())
-        self._offset = self._hex_field("Offset (hex; $ and 0x accepted)")
+        self._offset = self._hex_field("Offset (hex; $ and 0x prefixes accepted)")
         self._length = self._hex_field(
-            f"Length in bytes (hex); a whole number of\n"
-            f"{spec.stride}-byte {spec.unit or 'element'}s"
+            f"Length in bytes (hex)\n"
+            f"A whole number of {spec.stride}-byte {spec.unit or 'element'}s"
             if spec.stride > 1
             else "Length in bytes (hex)"
         )
         self._count = QLabel()
         self._use = QPushButton("Use selection")
         self._use.setToolTip(
-            "Fill the source, offset and length from the\n"
-            "byte or tile selection of the entry on screen"
+            "Fill source, offset and length from the\ncurrent entry's selection"
         )
         self._use.clicked.connect(lambda: self.use_selection_requested.emit(self))
         self._go = QPushButton("Go to")
-        self._go.setToolTip("Show the source with this region in view")
+        self._go.setToolTip("Show the region in its source")
         self._go.clicked.connect(self._emit_go_to)
         self.changed.connect(self._refresh_count)
 
@@ -254,14 +252,14 @@ class IntegerRow(_Row):
         self._form.addItem("Literal", "literal")
         self._form.addItem("From bytes", "bytes")
         self._form.setToolTip(
-            "Literal - a number typed here\n"
-            "From bytes - read the number out of the file at an\n"
-            "offset, so an edit there is followed"
+            "• Literal - a number typed here\n"
+            "• From bytes - a number read from the file at an offset,\n"
+            "so it follows edits there"
         )
         self._form.currentIndexChanged.connect(self._on_form_change)
         width = hex_digits(spec.maximum)
         self._literal = self._hex_field(
-            f"The value (hex; $ and 0x accepted),\n"
+            f"Value (hex; $ and 0x prefixes accepted)\n"
             f"{format_hex(spec.minimum, width)} to {format_hex(spec.maximum, width)}"
         )
         if spec.default is not None and not spec.required:
@@ -274,7 +272,7 @@ class IntegerRow(_Row):
         self._width.setRange(1, 8)
         self._width.setValue(2)
         self._width.setSuffix(" B")
-        self._width.setToolTip("How many bytes wide the number is")
+        self._width.setToolTip("Width of the number in bytes")
         self._width.valueChanged.connect(lambda _v: self.changed.emit())
         self._endian = CompactComboBox(SHORT_COMBO_WIDTH)
         self._endian.addItem("big-endian", False)
@@ -283,13 +281,12 @@ class IntegerRow(_Row):
         self._hint = QLabel()
         self._use = QPushButton("Use selection")
         self._use.setToolTip(
-            "Read the number from the start of the selection of\n"
-            "the entry on screen, as wide as the selection up to\n"
-            "8 bytes"
+            "Read the number from the start of the current\n"
+            "entry's selection, up to 8 bytes wide"
         )
         self._use.clicked.connect(lambda: self.use_selection_requested.emit(self))
         self._go = QPushButton("Go to")
-        self._go.setToolTip("Show the source with the number in view")
+        self._go.setToolTip("Show the number in its source")
         self._go.clicked.connect(self._emit_go_to)
         self.changed.connect(self._refresh_hint)
         self._on_form_change()
@@ -505,9 +502,9 @@ class InputsWindow(QWidget):
         self._this.setChecked(True)
         self._selected = QRadioButton("the selected entries")
         self._selected.setToolTip(
-            "Every entry selected in the Files pane whose plugin\n"
-            "declares the same inputs; a field left as it is here\n"
-            "is left as it is on each of them"
+            "Every selected Files entry whose plugin declares\n"
+            "the same inputs. Unchanged fields stay as they are\n"
+            "on each entry"
         )
         scope.addWidget(self._this)
         scope.addWidget(self._selected)

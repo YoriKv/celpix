@@ -114,8 +114,8 @@ class SmsRomContainer:
                 ContainerField(
                     "Header",
                     "no TMR SEGA marker",
-                    "Without the marker there is no checksum to keep\n"
-                    "current, and a save writes the bytes through untouched.",
+                    "No marker, no checksum to keep current\n"
+                    "A save writes the bytes through untouched",
                 ),
             )
         stored = int.from_bytes(
@@ -126,21 +126,21 @@ class SmsRomContainer:
             ContainerField(
                 "Header",
                 f"TMR SEGA at ${header:04X}",
-                "The 16-byte cartridge header the BIOS reads: product\n"
-                "code, version, region and size, and the checksum below.",
+                "The 16-byte cartridge header the BIOS reads\n"
+                "Product code, version, region, size and the checksum",
             ),
             ContainerField(
                 "Checksum",
                 f"${stored:04X} stored, ${computed:04X} computed"
                 + (" - matches" if stored == computed else " - stale"),
-                "The sum of every byte outside the header, over the range\n"
-                "the size nibble names. An export Master System refuses a\n"
-                "cartridge whose copy disagrees; a save recomputes it.",
+                "Every byte outside the header, over the size nibble's range\n"
+                "An export Master System BIOS refuses a stale copy\n"
+                "Recomputed on save",
             ),
             ContainerField(
                 "Summed range",
                 f"{format_size(summed_length(raw, header))} less the header",
                 "From the size nibble: $C = 32 KiB up to $0 = 256 KiB,\n"
-                "$1 and $2 the 512 KiB and 1 MiB extensions.",
+                "$1 and $2 the 512 KiB and 1 MiB extensions",
             ),
         )

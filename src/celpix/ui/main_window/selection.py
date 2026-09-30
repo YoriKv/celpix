@@ -203,7 +203,7 @@ class SelectionMixin:
         # four above are - the Edit menu and the canvas menu show one action.
         self._import_png_action = QAction("&Import from PNG…", self)
         self._import_png_action.setToolTip(
-            "Fit an image into this format and stamp it\nat the selected tile"
+            "Convert an image to this format and paste it\nat the selected tile"
         )
         self._import_png_action.triggered.connect(self._import_png_here)
         self._import_png_action.setEnabled(False)
@@ -226,14 +226,14 @@ class SelectionMixin:
                 "_toggle_selection_mode_action",
                 "Toggle &Selection Mode",
                 "S",
-                "Swap Linear / Rectangle selection",
+                "Swap Linear and Rectangle selection",
                 self._toggle_selection_mode,
             ),
             (
                 "_toggle_edit_mode_action",
                 "Toggle &Edit Mode",
                 "E",
-                "Swap tile / pixel editing",
+                "Swap tile and pixel editing",
                 self._toggle_edit_mode,
             ),
         )
@@ -1251,6 +1251,7 @@ class SelectionMixin:
             return
         self._sync_edit_actions()
         menu = QMenu(self)
+        menu.setToolTipsVisible(True)  # the shared actions carry tips; show them
         # Carving the file up comes first: all three ways to cut a slice, then a
         # bookmark. A bookmark records the *view position* rather than the
         # selection, but it belongs to the same "make something out of where I
@@ -1298,10 +1299,13 @@ class SelectionMixin:
         """The selected cells' enclosing ``(start, length)`` in the map's bytes.
 
         The tilemap counterpart of the range above, over the entry's **own** file
-        rather than over the tiles it draws: cells are fixed-width records in file
-        order, so a run of cell indices is a byte span. A rectangle spans the
-        bytes it *encloses* for the same reason a rectangle of tiles does - its
-        rows sit apart in the file, and a byte range is all a dump can shade.
+        rather than over the tiles it draws: cells are records in file order, so
+        a run of cell indices is a byte span — a multiplication where they are
+        fixed-width, and a sum where a two-byte letter sits among one-byte ones
+        (:meth:`~celpix.core.document.Document.cell_byte_span`). A rectangle
+        spans the bytes it *encloses* for the same reason a rectangle of tiles
+        does - its rows sit apart in the file, and a byte range is all a dump
+        can shade.
 
         No nudge and no display base: both belong to the pixel view, and the range
         is an index into the buffer the dump is rendering
@@ -1324,8 +1328,7 @@ class SelectionMixin:
         cells = self._selected_cells()
         if not cells:
             return None
-        first, last = min(cells), max(cells)
-        return first * doc.cell_bytes, (last - first + 1) * doc.cell_bytes
+        return doc.cell_byte_span(min(cells), max(cells))
 
     def _revalidate_selection(self) -> None:
         """Re-derive the canvas highlight after the window moved or resized.

@@ -130,9 +130,13 @@ class TilemapFormat(Protocol):
     ``index_runs()``, ``palette_row_limit()``, ``has_palette_rows()``,
     ``palette_row_granularity()``, ``settle_cells(cells)`` (or
     ``settle_cells(cells, inputs)`` for a format that declares inputs),
-    ``has_line_flag()``, ``has_visibility()`` and ``cell_fields()`` — plus the
-    two a ``layout = "sprite"`` format adds, ``size_pair()`` and
+    ``has_line_flag()``, ``has_visibility()``, ``cell_fields()``,
+    ``cell_widths(cells)``, ``line_bytes()`` and ``counts_records()`` — plus
+    the two a ``layout = "sprite"`` format adds, ``size_pair()`` and
     ``frames(cells, ctx)``, which have no place on a grid.
+    A format answering ``counts_records`` True has the record keys read off its
+    ``declares`` like an engine's off its preset
+    (:data:`~celpix.core.tilemap.RECORD_KEYS`).
     **A format that wants its cells edited has to define ``index_limit``** — the
     host refuses what a codec has not been asked about, so omitting it leaves the
     cell reference unsettable and every flip refused, exactly as it would for a
@@ -163,8 +167,8 @@ def _params_last(impl: Any) -> Any:
 
 def _params_second(impl: Any) -> Any:
     """The same for the surfaces that pass ``params`` second, whatever follows it:
-    ``frames(cells, params, ctx)``, ``shared_entries(index, params, count)`` and
-    ``settle_cells(cells, params[, inputs])``.
+    ``frames(cells, params, ctx)``, ``shared_entries(index, params, count)``,
+    ``cell_widths(cells, params)`` and ``settle_cells(cells, params[, inputs])``.
 
     Dropped by position rather than by counting from the end because the host
     calls ``settle_cells`` with a trailing ``inputs`` only when the entry has
@@ -198,6 +202,9 @@ _OPTIONAL: dict[Stage, dict[str, Any]] = {
         "has_line_flag": _params_last,
         "has_visibility": _params_last,
         "cell_fields": _params_last,
+        "cell_widths": _params_second,
+        "line_bytes": _params_last,
+        "counts_records": _params_last,
         "size_pair": _params_last,
         "frames": _params_second,
     },

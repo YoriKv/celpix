@@ -137,15 +137,14 @@ class TileSourceDockMixin:
             header,
             "Cols",
             self._tile_source_columns,
-            "Tiles across the sheet\n"
-            "How the bank is read, not how it is stored\n"
-            "Shift+Left/Right steps it while the sheet has focus",
+            "Tiles per row of the sheet (Shift+Left/Right while focused)\n"
+            "Display only; does not change the tile bank",
         )
         add_labelled(
             header,
             "Zoom",
             self._tile_source_zoom,
-            "Magnification of the sheet\nCtrl+wheel over the tiles does the same",
+            "Sheet magnification (Ctrl+Scroll over the sheet)",
         )
         header.addStretch(1)
 
@@ -336,13 +335,13 @@ class TileSourceDockMixin:
         self._set_base_tile_button.setText(f"Set Base {noun.capitalize()}")
         if doc is not None and doc.is_sprite:
             self._set_base_tile_button.setToolTip(
-                "Make the picked tile the one a subsprite holding $0 draws\n"
+                "Set Base so subsprite tile $0 draws the picked tile\n"
                 "Shifts every subsprite's tile by the same amount"
             )
             return
         verb = "names" if cells else "draws"
         self._set_base_tile_button.setToolTip(
-            f"Make the picked {noun} the one cell 0 {verb}\n"
+            f"Set Base so cell index 0 {verb} the picked {noun}\n"
             "Shifts every cell by the same amount"
         )
 
@@ -460,8 +459,8 @@ class TileSourceDockMixin:
         self._sync_stamp_preview()
         self._sync_cell_props()
         self.statusBar().showMessage(
-            f"Picked {grid.width}x{grid.height} tiles - "
-            "left click stamps them from the top-left."
+            f"Picked {grid.width}x{grid.height} tiles. Click to stamp "
+            "from the top-left."
         )
 
     def _clear_source_tile(self) -> None:

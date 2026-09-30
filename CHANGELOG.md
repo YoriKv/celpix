@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.2.1 - unreleased
+
+- Tooltip, shortcuts, and other text updates
+- Lots more tilemap fixes
+
 ## v1.2.0 - 2026-09-29
 
 - Added tilemap *Index unit* that allows a tilemap to switch between indexing cells or whole records (stampes/metatiles/etc)

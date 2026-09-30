@@ -102,16 +102,14 @@ class GbRomContainer:
             ContainerField(
                 "Boot logo",
                 "matches" if logo else "does not match",
-                "The bitmap at 0x104 the boot ROM compares against. It\n"
-                "identifies the file as a real cartridge dump, which the\n"
-                "suffix alone does not; nothing is read past it.",
+                "Bitmap at 0x104 the boot ROM compares against\n"
+                "Identifies a real cartridge dump; not read further",
             ),
             ContainerField(
                 "Payload",
                 "the whole file, unchanged",
-                "A Game Boy ROM needs no unwrapping - its bytes decode\n"
-                "where they lie. This container exists for its write\n"
-                "half, which repairs the two checksums below.",
+                "No unwrapping: the bytes decode where they lie\n"
+                "This container exists to repair the checksums below",
             ),
         ]
         if len(raw) < _HEADER_END:
@@ -120,9 +118,8 @@ class GbRomContainer:
                     "Checksums",
                     "no header to repair",
                     f"A file under {format_hex(_HEADER_END, None)} bytes "
-                    "holds no cartridge\n"
-                    "header, so a save writes it through untouched rather\n"
-                    "than inventing one.",
+                    "has no cartridge header\n"
+                    "A save writes it through untouched",
                 )
             )
             return tuple(fields)
@@ -133,9 +130,9 @@ class GbRomContainer:
             ContainerField(
                 "Header checksum",
                 _sum_value(stored_header, repaired[_HEADER_SUM_AT], "02X"),
-                "The byte at 0x14D, summed over the title and cartridge\n"
-                "fields. The boot ROM refuses to run a cartridge whose\n"
-                "copy disagrees, so a save always recomputes it.",
+                "Byte at 0x14D, summed over 0x134-0x14C\n"
+                "The boot ROM refuses a cartridge whose copy is wrong\n"
+                "Recomputed on every save",
             )
         )
         fields.append(
@@ -148,10 +145,9 @@ class GbRomContainer:
                     ),
                     "04X",
                 ),
-                "The word at 0x14E, the sum of every other byte in the\n"
-                "ROM. Graphics live inside it, so every tile edit makes\n"
-                "it stale; no boot ROM checks it, but cartridge tooling\n"
-                "and ROM databases do.",
+                "Word at 0x14E: the sum of every other byte in the ROM\n"
+                "Stale after any tile edit; recomputed on save\n"
+                "Checked by tooling and ROM databases, not the boot ROM",
             )
         )
         return tuple(fields)

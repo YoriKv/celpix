@@ -94,7 +94,7 @@ ROWS_TIP = "Tile rows shown"
 ROWS_LOCKED_TIP = "Tile rows shown\nLocked by View > Entire File"
 # A tilemap is always shown entire, so unlike the line above this is not a
 # setting being held — there is no window to set the height of.
-ROWS_WHOLE_TIP = "Tile rows shown\nA tilemap is always shown whole"
+ROWS_WHOLE_TIP = "Tile rows shown\nUnused: a tilemap is always shown whole"
 
 # The Palette Row control's tooltip, in its two states. It picks the range of palette
 # entries the picture indexes into — except on a tilemap whose cells name a row
@@ -103,29 +103,24 @@ ROWS_WHOLE_TIP = "Tile rows shown\nA tilemap is always shown whole"
 # The Tile size readout's two states. On a tilemap the unit the user points at,
 # selects and edits is the cell — which may be a 2x2 metatile — so both the
 # caption and the number follow it (see MainWindow._refresh_tile_size).
-TILE_SIZE_TIP = "Size of one tile in pixels"
-TILE_SIZE_CELL_TIP = (
-    "Size of one map cell in pixels\nSelections and edits work a cell at a time"
-)
-TILE_SIZE_STAMP_TIP = (
-    "Size of one stamp in pixels\nSelections and edits work a stamp at a time"
-)
+TILE_SIZE_TIP = "Tile size in pixels"
+TILE_SIZE_CELL_TIP = "Cell size in pixels\nSelections and edits work per cell"
+TILE_SIZE_STAMP_TIP = "Stamp size in pixels\nSelections and edits work per stamp"
 
-PALETTE_ROW_TIP = "Which range of palette entries tiles index into"
+PALETTE_ROW_TIP = "Palette row the tiles index into"
 # On a tilemap whose cells carry rows the spin does not recolour anything - the
 # file has answered that, and a view-wide row on top would shift a map already in
 # its authored colours. It is still the row being *pointed at*: the palette grid
 # outlines it, the tile sheet is read in it, and Set Selection's Palette Row
 # writes it into the cells. So it stays live and says which of the two it is.
 PALETTE_ROW_CELLS_TIP = (
-    "Which palette row the next assignment uses\n"
-    "This map draws through its cells' own rows; Palette >\n"
-    "Set Selection's Palette Row writes this one into them"
+    "Palette row written by Palette > Set Selection's Palette Row\n"
+    "This map draws through the rows its cells store"
 )
 # And under a direct-colour format, where pixels are colours and no row is read.
 PALETTE_ROW_DIRECT_TIP = (
-    "Which range of palette entries tiles index into\n"
-    "This pixel format stores colours, not palette indices"
+    "Palette row the tiles index into\n"
+    "Unused: this pixel format stores colors, not indices"
 )
 
 # The Cols control's tooltip, and what it reads while a paged tilemap's assembly
@@ -139,8 +134,8 @@ COLS_TIP = "Tiles per row"
 # out the strip of frames the canvas shows
 # (:func:`~celpix.pipeline.render.sprite_sheet`), while the pieces inside a frame
 # sit at the offsets the file gives them whatever the strip is doing.
-COLS_CELLS_TIP = "Cells per row\nA cell may be a metatile of several tiles"
-COLS_FRAMES_TIP = "Frames per row\nLays out the strip of frames, not the tiles in one"
+COLS_CELLS_TIP = "Cells per row"
+COLS_FRAMES_TIP = "Frames per row"
 # Says what has taken Cols over. There is no control to point at — a file that
 # fixes its width states it itself — so these name the *file* as the authority
 # rather than sending the user looking for a picker along some other row. Three
@@ -149,12 +144,12 @@ COLS_FRAMES_TIP = "Frames per row\nLays out the strip of frames, not the tiles i
 # groups of cells and has to be laid out on the grid it stores them in, and one
 # draws a stamp per entry
 # (:attr:`~celpix.core.document.Document.drawn_columns`).
-COLS_ASSEMBLED_TIP = "Cells per row\nFixed by how this file's pages assemble"
+COLS_ASSEMBLED_TIP = "Cells per row\nFixed by the file's page assembly"
 COLS_ROW_PLANE_TIP = (
-    "Cells per row\nFixed by the format: it stores one palette row\n"
-    "per group of cells, counted in the file's own rows"
+    "Cells per row\nFixed by the format: palette rows are stored\n"
+    "per group of cells in the file's own row width"
 )
-COLS_STAMPED_TIP = "Cells per row\nFixed by the stamp each of this file's entries draws"
+COLS_STAMPED_TIP = "Cells per row\nFixed by the stamp each entry draws"
 # And the dense map whose format states no width, where Cols is live: the number
 # is the user's, but it is theirs a stamp at a time, so say so before the spin
 # hands back a value they did not type
@@ -170,8 +165,8 @@ COLS_RECORDS_TIP = "Cells per row\nRounded down to whole records"
 # number typed: only arrangements that show every page are widths here.
 COLS_PAGES_TIP = (
     "Cells per row, in whole pages\n"
-    "This file is several pages and does not say how they sit:\n"
-    "set how many go side by side. Snaps to layouts that use every page"
+    "The file does not state its page layout\n"
+    "Snaps to widths that use every page"
 )
 
 # The Block W×H spins' width. Wide enough for the one digit every arrangement in
@@ -297,7 +292,7 @@ class InterpretationMixin:
         # End a format-cycling run when focus leaves the dropdown: the next switch
         # then re-anchors on the live position rather than the stale target.
         self._pixel_preset.focus_lost.connect(self._end_pixel_switch_run)
-        self._pixel_preset.setToolTip("Tile graphics format")
+        self._pixel_preset.setToolTip("Pixel format")
         # The combo and its filter button read as one control: grouped in a tight
         # container (no toolbar gap between them), same height, the button a plain
         # funnel icon that picks up the theme's button-text color.
@@ -305,7 +300,7 @@ class InterpretationMixin:
             "Filter", self._pixel_filter_items, self._apply_pixel_filter
         )
         self._bake_pixel_filter_icon()
-        self._pixel_filter.setToolTip("Which formats appear in the dropdown")
+        self._pixel_filter.setToolTip("Filter the formats listed")
         self._pixel_filter.setFixedHeight(self._pixel_preset.sizeHint().height())
         # Whole groups rather than loose widgets, because a tilemap entry swaps
         # this end of the bar wholesale: what a *cell* is replaces what a tile
@@ -329,7 +324,7 @@ class InterpretationMixin:
         # compression stage of its own either, so both go and this arrives.
         self._tilemap_preset = SearchableComboBox(PRESET_COMBO_WIDTH)
         self._tilemap_preset.setToolTip(
-            "How a cell's bytes are read: field layout and byte order\n"
+            "Cell format: field layout and byte order\n"
             "[T] grid map · [S] sprite map · [F] fontmap"
         )
         self._tilemap_preset.activated.connect(self._on_tilemap_preset_change)
@@ -337,7 +332,7 @@ class InterpretationMixin:
         # declares inputs — a mapping's parallel arrays — wearing whether they
         # resolve, and opening the Inputs window (``main_window/inputs.py``).
         self._tilemap_inputs_badge = self._make_inputs_badge(
-            "What this cell format needs from elsewhere in the file"
+            "Inputs this cell format reads from elsewhere in the file"
         )
         self._tilemap_inputs_badge.clicked.connect(self._inputs_current)
         self._tilemap_codec_action = codecs.addWidget(
@@ -354,12 +349,12 @@ class InterpretationMixin:
         # Structure navigation for contiguously packed compressed data: hop
         # past the structure in view, or walk forward looking for the next one.
         self._jump_next = QPushButton("Jump to Next")
-        self._jump_next.setToolTip("Jump past the structure in view")
+        self._jump_next.setToolTip("Jump to the end of the structure in view")
         self._jump_next.setEnabled(False)
         self._jump_next.clicked.connect(self._on_jump_next)
         self._scan_button = QPushButton("Scan")
         self._scan_button.setToolTip(
-            "Scan for the next compressed structure; click again to stop"
+            "Scan forward for the next compressed structure\nClick again to stop"
         )
         self._scan_button.setEnabled(False)
         self._scan_button.clicked.connect(self._on_scan)
@@ -368,10 +363,9 @@ class InterpretationMixin:
         # the structure in view a slice is File > New Slice from View.
         self._smart_scan_button = QPushButton("Smart Scan")
         self._smart_scan_button.setToolTip(
-            "Scan for the next structure that looks like graphics\n"
-            "under the current pixel format: a whole number of\n"
-            "tiles, more than a lone command, and not expanded\n"
-            "past what art compresses to. Click again to stop."
+            "Scan forward for the next compressed structure that\n"
+            "decodes to plausible tiles in the current pixel format\n"
+            "Click again to stop"
         )
         self._smart_scan_button.setEnabled(False)
         self._smart_scan_button.clicked.connect(self._on_smart_scan)
@@ -379,8 +373,8 @@ class InterpretationMixin:
         # file on screen: what the overlay decodes with, what Scan hunts with,
         # and what a slice carved under that codec inherits.
         self._compression_inputs_badge = self._make_inputs_badge(
-            "What this codec needs from elsewhere in the file,\n"
-            "for the preview and for every slice carved under it"
+            "Inputs this codec reads from elsewhere in the file\n"
+            "Used by the preview and by slices cut under it"
         )
         self._compression_inputs_badge.clicked.connect(self._inputs_current)
         # The picker and the three buttons it drives travel together: they are
@@ -393,7 +387,7 @@ class InterpretationMixin:
                 self._jump_next,
                 self._scan_button,
                 self._smart_scan_button,
-                tooltip="Preview the window decompressed with this codec",
+                tooltip="Preview the view decompressed with this codec",
             )
         )
         # The compression group's stand-in while the pixel picker reads the
@@ -405,9 +399,7 @@ class InterpretationMixin:
             Stage.INTERPRET_PALETTE, "bgr555"
         )
         self._palette_view_preset.setToolTip(
-            "How each palette entry's bytes decode to a color\n"
-            "Shown in place of the compression preview while\n"
-            "the view reads the bytes as palette colors"
+            "Palette color format, when the view reads bytes as colors"
         )
         self._palette_view_preset.currentIndexChanged.connect(
             self._on_palette_view_change
@@ -486,8 +478,7 @@ class InterpretationMixin:
             "Zoom:",
             self._zoom,
             "Screen pixels per image pixel\n"
-            "0.5 halves it, to read a whole map at once\n"
-            "Shared by every entry, and remembered between sessions",
+            "Shared by every entry; remembered between sessions",
         )
 
         # Range 255: enough rows for a 512-entry palette under a 2-color (1bpp)
@@ -523,10 +514,9 @@ class InterpretationMixin:
         # reach of a sheet nobody has typed a letter into yet.
         self._use_as_font = QCheckBox("Use as Font")
         self._use_as_font.setToolTip(
-            "Treat these tiles as letters, so a fontmap bound to\n"
-            "this sheet reads its codes as words\n"
-            "What they spell is typed in View > Font Alphabet\n"
-            "Unticking deletes that alphabet, after asking"
+            "Treat these tiles as a font, so a bound fontmap reads\n"
+            "its codes as text. Characters are set in View > Font Alphabet\n"
+            "Unticking deletes that alphabet"
         )
         self._use_as_font.toggled.connect(self._on_use_as_font_change)
         # The **action**, not the widget, is what :meth:`_sync_use_as_font` hides
@@ -556,7 +546,7 @@ class InterpretationMixin:
             self._pattern.addItem(preset.name, preset)
         self._pattern.addItem("Custom", "custom")
         self._pattern.setToolTip(
-            "Arrangement preset; pick Custom to edit these yourself"
+            "Tile arrangement preset\nCustom unlocks the fields to the right"
         )
         # What the picker settled on last, which the view does not record and a
         # ``currentIndexChanged`` handler can no longer read (the combo has
@@ -577,7 +567,7 @@ class InterpretationMixin:
         # The "x" between the pair belongs to both, so it carries the whole
         # control's sense rather than either side's half.
         times = QLabel("\u00d7")
-        times.setToolTip("Block size, in tiles")
+        times.setToolTip("Block size in tiles")
         # The three read as one control, so they go in a tight container instead
         # of taking the toolbar's own gap between each \u2014 the treatment the pixel
         # format and its filter button already get. "2 x 4" with a full toolbar
@@ -601,10 +591,10 @@ class InterpretationMixin:
         )
         self._block_order = QComboBox()
         self._block_order.setToolTip(
-            "How each block fills:\n"
+            "Order tiles fill a block:\n"
             "• Row - left to right, then down\n"
             "• Column - top to bottom, then right\n"
-            "• Row-interleave - a tile-row across every block"
+            "• Row-interleave - one tile row across every block"
         )
         for label, data in (
             ("Row", "row"),
@@ -617,7 +607,7 @@ class InterpretationMixin:
         )
         add_labelled(arrange, "Order:", self._block_order, self._block_order.toolTip())
         self._two_d = QCheckBox("2D")
-        self._two_d.setToolTip("Read as one wide bitmap, not back-to-back tiles")
+        self._two_d.setToolTip("Read as one wide bitmap instead of consecutive tiles")
         self._two_d.toggled.connect(self._arrangement_slot("2D"))
         arrange.addWidget(self._two_d)
 
@@ -634,11 +624,10 @@ class InterpretationMixin:
             arrange,
             "Bitmap W:",
             self._bitmap_width,
-            "Width of the 2D bitmap in pixels (needs 2D)\n"
-            "0 keeps the codec's own tile size\n"
-            "Any other width re-cuts tiles to the largest size\n"
-            "that divides it (306 gives 6x6) and spans it in Cols\n"
-            "Codecs with a fixed tile size are unaffected",
+            "Bitmap width in pixels (2D only)\n"
+            "0 keeps the codec's tile size; any other width re-cuts\n"
+            "tiles to the largest size that divides it and sets Cols\n"
+            "No effect on codecs with a fixed tile size",
         )
         # The default view is Linear (the first preset), so start with the block
         # controls locked until Custom is picked.

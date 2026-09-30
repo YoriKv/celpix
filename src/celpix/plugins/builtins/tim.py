@@ -293,27 +293,24 @@ class TimContainer:
                 "Pixel mode",
                 f"{layout.pmode} - {layout.bpp}bpp"
                 f"{' indexed' if layout.bpp <= 8 else ' direct'}",
-                "The depth the header states, from bits 0-2 of the flags\n"
-                "word. It picks the pixel format the payload is read at;\n"
-                "the four depths look alike as bytes, so a wrong guess\n"
-                "reads as plausible garbage rather than as nothing.",
+                "Bits 0-2 of the flags word\n"
+                "Picks the pixel format the payload is read at;\n"
+                "a wrong depth reads as plausible garbage",
             ),
             ContainerField(
                 "Image size",
                 f"{layout.width}x{layout.height} pixels"
                 f" ({layout.units} halfwords per row)",
-                "The header quotes the row width in 16-bit VRAM units,\n"
-                "not pixels, so the real width is four times it at 4bpp\n"
-                "and twice at 8bpp. Set the view to this many pixels\n"
-                "across; read narrower, the picture shears into stripes.",
+                "The header's W is halfwords per row, not pixels:\n"
+                "four times as many at 4bpp, twice at 8bpp\n"
+                "Not applied: set the view this wide, or it shears",
             ),
             ContainerField(
                 "Pixels",
                 f"{format_size(layout.image_bytes)} at "
                 f"{format_hex(layout.image_start)}",
-                "Where the image block's payload begins, past its own\n"
-                "12-byte header and past the CLUT block ahead of it.\n"
-                "Every address in the view is anchored here.",
+                "Image payload, past the CLUT and the 12-byte block header\n"
+                "Every address in the view is anchored here",
             ),
             _clut_field(layout),
         )
@@ -395,10 +392,9 @@ class TimClutContainer:
                 ContainerField(
                     "Semi-transparency bits",
                     "preserved on save",
-                    "Bit 15 of every entry is the GPU's STP flag, not part\n"
-                    "of the color. celPix's palette is plain ARGB and has\n"
-                    "nowhere to keep it, so a save carries each entry's bit\n"
-                    "over from the file rather than clearing all of them.",
+                    "Bit 15 of every entry is the GPU's STP flag, not color\n"
+                    "celPix's ARGB palette cannot hold it\n"
+                    "A save carries each entry's bit over from the file",
                 )
             )
         return tuple(fields)
@@ -410,19 +406,17 @@ def _clut_field(layout: TimLayout) -> ContainerField:
         return ContainerField(
             "Color table",
             "none - the pixels carry color directly",
-            "Bit 3 of the flags word is clear, which at this depth is\n"
-            "what it should be: a 16bpp or 24bpp TIM stores color in\n"
-            "the pixel and indexes nothing.",
+            "Bit 3 of the flags word is clear, as it should be:\n"
+            "a 16bpp or 24bpp TIM stores color in the pixel",
         )
     total = layout.clut_width * layout.clut_count
     return ContainerField(
         "Color table",
         f"{layout.clut_count} x {layout.clut_width} entries"
         f" at {format_hex(layout.clut_start)} ({total} total)",
-        "BGR555 entries, bit 15 being the GPU's semi-transparency\n"
-        "flag rather than color. A file may carry several palettes\n"
-        "for one image; they follow each other end to end, so the\n"
-        "second starts one palette's width into this block.",
+        "BGR555 entries; bit 15 is the GPU's STP flag, not color\n"
+        "Several palettes follow end to end;\n"
+        "the second starts one palette's width in",
     )
 
 

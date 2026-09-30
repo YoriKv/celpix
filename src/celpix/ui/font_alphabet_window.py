@@ -314,17 +314,15 @@ class FontAlphabetWindow(QWidget):
         # will meet it: that several characters are a name *by default*, and that
         # the Role column is what says otherwise.
         self._table.horizontalHeaderItem(COL_TEXT).setToolTip(
-            "What the code says: the character its tile draws, or\n"
-            "the name a command reads as inside [brackets]\n"
-            "Several characters are taken as a name - set Role to\n"
-            "dict where one code spells them all, as a th pair does"
+            "Character the code's tile draws, or a command name\n"
+            "shown in [brackets]\n"
+            "Several characters read as a name unless Role is dict"
         )
         self._table.horizontalHeaderItem(COL_ROLE).setToolTip(
-            "text is one character, the one its tile draws\n"
-            "dict is several standing behind the one code, and is\n"
-            "drawn as those characters where no tile draws it\n"
-            "line break reads as a newline; control is anything\n"
-            "else the game acts on, and reads as its own hex code"
+            "• text - one character, drawn by the code's tile\n"
+            "• dict - several characters spelled by one code\n"
+            "• line break - reads as a newline\n"
+            "• control - any other command; reads as its hex code"
         )
         header = self._table.horizontalHeader()
         # Sized to its contents, but **when the table is rebuilt** rather than by
@@ -492,20 +490,16 @@ class FontAlphabetWindow(QWidget):
         row.addWidget(QLabel("Prepend"))
         self._prepend_spin = value_spin(0, MAX_EXTRA_ROWS, 0, self._on_prepend_changed)
         self._prepend_spin.setToolTip(
-            "Rows to list before the first tile, for codes\n"
-            "below the sheet that the stream still uses\n"
-            "Nothing typed into one is on a tile, so it is\n"
-            "stored as a named code"
+            "Rows listed before the first tile, for codes\n"
+            "below the sheet. Their text is stored as named codes"
         )
         row.addWidget(self._prepend_spin)
 
         row.addWidget(QLabel("Append"))
         self._append_spin = value_spin(0, MAX_EXTRA_ROWS, 0, self._on_append_changed)
         self._append_spin.setToolTip(
-            "Rows to list after the last tile, which is where\n"
-            "a terminator or a command code usually sits\n"
-            "Nothing typed into one is on a tile, so it is\n"
-            "stored as a named code"
+            "Rows listed after the last tile, for terminators and\n"
+            "command codes. Their text is stored as named codes"
         )
         row.addWidget(self._append_spin)
         row.addStretch(1)
@@ -523,19 +517,13 @@ class FontAlphabetWindow(QWidget):
         # anyway — it would only wear a focus ring for nothing.
         self._show_chars.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._show_chars.setToolTip(
-            "Caption each tile with the character it says\n"
-            "Off shows the letter shapes alone, which is what\n"
-            "judging the art against the codes wants\n"
-            "Dropped anyway where the tiles are drawn too small\n"
-            "to hold the text"
+            "Label each tile with its character\nDropped at zooms the text does not fit"
         )
         self._show_chars.toggled.connect(lambda _on: self._apply_labels())
         row.addWidget(self._show_chars)
 
         self._fill_with = QPushButton("Fill with...")
-        self._fill_with.setToolTip(
-            "Fill the run with a common arrangement, as a first draft"
-        )
+        self._fill_with.setToolTip("Fill the table from a common character order")
         menu = QMenu(self._fill_with)
         for name, base, chars in TEMPLATES:
             menu.addAction(name).triggered.connect(
@@ -566,15 +554,14 @@ class FontAlphabetWindow(QWidget):
         self._shift_up = QPushButton("Shift up")
         self._shift_up.setToolTip(
             "Move every character one tile earlier\n"
-            "The character on the first tile falls off"
+            "The first tile's character is dropped"
         )
         self._shift_up.clicked.connect(lambda: self._shift(-1))
         row.addWidget(self._shift_up)
 
         self._shift_down = QPushButton("Shift down")
         self._shift_down.setToolTip(
-            "Move every character one tile later\n"
-            "The first tile is left spelling nothing"
+            "Move every character one tile later\nThe first tile is left blank"
         )
         self._shift_down.clicked.connect(lambda: self._shift(1))
         row.addWidget(self._shift_down)
@@ -582,21 +569,19 @@ class FontAlphabetWindow(QWidget):
 
         self._copy = QPushButton("Copy alphabet")
         self._copy.setToolTip(
-            "Put the table on the clipboard, one 20=A line per code\n"
-            "Selected rows only, or from the selected row to the\n"
-            "end when one is picked\n"
-            "Ctrl+C in the table copies cells instead"
+            "Copy the table as 20=A lines, one per code\n"
+            "Selected rows only, or from a single selected row\n"
+            "to the end"
         )
         self._copy.clicked.connect(self._copy_alphabet)
         row.addWidget(self._copy)
 
         self._paste = QPushButton("Paste alphabet")
         self._paste.setToolTip(
-            "Replace the table from the clipboard: 20=A lines, or\n"
-            "a plain string of characters, one per code\n"
-            "Into the selected rows only, or from the selected row\n"
-            "to the end when one is picked\n"
-            "Ctrl+V in the table fills characters down instead"
+            "Replace the table from the clipboard: 20=A lines,\n"
+            "or a plain string with one character per code\n"
+            "Selected rows only, or from a single selected row\n"
+            "to the end. Ctrl+V in the table fills down instead"
         )
         self._paste.clicked.connect(self._paste_alphabet)
         row.addWidget(self._paste)
@@ -928,8 +913,8 @@ class FontAlphabetWindow(QWidget):
                     f"{_code_label(code)} spells nothing.",
                     Badge(
                         "no text",
-                        "A line break or a control reads as its name.\n"
-                        "Write one in the Text column first.",
+                        "A line break or control reads as its name\n"
+                        "Fill the Text column first",
                         warning=True,
                     ),
                 )
@@ -951,9 +936,8 @@ class FontAlphabetWindow(QWidget):
                 f"{_code_label(code)} is below code zero.",
                 Badge(
                     "no such code",
-                    "No cell can hold a code below zero, so this row\n"
-                    "cannot be written to. Raise Base code to bring\n"
-                    "these rows into the code space.",
+                    "Codes below zero cannot be written to a cell\n"
+                    "Raise Base code to bring these rows into range",
                     warning=True,
                 ),
             )
@@ -1222,7 +1206,7 @@ class FontAlphabetWindow(QWidget):
                 Badge(
                     "empty",
                     "The clipboard holds neither 20=A lines nor\n"
-                    "characters to spell the codes with.",
+                    "a string of characters",
                     warning=True,
                 ),
             )
@@ -1437,15 +1421,15 @@ class FontAlphabetWindow(QWidget):
 _DROP_REASONS: tuple[tuple[str, str], ...] = (
     (
         "below",
-        "Some rows are below code zero, so nothing\ncould be written to them.",
+        "Rows below code zero were not written",
     ),
     (
         "past",
-        "The paste ran past the last row it could\nreach, so those were not written.",
+        "Codes past the last row were not written",
     ),
     (
         "outside",
-        "Some codes fall outside the selected rows,\nso those were not written.",
+        "Codes outside the selected rows were not written",
     ),
 )
 

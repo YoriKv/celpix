@@ -193,8 +193,8 @@ class PaletteRegionsMixin:
             self,
             "S&how Pinned Palette Colors",
             self._set_show_palette_regions,
-            tip="Draw pinned regions through their own rows (Shift+P)\n"
-            "Off draws the whole view in one palette row",
+            tip="Draw pinned regions in their own palette rows (Shift+P)\n"
+            "Off draws the whole view in one row",
             shortcut=QKeySequence("Shift+P"),
             context=Qt.ShortcutContext.WidgetShortcut,
             checkable=True,
@@ -216,9 +216,8 @@ class PaletteRegionsMixin:
             self,
             "Show Palette &Rows",
             self._set_show_palette_rows,
-            tip="Number each tile with the palette row it names\n"
-            "A pinned row on a pixel view, a cell's own on a tilemap\n"
-            "Drawn in the grid's own color, in the tile's bottom-left",
+            tip="Label each tile with its palette row\n"
+            "Pinned rows on a pixel view, cell rows on a tilemap",
             checkable=True,
             checked=self._show_palette_rows,
         )
@@ -233,9 +232,8 @@ class PaletteRegionsMixin:
             self,
             "&Wrap Palette Rows",
             self._set_wrap_palette_rows,
-            tip="Let Base Palette Row carry a row off one end of the\n"
-            "palette and back on at the other\n"
-            "Off, a row pushed below the first stops there",
+            tip="Wrap palette rows pushed past either end by Base Row\n"
+            "Off clamps them at the first or last row",
             checkable=True,
             checked=self._wrap_palette_rows,
         )
@@ -258,15 +256,14 @@ class PaletteRegionsMixin:
             self,
             "Pin &Selection to Palette Row",
             self._pin_selection,
-            tip="Render the selected tiles through the current\n"
-            "Palette Row, whatever the view is set to",
+            tip="Draw the selected tiles in the current Palette Row",
         )
         self._pin_palette_action.setIconText("Pin")
         self._unpin_palette_action = make_action(
             self,
             "&Unpin Selection",
             self._unpin_selection,
-            tip="Return the selected tiles to the view's own palette row",
+            tip="Draw the selected tiles in the view's palette row again",
         )
         self._unpin_palette_action.setIconText("Unpin")
         # Mnemonic "l": "a" is Paste's in the canvas menu these three also sit in.
@@ -274,8 +271,7 @@ class PaletteRegionsMixin:
             self,
             "Unpin A&ll",
             self._unpin_all,
-            tip="Drop every pinned region, returning the whole\n"
-            "picture to the view's own palette row",
+            tip="Remove every pinned region",
         )
 
     def _set_show_palette_rows(self, on: bool) -> None:
@@ -331,17 +327,11 @@ class PaletteRegionsMixin:
         pinned = doc is not None and not self._palette_regions.is_empty()
         if doc is not None and doc.is_tilemap:
             text, short = "Set &Selection's Palette Row", "Set Row"
-            tip = (
-                "Write the current Palette Row into the selected\n"
-                "cells, which is where this format keeps it"
-            )
+            tip = "Write the current Palette Row into the selected cells"
             writable = self._cell_palette_row_limit() is not None
         else:
             text, short = "Pin &Selection to Palette Row", "Pin"
-            tip = (
-                "Render the selected tiles through the current\n"
-                "Palette Row, whatever the view is set to"
-            )
+            tip = "Draw the selected tiles in the current Palette Row"
             writable = True
         self._pin_palette_action.setText(text)
         self._pin_palette_action.setIconText(short)

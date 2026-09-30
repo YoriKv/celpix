@@ -72,6 +72,12 @@ from celpix.ui.widgets import (
     zoom_level_after,
 )
 
+# The keys the tile source sheet answers itself while focused
+# (``TileSourcePanel.keyPressEvent``): the bare arrows, and nothing else.
+_SHEET_STEP_KEYS = frozenset(
+    (Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down)
+)
+
 
 class KeyControl(NamedTuple):
     """A bare-key shortcut, expressed as **the control it presses**.
@@ -246,7 +252,7 @@ class NavigationMixin:
         # Bank settings - created before the dropdown whose handler fills them.
         self._bank_size = hex_spin(0x1, 0x1000000, "Bank size in bytes", 0x8000)
         self._bank_addr = hex_spin(
-            0x0, 0xFFFFFF, "Address of a bank's first byte", 0x8000
+            0x0, 0xFFFFFF, "Address of the first byte in each bank", 0x8000
         )
         self._bank_first = hex_spin(0x0, 0xFF, "Bank of the file's first byte")
         # The bank anchor is the setting users actually retune (mirror
@@ -322,13 +328,13 @@ class NavigationMixin:
             (
                 "",
                 Glyph.ARROW_DOWN,
-                "Down one row (Down)\nA whole block-row in a block pattern",
+                "Down one row (Down)\nOne block row in a block pattern",
                 lambda: self._nav_rows(self._row_step()),
             ),
             (
                 "",
                 Glyph.ARROW_UP,
-                "Up one row (Up)\nA whole block-row in a block pattern",
+                "Up one row (Up)\nOne block row in a block pattern",
                 lambda: self._nav_rows(-self._row_step()),
             ),
             (
@@ -347,19 +353,19 @@ class NavigationMixin:
             (
                 "−B",
                 None,
-                "Nudge back one byte (- or Ctrl+Left)",
+                "Shift the tile grid back one byte (- or Ctrl+Left)",
                 lambda: self._nav_bytes(-1),
             ),
             (
                 "+B",
                 None,
-                "Nudge forward one byte (+, = or Ctrl+Right)",
+                "Shift the tile grid forward one byte (+, = or Ctrl+Right)",
                 lambda: self._nav_bytes(1),
             ),
             (
                 "0B",
                 None,
-                "Clear the byte nudge (0)",
+                "Clear the byte shift (0)",
                 self._clear_nudge,
             ),
         ):
@@ -726,11 +732,22 @@ class NavigationMixin:
             return True  # a running scan owns the view position; swallow keys
         if QApplication.activePopupWidget() is not None:
             return False
-        if isinstance(QApplication.focusWidget(), self._ARROW_INPUT_TYPES):
+        focus = QApplication.focusWidget()
+        if isinstance(focus, self._ARROW_INPUT_TYPES):
             return False
         mods = event.modifiers()
         blocked = Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.MetaModifier
         if mods & blocked:
+            return False
+        # The tile source sheet steps its pick on the bare arrows (its own
+        # keyPressEvent), but only those: Shift+Left/Right is its Cols, which
+        # _adjust_columns answers from here by reading the same focus, so the
+        # sheet is not in _ARROW_INPUT_TYPES - that would yield the pair too.
+        if (
+            focus is self._tile_source_panel
+            and not mods
+            and event.key() in _SHEET_STEP_KEYS
+        ):
             return False
         shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
         ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)

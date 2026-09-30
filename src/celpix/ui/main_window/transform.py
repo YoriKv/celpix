@@ -389,7 +389,9 @@ class TransformMixin:
         self._edit_mode_action = QAction("Pixel Mode", self)
         self._edit_mode_action.setCheckable(True)
         self._edit_mode_action.setChecked(self._edit_mode is EditMode.PIXEL)
-        self._edit_mode_action.setToolTip("Draw pixels instead of selecting tiles (E)")
+        self._edit_mode_action.setToolTip(
+            "Pixel Mode (E): paint pixels instead of selecting tiles"
+        )
         self._edit_mode_action.toggled.connect(
             lambda on: self._set_edit_mode(EditMode.PIXEL if on else EditMode.TILE)
         )
@@ -417,9 +419,9 @@ class TransformMixin:
         ):
             self._selection_shape.addItem(label, shape)
         self._selection_shape.setToolTip(
-            "What a canvas drag selects (S swaps):\n"
-            "• Linear - the run of tiles in storage order\n"
-            "• Rectangle - the block of tiles on screen"
+            "Selection shape (S swaps):\n"
+            "• Linear - a run of tiles in storage order\n"
+            "• Rectangle - a block of tiles on screen"
         )
         select_combo_data(
             self._selection_shape,

@@ -19,7 +19,9 @@ Contract
   raises at decode time unless the format is 8bpp.
 - celPix derives the bit depth as
   ``ceil(bytes_per_tile * 8 / (width * height))``. It sizes a palette row and
-  clamps painted indices, and it is not checked against ``decode``.
+  clamps painted indices, and it is not checked against ``decode``. A format
+  whose rows are wider than its tiles declares
+  ``FormatInfo(..., declares={"palette_bpp": 4})`` (see _planar.toml).
 """
 
 from celpix.core.index_grid import IndexGrid

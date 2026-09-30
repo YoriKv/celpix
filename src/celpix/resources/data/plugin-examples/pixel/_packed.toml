@@ -7,7 +7,7 @@
 #   A pixel's index is one field of `bpp` bits stored whole. A byte holds
 #   8 / bpp pixels; a row is tile_width / (8 / bpp) bytes, left to right.
 #   For 3bpp and 6bpp see _packed-straddling.toml. For pixels wider than a byte
-#   (colour, not an index) see _direct-color.toml.
+#   (color, not an index) see _direct-color.toml.
 #
 # SHIPPED PRESETS ON THIS ENGINE
 #   genesis-4bpp           bpp 4, msb_first. Mega Drive, 32X, X68000, MSX.

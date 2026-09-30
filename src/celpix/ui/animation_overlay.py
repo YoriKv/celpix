@@ -219,8 +219,8 @@ class AnimationOverlay(QWidget):
 
         self._sequence = QComboBox()
         self._sequence.setToolTip(
-            "Which of the file's animation sequences to play\n"
-            "A sequence is a run of (duration, frame) steps"
+            "Animation sequence to play\n"
+            "A sequence is a list of (duration, frame) steps"
         )
         self._sequence.currentIndexChanged.connect(self._on_sequence_changed)
 
@@ -235,11 +235,11 @@ class AnimationOverlay(QWidget):
         self._play.toggled.connect(self._on_play_toggled)
         self._prev = QPushButton("<")
         self._prev.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._prev.setToolTip("Step back one step of the sequence")
+        self._prev.setToolTip("Previous step")
         self._prev.clicked.connect(lambda: self._advance(-1))
         self._next = QPushButton(">")
         self._next.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._next.setToolTip("Step forward one step of the sequence")
+        self._next.setToolTip("Next step")
         self._next.clicked.connect(lambda: self._advance(1))
 
         self._rate = QSpinBox()
@@ -248,9 +248,7 @@ class AnimationOverlay(QWidget):
         self._rate.setKeyboardTracking(False)
         self._rate.setSuffix(" Hz")
         self._rate.setToolTip(
-            "How many ticks pass per second\n"
-            "A step's duration is counted in ticks; 60 reads\n"
-            "them as console frames"
+            "Ticks per second\nStep durations are in ticks; 60 = console frames"
         )
         self._rate.valueChanged.connect(self._on_rate_changed)
 
@@ -260,9 +258,8 @@ class AnimationOverlay(QWidget):
         self._zoom.setKeyboardTracking(False)
         self._zoom.setSuffix("x")
         self._zoom.setToolTip(
-            "How big the frame is drawn here\n"
-            "This window's own zoom, separate from the main view\n"
-            "Ctrl+wheel over the frame steps it; space-drag pans"
+            "Frame magnification (Ctrl+Scroll over the frame)\n"
+            "Independent of the main view. Space+drag pans"
         )
         self._zoom.valueChanged.connect(self._frame.set_zoom)
 
@@ -273,8 +270,8 @@ class AnimationOverlay(QWidget):
         self._export.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._export.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self._export.setToolTip(
-            "Save sequences as animated GIFs or numbered PNGs\n"
-            "Frames are exported at 1x, timed at this Rate"
+            "Export sequences as animated GIFs or numbered PNGs\n"
+            "Frames are written at 1x, timed at the Rate above"
         )
         menu = QMenu(self._export)
         self._export_one = [
@@ -564,8 +561,8 @@ class AnimationOverlay(QWidget):
             parts.append(
                 Badge(
                     "inferred",
-                    "Which block holds frames and which durations is\n"
-                    "read off the data, not declared by the file.",
+                    "Frame and duration blocks were inferred from\n"
+                    "the data; the file does not declare them",
                 )
             )
         missing = unknown_frames((sequence,), self._frames)
@@ -573,8 +570,8 @@ class AnimationOverlay(QWidget):
             parts.append(
                 Badge(
                     f"{missing} missing frame{'s' if missing != 1 else ''}",
-                    "This sequence names frames the file does not hold.\n"
-                    "Those steps show as blank.",
+                    "The sequence names frames the file does not hold\n"
+                    "Those steps show as blank",
                     warning=True,
                 )
             )

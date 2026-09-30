@@ -1,4 +1,4 @@
-# Example preset: `codec.pixel.palette-swatch` — bytes shown as palette colours.
+# Example preset: `codec.pixel.palette-swatch` — bytes shown as palette colors.
 #
 # To use: copy, remove the leading "_", edit, press F5. See _planar.toml for
 # what a preset is.
@@ -6,7 +6,7 @@
 # ENGINE
 #   Decodes the bytes with a palette format and draws one solid 8x8 swatch per
 #   entry. Painting a swatch writes the entry back through the same format,
-#   quantised to what it can store. One tile is one read unit of the palette
+#   quantized to what it can store. One tile is one read unit of the palette
 #   format: a format with several entries per unit (the Game Boy BGP register,
 #   four shades a byte) gives a tile that many swatches wide. tile_width and
 #   tile_height are ignored.

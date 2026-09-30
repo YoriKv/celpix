@@ -202,6 +202,72 @@ def _cell_settler(
     return settle
 
 
+def _cell_widths(
+    engine,  # noqa: ANN001 — a tilemap codec, reached by getattr
+    params: dict,
+    *,
+    ctx: PipelineContext,
+    plugin: str = "",
+) -> Callable[[list], list[int] | None] | None:
+    """``cells -> widths`` for a mixed-width format, or **None** for a fixed one.
+
+    :func:`_cell_settler`'s shape for
+    :meth:`~celpix.plugins.base.TilemapCodecPlugin.cell_widths`, and for the
+    same reason: it is asked per keystroke of a text region, by a model that
+    holds no registry. Asked once here with no cells, so a fixed-width answer —
+    None, or no method — costs every later edit one ``is None`` and no call.
+
+    Guarded and disarmed after the first fault like the settle: a method that
+    raises, or answers other than one width per cell, is read as one that was
+    never written, so the closure returns None and the caller falls back to
+    :meth:`~celpix.plugins.base.TilemapCodecPlugin.bytes_per_cell`.
+    """
+    ask = getattr(engine, "cell_widths", None)
+    if ask is None:
+        return None
+    live = [True]
+
+    def fault(exc: Exception) -> None:
+        live[0] = False
+        origin = fault_origin(exc)
+        warn(
+            ctx,
+            "The format could not say how wide its cells are, so each is taken "
+            "to be the same size",
+            f"{type(exc).__name__}: {exc}\n"
+            + (f"Raised at {origin}.\n" if origin else "")
+            + "Read as if the format had not defined cell_widths,\n"
+            "and not asked again for this document.",
+            source=plugin,
+            report=fault_report(exc),
+        )
+
+    try:
+        if ask([], params) is None:
+            return None
+    except Exception as exc:  # noqa: BLE001 — a probe must not fail the load
+        fault(exc)
+        return None
+
+    def widths(cells: list) -> list[int] | None:
+        if not live[0]:
+            return None
+        try:
+            out = ask(cells, params)
+            if not isinstance(out, list) or len(out) != len(cells):
+                raise TypeError(  # noqa: TRY301 — one report for both refusals
+                    f"cell_widths returned {type(out).__name__} of "
+                    f"{len(out) if isinstance(out, list) else '?'} "
+                    f"for {len(cells)} cells"
+                )
+        except Exception as exc:  # noqa: BLE001 — a width must not fail an edit
+            fault(exc)
+            return None
+        return out
+
+    return widths
+
+
 def _with_tile_size(engine, params: dict, size: tuple[int, int]) -> dict:  # noqa: ANN001
     """``params`` re-cut to ``size``, or ``params`` itself if that won't stick.
 

@@ -253,8 +253,7 @@ class EntryClipboardMixin:
         if entry.kind not in _MULTIPLE_KINDS:
             what = "A file" if entry.kind is EntryKind.FILE else "A palette"
             self.statusBar().showMessage(
-                f"{what} can only be open once - copy it into another project "
-                "instead, or duplicate one of its slices."
+                f"{what} can only be open once. Duplicate one of its slices instead."
             )
             return
         # Round-tripped through the payload rather than deep-copied by hand, so a

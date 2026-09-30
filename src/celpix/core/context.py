@@ -332,123 +332,102 @@ KEY_PIXEL_ASPECT = "pixel.aspect"
 HINT_INFO: dict[str, tuple[str, str]] = {
     KEY_SOURCE_OFFSET: (
         "Payload offset",
-        "Where in the file the bytes this entry shows begin.\n"
-        "Every address in the view and every slice carved from\n"
-        "it is anchored here.",
+        "File offset of the bytes this entry shows\n"
+        "Every address in the view and every slice is anchored here",
     ),
     KEY_TILEMAP_COLUMNS: (
         "Map width",
-        "How many cells across the map is laid out at.\n"
-        "Fixed by the format; without it the width is a guess,\n"
-        "and a wrong one shears the picture into diagonal stripes.",
+        "Cells per row, fixed by the format\n"
+        "A wrong width shears the picture into diagonal stripes",
     ),
     KEY_TILEMAP_CELL_TILES: (
         "Cell size",
-        "How many tiles one cell covers, when the header says.\n"
-        "Read small, a metatile map draws one quarter of every\n"
-        "cell and drops the rest.",
+        "Tiles per cell, as the header states\n"
+        "Read smaller, a metatile map draws a quarter of each cell",
     ),
     KEY_TILEMAP_PALETTE_ROW_BASE: (
         "Palette row base",
-        "The palette row this map's own row 0 counts from, as\n"
-        "its header states it. Read as 0 when the file says 1,\n"
-        "every tile draws through the wrong sixteen colours.",
+        "Palette row the map's own row 0 counts from,\n"
+        "as the header states. Applied as Base Palette Row",
     ),
     KEY_TILEMAP_STAMP_CELLS: (
         "Stamp size",
-        "How many cells one stamp covers, for a map that another\n"
-        "map's coordinates index in stamps. Read by the layout\n"
-        "bound to this one, not by this one.",
+        "Cells per stamp, for maps that index this one in stamps\n"
+        "Read by the layout bound to this map, not by this map",
     ),
     KEY_TILEMAP_STAMP_STRIDE: (
         "Stamp stride",
-        "How many cells apart a stamp's rows sit in this map's\n"
-        "cell list. Records packed end to end stamp at their own\n"
-        "width, however wide the table is shown.",
+        "Cells between a stamp's rows in the cell list\n"
+        "Packed records stamp at their own width, whatever\n"
+        "width the table is shown at",
     ),
     KEY_TILEMAP_STAMP_COLUMN_MAJOR: (
         "Stamp order",
-        "A stamp's cells are stored down each column, so the\n"
-        "stride steps between its columns rather than its rows.",
+        "Stamp cells are stored column by column, so the stride\n"
+        "steps between columns rather than rows",
     ),
     KEY_TILEMAP_PAGE_ROWS: (
         "Page height",
-        "The file is several independent maps end to end, this\n"
-        "many cell rows each, assembled into one picture.",
+        "The file is several maps end to end, this many cell\n"
+        "rows each, assembled into one picture",
     ),
     KEY_TILEMAP_PAGES_ACROSS: (
         "Pages across",
-        "How the pages above go together, where the format\n"
-        "settles it rather than leaving it to be read.",
+        "Page layout, where the format fixes it",
     ),
     KEY_TILEMAP_ENDIAN: (
         "Cell byte order",
-        "The byte order this file's cells are in, where the file\n"
-        "itself states it. Overrides the format preset, the file\n"
-        "being the better authority about its own bytes.",
+        "Cell byte order stated by the file\nOverrides the format preset",
     ),
     KEY_TILEMAP_FRAME_SIZES: (
         "Frame sizes",
-        "How many subsprites each frame holds, for a format that\n"
-        "counts them rather than giving every frame the same\n"
-        "number of slots. Read off the file's own counts.",
+        "Subsprites per frame, read from the file's own counts\n"
+        "For formats whose frames are not all one size",
     ),
     KEY_TILEMAP_SUBSPRITES_PER_FRAME: (
         "Subsprites per frame",
-        "How many subsprite slots one frame holds, where the file\n"
-        "settles it rather than the format preset. The two sizes\n"
-        "of sprite object divide the same payload differently.",
+        "Subsprite slots per frame, stated by the file\nOverrides the format preset",
     ),
     KEY_TILEMAP_ANIMATIONS: (
         "Animation sequences",
-        "The order this file says its frames play in, read from\n"
-        "the table past its records. Shown here and in the\n"
-        "animation player; nothing is drawn or written from it.",
+        "Frame play order, read from the table past the records\n"
+        "Used by the animation player only; never written",
     ),
     KEY_TILEMAP_ANIMATIONS_INFERRED: (
         "Animation layout inferred",
-        "Whether the sequences above are a reading of the data\n"
-        "rather than a spec. One format's writer emits its\n"
-        "animation blocks opaquely, so their split is read off\n"
-        "the corpus and shown as a guess, not a fact.",
+        "The sequences above were inferred from the data,\nnot declared by the format",
     ),
     KEY_PIXEL_PRESET: (
         "Pixel format",
-        "The graphics format the container believes its payload\n"
-        "is in, from the file's own header. It seeds the format\n"
-        "picker; you own the choice after that.",
+        "Pixel format stated by the file's header\n"
+        "Seeds the format picker; a later pick is kept",
     ),
     KEY_TILE_PALETTE_ROWS: (
         "Per-tile palette rows",
-        "A side table naming the palette row each tile is meant\n"
-        "to be read under, which is what pinned palette regions\n"
-        "otherwise have to be told by hand.",
+        "Side table naming each tile's palette row\nSeeds the pinned palette regions",
     ),
     KEY_TILE_PALETTE_ROW_BASE: (
         "Palette row base",
-        "The palette row this bank's tiles count their own row 0\n"
-        "from, as its header states it. A tilemap bound to the\n"
-        "bank counts from here too, unless its own file says.",
+        "Palette row the bank's row 0 counts from, as the\n"
+        "header states. A bound tilemap counts from here too\n"
+        "unless its own file states a base",
     ),
     KEY_PIXEL_ASPECT: (
         "Pixel aspect",
-        "The shape of one pixel on the machine this file was\n"
-        "drawn for, when the container knows which machine that\n"
-        "is. It seeds View > Pixel Aspect, which is a setting for\n"
-        "the whole project; you own the choice after that.",
+        "Pixel shape of the machine this file was drawn for\n"
+        "Seeds View > Pixel Aspect (project-wide); a later\n"
+        "pick is kept",
     ),
     KEY_PALETTE_PRESET: (
         "Color format",
-        "The color encoding the container read out of the file's\n"
-        "own header. Almost no palette file states one, so where\n"
-        "this appears the format is a fact rather than the usual\n"
-        "guess. It does not change the dock's picker on its own.",
+        "Color format stated by the file's header\n"
+        "Adopted as the palette format unless one was\n"
+        "chosen by hand",
     ),
     KEY_PALETTE_ERROR: (
         "Palette read error",
-        "The colors shown are a placeholder, not the file's:\n"
-        "decoding them the chosen way failed. Correct the format\n"
-        "in the palette dock to read the real ones.",
+        "Decoding failed; the colors shown are a placeholder\n"
+        "Correct the format in the palette dock",
     ),
 }
 

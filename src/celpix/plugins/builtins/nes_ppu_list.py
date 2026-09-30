@@ -179,9 +179,9 @@ class NesPpuListCompression:
                 minimum=0x2000,
                 maximum=0x2C00,
                 tooltip=(
-                    "Replay only the writes into this nametable page\n"
-                    "($2000, $2400, $2800 or $2C00),\n"
-                    "for a list that draws on two."
+                    "Replay only the writes to this nametable page\n"
+                    "($2000, $2400, $2800 or $2C00), for a list\n"
+                    "that draws on two."
                 ),
             ),
             InputSpec(
@@ -193,9 +193,9 @@ class NesPpuListCompression:
                 maximum=0xFF,
                 default=0,
                 tooltip=(
-                    "The tile a cell the list never writes shows.\n"
-                    "The machine has the previous screen there,\n"
-                    "so pick the game's blank tile."
+                    "Tile shown in cells the list never writes.\n"
+                    "The machine keeps the previous screen there;\n"
+                    "use the game's blank tile."
                 ),
             ),
         ),

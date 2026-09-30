@@ -582,3 +582,50 @@ def test_a_side_array_is_offered_only_where_the_preset_places_its_bits(
     sl.tilemap_preset_id = "preset.tilemap.index-8bit"
     assert resolve_inputs(sl, Stage.INTERPRET_TILEMAP, TILEMAP_ENGINE, reg).values == {}
     assert prune_bindings(sl, reg) == {}
+
+
+def test_a_side_array_keyed_by_index_follows_the_cell_index() -> None:
+    """``side_key = "index"``: the side word is the one the cell's *stored* index
+    selects — a per-metatile attribute table, as Final Fantasy VI's field BG3
+    keeps its palette rows — not the one at the cell's position. An index past
+    the table reads zero; a cell given another index takes that entry's bits on
+    settling, and an encode handed a row the table disagrees with refuses it."""
+    from celpix.plugins.builtins.tilemap_codec import TilemapCodec
+
+    codec = TilemapCodec()
+    params = {"fields": "vhii iiii", "side_fields": "...p pp..", "side_key": "index"}
+    table = bytes((0, 1 << 2, 2 << 2, 7 << 2))  # rows 0, 1, 2, 7 for indices 0-3
+    ctx = PipelineContext()
+    ctx.set(KEY_INPUTS, {"side_array": table})
+    cells = codec.decode(bytes((0x03, 0x41, 0x83, 0x05)), params, ctx)
+    assert [(c.index, c.palette_row, c.flip_h, c.flip_v) for c in cells] == [
+        (3, 7, False, False),
+        (1, 1, True, False),
+        (3, 7, False, True),
+        (5, 0, False, False),  # past the table's end
+    ]
+
+    moved = [replace(cells[0], index=2), *cells[1:]]
+    settled = codec.settle_cells(moved, params, ctx.get(KEY_INPUTS))
+    assert settled[0].palette_row == 2
+    assert codec.encode(settled, params, ctx) == bytes((0x02, 0x41, 0x83, 0x05))
+    with pytest.raises(ValueError, match="side array"):
+        codec.encode(moved, params, ctx)
+
+
+@pytest.mark.parametrize(
+    ("side", "message"),
+    [
+        ({"side_fields": "...p ppii", "side_key": "index"}, "index itself"),
+        ({"side_fields": "...p pp..", "side_key": "cell"}, "side_key must be"),
+    ],
+)
+def test_a_side_key_that_cannot_work_is_refused(side, message) -> None:
+    """An index with bits in the side word it picks would be circular, and an
+    unknown ``side_key`` is refused rather than read as position."""
+    from celpix.plugins.builtins.tilemap_codec import TilemapCodec
+
+    with pytest.raises(ValueError, match=message):
+        TilemapCodec().decode(
+            b"\x00", {"fields": "vhii iiii", **side}, PipelineContext()
+        )

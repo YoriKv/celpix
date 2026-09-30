@@ -6,20 +6,21 @@ app's privileges, so celPix asks before loading one.
 A code format implements one palette interpretation directly and appears in the
 palette format picker like a preset. Use it for encodings no engine's parameters
 express; try a preset first (_color-mask.toml, _color-indexed.toml).
-_nes-custom.py is a worked example that loads its colour table from a file.
+_nes-custom.py is a worked example that loads its color table from a file.
 
 Contract
 - Required methods: ``decode``, ``encode``, ``bytes_per_entry``.
 - ``decode`` returns a ``Palette`` of 0xAARRGGBB integers. ``encode`` is its
-  inverse; a colour the format cannot store is quantised, not rejected.
-- A format with no alpha field must decode alpha as 0xFF. The colour editor
-  offers an alpha control when a format decodes alpha other than 0xFF, and
-  values set through it would be lost on save.
+  inverse; a color the format cannot store is quantized, not rejected.
+- A format with no alpha field must decode alpha as 0xFF. celPix probes for
+  alpha by round-tripping a transparent color through ``encode`` and
+  ``decode``; a format that returns it transparent gets an alpha control, and
+  one that decodes 0xFF does not.
 - Optional: ``entries_per_unit()`` (default 1), the number of entries packed
   into one ``bytes_per_entry`` unit. A handheld shade register holding four
   2-bit shades in a byte returns 4.
 - Optional: ``shared_entries(index, count)``, the entries of a ``count``-entry
-  palette that show entry ``index``'s colour, owner first. An edit to any of
+  palette that show entry ``index``'s color, owner first. An edit to any of
   them is written to the owner. Default: ``(index,)``.
 """
 

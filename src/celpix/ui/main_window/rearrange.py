@@ -76,14 +76,11 @@ from celpix.ui.widgets import signals_blocked
 # two lockouts say different things because the user can act on one of them: a 2D
 # pattern is a setting to leave, a tilemap is the document they opened.
 REARRANGE_TIP = (
-    "Drag tiles to new display positions (R)\nRight-drag selects; no bytes move"
+    "Drag tiles to new display positions (R)\n"
+    "Right-drag selects. Display only; the file is not changed"
 )
-REARRANGE_BLOCKED_TIP = (
-    "Not available for a 2D pattern (R)\nA tile's bytes interleave with its neighbours'"
-)
-REARRANGE_TILEMAP_TIP = (
-    "Not available for a tilemap (R)\nMoving a cell is an edit, not a display order"
-)
+REARRANGE_BLOCKED_TIP = "Rearrange (R)\nUnavailable for a 2D pattern"
+REARRANGE_TILEMAP_TIP = "Rearrange (R)\nUnavailable for a tilemap: use Edit Tiles"
 
 
 @dataclass(frozen=True)
@@ -259,8 +256,8 @@ class RearrangeMixin:
             Qt.ShortcutContext.WidgetShortcut
         )
         self._show_rearranged_action.setToolTip(
-            "Show the rearranged order, or the file's own (Shift+R)\n"
-            "Forced on while the Rearrange tool is armed"
+            "Show tiles in the rearranged order (Shift+R)\n"
+            "Off shows the file's own order. Forced on while rearranging"
         )
         self._show_rearranged_action.toggled.connect(self._set_show_rearranged)
 

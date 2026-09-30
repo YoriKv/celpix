@@ -120,9 +120,9 @@ def tile_base_tip(noun: str, chained: bool) -> str:
     """
     verb = "stamps" if chained else "draws"
     what = "source cell" if noun == "cell" else noun
-    whole = "" if noun in ("tile", "cell") else f" by whole {noun}s"
+    whole = "" if noun in ("tile", "cell") else f", in whole {noun}s"
     return (
-        f"Shifts every cell{whole}:\n"
+        f"Offset added to every cell index{whole}:\n"
         f"cell N {verb} {what} base + N\n"
         "Negative when the map starts partway into its source"
     )
@@ -181,9 +181,8 @@ class TilemapBarMixin:
         # so a refresh that changes none of it leaves them alone.
         self._binding_combo_rows_shown: tuple[object, ...] | None = None
         self._tile_binding.setToolTip(
-            "Which open entry supplies this map's tiles\n"
-            "Its edits follow through live\n"
-            "A tilemap works too: each cell stamps one of its cells"
+            "Open entry that supplies this map's tiles\n"
+            "A tilemap works too: each cell then stamps its cells"
         )
         self._tile_binding.activated.connect(self._on_tile_binding_change)
         row.addWidget(self._tile_binding)
@@ -222,7 +221,7 @@ class TilemapBarMixin:
             row,
             "Index unit: ",
             self._index_addressing,
-            "What each index counts in the source it draws from",
+            "Unit each cell index counts in the source",
         )
 
         row.addSpacing(12)
@@ -273,8 +272,8 @@ class TilemapBarMixin:
         # Rearranged Tiles and Show Palette Regions already get.
         self._all_frames = QCheckBox("All Frames")
         self._all_frames.setToolTip(
-            "Show every frame slot the file has room for\n"
-            "Off stops after the last frame that draws something"
+            "Show every frame slot in the file\n"
+            "Off stops after the last non-empty frame"
         )
         self._all_frames.toggled.connect(self._on_all_frames_change)
         row.addWidget(self._all_frames)
@@ -293,8 +292,8 @@ class TilemapBarMixin:
         # gives for the same choice.
         self._transparent_zero_box = QCheckBox("Transparent 0")
         self._transparent_zero_box.setToolTip(
-            "Draw palette index 0 as nothing, the way the console does\n"
-            "Off leaves index 0 an ordinary colour, to see and to edit"
+            "Draw palette index 0 as transparent, as the console does\n"
+            "Off draws it as an ordinary color"
         )
         self._transparent_zero_box.toggled.connect(self._on_transparent_zero_change)
         row.addWidget(self._transparent_zero_box)
@@ -311,7 +310,7 @@ class TilemapBarMixin:
         self._cell_index = hex_spin(
             0,
             0xFFFF,
-            "The tile the selected cells name - set it to point\nthem somewhere else",
+            "Tile index stored in the selected cells",
             kind=RunSpinBox,
         )
         self._cell_index.valueChanged.connect(self._on_cell_index_change)
@@ -325,12 +324,17 @@ class TilemapBarMixin:
 
         # Says which entry the tiles are coming from without making the user
         # open the combo to find out, and reads as the sentence the binding is.
+        # Wrapped, because the sentence carries entry names — which have no bound
+        # — and an unwrapped label's width is a floor on the whole window's. It
+        # takes the row's stretch itself rather than sharing it with a spacer:
+        # a wrapped label's size hint is only a guess at a pleasing width, so
+        # beside a spacer it would break the line with room still to spare.
         self._tile_binding_note = QLabel()
+        self._tile_binding_note.setWordWrap(True)
         self._tile_binding_note.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
-        offset_row.addWidget(self._tile_binding_note)
-        offset_row.addStretch(1)
+        offset_row.addWidget(self._tile_binding_note, 1)
         return bar
 
     # -- the swap ------------------------------------------------------------
@@ -536,10 +540,7 @@ class TilemapBarMixin:
         if reading is None:
             return "The source map is not loaded", None
         if reading.refusal is None and _counts_elements(reading.geometry):
-            return (
-                f"Each {unit} here is one {element},\n"
-                "so both ways count the same number"
-            ), None
+            return f"Each {unit} is one {element}: both units count the same", None
         return None, reading
 
     def _sync_index_addressing(self, entry: Entry, source: TileSource) -> None:
@@ -599,13 +600,13 @@ class TilemapBarMixin:
         # The first row is the only one whose name does not say what it does:
         # it states nothing itself, and the brackets are the format's answer.
         lines = [
-            f"What each index counts in the {where}",
-            "From format: what the cell format says, shown in brackets",
-            "The other two override the format, for this map only",
-            f"{element.capitalize()}s: the {unit}'s top-left {element}",
-            f"{unit.capitalize()}s: the {unit}'s number, 0, 1, 2...",
-            f"Base counts {element}s or {unit}s, as the index does;",
-            "changing this moves it to the same place, or to 0",
+            f"Unit each cell index counts in the {where}:",
+            "• From format - the cell format's own unit, in brackets",
+            f"• {element.capitalize()}s - index N is the top-left {element} "
+            f"of a {unit}",
+            f"• {unit.capitalize()}s - index N is {unit} number N",
+            "The last two override the format for this map only",
+            "Base is re-counted in the new unit, or reset to 0",
             f"where no whole {unit} starts there",
         ]
         if moot is not None:
@@ -629,9 +630,9 @@ class TilemapBarMixin:
         per_row = self._view_width_numbering(entry, source)
         if per_row:
             lines.append(
-                f"{unit.capitalize()}s are numbered {per_row} to a row by the\n"
-                "source's Cols - no file states that width, so a\n"
-                f"different Cols there numbers every {unit} differently"
+                f"{unit.capitalize()}s are numbered {per_row} per row from the\n"
+                "source's Cols, which no file states: changing it there\n"
+                f"renumbers every {unit} here"
             )
         return "\n".join(lines)
 
@@ -683,10 +684,9 @@ class TilemapBarMixin:
         bound = self._binding_target(source)
         self._tile_binding_jump.setEnabled(bound is not None)
         self._tile_binding_jump.setToolTip(
-            f"Show {bound.name} - where these tiles come from\n"
-            "Back (Alt+Left) returns here"
+            f"Show the tile source, {bound.name}\nBack (Alt+Left) returns here"
             if bound is not None
-            else "Show where the tiles come from\nNothing is bound yet"
+            else "Show the tile source\nNothing is bound"
         )
 
     def _sync_size_pair(self) -> None:
@@ -891,9 +891,7 @@ class TilemapBarMixin:
         and the addressing in force say.
         """
         what = "source cell" if noun == "cell" else noun
-        return (
-            f"The {what} the selected cells name - set it to point\nthem somewhere else"
-        )
+        return f"{what.capitalize()} index stored in the selected cells"
 
     def _on_cell_index_change(self, value: int) -> None:
         if self._applying_undo:

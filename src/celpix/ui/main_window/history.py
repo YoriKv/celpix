@@ -90,8 +90,7 @@ class HistoryMixin:
         self._find_entry_action = QAction("Find Entr&y", self)
         self._find_entry_action.setShortcut(FILTER_KEY)
         self._find_entry_action.setToolTip(
-            "Filter the Files list to the rows matching\n"
-            "what you type - by name, in any word order."
+            "Filter the Files list by name\nWords match in any order"
         )
         self._find_entry_action.triggered.connect(self._find_entry)
         self._sync_history_actions()
@@ -130,7 +129,7 @@ class HistoryMixin:
                 else f"Nothing to go {way.lower()} to"
             )
             button = "Mouse 4" if delta < 0 else "Mouse 5"
-            action.setToolTip(f"{where}\nAlso {button} (the browser {way} button)")
+            action.setToolTip(f"{where}\nAlso {button}")
 
     def _history_target(self, delta: int) -> Entry | None:
         """The entry ``delta`` steps along the trail, or None at that end of it."""

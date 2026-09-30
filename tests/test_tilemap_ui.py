@@ -2493,7 +2493,7 @@ def test_a_dropped_png_is_refused_on_a_tilemap(qtbot, tmp_path) -> None:
     assert window._doc.pixel_data == before  # the bank it borrows is untouched
     assert window._undo_stack.count() == depth
     assert not entry.pixel_dirty
-    assert "import into the entry" in window.statusBar().currentMessage()
+    assert "Import into its tile source" in window.statusBar().currentMessage()
 
 
 def test_a_sprite_map_offers_a_size_pair_and_nothing_else_does(qtbot, tmp_path) -> None:
@@ -2770,7 +2770,7 @@ def test_index_unit_recounts_the_base_and_renames_both_numbers_in_one_step(
     )
     assert window._tile_base_label.text() == "Base stamp "
     assert window._cell_index_label.text() == "Stamp "
-    assert "by whole stamps" in window._tile_base.toolTip()
+    assert "in whole stamps" in window._tile_base.toolTip()
     window._sync_set_base_tile()  # the dock converges when shown; it is hidden
     assert window._set_base_tile_button.text() == "Set Base Stamp"
 
@@ -2798,7 +2798,7 @@ def test_the_cell_spin_reads_and_writes_the_unit_the_index_counts(
     assert spin.value() == 2
     assert (spin.minimum(), spin.maximum()) == (0, 0xFF)
     assert window._cell_index_label.text() == "Stamp "
-    assert "The stamp the selected cells name" in spin.toolTip()
+    assert "Stamp index stored in the selected cells" in spin.toolTip()
 
     spin.setValue(5)
     assert table.doc.cells[2].index == 5
@@ -2808,7 +2808,7 @@ def test_the_cell_spin_reads_and_writes_the_unit_the_index_counts(
 
     _count_indices_as(window, 1)
     assert window._cell_index_label.text() == "Cell "
-    assert "The source cell the selected cells name" in spin.toolTip()
+    assert "Source cell index stored in the selected cells" in spin.toolTip()
     assert spin.value() == 5
     assert (spin.minimum(), spin.maximum()) == (0, 0xFF)
 
@@ -2870,7 +2870,7 @@ def test_index_counts_is_off_where_a_unit_is_one_element(qtbot, tmp_path) -> Non
         "Metatiles",
     ]
     assert not combo.isEnabled()
-    assert "same number" in combo.toolTip()
+    assert "count the same" in combo.toolTip()
 
 
 def test_counting_stamps_survives_the_project(qtbot, tmp_path) -> None:

@@ -235,28 +235,24 @@ class SprContainer:
                 f"{signature} at {format_hex(trailer_at + TRAILER, 4)}"
                 if signature
                 else "none - identified by suffix alone",
-                "This family puts its signature at the *end*, past a\n"
-                "payload whose length varies, so detection cannot match\n"
-                "on it and has only the .spr suffix to go on. The\n"
-                "earliest build wrote none at all.",
+                "Sits at the end of a variable-length file\n"
+                "Detection cannot match it and has only the .spr suffix\n"
+                "The earliest build wrote none at all",
             ),
             ContainerField(
                 "Frames",
                 f"{drawn} of {FRAMES} used, {len(records) // SPR_RECORD} subsprites",
-                "Each frame states its own subsprite count, so the\n"
-                "frames are different lengths and the file's size is\n"
-                "whatever those counts add up to. The counts are held\n"
-                "aside and put back on write.",
+                "Each frame states its own subsprite count\n"
+                "Frames differ in length; the counts set the file size\n"
+                "The counts are held aside and put back on write",
             ),
             ContainerField(
                 "Trailer",
                 f"{format_size(len(trailer))} at "
                 f"{format_hex(trailer_at, 4)}, preserved",
-                "40 frame numbers, then 40 durations, then a flag byte.\n"
-                "That split is read off the corpus rather than off the\n"
-                "writer, which emits both blocks opaquely - so the player\n"
-                "says it is a reading. The earliest build leaves 512 bytes\n"
-                "of uninitialised buffer here instead; both ride through\n"
-                "a save intact.",
+                "40 frame numbers, 40 durations, one flag byte;\n"
+                "the split is inferred from the corpus\n"
+                "The earliest build leaves 512 uninitialized bytes instead\n"
+                "Preserved on save either way",
             ),
         )

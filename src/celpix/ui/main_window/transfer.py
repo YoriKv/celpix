@@ -406,8 +406,8 @@ class TransferMixin:
         self.statusBar().showMessage(message)
         if failed:
             self._alert(
-                f"{len(failed)} item(s) could not be exported (unreadable, or a "
-                "codec that couldn't decode them).",
+                f"{len(failed)} item(s) could not be exported: unreadable, or their "
+                "codec failed.",
                 title="celPix - export",
                 detail="\n".join(failed),
             )
@@ -484,8 +484,8 @@ class TransferMixin:
         """
         if self._doc is None:
             self.statusBar().showMessage(
-                f"Open a file or slice first - {Path(path).name} is imported into "
-                "the graphic on screen, not added to the list."
+                f"Open a file or slice first: {Path(path).name} is imported into "
+                "the graphic on screen."
             )
             return
         self._import_png_at(self._paste_anchor(), path)
@@ -519,8 +519,7 @@ class TransferMixin:
         if self._can(Capability.IMPORT_IMAGE):
             return False
         self.statusBar().showMessage(
-            "A tilemap has no pixels of its own - import into the entry it "
-            "draws its tiles from."
+            "A tilemap has no pixels. Import into its tile source instead."
         )
         return True
 

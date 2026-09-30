@@ -714,7 +714,7 @@ def test_an_offset_palette_on_a_composite_reads_its_first_piece_file(
     window._activate_entry(pads)
     assert not offset_item.isEnabled()
     assert not window._load_palette_at_offset(0)
-    assert alerts and "no piece from a file" in alerts[0]
+    assert alerts and "no file-backed run" in alerts[0]
 
 
 def test_reading_a_composite_opens_the_files_its_slices_are_cut_from(

@@ -181,9 +181,9 @@ class CompressionMixin:
             # the window really did cut a structure short: a warning, with a fix.
             badge = Badge(
                 "end not in view",
-                "The structure's end marker is not inside the view\n"
-                "window, so this preview stops where the window does.\n"
-                "Add rows or columns to decode more of it.",
+                "The end marker is outside the view window, so the\n"
+                "preview stops at the window's end\n"
+                "Add rows or columns to decode more",
                 warning=True,
             )
         else:
@@ -199,10 +199,9 @@ class CompressionMixin:
                 self._structure_extent = (self._byte_position(), consumed)
             badge = Badge(
                 "end of view window",
-                "This scheme has no end marker, so it decodes as far\n"
-                "as the view window reaches and no further.\n"
-                "New Slice from View bounds the slice at that same\n"
-                "point; widen the window for more, or set the true length.",
+                "The scheme has no end marker, so decoding stops at\n"
+                "the view window's end. New Slice from View bounds\n"
+                "the slice there; widen the window or set a length",
             )
         rows16 = ctx.get(KEY_LZ16_ROWS)
         if rows16 is not None:

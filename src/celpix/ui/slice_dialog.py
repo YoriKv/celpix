@@ -95,11 +95,11 @@ from celpix.ui.widgets import (
 __all__ = ["SliceDialog", "SliceParams"]
 
 _SIZE_TIPS = {
-    ContentKind.PIXELS: "How many tiles the slice unpacks to\n"
-    "Growing it appends blank tiles; shrinking drops the last ones\n"
+    ContentKind.PIXELS: "Tiles the slice unpacks to\n"
+    "Growing appends blank tiles; shrinking drops the last ones\n"
     "The re-packed stream must still fit Length",
-    ContentKind.TILEMAP: "How many cells the slice unpacks to\n"
-    "Growing it appends empty cells; shrinking drops the last ones\n"
+    ContentKind.TILEMAP: "Cells the slice unpacks to\n"
+    "Growing appends empty cells; shrinking drops the last ones\n"
     "The re-packed stream must still fit Length",
 }
 
@@ -185,9 +185,9 @@ class SliceDialog(QDialog):
         if choose_content:
             self._content = CompactComboBox(SHORT_COMBO_WIDTH)
             self._content.setToolTip(
-                "What this region holds:\n"
-                "• Pixels - tile graphics, drawn from these bytes\n"
-                "• Tilemap - indices into tiles that live somewhere else"
+                "Content of the region:\n"
+                "• Pixels - tile graphics\n"
+                "• Tilemap - indices into tiles stored elsewhere"
             )
             for label, data in (
                 ("Pixels", ContentKind.PIXELS),
@@ -198,20 +198,19 @@ class SliceDialog(QDialog):
             self._content.setCurrentIndex(max(0, at))
 
         self._name = QLineEdit(name)
-        self._name.setToolTip("Name in the Files list; blank uses the placeholder")
+        self._name.setToolTip("Name in the Files list\nBlank uses the placeholder")
         self._offset = QLineEdit(format_hex(offset, prefix=False))
-        self._offset.setToolTip("File offset (hex; $ and 0x accepted)")
+        self._offset.setToolTip("File offset (hex; $ and 0x prefixes accepted)")
         self._length = QLineEdit(
             format_hex(length, prefix=False) if length is not None else ""
         )
         self._length.setToolTip(
-            "Byte length (hex); blank lets a decompressor find the end"
+            "Byte length (hex)\nBlank lets the decompressor find the end"
         )
         self._match_parent = QCheckBox("Match parent size")
         self._match_parent.setToolTip(
-            "Run to the end of what the slice is cut from,\n"
-            "and follow it when that is resized\n"
-            "Length is measured from the parent, not typed"
+            "Run to the end of the parent and follow its resizes\n"
+            "Length is then measured from the parent"
         )
         self._match_parent.setChecked(match_parent)
         # What Length held before the box took it over, handed back on untick —
@@ -220,8 +219,8 @@ class SliceDialog(QDialog):
 
         self._reshape = SearchableComboBox(PRESET_COMBO_WIDTH)
         self._reshape.setToolTip(
-            "Undo a byte reordering on load: a plane-per-chip\n"
-            "split, an interleave\n"
+            "Byte reordering undone on load, e.g. a plane-per-chip\n"
+            "split or an interleave\n"
             "Applies to the whole region, before decompression"
         )
         fill_stage_combo(self._reshape, registry.plugins(Stage.RESHAPE), reshape_id)
@@ -234,11 +233,11 @@ class SliceDialog(QDialog):
 
         self._slot_fill = CompactComboBox(SHORT_COMBO_WIDTH)
         self._slot_fill.setToolTip(
-            "What fills the end of the region when re-packing\n"
-            "produces fewer bytes than it replaces:\n"
-            "• Keep Bytes - leave the old stream's tail standing\n"
-            "• Fill w/ $FF - how erased ROM reads\n"
-            "• Fill w/ $00 - for images padded with zeroes"
+            "Fill for the end of the region when a re-packed stream\n"
+            "is shorter than the one it replaces:\n"
+            "• Keep Bytes - leave the old stream's tail\n"
+            "• Fill w/ $FF - erased ROM\n"
+            "• Fill w/ $00 - zero padding"
         )
         for label, data in (
             ("Keep Bytes", SlotFill.KEEP),
@@ -277,7 +276,7 @@ class SliceDialog(QDialog):
         )
         self._inputs_badge.setFixedHeight(self._decompress.sizeHint().height())
         self._inputs_badge.setToolTip(
-            "Edit what this codec needs from elsewhere in the file"
+            "Edit the inputs this codec reads from elsewhere in the file"
         )
         self._inputs_badge.clicked.connect(self._on_edit_inputs)
 
@@ -288,10 +287,9 @@ class SliceDialog(QDialog):
         # which unwrapped would set the whole dialog's width.
         self._inputs.setWordWrap(True)
         self._inputs.setToolTip(
-            "What this codec needs from elsewhere in the file, and\n"
-            "where the slice binds it. Edit it with the button beside\n"
-            "the picker; a required input left unbound opens the slice\n"
-            "degraded, with a notice saying what to bind."
+            "Inputs this codec reads from elsewhere in the file,\n"
+            "and where the slice binds them\n"
+            "An unbound required input opens the slice degraded"
         )
 
         self._error = QLabel()

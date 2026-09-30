@@ -253,8 +253,7 @@ class InputsMixin:
         sections = self._inputs_sections(entry, codec)
         if not sections:
             self.statusBar().showMessage(
-                f"{entry.name}: none of its formats needs anything from outside "
-                "its bytes."
+                f"{entry.name}: its formats declare no inputs."
             )
             return
         selected = [

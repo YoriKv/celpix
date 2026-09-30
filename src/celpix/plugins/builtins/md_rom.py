@@ -134,8 +134,8 @@ class MdRomContainer:
                 ContainerField(
                     "Header",
                     "Mega-CD disc image",
-                    "A disc, not a cartridge: its header has no checksum a\n"
-                    "game sums, and a save writes the bytes through untouched.",
+                    "A disc, not a cartridge: no checksum a game sums\n"
+                    "A save writes the bytes through untouched",
                 ),
             )
         if len(raw) < SUM_START or not has_header(raw):
@@ -143,8 +143,8 @@ class MdRomContainer:
                 ContainerField(
                     "Header",
                     "no SEGA marker at $100",
-                    "Without the marker there is no checksum to keep\n"
-                    "current, and a save writes the bytes through untouched.",
+                    "No marker, no checksum to keep current\n"
+                    "A save writes the bytes through untouched",
                 ),
             )
         name = raw[CONSOLE_NAME].decode("ascii", "replace").strip()
@@ -155,22 +155,22 @@ class MdRomContainer:
             ContainerField(
                 "Header",
                 f'"{name}" at $100',
-                "The cartridge header: console name, titles, serial,\n"
-                "the checksum below and the ROM and RAM ranges.",
+                "Cartridge header: console name, titles, serial,\n"
+                "the checksum below and the ROM and RAM ranges",
             ),
             ContainerField(
                 "Checksum",
                 f"${stored:04X} stored, ${computed:04X} computed"
                 + (" - matches" if stored == computed else " - stale"),
-                "The sum of the big-endian words from $200 to the ROM end.\n"
-                "The console never checks it, but many games do at boot\n"
-                "and stop on a mismatch; a save recomputes it.",
+                "Sum of the big-endian words from $200 to the ROM end\n"
+                "Not checked by the console, but by many games at boot\n"
+                "Recomputed on save",
             ),
             ContainerField(
                 "Summed range",
                 f"$200-${end - 1:X} ({format_size(end - SUM_START)})",
-                "Up to the ROM end the header names at $1A4, so padding\n"
-                "past it is not summed; the file's length when the field\n"
-                "is missing or runs past the file.",
+                "Up to the ROM end named at $1A4; padding is not summed\n"
+                "The file length stands in for a field that is 0,\n"
+                "below $200 or past the file",
             ),
         )

@@ -299,6 +299,111 @@ def test_the_terminator_is_the_codecs_answer_not_the_presets() -> None:
     assert not codec.has_line_flag(_params(registry, "preset.tilemap.text-8bit"))
 
 
+# Final Fantasy VI (Japan)'s field text: leads $1C-$1F, letters $100-$4FF, and
+# three commands that swallow one byte (``_lead_codes``).
+_LEAD_TEXT = {
+    "fields": "iiii iiii",
+    "lead_codes": [[0x1C, 0x1F]],
+    "lead_bias": 0x1B,
+    "operands": {"1": [0x11, 0x14, 0x16]},
+}
+
+
+def test_lead_codes_read_a_mixed_width_stream_as_one_cell_per_character() -> None:
+    """A lead joins the next byte into one letter, except where it cannot.
+
+    The two exceptions are the ones a constant stride gets wrong silently: a
+    command's operand is never a lead however it reads, and a lead with nothing
+    after it is an ordinary byte. Encode has to be the exact inverse, or every
+    cell after the first mis-paired byte shifts.
+    """
+    codec, ctx = TilemapCodec(), PipelineContext()
+    data = bytes((0x20, 0x1C, 0x41, 0x11, 0x1F, 0x1F, 0xFF, 0x1D))
+    cells = codec.decode(data, _LEAD_TEXT, ctx)
+    assert [c.index for c in cells] == [0x20, 0x141, 0x11, 0x1F, 0x4FF, 0x1D]
+    assert codec.encode(cells, _LEAD_TEXT, ctx) == data
+    assert codec.index_limit(_LEAD_TEXT) == 0x4FF
+    assert codec.cell_fields(_LEAD_TEXT) == {"index": 0x4FF}
+    assert codec.bytes_per_cell(_LEAD_TEXT) == 1
+    assert not codec.has_line_flag(_LEAD_TEXT)
+    # What the host's byte readouts sum: an operand is one byte whatever it
+    # holds, and a lone lead where a byte follows is the two a read makes of it.
+    assert codec.cell_widths(cells, _LEAD_TEXT) == [1, 2, 1, 1, 2, 1]
+    assert codec.cell_widths([Cell(index=0x1C), Cell(index=0x20)], _LEAD_TEXT) == [
+        2,
+        1,
+    ]
+    assert codec.cell_widths([], {"fields": "iiii iiii"}) is None  # fixed width
+
+
+def test_line_bytes_records_pair_within_themselves_and_end_their_line() -> None:
+    """A name table: every record one line, and a lead never pairs across two.
+
+    The second record ends in `$1C`, which in a continuous stream would take the
+    third record's first byte as its trail.
+    """
+    codec, ctx = TilemapCodec(), PipelineContext()
+    params = {**_LEAD_TEXT, "line_bytes": 3}
+    data = bytes((0x1C, 0x41, 0x20, 0x21, 0x22, 0x1C, 0x23, 0x24, 0x25, 0x26))
+    cells = codec.decode(data, params, ctx)
+    assert [(c.index, c.ends_line) for c in cells] == [
+        (0x141, False), (0x20, True),
+        (0x21, False), (0x22, False), (0x1C, True),
+        (0x23, False), (0x24, False), (0x25, True),
+    ]  # fmt: skip
+    assert codec.encode(cells, params, ctx) == data[:9]  # the partial record drops
+    assert codec.has_line_flag(params)
+    with pytest.raises(ValueError, match="cells 0-1: record 0 comes to 4 bytes"):
+        codec.encode(
+            [Cell(index=0x141), Cell(index=0x142, ends_line=True)], params, ctx
+        )
+    with pytest.raises(ValueError, match="last record has no line end"):
+        codec.encode(cells[:2] + [Cell(index=0x20)], params, ctx)
+
+
+@pytest.mark.parametrize(
+    ("indices", "message"),
+    [
+        ([0x1C, 0x20], "cell 0: a lone \\$1C would read back as a lead"),
+        ([0x11, 0x141], "cell 1: an operand is one byte"),
+        ([0x20, 0x520], "cell 1: 0x520 is past the last two-byte letter"),
+    ],
+)
+def test_lead_codes_refuse_a_cell_that_would_read_back_differently(
+    indices: list[int], message: str
+) -> None:
+    """Stricter than the engine's masking on purpose: a mis-paired byte moves
+    every cell after it, where a masked field costs one cell its high bits."""
+    cells = [Cell(index=i) for i in indices]
+    with pytest.raises(ValueError, match=message):
+        TilemapCodec().encode(cells, _LEAD_TEXT, PipelineContext())
+
+
+def test_lead_code_params_are_refused_where_they_cannot_mean_one_thing() -> None:
+    """Each of these would decode *something*, and not something encode could
+    write back: a lead in a cell with other fields, a letter numbered like a
+    one-byte code, a byte that is both a lead and a command."""
+    codec, ctx = TilemapCodec(), PipelineContext()
+
+    def decode(**params: object) -> None:
+        codec.decode(b"\x00", {**_LEAD_TEXT, **params}, ctx)
+
+    with pytest.raises(ValueError, match="all index .* places terminator"):
+        decode(fields="eiii iiii")
+    with pytest.raises(ValueError, match="layout is 16 bits"):
+        decode(fields="iiii iiii iiii iiii")
+    with pytest.raises(ValueError, match="bias can be at most 0x1b"):
+        decode(lead_bias=0x1C)
+    with pytest.raises(ValueError, match=r"\[31, 28\] is not a byte or an ascending"):
+        decode(lead_codes=[[0x1F, 0x1C]])
+    with pytest.raises(ValueError, match="\\$1C is also a lead code"):
+        decode(operands={"1": [0x1C]})
+    with pytest.raises(ValueError, match="'x' is not an operand count"):
+        decode(operands={"x": [0x11]})
+    with pytest.raises(ValueError, match="only means something beside lead_codes"):
+        codec.decode(b"\x00", {"fields": "iiii iiii", "lead_bias": 1}, ctx)
+
+
 def test_a_trailing_partial_cell_is_dropped() -> None:
     """Unlike a partial tile, which still draws as something, half a cell has no
     meaningful index and would render as a spurious tile 0."""

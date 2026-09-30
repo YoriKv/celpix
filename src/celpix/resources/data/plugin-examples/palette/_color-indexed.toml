@@ -4,20 +4,20 @@
 # what a preset is.
 #
 # ENGINE
-#   For hardware whose palette bytes are indices into a colour table fixed in
+#   For hardware whose palette bytes are indices into a color table fixed in
 #   the machine (EGA, MSX, NES). An entry is always one byte.
 #
 #   Decode: table lookup. A byte past the end of the table decodes to the
-#   missing-colour sentinel. Every colour decodes opaque.
+#   missing-color sentinel. Every color decodes opaque.
 #   Encode: the nearest table entry by Manhattan distance in RGB; ties go to the
-#   lowest index. A colour not in the table is quantised to it, and a byte
-#   naming a duplicate colour is rewritten as that colour's first index.
+#   lowest index. A color not in the table is quantized to it, and a byte
+#   naming a duplicate color is rewritten as that color's first index.
 #
 #   To load the table from a file instead, see _nes-custom.py.
 #
 # SHIPPED PRESETS ON THIS ENGINE
-#   ega-indexed   16 colours.
-#   msx-indexed   16 colours.
+#   ega-indexed   16 colors.
+#   msx-indexed   16 colors.
 #   nes-indexed   the 64-entry NES master palette.
 #   nes-screen    the same table with shared_every = 4.
 
@@ -27,13 +27,13 @@ engine_id = "codec.palette.indexed"
 
 [params]
 
-# Required. The colour table as 0xRRGGBB integers, in hardware order. 1 to 256
+# Required. The color table as 0xRRGGBB integers, in hardware order. 1 to 256
 # entries; the length need not be a power of two.
 colors = [
   0x000000, 0x0000AA, 0x00AA00, 0x00AAAA,
   0xAA0000, 0xAA00AA, 0xAA5500, 0xAAAAAA,
 ]
 
-# Every Nth entry shows entry 0's colour, and an edit to one edits entry 0.
+# Every Nth entry shows entry 0's color, and an edit to one edits entry 0.
 # Default 0 (off). The NES backdrop occupies the first slot of every 4-entry row.
 # shared_every = 4

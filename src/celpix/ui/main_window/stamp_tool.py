@@ -66,14 +66,14 @@ from celpix.ui.tools import EditMode
 from celpix.ui.widgets import counted, signals_blocked
 
 STAMP_TIP = (
-    "Draw tiles/stamps with left click\n"
-    "Select a tile or drag select a stamp with right click (T)"
+    "Edit Tiles (T): click or drag to lay the picked tile or stamp\n"
+    "Right-click picks a tile; right-drag picks an area as the stamp"
 )
 # Why the tool is off where it looks like it should apply. A format whose cells
 # have no index field has nothing for a stamp to set - the same answer that hides
 # the Cell spin, said in the place the user is reaching for.
 STAMP_BLOCKED_TIP = (
-    "This format's cells hold no tile reference (T)\nNothing for a stamp to place"
+    "Edit Tiles (T)\nUnavailable: this format's cells store no tile index"
 )
 
 
@@ -683,8 +683,8 @@ class StampToolMixin:
         self._pick_palette_row_at((y0 * width + x0) * doc.tiles_per_cell)
         what = "stamps" if doc.is_indirect else "cells"
         self.statusBar().showMessage(
-            f"Picked {lifted.width}x{lifted.height} {what} - "
-            "left click stamps them from the top-left."
+            f"Picked {lifted.width}x{lifted.height} {what}. Click to stamp "
+            "from the top-left."
         )
 
     # -- the preview ---------------------------------------------------------

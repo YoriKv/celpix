@@ -321,7 +321,7 @@ class LzwCompression:
                 maximum=MAX_WIDTH,
                 unit="bits",
                 tooltip=(
-                    "The widest a code grows; the table holds at most\n"
+                    "Widest a code grows. The table holds at most\n"
                     "2^width codes, then freezes until a clear code.\n"
                     "GIF and TIFF: 12."
                 ),
@@ -352,15 +352,14 @@ class LzwCompression:
             _code_input(
                 INPUT_CLEAR_CODE,
                 "Clear code",
-                "The code that empties the table and resets the\n"
-                "width. Unbound: there is none. GIF: 2^literal bits.\n"
-                "TIFF: 256.",
+                "Code that empties the table and resets the width.\n"
+                "Unbound: none. GIF: 2^literal bits. TIFF: 256.",
             ),
             _code_input(
                 INPUT_END_CODE,
                 "End code",
-                "The code that ends the stream. Unbound: none,\n"
-                "and the slice's length is the extent.\n"
+                "Code that ends the stream. Unbound: none, and the\n"
+                "slice length is the extent.\n"
                 "GIF: 2^literal bits + 1. TIFF: 257.",
             ),
             InputSpec(
@@ -368,10 +367,7 @@ class LzwCompression:
                 "Early change",
                 InputKind.FLAG,
                 required=False,
-                tooltip=(
-                    "The width grows one code before the table needs\n"
-                    "it to, as TIFF's LZW does."
-                ),
+                tooltip=("Grow the width one code early, as TIFF's LZW does."),
             ),
         ),
     )

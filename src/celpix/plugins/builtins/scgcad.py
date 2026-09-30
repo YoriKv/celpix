@@ -293,16 +293,15 @@ def _metadata_fields(data: bytes, at: int) -> list[ContainerField]:
             f"{SIGNATURE.decode()} at {format_hex(at, 4)}"
             if block[: len(SIGNATURE)] == SIGNATURE
             else "absent",
-            "The 16 bytes that identify this file's family, and what\n"
-            "detection matched to pick this container. Where they sit\n"
-            "is itself part of the format.",
+            "The 16 bytes that identify this file's family,\n"
+            "matched by detection to pick this container\n"
+            "Its position is itself part of the format",
         ),
         ContainerField(
             "Tool version",
             _text(block[0x10:0x20]) or "blank",
-            "The version and build date of the authoring tool that\n"
-            "wrote the file. Recorded here only - celPix is not that\n"
-            "tool, so a save leaves the whole block as it found it.",
+            "Version and build date of the authoring tool\n"
+            "Recorded only; the whole block is preserved on save",
         ),
     ]
 
@@ -401,35 +400,32 @@ class ScrContainer:
             ContainerField(
                 "Payload",
                 f"{format_size(SCR_PAYLOAD)} at 0x000000 - four 32x32 quadrants",
-                "One 64x64 tilemap stored as four quadrants. They come\n"
-                "out as one buffer with their shape and their 2x2\n"
-                "layout published, so the view assembles them as the\n"
-                "editor that wrote them did.",
+                "One 64x64 tilemap stored as four quadrants\n"
+                "Passed on as one buffer with the 2x2 layout published,\n"
+                "so the view assembles it as the editor did",
             ),
             ContainerField(
                 "Cell size byte",
                 f"0x{raw_byte:02X} at {format_hex(SCR_HEADER_AT + SCR_TILE_SIZE, 4)}"
                 f" - {size[0]}x{size[1]} tiles per cell",
-                "8 * (value + 1) pixels. Read small, a 16x16 screen draws\n"
-                "one quarter of every cell and drops the rest, so this is\n"
-                "published as the view's cell size.",
+                "8 * (value + 1) pixels; published as the view's cell size\n"
+                "Read as 8x8, a 16x16 screen draws one quarter of each cell",
             ),
             ContainerField(
                 "Base character word",
                 f"0x{base_word:04X} at {format_hex(SCR_HEADER_AT + 0x47, 4)}"
                 " - not applied",
-                "It reads like a base tile index and is not one: added to\n"
-                "every cell it sends the screen off the end of the bank,\n"
-                "and neither candidate meaning survives the corpus. The\n"
-                "tile base is yours to set.",
+                "Reads like a base tile index and is not one\n"
+                "Added to every cell it sends the screen off the bank\n"
+                "Not applied; the tile base is set by the user",
             ),
             ContainerField(
                 "Clear codes",
                 f"{format_size(max(0, len(data) - SCR_HEADER_AT - HEADER))}"
                 f" at {format_hex(SCR_HEADER_AT + HEADER, 4)}, preserved",
-                "A per-cell draw/don't-draw the artist set. It sits outside\n"
-                "the cells celPix reads, so every cell is drawn and the\n"
-                "table rides through a save untouched.",
+                "Per-cell draw/don't-draw table set by the artist\n"
+                "Outside the payload: every cell is drawn here,\n"
+                "and the table is preserved on save",
             ),
         )
 
@@ -535,37 +531,34 @@ class PnlContainer:
             ContainerField(
                 "Tile table",
                 f"{format_size(PNL_TABLE)} at {format_hex(HEADER, 4)} - the payload",
-                f"0x{PNL_TABLE // 2:X} cells, laid out {PANEL_COLUMNS} wide.\n"
-                "Each word is one 8x8 tile; a 16x16 unit is stored as\n"
-                "four adjacent words rather than as one bigger cell.",
+                f"0x{PNL_TABLE // 2:X} cells, {PANEL_COLUMNS} wide; "
+                "each word is one 8x8 tile\n"
+                "A 16x16 unit is four adjacent words, not one bigger cell",
             ),
             ContainerField(
                 "Registration table",
                 f"{format_size(PNL_TABLE)} at "
                 f"{format_hex(HEADER + PNL_TABLE, 4)}, preserved",
-                "The same size again, following the tiles. Bit 15 marks\n"
-                "a cell the tool handed out as part of a panel, and it is\n"
-                "the tool's own draw test - clear renders as background.\n"
-                "celPix draws every cell and writes this back untouched.",
+                "Bit 15 marks a cell registered to a panel,\n"
+                "which is the tool's own draw test\n"
+                "celPix draws every cell; written back untouched",
             ),
             ContainerField(
                 "Stamp size",
                 f"{across}x{down} cells at "
                 f"{PNL_STAMP_EXPONENTS[0]:#04x}/{PNL_STAMP_EXPONENTS[1]:#04x}",
-                "How many cells one stamp covers, as two exponents.\n"
-                "Published for a stamp layout bound to this panel; it is\n"
-                "not this file's own cell size, which is one 8x8 tile per\n"
-                "word whatever the header suggests.",
+                "Cells one stamp covers, as two exponents\n"
+                "Published for a stamp layout bound to this panel\n"
+                "Not this file's cell size, which is one 8x8 tile",
             ),
             ContainerField(
                 "Cell size byte",
                 f"0x{data[0x62]:02X} at {format_hex(0x62, 4)} - not read"
                 if len(data) > 0x62
                 else "absent",
-                "A header byte shaped like a cell size and not one:\n"
-                "reading it as one draws the panel at four times its\n"
-                "content. Measured against the corpus, a panel word is\n"
-                "always a single 8x8 tile.",
+                "Shaped like a cell size and not one: read as one,\n"
+                "the panel draws at four times its content\n"
+                "A panel word is always a single 8x8 tile",
             ),
         )
 
@@ -617,25 +610,22 @@ class MapContainer:
             ContainerField(
                 "Entry table",
                 f"{format_size(MAP_PAYLOAD)} at {format_hex(HEADER, 4)} - the payload",
-                f"0x{MAP_PAYLOAD // 2:X} entries, laid out {MAP_COLUMNS} wide -\n"
-                "a screen's shape, which is what a layout is made from.\n"
-                "The width is fixed by the format, so it is published\n"
-                "rather than left as a guess.",
+                f"0x{MAP_PAYLOAD // 2:X} entries, {MAP_COLUMNS} wide - "
+                "a screen's shape\n"
+                "The width is fixed by the format and published",
             ),
             ContainerField(
                 "Entry meaning",
                 "a panel coordinate, not a tile",
-                "A stamp layout holds no tiles and no attributes of its\n"
-                "own: resolving an entry needs the panel it was authored\n"
-                "against, which is what the tile binding supplies.",
+                "A stamp layout holds no tiles or attributes of its own\n"
+                "Entries resolve through the tile binding's panel",
             ),
             ContainerField(
                 "Stamp size",
                 "the panel's, not this file's",
-                "One entry names a stamp of cells, and how many cells\n"
-                "that covers comes from the panel this layout is bound\n"
-                "to. Until it is bound, an entry reads as the single\n"
-                "cell it names.",
+                "One entry names a stamp of cells; how many comes\n"
+                "from the panel this layout is bound to\n"
+                "Unbound, an entry reads as the single cell it names",
             ),
         )
 
@@ -741,18 +731,15 @@ class ObjContainer:
                 f"{'extended' if extended else 'ordinary'} - "
                 f"{payload // (slots * SUBSPRITE_RECORD)} frames"
                 f" of {slots} subsprites",
-                "Which of the two sizes this is shows in *where* the\n"
-                "signature sits, so the records stop there. Found by\n"
-                "signature rather than by file length, so a file with an\n"
-                "unexpected tail still reads.",
+                "Told by where the signature sits; the records stop there\n"
+                "Not by file length, so a file with an extra tail reads",
             ),
             ContainerField(
                 "Build marker",
                 f"{marker or 'blank'} - attribute word "
                 f"{'byte-swapped' if swapped else 'as stored'}",
-                "A later build of the tool writes the attribute word the\n"
-                "other way round and says so here. Published as the cell\n"
-                "byte order, overriding the codec's own assumption.",
+                "A later build byte-swaps the attribute word and says so\n"
+                "Published as the cell byte order, overriding the codec",
             ),
             ContainerField(
                 "Animation table",
@@ -760,10 +747,9 @@ class ObjContainer:
                 f" at {format_hex(payload + HEADER, 4)}, "
                 f"{_live_sequences(data, payload + HEADER, groups, OBJ_SEQUENCE_STEPS)}"
                 f" of {groups} sequences used",
-                "Runs of (duration, frame) naming frames in the payload.\n"
-                "Read for playback only: celPix draws the frames\n"
-                "themselves in file order, and a save writes these bytes\n"
-                "back exactly as they were read.",
+                "Runs of (duration, frame) naming frames in the payload\n"
+                "Read for playback only; frames draw in file order\n"
+                "Written back exactly as read",
             ),
         )
 
@@ -816,19 +802,18 @@ class ObzContainer:
             ContainerField(
                 "Signature",
                 "none - identified by length and suffix",
-                "The one member of this family that carries no signature\n"
-                "anywhere: it was written to be consumed by the devkit\n"
-                "rather than reopened, so its length is all there is to\n"
-                "go on.",
+                "The one member of this family with no signature:\n"
+                "written to be consumed by the devkit, not reopened\n"
+                "Length and suffix are all there is to go on",
             ),
             ContainerField(
                 "Payload",
                 f"{format_size(OBZ_PAYLOAD)} at 0x000000 - "
                 f"{OBZ_PAYLOAD // (64 * SUBSPRITE_RECORD)} frames"
                 f" of 64 subsprites",
-                "The same shape as a sprite object with the header taken\n"
-                "away. The records inside are not an object's records,\n"
-                "which is why this reads through its own cell codec.",
+                "A sprite object's shape with the header removed\n"
+                "The records are not an object's records;\n"
+                "they read through their own cell codec",
             ),
             ContainerField(
                 "Animation table",
@@ -837,8 +822,7 @@ class ObzContainer:
                 f"{_live_sequences(source.data, OBZ_PAYLOAD, *OBZ_TABLE)}"
                 f" of {OBZ_SEQUENCES} sequences used",
                 "16 sequences of 64 (duration, frame), read for playback\n"
-                "only. The whole tail is kept exactly as it stands, so a\n"
-                "save leaves the frame timings alone.",
+                "The whole tail is preserved on save, timings included",
             ),
         )
 
@@ -887,24 +871,21 @@ class StdContainer:
             ContainerField(
                 "Signature",
                 "none - identified by length and suffix",
-                "Headerless and fixed-size. Not something the authoring\n"
-                "tool writes: a converter made it out of a screen, and\n"
-                "wrote nothing to say so.",
+                "Headerless and fixed-size\n"
+                "Made from a screen by a converter that wrote no marker",
             ),
             ContainerField(
                 "Payload",
                 f"{format_size(STD_SIZE)} - the whole file, {STD_COLUMNS} wide",
-                "Bare tile numbers, the screen's four quadrants laid\n"
-                "out 2x2. The width is fixed by the format and published\n"
-                "as such - 4 KiB of bytes would not suggest it.",
+                "Bare tile numbers, four screen quadrants laid out 2x2\n"
+                "The width is fixed by the format and published",
             ),
             ContainerField(
                 "Cell contents",
                 "low byte only - attributes dropped",
-                "The converter kept the low byte of each screen cell and\n"
-                "discarded the high one, so there are no palette rows or\n"
-                "flip bits left to read. That is why this holds a\n"
-                "screen's shape but reads through an index-only cell.",
+                "The converter kept the low byte of each screen cell\n"
+                "No palette rows or flip bits remain;\n"
+                "reads through an index-only cell",
             ),
         )
 
@@ -979,19 +960,15 @@ class ColContainer:
             ContainerField(
                 "Colors",
                 f"{format_size(COL_PAYLOAD)} at 0x000000 - {COL_PAYLOAD // 2} entries",
-                "Where the colours stop, which is the whole reason this\n"
-                "file needs a container: read to the end of the file, the\n"
-                "metadata block decodes as 128 more entries of junk that\n"
-                "look like colours because any two bytes do.",
+                "Where the colors stop; the reason for a container\n"
+                "Read whole, the metadata block decodes as 128 junk colors",
             ),
             ContainerField(
                 "Metadata block",
                 f"{format_size(COL_SIZE - COL_PAYLOAD)}"
                 f" at {format_hex(COL_HEADER_AT, 4)}, preserved",
-                "Spliced around on write, so editing a colour leaves the\n"
-                "tool's own metadata as it found it. Not a second bank of\n"
-                "colours - a screen picks which 128-colour half to draw\n"
-                "through with a field of its own.",
+                "Spliced around on write; a color edit leaves it as-is\n"
+                "Not a second bank: a screen's own field picks the half",
             ),
         )
 
@@ -1229,11 +1206,9 @@ class CgxContainer:
                 ContainerField(
                     "Bank size",
                     f"{len(data)} bytes - not a size this family has",
-                    "The three tile banks are told apart by their length,\n"
-                    "and failing that by where the signature sits. This\n"
-                    "file answers to neither, so the bytes are handed on\n"
-                    "whole rather than cut at a guess: better a few\n"
-                    "trailing junk tiles than a silently truncated bank.",
+                    "Banks are told by length, then by signature position;\n"
+                    "this file matches neither\n"
+                    "Passed on whole rather than cut at a guess",
                 ),
             )
         payload, _, bpp = bank
@@ -1253,9 +1228,8 @@ class CgxContainer:
             ContainerField(
                 "Payload",
                 f"{format_size(payload)} at 0x000000 - 1024 tiles",
-                "Payload first, header after, which is what makes reading\n"
-                "this file raw *almost* work: the trailing block decodes\n"
-                "as a few dozen tiles of convincing noise.",
+                "Payload first, header after\n"
+                "Read raw, the trailing block decodes as tiles of noise",
             ),
             ContainerField(
                 "Bit depth",
@@ -1265,22 +1239,15 @@ class CgxContainer:
                     if stated is None
                     else f", header says {_DEPTH_BPP.get(stated & 3, bpp)}bpp"
                 ),
-                "In the file twice over, so it need not be guessed - the\n"
-                "three depths look alike enough that a wrong pick reads as\n"
-                "plausible garbage. The length is one statement and the\n"
-                "byte at +0x20 behind the signature is the other; they\n"
-                "agree across the whole surveyed corpus. Published as the\n"
-                "pixel format the view starts at.",
+                "Stated twice: the length, and header byte +0x20\n"
+                "The two agree across the surveyed corpus\n"
+                "Published as the pixel format the view starts at",
             ),
             ContainerField(
                 "Palette row table",
                 table,
-                "One byte per tile naming the palette row it is meant to\n"
-                "be read under, counted from the base this file's header\n"
-                "states. Published so it can seed pinned palette regions,\n"
-                "and preserved on write: the rows are the file's own\n"
-                "statement, not something to re-derive from a pixel edit.\n"
-                "A bank with no header states no rows: the table is there\n"
-                "but nothing wrote it.",
+                "One byte per tile: its palette row, from the header's base\n"
+                "Published to seed pinned palette regions\n"
+                "Preserved on write; a headerless bank states no rows",
             ),
         )

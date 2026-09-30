@@ -111,6 +111,33 @@ endian = "little"
 # the Font Alphabet window against the bound sheet. Default: a plain grid.
 # layout = "text"
 
+# ---- Text of one- and two-byte codes ----
+
+# Lead bytes: a stored byte listed here, followed by another byte, reads as ONE
+# cell, (lead - lead_bias) * 256 + next byte -- a kanji in a stream of one-byte
+# kana. A lead with no byte after it reads as a one-byte cell. Elements are a
+# code or an inclusive [first, last] range. Needs `fields = "iiii iiii"` (a
+# one-byte cell that is all index) and no side_fields. Encode refuses a cell
+# that would read back differently, such as a one-byte lead value with a cell
+# after it. Default: none; every cell is `bytes` wide.
+# lead_codes = [[0x1C, 0x1F]]      # Shift-JIS: [[0x81, 0x9F], [0xE0, 0xFF]]
+
+# Subtracted from a lead before it becomes the letter's high byte. Default 0.
+# Every letter must stay above $FF: 0x1B turns leads $1C-$1F into $100-$4FF.
+# lead_bias = 0x1B
+
+# Commands that read the byte(s) after them whatever they hold, keyed by how
+# many: those bytes are one-byte cells and are never read as leads. A command
+# too near the end takes the bytes there are. Codes and ranges as lead_codes;
+# none may be a lead. Requires lead_codes.
+# operands = { 1 = [0x11, 0x14, 0x16], 2 = [[0x08, 0x0F]] }
+
+# Fixed-length records of this many bytes, each one line (a name table): each
+# record is read on its own, and its last cell ends the line. Encode refuses a
+# line that is not this many bytes. Needs the same `iiii iiii` cell; works with
+# or without lead_codes. Default: one continuous stream.
+# line_bytes = 8
+
 # ---- Bits kept outside the cell ----
 
 # Some formats keep part of a cell in a second array: a metatile table's
@@ -126,6 +153,24 @@ endian = "little"
 # Consecutive cells one side word covers. Default 1. 4 for one byte per 2x2
 # metatile record.
 # side_cells = 4
+
+# Which side word a cell reads. "position" (default): word k covers cells
+# k * side_cells onward, in cell order. "index": the word the cell's own index
+# selects, index // side_cells -- a per-tile or per-metatile attribute table,
+# where a graphic's palette row follows it wherever the map places it. The
+# index is the field as stored (a metatile number under index_addressing =
+# "ordinal"), and side_fields may not place any of its bits. An index past the
+# array's end reads its side bits as zero.
+#
+# Final Fantasy VI's field BG3 layout is one byte per 16x16 metatile, with the
+# palette row in bits 2-4 of a 64-byte table indexed by metatile number:
+#   fields = "vhii iiii"
+#   side_fields = "...p pp.."
+#   side_key = "index"
+#   cell_tiles = [2, 2]
+#   cell_row_stride = 2
+#   index_addressing = "ordinal"
+# side_key = "index"
 
 # ---- Maps that reference another map (tilemap-entry.md sec 3.1) ----
 

@@ -1001,7 +1001,7 @@ def test_a_slice_whose_fold_no_longer_fits_stays_dirty_and_is_reported(
     assert window._write_entry(parent)
     assert cut.pixel_dirty and cut.doc is not None
     assert not parent.pixel_dirty
-    assert "gfx" in alerts[-1] and "still unsaved" in alerts[-1]
+    assert "gfx" in alerts[-1] and "remain unsaved" in alerts[-1]
     assert rom.read_bytes()[0x100 : 0x100 + len(stream)] == stream  # untouched
 
     # Its own write reports the same overflow, and it is still not lost.
@@ -4098,7 +4098,9 @@ def test_a_slice_outside_the_parents_window_is_refused_rather_than_skipped(
 
     assert cut.fold_refused is not None and "lies outside" in cut.fold_refused
     assert cut.pixel_dirty and cut.doc is not None  # nothing of it was written
-    assert "gfx" in captured_alerts[-1][1] and "still unsaved" in captured_alerts[-1][1]
+    assert (
+        "gfx" in captured_alerts[-1][1] and "remain unsaved" in captured_alerts[-1][1]
+    )
     # ...and nothing of it reached the file either, at its own offset or any other.
     assert rom.read_bytes() == before
 

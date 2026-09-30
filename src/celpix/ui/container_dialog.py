@@ -101,28 +101,28 @@ from celpix.ui.widgets import PRESET_COMBO_WIDTH, value_spin
 __all__ = ["ContainerDialog", "ContainerEdit"]
 
 _TIP = (
-    "How this file's bytes are unwrapped before decoding:\n"
-    "a header to skip, an interleave to undo, a wrapper to strip\n"
-    "Raw binary file passes every byte through untouched"
+    "How the file is unwrapped before decoding: a header\n"
+    "to skip, an interleave to undo, a wrapper to strip\n"
+    "Raw binary file passes every byte through"
 )
 
 _RESHAPE_TIP = (
-    "A byte reordering undone after the container:\n"
-    "a plane-per-chip split, a ROM-pair word interleave\n"
-    "Turns addresses and slice carving off while active"
+    "Byte reordering undone after the container, e.g. a\n"
+    "plane-per-chip split or a ROM-pair word interleave\n"
+    "Disables addresses and slicing while active"
 )
 
-_FILES_TIP = "Every file this entry's bytes come from, in this order"
+_FILES_TIP = "Files joined end to end to form this entry, in order"
 
 # A total rather than a grid across and down, which is why these are not the
 # New File dialog's tips: see :meth:`ContainerDialog._build_size_row`.
 _SIZE_TIPS = {
-    ContentKind.PIXELS: "How many tiles the file holds in total\n"
-    "Growing it appends blank tiles; shrinking drops the last ones",
-    ContentKind.TILEMAP: "How many cells the map holds in total\n"
-    "Growing it appends empty cells; shrinking drops the last ones",
-    ContentKind.PALETTE: "How many colors the palette holds in total\n"
-    "Growing it appends black; shrinking drops the last ones",
+    ContentKind.PIXELS: "Total tiles in the file\n"
+    "Growing appends blank tiles; shrinking drops the last ones",
+    ContentKind.TILEMAP: "Total cells in the map\n"
+    "Growing appends empty cells; shrinking drops the last ones",
+    ContentKind.PALETTE: "Total colors in the palette\n"
+    "Growing appends black; shrinking drops the last ones",
 }
 
 # Past this many rows the list scrolls instead of the dialog growing: a board
@@ -236,7 +236,7 @@ class ContainerDialog(QDialog):
         self._scroll.setToolTip(_FILES_TIP)
 
         self._append = QPushButton("Append File")
-        self._append.setToolTip("Add another file to the end of the region")
+        self._append.setToolTip("Append another file to the region")
         self._append.clicked.connect(self._append_file)
         # Sized to its own text, left under the list it adds to: stretched across
         # the dialog it would read as the primary action, which OK is.
@@ -472,7 +472,7 @@ class ContainerDialog(QDialog):
             ),
             (
                 "✕",
-                "Drop this file from the region\n(the list keeps at least one)",
+                "Remove this file from the region",
                 last > 0,
                 partial(self._remove, index),
             ),

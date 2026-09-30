@@ -1354,7 +1354,7 @@ class ToolBarOverflow(QObject):
         super().__init__(bar)
         self._bar = bar
         self._button: QToolButton = bar.findChild(QToolButton, "qt_toolbar_ext_button")
-        self._button.setToolTip("Show the controls that don't fit")
+        self._button.setToolTip("Controls that do not fit the toolbar")
         self._button.installEventFilter(self)
         bar.installEventFilter(self)
         self._button.setEnabled(True)

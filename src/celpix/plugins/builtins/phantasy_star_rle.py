@@ -344,10 +344,10 @@ class PhantasyStarRleCompression:
                 maximum=_MAX_PARTS,
                 unit="part",
                 tooltip=(
-                    "How many parts the stream is cut into, one per byte\n"
-                    "of the interleaved data: 4 for tiles (one per\n"
-                    "bitplane), 2 for a tilemap (one per cell byte).\n"
-                    "The bytes do not say; the game's loader does."
+                    "Parts the stream is cut into, one per byte of the\n"
+                    "interleaved data: 4 for tiles (one per bitplane),\n"
+                    "2 for a tilemap (one per cell byte).\n"
+                    "Set by the game's loader, not the bytes."
                 ),
             ),
             InputSpec(
@@ -360,10 +360,10 @@ class PhantasyStarRleCompression:
                 maximum=_MAX_PART * _MAX_PARTS,
                 unit="byte",
                 tooltip=(
-                    "The bytes the stream decodes to, where the game's\n"
-                    "loader is told: a size word, a map's width x height x 2.\n"
-                    "Lets the parts differ by a packer's slack byte and\n"
-                    "drops it. 0 requires every part to be the same length.\n"
+                    "Decoded size in bytes, as the game's loader is told\n"
+                    "(a size word, a map's width x height x 2). Lets the\n"
+                    "parts differ by a packer's slack byte, which is dropped.\n"
+                    "0 requires every part to be the same length.\n"
                     "Ignored when a size word states it."
                 ),
             ),
@@ -375,8 +375,7 @@ class PhantasyStarRleCompression:
                 default=False,
                 tooltip=(
                     "The stream starts with a 16-bit decoded size,\n"
-                    "which the slice includes: read as the size,\n"
-                    "and rewritten for the length a save packs."
+                    "included in the slice. Read on load; rewritten on save."
                 ),
             ),
             InputSpec(
@@ -400,8 +399,8 @@ class PhantasyStarRleCompression:
                 required=False,
                 default=False,
                 tooltip=(
-                    "The size word's byte order: off for a Z80 game\n"
-                    "(low byte first), on for a 68000 one."
+                    "Size word byte order: off for a Z80 game (low byte\n"
+                    "first), on for a 68000 one."
                 ),
             ),
         ),

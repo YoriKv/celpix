@@ -99,7 +99,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         Tool.SELECT,
         "Select",
-        "Select a pixel rectangle; Shift for a square",
+        "Select a pixel rectangle; Shift+drag for a square",
         "1",
         Gesture.MARQUEE,
         shape="marquee",
@@ -116,7 +116,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         Tool.EYEDROPPER,
         "Eyedropper",
-        "Pick a color; right-click does this on any tool",
+        "Pick a color; right-click does this with any tool",
         "3",
         Gesture.SAMPLE,
         icon=Glyph.EYE_DROPPER,
@@ -124,7 +124,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         Tool.FILL,
         "Fill",
-        "Flood-fill the region under the cursor",
+        "Flood-fill the area under the cursor",
         "4",
         Gesture.FILL,
         icon=Glyph.PAINT_BUCKET,

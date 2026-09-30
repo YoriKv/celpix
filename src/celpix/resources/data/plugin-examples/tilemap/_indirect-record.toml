@@ -13,8 +13,8 @@
 #
 #   The format has no flips and no writable palette row: a record number sharing
 #   its cell with flips is _packed.toml with index_addressing = "ordinal". Sample
-#   projects with their own preset on this engine: alex-kidd, smw, smb,
-#   ferias-frustradas, ferias-frustradas-sms.
+#   projects with their own preset on this engine: alex-kidd, smw, smb, ff2,
+#   phantasy-star-2-3, ferias-frustradas, ferias-frustradas-sms.
 #
 # SHIPPED PRESETS ON THIS ENGINE
 #   metatile-index   the params below: 2x2 records stored end to end.

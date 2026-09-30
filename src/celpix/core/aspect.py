@@ -40,33 +40,30 @@ SQUARE: PixelAspect = (1, 1)
 #: has a handful of answers between it — an arbitrary one would be a number to
 #: get wrong rather than a fact to state.
 PRESETS: tuple[tuple[PixelAspect, str, str], ...] = (
-    (SQUARE, "Square", "One image pixel to one screen pixel."),
+    (SQUARE, "Square", "One image pixel to one screen pixel"),
     (
         (1, 2),
         "Tall (1:2)",
-        "A pixel twice as tall as it is wide, which is what a\n"
-        "200-line screen at 640 across draws (PC-8801, PC-9801).\n"
-        "A 16x8 tile is a square on the machine.",
+        "Pixel twice as tall as wide: 640x200 screens\n"
+        "(PC-8801, PC-9801). A 16x8 tile draws square",
     ),
     (
         (2, 1),
         "Wide (2:1)",
-        "A pixel twice as wide as it is tall — a 256-wide mode\n"
-        "shown at the same width as a 512-wide one, and the\n"
-        "high-resolution modes' partner.",
+        "Pixel twice as wide as tall: a 256-wide mode\n"
+        "shown at the width of a 512-wide one",
     ),
     (
         (8, 7),
         "Slightly wide (8:7)",
-        "The console pixel on a 4:3 television: a 256-wide\n"
-        "screen fills a frame that is a little wider than the\n"
-        "pixel count implies.",
+        "Console pixel on a 4:3 television: a 256-wide\n"
+        "screen filling the full frame width",
     ),
     (
         (7, 8),
         "Slightly tall (7:8)",
-        "The same correction the other way, for a mode whose\n"
-        "horizontal count is the one that was doubled.",
+        "The 8:7 correction inverted, for a mode with a\n"
+        "doubled horizontal pixel count",
     ),
 )
 

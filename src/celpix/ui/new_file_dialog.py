@@ -85,25 +85,24 @@ DEFAULT_ROWS = 16
 DEFAULT_COLORS = 256
 
 _CONTENT_TIP = (
-    "What this file will hold:\n"
-    "• Pixels - tile graphics, drawn from these bytes\n"
-    "• Palette - colors, read through a color format\n"
-    "• Tilemap - indices into tiles that live somewhere else"
+    "Content of the new file:\n"
+    "• Pixels - tile graphics\n"
+    "• Palette - colors in a color format\n"
+    "• Tilemap - indices into tiles stored elsewhere"
 )
 
 _CONTAINER_TIP = (
-    "The framing written around the payload:\n"
-    "Raw binary file writes the payload and nothing else\n"
-    "A format that builds its own header instead produces\n"
-    "a file its own reader recognises"
+    "Framing written around the payload\n"
+    "Raw binary file writes the payload alone; other\n"
+    "containers add their own header"
 )
 
-_CODEC_TIP = "The format these bytes will be read back through"
+_CODEC_TIP = "Format the file is created in and read back through"
 
 _SIZE_TIPS = {
-    ContentKind.PIXELS: "How many tiles the sheet holds, across and down",
-    ContentKind.TILEMAP: "How many cells the map holds, across and down",
-    ContentKind.PALETTE: "How many colors the palette holds",
+    ContentKind.PIXELS: "Tiles across and down",
+    ContentKind.TILEMAP: "Cells across and down",
+    ContentKind.PALETTE: "Number of colors",
 }
 
 SIZE_CAPTIONS = {

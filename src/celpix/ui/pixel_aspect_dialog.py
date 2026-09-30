@@ -41,15 +41,13 @@ class PixelAspectDialog(QDialog):
         self.setWindowTitle("celPix - pixel aspect")
         layout = QVBoxLayout(self)
         intro = QLabel(
-            "How wide and tall one image pixel is drawn. This is a display\n"
-            "setting for the whole project - it changes nothing in the data,\n"
+            "Width:height ratio one image pixel is drawn at.\n"
+            "A project-wide display setting: it changes no data\n"
             "and nothing an export writes."
         )
         intro.setToolTip(
-            "A machine's pixel is not always square: a 640x200 screen\n"
-            "draws one twice as tall as it is wide, so its art is\n"
-            "squashed at 1:1. The wider side is stretched rather than\n"
-            "the narrower one shrunk, so nothing is ever lost."
+            "For displays with non-square pixels, e.g. 640x200\n"
+            "The longer side is stretched; nothing is dropped"
         )
         layout.addWidget(intro)
         self._group = QButtonGroup(self)

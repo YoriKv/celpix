@@ -61,6 +61,7 @@ from celpix.core.tilemap import RECORD_KEYS, Cell, IndexAddressing, record_geome
 from celpix.pipeline._stage import (
     _acquire,
     _cell_settler,
+    _cell_widths,
     _pixel_geometry,
     _probe,
     _run,
@@ -517,9 +518,10 @@ class TilemapData(NamedTuple):
 
     ``index_mask`` is the ``index`` field's own width, so a multi-tile cell's
     neighbours wrap inside the field rather than running past the end
-    (:attr:`~celpix.core.document.Document.index_mask`) — the codec's
-    :meth:`~celpix.plugins.base.TilemapCodecPlugin.index_limit`, since the mask
-    *is* the highest value the field holds. 0 for a format that does not say.
+    (:attr:`~celpix.core.document.Document.index_mask`) — every bit up to the top
+    one of the codec's
+    :meth:`~celpix.plugins.base.TilemapCodecPlugin.index_limit`, the highest value
+    the field holds. 0 for a format that does not say.
 
     ``palette_row_base`` is the palette row a cell's row 0 means — 8 for a sprite,
     whose 3-bit field counts from the upper half of CGRAM
@@ -546,6 +548,13 @@ class TilemapData(NamedTuple):
     because what reads it is the Qt-free model
     (:attr:`~celpix.core.document.Document.cell_settler`).
 
+    ``widths`` and ``line_bytes`` are the two answers a **mixed-width** format
+    gives beside :attr:`cell_bytes` — each cell's byte width, as a callable like
+    ``settler`` (:func:`~celpix.pipeline._stage._cell_widths`), and the fixed
+    record a name table stores each line in. None and 0 for every format whose
+    cells are all ``cell_bytes`` and whose lines are free, which is every format
+    but lead-code text (``docs/design/fontmap-entry.md`` §5).
+
     ``disk`` is the region as the **file** holds it — ``data`` before ``live``
     was spliced over it, and the same bytes when nothing was. It is the
     baseline a reload measures unsaved cell edits against
@@ -568,6 +577,8 @@ class TilemapData(NamedTuple):
     column_major: bool = False
     settler: Callable[[list[Cell]], list[Cell]] | None = None
     disk: bytes = b""
+    widths: Callable[[list[Cell]], list[int] | None] | None = None
+    line_bytes: int = 0
 
 
 def load_tilemap_data(
@@ -729,14 +740,17 @@ def load_tilemap_data(
     )
     # The index field's own width, straight off the codec
     # (:meth:`~celpix.plugins.base.TilemapCodecPlugin.index_limit`) rather than a
-    # second parameter that could disagree with the field table -- the mask *is*
-    # the highest value the field holds. A format that cannot say leaves its
-    # references unbounded.
+    # second parameter that could disagree with the field table. The limit is the
+    # highest value a cell can *hold*, which is not always all ones: an index that
+    # counts in steps of four tops out at 252, and masking with that would clear
+    # the very bits a metatile's walk adds to find its other three tiles. The field
+    # is as wide as that value's bits, so the mask is every bit up to its top one.
+    # A format that cannot say leaves its references unbounded.
     mask = _probe(
         engine,
         "index_limit",
         preset.params,
-        lambda top: max(0, int(top or 0)),
+        lambda top: (1 << max(0, int(top or 0)).bit_length()) - 1,
         0,
         ctx=ctx,
         plugin=preset.id,
@@ -788,6 +802,16 @@ def load_tilemap_data(
         # than an answer, so it travels as a callable the model can apply per edit.
         _cell_settler(engine, preset.params, ctx=ctx, plugin=preset.id),
         disk,
+        _cell_widths(engine, preset.params, ctx=ctx, plugin=preset.id),
+        _probe(
+            engine,
+            "line_bytes",
+            preset.params,
+            lambda size: max(0, int(size or 0)),
+            0,
+            ctx=ctx,
+            plugin=preset.id,
+        ),
     )
 
 

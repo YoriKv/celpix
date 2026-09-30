@@ -476,12 +476,9 @@ class FileListPanel(QWidget):
         self._filter.setPlaceholderText("Filter")
         self._filter.setClearButtonEnabled(True)
         self._filter.setToolTip(
-            "Show only the rows matching every word typed,\n"
-            "in any order - so 'object disk a' finds a slice\n"
-            "named '003 Object tiles - disk A trk 24'.\n"
-            "A matching slice brings its file along, so what\n"
-            "is left still says where each row came from.\n"
-            "Escape clears the filter."
+            "Show only rows whose name contains every word typed,\n"
+            "in any order (Ctrl+F)\n"
+            "A matching slice keeps its file row. Esc clears"
         )
         self._filter.textChanged.connect(self._apply_filter)
         # Only while a filter is up: what the tree's expansion was before it
@@ -1190,7 +1187,7 @@ class FileListPanel(QWidget):
                 tip += f"\nFormat {entry.palette_preset_id.rsplit('.', 1)[-1]}"
             tip += (
                 "\nDouble-click to use as the current palette;"
-                "\nOpen Swatches shows its colours as a sheet"
+                "\nOpen Swatches shows its colors as a sheet"
             )
         if unsaved:
             # Name which pathway is pending: a palette edit writes to a different

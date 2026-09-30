@@ -167,9 +167,8 @@ class SpriteTableCodec:
                 "Frames",
                 InputKind.REGION,
                 tooltip=(
-                    "The bytes from this table's first byte onward,\n"
-                    "far enough to hold every frame it names:\n"
-                    "the offsets count from the table's start."
+                    "Bytes from the table's first byte, far enough to hold\n"
+                    "every frame it names. Offsets count from the table start."
                 ),
             ),
         ),

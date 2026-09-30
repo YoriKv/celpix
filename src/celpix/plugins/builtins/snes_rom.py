@@ -218,9 +218,9 @@ class SnesRomContainer:
         copier = ContainerField(
             "Copier header",
             f"{skip} bytes, skipped" if skip else "none",
-            "Spotted by the file being 512 bytes over a whole number\n"
-            "of KiB. Skipped on read so offsets are the cartridge's,\n"
-            "preserved on write, and never part of the checksum.",
+            "Detected by a length 512 bytes over a whole number of KiB\n"
+            "Skipped on read so offsets are the cartridge's;\n"
+            "preserved on write, never summed",
         )
         header = header_offset(image)
         if header is None:
@@ -229,9 +229,8 @@ class SnesRomContainer:
                 ContainerField(
                     "Header",
                     "no internal header found",
-                    "Nothing at $7FC0, $FFC0 or $40FFC0 reads as a cartridge\n"
-                    "header, so there is no checksum to keep current and a\n"
-                    "save writes the bytes through untouched.",
+                    "Nothing at $7FC0, $FFC0 or $40FFC0 reads as a header\n"
+                    "A save writes the bytes through untouched",
                 ),
             )
         stored = _word(image, header + CHECKSUM)
@@ -246,17 +245,17 @@ class SnesRomContainer:
             ContainerField(
                 "Header",
                 f"{HEADER_AT[header][0]}, at ${header:04X}: {title.strip()}",
-                "The internal header at the top of the first bank. Its\n"
-                "position is the board's, and is settled by scoring the\n"
-                "three candidates: checksum pair, map mode, title, size.",
+                "Internal header at the top of the first bank\n"
+                "Position is the board's, found by scoring candidates\n"
+                "on checksum pair, map mode, title and size",
             ),
             ContainerField(
                 "Checksum",
                 f"${stored:04X} stored, ${computed:04X} computed"
                 + (" - matches" if stored == computed else " - stale"),
-                "The sum of every byte in the image. Graphics live inside\n"
-                "it, so every tile edit makes it stale; emulators and ROM\n"
-                "databases check it, and a save recomputes it.",
+                "Sum of every byte in the image\n"
+                "Stale after any tile edit; recomputed on save\n"
+                "Checked by emulators and ROM databases",
             ),
             ContainerField(
                 "Complement",
@@ -266,8 +265,8 @@ class SnesRomContainer:
                     if complement == computed ^ 0xFFFF
                     else f", ${computed ^ 0xFFFF:04X} correct"
                 ),
-                "The checksum with every bit flipped, stored beside it.\n"
-                "A save rewrites the two together.",
+                "The checksum with every bit flipped, stored beside it\n"
+                "A save rewrites the two together",
             ),
             ContainerField(
                 "Summed size",
@@ -277,8 +276,8 @@ class SnesRomContainer:
                     if mirrored != len(image)
                     else ""
                 ),
-                "An image that is not a power of two long is summed as\n"
-                "the hardware maps it: the part past the largest power\n"
-                "of two repeats until it fills out the first part.",
+                "A non-power-of-two image is summed as the hardware maps it\n"
+                "The remainder past the largest power of two repeats\n"
+                "until it fills out the first part",
             ),
         )

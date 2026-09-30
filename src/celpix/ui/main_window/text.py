@@ -15,7 +15,9 @@ Six things it has to get right, and none of them is the window's to know:
   edit land on the canvas at all: a refusal leaves the picture showing the old
   string, and a preserved tail leaves it showing half of one. Text pushed off the
   end is **said out loud** when it was something rather than trailing space, since
-  it is text the user will look for later and not find.
+  it is text the user will look for later and not find. Where a character can be
+  one byte or two the length is the slot's **bytes** and the cell count moves
+  instead (:meth:`~celpix.core.document.Document.fit_text`).
 - **Nothing the user can type refuses the write.** A character this font has no
   code for takes its cell as a blank too, so the string still lands and the gap
   sits on the picture where the missing glyph is. A refusal would leave the canvas
@@ -56,6 +58,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from celpix.core.tilemap import Cell
 from celpix.ui.widgets import Badge
 
 
@@ -187,42 +190,43 @@ class TextMixin:
         a *length* problem.
         """
         doc = self._doc
-        cells = len(doc.cells or []) if doc is not None else 0
         if doc is not None and doc.font_alphabet is None:
+            room, unit = doc.text_room
             return (
-                f"{cells} cells - no alphabet",
+                f"{room} {unit} - no alphabet",
                 Badge(
                     "no alphabet",
-                    "Nothing says what this font's codes mean, so every\n"
-                    "one reads as hex. Tick Use as Font on the entry\n"
-                    "supplying the tiles, then spell its sheet in the\n"
-                    "Font Alphabet window.",
+                    "Every code reads as hex: the font has no alphabet\n"
+                    "Tick Use as Font on the tile entry, then fill in\n"
+                    "View > Font Alphabet",
                     warning=True,
                 ),
             )
-        if typed is None or doc is None or doc.font_alphabet is None:
-            return f"{cells} cells", None
+        if typed is None or doc is None:
+            room, unit = doc.text_room if doc is not None else (0, "cells")
+            return f"{room} {unit}", None
         encoded = doc.font_alphabet.encode(typed)
-        used = len(encoded.codes)
-        line = f"{used} / {cells} cells"
+        # Counted by the fit the write will make, so the budget and the write
+        # cannot disagree about where the region ends — in cells, or in bytes
+        # where a two-byte letter costs two.
+        fit = doc.fit_text(encoded.codes, encoded.ends_line, doc.font_alphabet.blank)
+        line = f"{fit.used} / {fit.room} {fit.unit}"
         if not encoded.ok:
             shown = ", ".join(repr(item) for item in encoded.unknown[:4])
             return line, Badge(
                 f"{len(encoded.unknown)} not in font",
-                "These have no code in this font, so each is written\n"
-                "as a blank cell and the picture shows a gap where it\n"
-                "should be:\n"
+                "Characters with no code in this font, each written\n"
+                "as a blank cell:\n"
                 f"  {shown}\n"
-                "Remove them, or pick an alphabet that has them.",
+                "Remove them, or add them to the alphabet",
                 warning=True,
             )
-        if used > cells:
+        if fit.over:
+            held = "a line's record" if doc.line_bytes else "the region"
             return line, Badge(
-                f"{used - cells} over",
-                "The text encodes to more cells than this map has,\n"
-                "and a text region is a fixed run - there is nowhere\n"
-                "for the extra codes to go. Shorten it, or carve a\n"
-                "longer slice for the entry.",
+                f"{fit.over} over",
+                f"The text encodes to more {fit.unit} than {held} holds\n"
+                "Shorten it, or cut a longer slice for the entry",
                 warning=True,
             )
         return line, None
@@ -260,8 +264,10 @@ class TextMixin:
         A negative position says the caller had none to give, which is a direct
         call rather than the window's own signal.
 
-        **Nothing here is a failure.** The region is a fixed run of cells, so it
-        is kept exactly full — what ran past the end comes off it, what the string
+        **Nothing here is a failure.** The region is a fixed run — of cells, or of
+        bytes where a letter can be two — so it is kept exactly full
+        (:meth:`~celpix.core.document.Document.fit_text`) — what ran past the end
+        comes off it, what the string
         gave up is filled with the blank — and a character the font has no code
         for takes its cell as a blank as well
         (:attr:`~celpix.core.font.FontAlphabet.blank`). Both are *said* on the
@@ -284,16 +290,12 @@ class TextMixin:
         cells = list(doc.cells or [])
         encoded = doc.font_alphabet.encode(body)
         self._text.set_status(*self._text_status(body))
-        codes = list(encoded.codes)
         # The terminator bit rides beside the index for the formats that have one
         # and is False everywhere else, so it is written unconditionally: a format
         # without the field has nowhere to put it and the codec drops it.
-        ends = list(encoded.ends_line)
-        lost = doc.font_alphabet.decode(codes[len(cells) :], ends[len(cells) :]).body
-        codes = codes[: len(cells)]
-        ends = ends[: len(cells)]
-        codes += [doc.font_alphabet.blank] * (len(cells) - len(codes))
-        ends += [False] * (len(cells) - len(ends))
+        fit = doc.fit_text(encoded.codes, encoded.ends_line, doc.font_alphabet.blank)
+        codes, ends = fit.codes, fit.ends
+        lost = doc.font_alphabet.decode(fit.lost_codes, fit.lost_ends).body
         # Only the cells the string actually moved are rebuilt. A keystroke
         # re-encodes the whole region — it has to, since a code standing for a
         # pair can slide everything after it — but nearly all of what comes back
@@ -302,10 +304,20 @@ class TextMixin:
         # The comparison is the same one :meth:`_apply_cells` makes to decide
         # whether anything changed at all, done a field at a time instead of over
         # a whole list of records nobody needed to build.
-        for at, code in enumerate(codes):
+        for at, code in enumerate(codes[: len(cells)]):
             cell = cells[at]
             if cell.index != code or cell.ends_line != ends[at]:
                 cells[at] = replace(cell, index=code, ends_line=ends[at])
+        # Only a mixed-width region gets here with a different count: the fit
+        # holds its bytes, so trading two-byte letters for one-byte ones takes
+        # more cells and the reverse fewer. A cell added has nothing to carry
+        # over — such a cell is all index — and a cell dropped is bytes the
+        # string now spends on letters.
+        del cells[len(codes) :]
+        cells += [
+            Cell(index=code, ends_line=end)
+            for code, end in zip(codes[len(cells) :], ends[len(cells) :], strict=True)
+        ]
         caret = None if caret_before < 0 else (caret_before, caret_after)
         written = self._apply_cells(cells, label, run=self._text_run, caret=caret)
         if lost.strip():
@@ -313,10 +325,12 @@ class TextMixin:
             # of trailing spaces pushed off the end is the region doing its job;
             # a word pushed off it is text the user will look for later and not
             # find, and they are owed the chance to undo before typing again.
-            self.statusBar().showMessage(
-                f"{lost.strip()!r} pushed off the end - the region holds "
-                f"{len(cells)} cells and they are all in use."
+            held = (
+                f"each line's record holds only {doc.line_bytes} bytes"
+                if doc.line_bytes
+                else f"the region holds only {fit.room} {fit.unit}"
             )
+            self.statusBar().showMessage(f"{lost.strip()!r} dropped: {held}.")
         elif not encoded.ok:
             # Said after the write, not instead of it. The badge carries the same
             # news and stays up; this is the line that catches the user in the act,

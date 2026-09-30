@@ -9,15 +9,15 @@
 # invalid preset loads and then fails on the palette that uses it.
 #
 # ENGINE
-#   Fixed-size entries storing colour as bit fields. An entry's bytes are
+#   Fixed-size entries storing color as bit fields. An entry's bytes are
 #   assembled into one value by `byte_order`; each channel is sliced out and
 #   scaled to 8 bits. Same kernel as codec.pixel.direct-color
-#   (pixel/_direct-color.toml). For palettes that index a fixed hardware colour
+#   (pixel/_direct-color.toml). For palettes that index a fixed hardware color
 #   table, see _color-indexed.toml.
 #
 #   Round trip: a channel of 8 bits or fewer is exact. Bits no field names are
 #   written as zero. A channel wider than 8 bits loses its low bits. An edited
-#   colour is quantised to the channel width.
+#   color is quantized to the channel width.
 #
 # SHIPPED PRESETS ON THIS ENGINE
 #   bgr555           2 bytes little-endian, `.bbb bbgg gggr rrrr`. SNES, GBC, GBA.
@@ -44,7 +44,7 @@ engine_id = "codec.palette.mask"
 # Every bit must have a letter, and the bit count must equal the entry width.
 # No `a` field: every entry decodes opaque. A channel split across the entry is
 # written where it sits; its runs join in reading order (`rrrr gggg bbbb rgb.`).
-# On write, `v` stores the colour's luma.
+# On write, `v` stores the color's luma.
 fields = ".rrr rrgg gggb bbbb"
 
 # Optional: rename letters. Key: one character. Value: r, g, b, a or v.

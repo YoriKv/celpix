@@ -238,8 +238,7 @@ class PaletteTransferMixin:
             # carries the failure, and the dialog was raised when it happened.
             failure = load_failed(entry)
             self._alert(
-                f"{entry.name} did not open, so it cannot be applied:\n"
-                f"{failure.summary}"
+                f"{entry.name} did not open:\n{failure.summary}"
                 if failure is not None
                 else f"{entry.name}: file not found - File ▸ Locate missing files "
                 "to re-point it.",

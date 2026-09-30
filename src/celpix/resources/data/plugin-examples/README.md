@@ -9,7 +9,7 @@ and on **File ▸ Refresh plugins** (<kbd>F5</kbd>).
 | `reshape/` | reshape | a byte reordering applied to a whole region |
 | `compression/` | compression | a packing scheme, unpacked before the data is interpreted |
 | `pixel/` | interpret | how bytes become tiles |
-| `palette/` | interpret | how bytes become colours |
+| `palette/` | interpret | how bytes become colors |
 | `tilemap/` | interpret | how bytes become references to tiles: maps, screens, sprite frames |
 
 The folder sets a file's stage. Files directly in this folder and unknown
@@ -36,10 +36,10 @@ engine; each lists every parameter and the shipped presets built on the engine.
 | `pixel/_packed.toml` | one field per pixel at 1, 2, 4 or 8bpp (Mega Drive, GBA, …) |
 | `pixel/_packed-straddling.toml` | packed 3bpp and 6bpp |
 | `pixel/_nibble-planar.toml` | two bitplanes per byte, four pixels each |
-| `pixel/_direct-color.toml` | pixels that carry their own colour; no palette |
-| `pixel/_palette-swatch.toml` | bytes shown as palette colours, one swatch per entry |
-| `palette/_color-mask.toml` | colour channels as bit fields (BGR555, …) |
-| `palette/_color-indexed.toml` | bytes index a fixed hardware colour table |
+| `pixel/_direct-color.toml` | pixels that carry their own color; no palette |
+| `pixel/_palette-swatch.toml` | bytes shown as palette colors, one swatch per entry |
+| `palette/_color-mask.toml` | color channels as bit fields (BGR555, …) |
+| `palette/_color-indexed.toml` | bytes index a fixed hardware color table |
 | `tilemap/_packed.toml` | a grid of packed cell words (nearly every hardware map) |
 | `tilemap/_sprite-record.toml` | sprite parts as fixed records, in any field order |
 | `tilemap/_md-sprite.toml` | the Mega Drive VDP sprite record |
@@ -65,7 +65,7 @@ shapes:
 - **Format** (`pixel/`, `palette/`, `tilemap/`): a `FormatInfo(id, name)`, the
   stage's `decode`/`encode` pair, and `registry.register_format(...)`. It
   appears in the format picker like a preset. Use a format to implement one
-  codec; presets parameterise an engine that serves many.
+  codec; presets parameterize an engine that serves many.
 - **Plugin** (`containers/`, `reshape/`, `compression/`): a
   `PluginInfo(id, name)`, the stage's methods, and `registry.register(...)`.
 
@@ -74,7 +74,7 @@ shapes:
 | `*/_example.py` | the minimal plugin for each folder, with its full contract |
 | `containers/_tiff.py` | a real format whose payload position is a lookup; notices; Save As |
 | `compression/_inputs.py` | a codec that reads a table stored elsewhere in the file |
-| `palette/_nes-custom.py` | a format that loads its colour table from a companion file |
+| `palette/_nes-custom.py` | a format that loads its color table from a companion file |
 
 Rules common to every stage:
 

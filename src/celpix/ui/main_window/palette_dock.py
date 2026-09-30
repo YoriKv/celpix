@@ -69,16 +69,14 @@ _SOURCE_SLOT_MIN_WIDTH = 58
 # different rhythm than its neighbours.
 _ROW_GAP = 4
 _ROW_BASE_TIP = (
-    "Which palette row a named row 0 draws through\n"
-    "A map's cells, a sprite's parts and a bank's pinned\n"
-    "rows all count from here; the file says where it can\n"
-    "Palette > Wrap Palette Rows decides what happens\n"
-    "to a row this pushes off the end"
+    "Offset added to every palette row the file names:\n"
+    "tilemap cells, sprite parts and pinned regions\n"
+    "Palette > Wrap Palette Rows handles rows pushed off the end"
 )
 # The same control under a direct-colour format, where no row is ever named.
 _ROW_BASE_DIRECT_TIP = (
-    "Which palette row a named row 0 draws through\n"
-    "This pixel format stores colours, not palette indices"
+    "Offset added to every palette row the file names\n"
+    "Unused: this pixel format stores colors, not indices"
 )
 
 # Horizontal inset for each row, matching the swatch grid's own left edge.
@@ -142,7 +140,7 @@ class PaletteDockMixin:
         # format names, so it needs about the width of "Emulator State" and no
         # room for a plugin to widen it later.
         self._palette_mode_combo = CompactComboBox(120)
-        self._palette_mode_combo.setToolTip("Where the palette comes from")
+        self._palette_mode_combo.setToolTip("Palette source")
         for label, mode in (
             ("Default", PaletteMode.DEFAULT),
             ("File", PaletteMode.FILE),
@@ -171,8 +169,8 @@ class PaletteDockMixin:
         )
         self._palette_offset_edit.setFixedWidth(104)
         self._palette_offset_edit.setToolTip(
-            "Where the palette starts: a byte offset in the\n"
-            "pixel file, or in the entry it is read from\n"
+            "Byte offset of the palette in the pixel file,\n"
+            "or in the entry it is read from\n"
             "Enter to load"
         )
         self._palette_offset_edit.hide()
@@ -207,7 +205,7 @@ class PaletteDockMixin:
         # _set_palette_mode). Hidden widgets still hold state - the session
         # capture/restore and undo paths read and set them as before.
         self._palette_preset = self._preset_combo(Stage.INTERPRET_PALETTE, "bgr555")
-        self._palette_preset.setToolTip("How palette bytes decode to colors")
+        self._palette_preset.setToolTip("Palette color format")
         self._palette_preset.currentIndexChanged.connect(self._reload_palette)
         self._palette_preset.hide()
 
@@ -236,7 +234,7 @@ class PaletteDockMixin:
         # explicit, one-shot conversion - the dropdown alone only relabels.
         self._quantize_palette_action = QPushButton("Quantize")
         self._quantize_palette_action.setToolTip(
-            "Snap colors to the nearest the format can store"
+            "Snap every color to the nearest the format can store"
         )
         self._quantize_palette_action.clicked.connect(self._quantize_custom_palette)
         self._quantize_palette_action.hide()
@@ -293,7 +291,7 @@ class PaletteDockMixin:
         # _sync_palette_export_action.
         self._export_palette_action = QPushButton("Export to File…")
         self._export_palette_action.setToolTip(
-            "Write these colors to a .pal file,\nencoded in the Format row's codec"
+            "Write these colors to a .pal file in the Format row's codec"
         )
         self._export_palette_action.clicked.connect(self._export_palette_file)
 
@@ -308,8 +306,8 @@ class PaletteDockMixin:
             Stage.INTERPRET_PALETTE, "bgr555"
         )
         self._palette_import_preset.setToolTip(
-            "How the next palette file opened is read\n"
-            "The Format row re-reads the one on screen"
+            "Color format for the next palette file opened\n"
+            "Format above re-reads the one already open"
         )
         # A row each: the two are opposite directions through the same file
         # format, and sharing a line left neither enough width at the dock's
@@ -389,7 +387,7 @@ class PaletteDockMixin:
         # (where this action also sits) keeps clear for it.
         self._palette_from_selection_action = QAction("&Palette from Selection", self)
         self._palette_from_selection_action.setToolTip(
-            "Read a palette from the selected tile's offset"
+            "Load the palette at the selected tile's offset (P)"
         )
         self._palette_from_selection_action.triggered.connect(
             self._load_palette_from_selection
@@ -609,9 +607,7 @@ class PaletteDockMixin:
             self._palette_file_label.setText(
                 metrics.elidedText(name, Qt.TextElideMode.ElideMiddle, 120)
             )
-            self._palette_file_label.setToolTip(
-                f"The palette is read from {source.name}"
-            )
+            self._palette_file_label.setToolTip(f"Palette read from {source.name}")
             self._palette_file_label.show()
             return
         path, missing = None, False

@@ -48,3 +48,10 @@ planes = [
 # Tile size in pixels. Default 8 each. tile_width must be a multiple of 8.
 tile_width = 8
 tile_height = 8
+
+# Read by celPix, not the engine, on any pixel preset: the depth a palette row
+# is sized by, when the hardware expands tiles on upload. Default: the tile's
+# own depth (bits per tile / pixels per tile, rounded up). The shipped
+# snes-3bpp-as-4bpp states 4, so a row is 16 colors over 3bpp tiles. Never
+# below the tile's depth.
+# palette_bpp = 4

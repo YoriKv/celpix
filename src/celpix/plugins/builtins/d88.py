@@ -436,9 +436,8 @@ class D88Container:
                 ContainerField(
                     "Disk header",
                     "not a D88 image",
-                    "The first track pointer is neither 688 nor 672, the\n"
-                    "only two header lengths there are, so the file is\n"
-                    "handed on whole as a plain binary would be.",
+                    "First track pointer is neither 688 nor 672\n"
+                    "The whole file is passed on as a plain binary",
                 ),
             )
         fields: list[ContainerField] = []
@@ -447,8 +446,8 @@ class D88Container:
                 ContainerField(
                     "Disks",
                     f"{len(image.disks)} in one file",
-                    "Concatenated one after another, each with its own\n"
-                    "header. Read into one flat image in file order.",
+                    "Concatenated, each with its own header\n"
+                    "Read into one flat image in file order",
                 )
             )
         for number, disk in enumerate(image.disks, 1):
@@ -479,44 +478,42 @@ class D88Container:
             ContainerField(
                 f"{label}Name",
                 disk.name or "(none)",
-                "The 16-character label at the head of the disk. Written\n"
-                "by the dumping tool rather than the game, so a raw game\n"
-                "disk usually carries whatever the blank was called.",
+                "16-character label at offset 0\n"
+                "Written by the dumping tool, not the game",
             ),
             ContainerField(
                 f"{label}Media",
                 MEDIA_NAMES.get(disk.media, f"unknown ({disk.media:02X}h)")
                 + (", write protected" if disk.protected else ""),
-                "The media byte at 1Bh and the protect flag at 1Ah.\n"
-                "Informational: the geometry is read from the sectors\n"
-                "themselves, and a save writes regardless of the flag.",
+                "Media byte at 1Bh, protect flag at 1Ah\n"
+                "Informational: geometry comes from the sectors,\n"
+                "and a save writes regardless of the flag",
             ),
             ContainerField(
                 f"{label}Header",
                 f"{disk.header} bytes, {header_tracks} track pointers",
-                "Told by the first non-zero track pointer, since the\n"
-                "table's length is not stored: 688 bytes is the current\n"
-                "layout, 672 the one older tools wrote.",
+                "Told by the first non-zero track pointer\n"
+                "688 bytes is the current layout, 672 from older tools",
             ),
             ContainerField(
                 f"{label}Size",
                 f"{disk.declared} ({format_size(disk.declared)})",
-                "The size field at 1Ch, header included. A file longer\n"
-                "than this holds another disk after it.",
+                "Size field at 1Ch, header included\n"
+                "A longer file holds another disk after it",
             ),
             ContainerField(
                 f"{label}Sectors",
                 f"{disk.sectors} in {disk.formatted_tracks} tracks, "
                 f"{format_size(disk.payload_size)} flat",
-                "Every sector's data with its ID field removed, each\n"
-                "track sorted by R and every sector at its full size -\n"
-                "what a slice offset in this entry addresses.",
+                "Sector data with ID fields removed, each track\n"
+                "sorted by R, every sector at its full size\n"
+                "What a slice offset in this entry addresses",
             ),
             ContainerField(
                 f"{label}Irregularities",
                 "; ".join(q for q in quirks if q) or "none",
-                "What the read had to work around: out-of-order sectors,\n"
-                "garbage length fields, gaps in the track table, and\n"
-                "sectors dumped deleted or with a read error.",
+                "What the read worked around: out-of-order sectors,\n"
+                "garbage length fields, track-table gaps, and\n"
+                "sectors dumped deleted or with a read error",
             ),
         ]

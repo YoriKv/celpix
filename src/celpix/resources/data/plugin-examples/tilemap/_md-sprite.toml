@@ -14,8 +14,8 @@
 #   attr   `oppv hiii iiii iiii`: priority, palette row, flips, 11-bit tile.
 #
 #   There is no frame header: the entry must start at the first record. For any
-#   other field order use _sprite-record.toml. Sprite maps open read-only in
-#   the app.
+#   other field order use _sprite-record.toml. A sprite map's pixels are
+#   editable through the bound bank; its records are not.
 #
 # SHIPPED PRESETS ON THIS ENGINE
 #   md-sprite   the same params as below.

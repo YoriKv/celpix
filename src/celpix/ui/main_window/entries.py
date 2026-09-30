@@ -413,7 +413,7 @@ class EntriesMixin:
         second window shares the same one.
         """
         self._recent_menu = file_menu.addMenu("Open Re&cent")
-        self._recent_menu.setToolTip("Reopen a recently opened project")
+        self._recent_menu.setToolTip("Reopen a recent project")
         file_menu.aboutToShow.connect(self._sync_recent_menu)
 
     def _sync_recent_menu(self) -> None:
@@ -439,7 +439,7 @@ class EntriesMixin:
         if recent:
             menu.addSeparator()
             clear = menu.addAction("Clear &List")
-            clear.setToolTip("Forget every recent project")
+            clear.setToolTip("Clear the recent projects list")
             clear.triggered.connect(lambda *_: clear_recent_projects())
 
     def _open_recent(self, path: str) -> None:
@@ -651,9 +651,8 @@ class EntriesMixin:
             clash = self._workspace.find_file(new)
             if self._workspace.find_file(old) is not None and clash is not None:
                 self._alert(
-                    f"{Path(new).name} is already open in this project, so "
-                    f"{Path(old).name} can't be relocated to it. Pick a "
-                    "different file, or close the duplicate first.",
+                    f"{Path(new).name} is already open in this project. Pick a "
+                    "different file, or close it first.",
                     title="celPix - locate",
                 )
                 continue
@@ -1080,10 +1079,9 @@ class EntriesMixin:
                 "New Slice from Selection needs a continuous run of tiles.",
                 title="celPix - new slice",
                 detail=(
-                    "This rectangle's rows are separated in the file, and a "
-                    "slice is a single offset and length. Select the tiles as "
-                    "one run (Selection ▸ Linear), or widen the rectangle to the "
-                    "full width of the view."
+                    "The rectangle's rows are not contiguous in the file. Select "
+                    "the tiles as one run (Selection: Linear), or widen the "
+                    "rectangle to the full view width."
                 ),
             )
             return
@@ -1480,8 +1478,8 @@ class EntriesMixin:
                 else Path(entry.path).name
             )
             self._alert(
-                f"{entry.name} is a region of {where}, which is no longer open, "
-                "so there is nowhere to put the resized bytes.",
+                f"{entry.name} is a region of {where}, which is not open. "
+                "Cannot resize.",
                 title="celPix - resize",
             )
             return False
@@ -1507,9 +1505,8 @@ class EntriesMixin:
         assert parent.doc is not None
         if parent.doc.is_tilemap:
             self._alert(
-                f"{entry.name} lies inside {parent.name}, a tilemap, whose bytes "
-                "are written from its cells, so there is nowhere to put the "
-                "resized bytes.",
+                f"{entry.name} lies inside the tilemap {parent.name}, which is "
+                "written from its cells. Cannot resize.",
                 title="celPix - resize",
             )
             return False
@@ -1523,8 +1520,7 @@ class EntriesMixin:
         start = entry.slice_offset - base
         if start < 0 or start + len(slot) > len(parent.doc.pixel_data):
             self._alert(
-                f"{entry.name} lies outside {parent.name}'s region, so there is "
-                "nowhere in it to put the resized bytes.",
+                f"{entry.name} lies outside {parent.name}'s region. Cannot resize.",
                 title="celPix - resize",
             )
             return False
@@ -2197,10 +2193,7 @@ class EntriesMixin:
             # A nested slice's parent is a slice, closed only with everything
             # under it — so this is a broken chain, and reopening the file would
             # land on an offset that was never a file offset.
-            self.statusBar().showMessage(
-                f"{child.name}'s parent slice is not open, so there is nowhere "
-                "to jump to."
-            )
+            self.statusBar().showMessage(f"{child.name}'s parent slice is not open.")
             return
         # Reopened as what the child was cut from: a slice of a palette file
         # names a registered palette, and it comes back as one.
@@ -2341,8 +2334,8 @@ class EntriesMixin:
                 previous.pixel_data
             ) != len(doc.pixel_data):
                 self._alert(
-                    f"{parent.name} has unsaved changes that could not be carried "
-                    "into the jump. Write them first, then jump again.",
+                    f"{parent.name} has unsaved changes the jump cannot carry. "
+                    "Write it first.",
                     title="celPix - jump",
                 )
                 return False
@@ -2513,11 +2506,9 @@ class EntriesMixin:
     ) -> None:
         if not self._can_hold_slices(parent):
             self._alert(
-                f"{parent.name} is a tilemap slice, and a slice cannot be cut from "
-                "one: a map is written from its cells rather than from the bytes "
-                "they were read out of, so a slice of those bytes would have "
-                "nowhere to put its edits. Cut the slice from the entry the map "
-                "was cut from instead.",
+                f"{parent.name} is a tilemap slice. A tilemap is written from its "
+                "cells, not its bytes, so a slice of it could not save edits. Cut "
+                f"the slice from the entry {parent.name} was cut from instead.",
                 title="celPix - new slice",
             )
             return

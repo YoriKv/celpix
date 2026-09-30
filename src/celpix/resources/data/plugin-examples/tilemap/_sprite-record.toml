@@ -8,8 +8,8 @@
 #   not cells in rows. This engine reads any record whose fields sit at fixed
 #   byte positions, stored back to back or as parallel arrays. Frames named by
 #   a table of offsets are _sprite-table.toml; any other frame reached through
-#   pointers needs a code format (_example.py). Sprite maps open read-only in
-#   the app.
+#   pointers needs a code format (_example.py). A sprite map's pixels are
+#   editable through the bound bank; its records are not.
 #
 #   The record below is 10 bytes: x.w  x_mirror.w  y.w  pad.b  size.b  attr.w
 #

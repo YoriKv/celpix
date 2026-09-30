@@ -71,9 +71,9 @@ class CompressReshapeDialog(QDialog):
 
         self._compression = SearchableComboBox(PRESET_COMBO_WIDTH)
         self._compression.setToolTip(
-            "The scheme the data is packed with.\n"
-            "It reads the file's bytes, so whether the pair finds its\n"
-            "own end, and any inputs it needs, are this half's."
+            "Compression scheme the data is packed with\n"
+            "Decides whether the pair finds its own end,\n"
+            "and which inputs it needs"
         )
         # Neither pass-through, and no pair: half a pair is a plugin that already
         # exists under its own picker, and the loader refuses all three anyway
@@ -90,9 +90,9 @@ class CompressReshapeDialog(QDialog):
         )
         self._reshape = SearchableComboBox(PRESET_COMBO_WIDTH)
         self._reshape.setToolTip(
-            "The pass run over the decompressed bytes on load,\n"
-            "and undone before compressing on save.\n"
-            "It is handed the whole decompressed stream as its region."
+            "Reshape run over the decompressed bytes on load\n"
+            "and undone before compressing on save\n"
+            "Its region is the whole decompressed stream"
         )
         fill_stage_combo(
             self._reshape,
@@ -105,14 +105,13 @@ class CompressReshapeDialog(QDialog):
         )
         self._name = QLineEdit()
         self._name.setToolTip(
-            "What the Compression picker calls the pair.\n"
-            "Blank uses the two halves' names."
+            "Name shown in the Compression picker\nBlank joins the two halves' names"
         )
         self._saved_as = QLabel()
         self._saved_as.setToolTip(
-            "The plugin's id, which a slice using it is saved with,\n"
-            "and the file it is written to in the project's plugins folder.\n"
-            "Both follow from the name."
+            "Plugin id, saved with every slice using it, and its\n"
+            "file name in the project's plugins folder\n"
+            "Both derive from the name"
         )
         self._note = QLabel()
         self._note.hide()

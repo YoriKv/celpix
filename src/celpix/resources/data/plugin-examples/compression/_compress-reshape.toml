@@ -42,6 +42,6 @@ engine_id = "compression.compress-reshape"
 compression = "compression.rnc2"
 
 # Required. Plugin id of the reshape applied to the whole decompressed stream:
-# any entry of the Reshape picker except "None", including your own bitswap and
-# data-LUT presets.
+# any entry of the Reshape picker except "None", including your own bitswap,
+# data-LUT and split-parts presets.
 reshape = "reshape.running-sum"

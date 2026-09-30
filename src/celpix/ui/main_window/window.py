@@ -53,6 +53,7 @@ from PySide6.QtWidgets import (
     QDockWidget,
     QHBoxLayout,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QScrollArea,
     QScrollBar,
@@ -1220,8 +1221,8 @@ class MainWindow(
             "Open &tilemap data…",
             self._open_tilemap,
             menu=file_menu,
-            tip="Read a file as a map of tile indices\n"
-            "Bind it to its tiles in the bar under the canvas",
+            tip="Open a file as a map of tile indices\n"
+            "Bind its tile source in the bar under the canvas",
         )
 
         # Under the three Open rows, because it answers the same question they
@@ -1240,8 +1241,7 @@ class MainWindow(
             "New File…",
             self._new_file,
             menu=file_menu,
-            tip="Create a blank graphics, palette or tilemap file\n"
-            "and open it as an entry",
+            tip="Create a blank pixel, palette or tilemap file\nand open it",
             shortcut="Ctrl+Shift+N",
         )
 
@@ -1271,7 +1271,8 @@ class MainWindow(
             "&Save Project",
             self._save_project,
             menu=file_menu,
-            tip="Save the session to a .celpix project\nReferences, not bytes",
+            tip="Save the session as a .celpix project\n"
+            "Stores file references and settings, not file bytes",
             shortcut=QKeySequence.StandardKey.Save,  # Ctrl+S
         )
         make_action(
@@ -1341,8 +1342,8 @@ class MainWindow(
             "New Composite View…",
             self._new_composite,
             menu=file_menu,
-            tip="Assemble one tile source from several files and slices,\n"
-            "so a tilemap can index the window the hardware loaded",
+            tip="Assemble one tile source from several files and slices\n"
+            "Lets a tilemap index the window the hardware loaded",
         )
 
         self._change_container_action = make_action(
@@ -1350,8 +1351,8 @@ class MainWindow(
             "&Edit File Container…",
             self._change_container_current,
             menu=file_menu,
-            tip="Change how this file is unwrapped before decoding:\n"
-            "a header to skip, an interleave to undo, or none at all",
+            tip="Set how this file is unwrapped before decoding:\n"
+            "header to skip, interleave to undo, or none",
             shortcut=QKeySequence("Ctrl+E"),
             enabled=False,
         )
@@ -1363,8 +1364,8 @@ class MainWindow(
             "Container &Info…",
             self._container_info_current,
             menu=file_menu,
-            tip="What this file's container read out of it:\n"
-            "the header fields it used, and what it passed on",
+            tip="Header fields the container read from this file,\n"
+            "and the payload it passed on",
             enabled=False,
         )
         # Beside the container rows for the same reason they sit together: all
@@ -1375,9 +1376,8 @@ class MainWindow(
             "Inp&uts…",
             self._inputs_current,
             menu=file_menu,
-            tip="What this entry's formats need from elsewhere in the\n"
-            "file - a shared code table, a size kept in another table -\n"
-            "and where each is bound",
+            tip="Data this entry's formats read from elsewhere\n"
+            "(a code table, a size word) and where each is bound",
             enabled=False,
         )
 
@@ -1388,9 +1388,9 @@ class MainWindow(
             "&Write",
             self._write_current,
             menu=file_menu,
-            tip="Write this file or slice back to disk, with the\n"
-            "palette file it shows and, on a map, the tiles\n"
-            "it borrows if they have been painted on",
+            tip="Write this file or slice to disk\n"
+            "Also writes its palette file and, on a tilemap,\n"
+            "its edited tile source",
             shortcut=QKeySequence("Ctrl+W"),
             enabled=False,
         )
@@ -1413,8 +1413,8 @@ class MainWindow(
             "Reload From Disk",
             self._reload_current_from_disk,
             menu=file_menu,
-            tip="Re-read this entry's file as it is on disk now.\n"
-            "Unsaved changes made here are kept on top of it",
+            tip="Re-read this entry's file from disk\n"
+            "Unsaved edits are reapplied on top",
             enabled=False,
         )
 
@@ -1432,8 +1432,8 @@ class MainWindow(
             "Open Project Folder…",
             self._open_project_folder,
             menu=file_menu,
-            tip="Show the open .celpix project in a file manager,\n"
-            "where its plugins/ folder and its files live",
+            tip="Show the project's folder in a file manager\n"
+            "Holds the .celpix file and its plugins/ folder",
             enabled=False,  # armed by an open project
         )
         # A project can be opened, closed or first saved without a menu rebuild -
@@ -1446,9 +1446,8 @@ class MainWindow(
             "New Compress && Reshape Plugin…",
             self._new_compress_reshape_plugin,
             menu=file_menu,
-            tip="Pair a compression scheme with a reshape run over what\n"
-            "it unpacks, as a plugin in the open project's plugins/ folder.\n"
-            "For data a game transforms again after decompressing it.",
+            tip="Pair a compression scheme with a reshape pass over\n"
+            "its output, saved as a plugin in the project's plugins/",
             enabled=False,  # armed by an open project
         )
         make_action(
@@ -1464,8 +1463,7 @@ class MainWindow(
             "&Refresh plugins",
             self._refresh_plugins,
             menu=file_menu,
-            tip="Reload plugins - yours and the open project's -\nand re-run "
-            "on the open file",
+            tip="Reload user and project plugins\nand re-run them on the open file",
             shortcut=QKeySequence.StandardKey.Refresh,  # F5
             enabled=self._reload_plugins is not None,
         )
@@ -1490,6 +1488,12 @@ class MainWindow(
         self._build_palette_menu()
         self._build_panels_menu()
         self._build_help_menu()
+        # Qt hides an action's tooltip on a menu row unless the menu opts in,
+        # and most File/View/Palette actions have no other home to show it. One
+        # sweep here rather than a line per addMenu: the submenus (Export, Grid
+        # Style, Open Recent) are children of their menus, so it finds them all.
+        for menu in self.menuBar().findChildren(QMenu):
+            menu.setToolTipsVisible(True)
 
     def _build_help_menu(self) -> None:
         """Help ▸ the shortcut guide and About.
@@ -1499,7 +1503,7 @@ class MainWindow(
         """
         menu = self.menuBar().addMenu("&Help")
         shortcuts = QAction("&Shortcuts…", self)
-        shortcuts.setToolTip("Every keyboard shortcut in one page")
+        shortcuts.setToolTip("List every keyboard shortcut")
         shortcuts.setShortcut(QKeySequence.StandardKey.HelpContents)  # F1
         shortcuts.triggered.connect(self._show_shortcuts)
         menu.addAction(shortcuts)
@@ -1743,8 +1747,7 @@ class MainWindow(
             return
         self._codec_faults_seen.update((f[0], f[1]) for f in fresh)
         self._alert(
-            "A plugin crashed and celPix worked around it. The entry stays open, "
-            "but what the plugin would have answered is missing.\n\n"
+            "A plugin crashed; its result was skipped and the entry stays open.\n\n"
             + "\n\n".join(f[2] for f in fresh),
             title="celPix - plugin warning",
             detail="\n\n".join(f[3] for f in fresh),
@@ -1779,11 +1782,10 @@ class MainWindow(
             for item in missing
         )
         self._alert(
-            f"{len(missing)} format(s) this project uses aren't installed. Those "
-            "entries fall back to a default, so what they show is not what the "
-            "files hold. Install the plugin that provides them and reopen the "
-            "project - saving it as it stands writes the fallbacks in place of "
-            "the formats it named.",
+            f"{len(missing)} format(s) this project uses are not installed. Their "
+            "entries fall back to a default format and do not show what the files "
+            "hold. Install the plugin and reopen the project; saving now writes "
+            "the fallbacks in place of the named formats.",
             title="celPix - missing formats",
             detail=detail,
         )
@@ -1800,10 +1802,10 @@ class MainWindow(
         if not notes:
             return
         self._alert(
-            f"{len(notes)} map(s) in this project count their index in whole "
-            "stamps or metatiles, and a base now counts in the same unit. Their "
-            "bases were not whole units, so each was moved to the nearest one "
-            "and draws shifted. Check Base on each before saving.",
+            f"{len(notes)} map(s) count their index in whole stamps or metatiles, "
+            "and Base now counts in the same unit. Bases that were not whole units "
+            "were moved to the nearest one, shifting what they draw. Check Base on "
+            "each before saving.",
             title="celPix - base re-counted",
             detail="\n".join(f"• {note}" for note in notes),
         )

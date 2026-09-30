@@ -384,11 +384,10 @@ class Lz4wCompression:
                 stride=WORD,
                 unit="word",
                 tooltip=(
-                    "The bytes that sit immediately before this stream in\n"
-                    "the ROM, ending where the stream starts, for a stream\n"
-                    "that copies from the resource packed before it. Needed\n"
-                    "only for a stream lifted out of its ROM: in place, the\n"
-                    "bytes before it are read from the file itself."
+                    "Bytes immediately before the stream in the ROM, for a\n"
+                    "stream that copies from the resource packed before it.\n"
+                    "Needed only for a stream lifted out of its ROM; in\n"
+                    "place they are read from the file."
                 ),
             ),
             InputSpec(
@@ -397,10 +396,9 @@ class Lz4wCompression:
                 InputKind.FLAG,
                 required=False,
                 tooltip=(
-                    "Checked, a save may copy from the bytes before the\n"
-                    "stream, as SGDK's packer does, which is what fits a\n"
-                    "stream back into a slot it only fit by doing so. The\n"
-                    "stream then stays correct only while those bytes do.\n"
+                    "Let a save copy from the bytes before the stream, as\n"
+                    "SGDK's packer does. Fits a stream back into a slot that\n"
+                    "needs it, but the stream then depends on those bytes.\n"
                     "Unchecked, the stream is valid wherever it lands."
                 ),
             ),

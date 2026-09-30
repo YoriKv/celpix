@@ -19,12 +19,11 @@ written back shorter than the one read has to *shorten the file*, which is why
 than splicing into what is there — a splice would leave the tail of the old
 palette behind and the count would still describe it.
 
-**The format byte is published, not applied.** It goes on the context as
-``KEY_PALETTE_PRESET``, which puts it in the container-info popup where a reader
-can see what the file says it is. Adopting it into the palette dock's format
-picker automatically is a further step this does not take: unlike the pixel
-pathway's ``KEY_PIXEL_PRESET``, a palette entry's format is chosen at
-registration time, before any pipeline has run to produce a context.
+**The format byte is published on the context** as ``KEY_PALETTE_PRESET``,
+which puts it in the container-info popup and lets the palette dock adopt it
+(``palette_source._apply_palette_preset_hint``) - but only while the entry's
+format is still the import default, since a format someone picked by hand is
+not overruled by a header.
 
 The same key is read the other way on a write into nothing. A **new** palette
 has no file to copy a header from, and the colors cannot say what they are
@@ -181,18 +180,15 @@ class TplPaletteContainer:
             ContainerField(
                 "Color format",
                 f"{kind} - {label} ({entry_size} bytes/entry)",
-                "This file states its own encoding, which almost no other\n"
-                "palette file does. Read through the wrong format the\n"
-                "colors are wrong but never obviously so, since any bytes\n"
-                f"decode as some color. It names {preset.rsplit('.', 1)[-1]}.",
+                f"States its own encoding: {preset.rsplit('.', 1)[-1]}\n"
+                "Adopted as the palette format unless one was\n"
+                "chosen by hand",
             ),
             ContainerField(
                 "Entries",
                 f"{count} at {format_hex(HEADER_SIZE, 2)}",
-                "Counted from the file's length rather than read: the\n"
-                "entries run to the end and there is no count field. A\n"
-                "save therefore rewrites the file's length rather than\n"
-                "splicing into it.",
+                "Counted from the file's length; there is no count field\n"
+                "A save rewrites the file's length rather than splicing",
             ),
         ]
         if leftover:
@@ -200,9 +196,9 @@ class TplPaletteContainer:
                 ContainerField(
                     "Trailing bytes",
                     f"{leftover} past the last whole entry",
-                    "The payload is not a whole number of entries, so the\n"
-                    "file is either truncated or not what its header says.\n"
-                    "What is shown stops at the last complete entry.",
+                    "Not a whole number of entries: the file is truncated\n"
+                    "or not what its header says\n"
+                    "What is shown stops at the last complete entry",
                 )
             )
         return tuple(fields)

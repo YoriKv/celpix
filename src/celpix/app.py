@@ -94,18 +94,17 @@ def _build_parser() -> argparse.ArgumentParser:
         nargs="*",
         type=Path,
         metavar="FILE",
-        help=f"what to open: one {PROJECT_EXTENSION} project, or any number of "
-        "data files - a ROM, a dump, a palette - as File > Open would",
+        help=f"a {PROJECT_EXTENSION} project, or any number of data files "
+        "(a ROM, a dump, a palette), opened as File > Open would",
     )
     parser.add_argument(
         "-t",
         "--type",
         dest="content_kind",
         choices=[kind.value for kind in ContentKind],
-        help="what the data files hold, said rather than guessed from their "
-        "signature: the command line's File > Open pixel/tilemap data. Detection "
-        "can only recognise a format it knows, so a raw region of a ROM has no "
-        "way to announce itself as a map or a palette. Applies to every FILE",
+        help="content of every FILE, instead of detecting it from the file's "
+        "signature (a raw ROM region cannot announce itself as a tilemap or "
+        "a palette)",
     )
     return parser
 

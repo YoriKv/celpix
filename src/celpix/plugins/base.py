@@ -1231,6 +1231,49 @@ class TilemapCodecPlugin(Plugin, Protocol):
         """
         ...
 
+    def cell_widths(
+        self, cells: list[Cell], params: dict[str, Any]
+    ) -> list[int] | None:
+        """How many bytes each of ``cells`` takes, for a format of **mixed widths**.
+
+        Optional, and for the one kind of format where :meth:`bytes_per_cell` is
+        not every cell's answer: text in which some characters are one byte and
+        some two (:mod:`~celpix.plugins.builtins._lead_codes`). There cell *N*
+        does not start at byte *N* times anything, and the host needs to know
+        where it does for the readouts that are about **bytes** — the hex dump's
+        shading of a selection, the text window's budget — and to keep a text
+        region full in the bytes its slot holds rather than in cells
+        (``docs/design/fontmap-entry.md`` §5).
+
+        One width per cell, in order, as :meth:`encode` would write the list —
+        a cell whose width depends on its neighbours is answered where it
+        stands. Asked per keystroke of a text region, so a scan and nothing
+        more. **None** says every cell is :meth:`bytes_per_cell`, which is how a
+        fixed-width preset of an engine that also reads mixed ones answers; the
+        host asks once with no cells at load and, on None, never again.
+
+        A plugin that omits this method is fixed-width, which is every format
+        whose cells are words: :meth:`bytes_per_cell` already says it all.
+        """
+        ...
+
+    def line_bytes(self, params: dict[str, Any]) -> int:
+        """The fixed byte length each **line** is stored in, or 0 where lines are free.
+
+        Optional, and :meth:`cell_widths`'s companion for a name table: fixed
+        records, one line each, a line end being where a record fills rather
+        than a code or a bit the text chose to put there. The text window keeps
+        **each record** full rather than the region as a whole, since a line
+        run past its record is not text moved to the next one but a record that
+        no longer reads back — and a name typed shorter than its record is
+        padded where it stands, not by pulling the next name up into it.
+
+        A plugin that omits this method has no records, which is every format
+        whose lines end on a code or on a bit: a line there is as long as its
+        text, and only the region's length is fixed.
+        """
+        ...
+
 
 @dataclass(frozen=True)
 class Preset:
