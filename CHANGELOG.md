@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.2.3 - unreleased
+## v1.2.3 - 2026-09-30
 
 - Big code review and re-org, lots of small fixes
 
