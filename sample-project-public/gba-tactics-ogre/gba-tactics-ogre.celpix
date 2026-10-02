@@ -1,6 +1,6 @@
 {
  "version": 7,
- "current": 2,
+ "current": 3,
  "entries": [
   {
    "kind": "file",
@@ -30,7 +30,7 @@
   },
   {
    "kind": "slice",
-   "name": "Portrait archive — A7, 1830 entries = 122 portraits x 15 ($086E3F3C)",
+   "name": "Portrait archive, 40x48 — A7, 1830 entries = 122 portraits x 15 ($086E3F3C)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "slice_offset": 7225148,
    "slice_length": 101870,
@@ -59,13 +59,41 @@
   },
   {
    "kind": "slice",
-   "name": "Portrait 000 — portrait, palette 16 (record 35, 59, 107, 151, 152, 153, 154)",
+   "name": "Portrait archive, 48x48 — A7, 1764 entries = 98 portraits x 18 ($086C052C)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "slice_offset": 7079212,
+   "slice_length": 91653,
+   "compression_id": "compression.lodis-a7",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 30,
+    "rows": 118,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6417448
+   }
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 000 — 40x48 portrait, palette 16 (record 35, 59, 107, 151, 152, 153, 154)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 0,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -87,17 +115,48 @@
    },
    "palette": {
     "offset": 6417448
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 000 — 48x48 portrait, palette 16 (record 35, 59, 107, 151, 152, 153, 154)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 0,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6417448
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 001 — portrait, palette 17 (record 36, 61, 92, 93)",
+   "name": "Portrait 001 — 40x48 portrait, palette 17 (record 36, 61, 92, 93)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 960,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -119,17 +178,48 @@
    },
    "palette": {
     "offset": 6417480
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 001 — 48x48 portrait, palette 17 (record 36, 61, 92, 93)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 1152,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6417480
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 002 — portrait, palette 18 (record 37, 49, 155)",
+   "name": "Portrait 002 — 40x48 portrait, palette 18 (record 37, 49, 155)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 1920,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -151,17 +241,48 @@
    },
    "palette": {
     "offset": 6417512
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 002 — 48x48 portrait, palette 18 (record 37, 49, 155)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 2304,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6417512
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 003 — portrait, palette 19 (record 38, 75)",
+   "name": "Portrait 003 — 40x48 portrait, palette 19 (record 38, 75)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 2880,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -183,17 +304,48 @@
    },
    "palette": {
     "offset": 6417544
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 003 — 48x48 portrait, palette 19 (record 38, 75)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 3456,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6417544
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 004 — portrait, palette 20 (record 39)",
+   "name": "Portrait 004 — 40x48 portrait, palette 20 (record 39)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 3840,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -215,17 +367,48 @@
    },
    "palette": {
     "offset": 6417576
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 004 — 48x48 portrait, palette 20 (record 39)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 4608,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6417576
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 005 — portrait, palette 21 (record 40, 47)",
+   "name": "Portrait 005 — 40x48 portrait, palette 21 (record 40, 47)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 4800,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -247,17 +430,48 @@
    },
    "palette": {
     "offset": 6417608
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 005 — 48x48 portrait, palette 21 (record 40, 47)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 5760,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6417608
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 006 — portrait, palette 22 (record 41, 108)",
+   "name": "Portrait 006 — 40x48 portrait, palette 22 (record 41, 108)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 5760,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -279,17 +493,48 @@
    },
    "palette": {
     "offset": 6417640
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 006 — 48x48 portrait, palette 22 (record 41, 108)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 6912,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6417640
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 007 — portrait, palette 23 (record 42, 46)",
+   "name": "Portrait 007 — 40x48 portrait, palette 23 (record 42, 46)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 6720,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -311,17 +556,48 @@
    },
    "palette": {
     "offset": 6417672
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 007 — 48x48 portrait, palette 23 (record 42, 46)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 8064,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6417672
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 008 — portrait, palette 24 (record 43, 51)",
+   "name": "Portrait 008 — 40x48 portrait, palette 24 (record 43, 51)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 7680,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -343,17 +619,48 @@
    },
    "palette": {
     "offset": 6417704
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 008 — 48x48 portrait, palette 24 (record 43, 51)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 9216,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6417704
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 009 — portrait, palette 25 (record 44)",
+   "name": "Portrait 009 — 40x48 portrait, palette 25 (record 44)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 8640,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -375,17 +682,48 @@
    },
    "palette": {
     "offset": 6417736
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 009 — 48x48 portrait, palette 25 (record 44)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 10368,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6417736
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 010 — portrait, palette 26 (record 48, 60, 64, 109)",
+   "name": "Portrait 010 — 40x48 portrait, palette 26 (record 48, 60, 64, 109)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 9600,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -407,17 +745,48 @@
    },
    "palette": {
     "offset": 6417768
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 010 — 48x48 portrait, palette 26 (record 48, 60, 64, 109)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 11520,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6417768
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 011 — portrait, palette 27 (record 62, 122)",
+   "name": "Portrait 011 — 40x48 portrait, palette 27 (record 62, 122)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 10560,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -439,17 +808,48 @@
    },
    "palette": {
     "offset": 6417800
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 011 — 48x48 portrait, palette 27 (record 62, 122)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 12672,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6417800
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 012 — portrait, palette 28 (record 78)",
+   "name": "Portrait 012 — 40x48 portrait, palette 28 (record 78)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 11520,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -471,17 +871,48 @@
    },
    "palette": {
     "offset": 6417832
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 012 — 48x48 portrait, palette 28 (record 78)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 13824,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6417832
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 013 — portrait, palette 29 (record 52)",
+   "name": "Portrait 013 — 40x48 portrait, palette 29 (record 52)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 12480,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -503,17 +934,48 @@
    },
    "palette": {
     "offset": 6417864
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 013 — 48x48 portrait, palette 29 (record 52)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 14976,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6417864
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 014 — portrait, palette 30 (record 71, 76)",
+   "name": "Portrait 014 — 40x48 portrait, palette 30 (record 71, 76)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 13440,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -535,17 +997,48 @@
    },
    "palette": {
     "offset": 6417896
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 014 — 48x48 portrait, palette 30 (record 71, 76)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 16128,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6417896
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 015 — portrait, palette 31 (record 53, 128, 129)",
+   "name": "Portrait 015 — 40x48 portrait, palette 31 (record 53, 128, 129)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 14400,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -567,17 +1060,48 @@
    },
    "palette": {
     "offset": 6417928
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 015 — 48x48 portrait, palette 31 (record 53, 128, 129)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 17280,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6417928
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 016 — portrait, palette 32 (record 77)",
+   "name": "Portrait 016 — 40x48 portrait, palette 32 (record 77)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 15360,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -599,17 +1123,48 @@
    },
    "palette": {
     "offset": 6417960
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 016 — 48x48 portrait, palette 32 (record 77)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 18432,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6417960
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 017 — portrait, palette 33 (no record)",
+   "name": "Portrait 017 — 40x48 portrait, palette 33 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 16320,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -631,17 +1186,48 @@
    },
    "palette": {
     "offset": 6417992
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 017 — 48x48 portrait, palette 33 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 19584,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6417992
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 018 — portrait, palette 34 (no record)",
+   "name": "Portrait 018 — 40x48 portrait, palette 34 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 17280,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -663,17 +1249,48 @@
    },
    "palette": {
     "offset": 6418024
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 018 — 48x48 portrait, palette 34 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 20736,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418024
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 019 — portrait, palette 35 (record 79)",
+   "name": "Portrait 019 — 40x48 portrait, palette 35 (record 79)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 18240,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -695,17 +1312,48 @@
    },
    "palette": {
     "offset": 6418056
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 019 — 48x48 portrait, palette 35 (record 79)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 21888,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418056
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 020 — portrait, palette 36 (no record)",
+   "name": "Portrait 020 — 40x48 portrait, palette 36 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 19200,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -727,17 +1375,48 @@
    },
    "palette": {
     "offset": 6418088
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 020 — 48x48 portrait, palette 36 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 23040,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418088
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 021 — portrait, palette 37 (record 50)",
+   "name": "Portrait 021 — 40x48 portrait, palette 37 (record 50)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 20160,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -759,17 +1438,48 @@
    },
    "palette": {
     "offset": 6418120
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 021 — 48x48 portrait, palette 37 (record 50)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 24192,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418120
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 022 — portrait, palette 38 (no record)",
+   "name": "Portrait 022 — 40x48 portrait, palette 38 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 21120,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -791,17 +1501,48 @@
    },
    "palette": {
     "offset": 6418152
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 022 — 48x48 portrait, palette 38 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 25344,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418152
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 023 — portrait, palette 39 (record 57, 120, 121)",
+   "name": "Portrait 023 — 40x48 portrait, palette 39 (record 57, 120, 121)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 22080,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -823,17 +1564,48 @@
    },
    "palette": {
     "offset": 6418184
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 023 — 48x48 portrait, palette 39 (record 57, 120, 121)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 26496,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418184
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 024 — portrait, palette 40 (no record)",
+   "name": "Portrait 024 — 40x48 portrait, palette 40 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 23040,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -855,17 +1627,48 @@
    },
    "palette": {
     "offset": 6418216
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 024 — 48x48 portrait, palette 40 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 27648,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418216
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 025 — portrait, palette 41 (record 54)",
+   "name": "Portrait 025 — 40x48 portrait, palette 41 (record 54)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 24000,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -887,17 +1690,48 @@
    },
    "palette": {
     "offset": 6418248
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 025 — 48x48 portrait, palette 41 (record 54)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 28800,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418248
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 026 — portrait, palette 42 (no record)",
+   "name": "Portrait 026 — 40x48 portrait, palette 42 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 24960,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -919,17 +1753,48 @@
    },
    "palette": {
     "offset": 6418280
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 026 — 48x48 portrait, palette 42 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 29952,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418280
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 027 — portrait, palette 43 (record 55)",
+   "name": "Portrait 027 — 40x48 portrait, palette 43 (record 55)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 25920,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -951,17 +1816,48 @@
    },
    "palette": {
     "offset": 6418312
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 027 — 48x48 portrait, palette 43 (record 55)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 31104,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418312
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 028 — portrait, palette 44 (no record)",
+   "name": "Portrait 028 — 40x48 portrait, palette 44 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 26880,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -983,17 +1879,48 @@
    },
    "palette": {
     "offset": 6418344
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 028 — 48x48 portrait, palette 44 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 32256,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418344
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 029 — portrait, palette 45 (no record)",
+   "name": "Portrait 029 — 40x48 portrait, palette 45 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 27840,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1015,17 +1942,48 @@
    },
    "palette": {
     "offset": 6418376
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 029 — 48x48 portrait, palette 45 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 33408,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418376
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 030 — portrait, palette 46 (record 22)",
+   "name": "Portrait 030 — 40x48 portrait, palette 46 (record 22)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 28800,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1047,17 +2005,48 @@
    },
    "palette": {
     "offset": 6418408
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 030 — 48x48 portrait, palette 46 (record 22)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 34560,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418408
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 031 — portrait, palette 47 (record 56)",
+   "name": "Portrait 031 — 40x48 portrait, palette 47 (record 56)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 29760,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1079,17 +2068,48 @@
    },
    "palette": {
     "offset": 6418440
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 031 — 48x48 portrait, palette 47 (record 56)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 35712,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418440
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 032 — portrait, palette 48 (record 58, 65, 123)",
+   "name": "Portrait 032 — 40x48 portrait, palette 48 (record 58, 65, 123)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 30720,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1111,17 +2131,48 @@
    },
    "palette": {
     "offset": 6418472
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 032 — 48x48 portrait, palette 48 (record 58, 65, 123)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 36864,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418472
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 033 — portrait, palette 49 (no record)",
+   "name": "Portrait 033 — 40x48 portrait, palette 49 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 31680,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1143,17 +2194,48 @@
    },
    "palette": {
     "offset": 6418504
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 033 — 48x48 portrait, palette 49 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 38016,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418504
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 034 — portrait, palette 50 (no record)",
+   "name": "Portrait 034 — 40x48 portrait, palette 50 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 32640,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1175,17 +2257,48 @@
    },
    "palette": {
     "offset": 6418536
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 034 — 48x48 portrait, palette 50 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 39168,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418536
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 035 — portrait, palette 51 (no record)",
+   "name": "Portrait 035 — 40x48 portrait, palette 51 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 33600,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1207,17 +2320,48 @@
    },
    "palette": {
     "offset": 6418568
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 035 — 48x48 portrait, palette 51 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 40320,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418568
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 036 — portrait, palette 52 (no record)",
+   "name": "Portrait 036 — 40x48 portrait, palette 52 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 34560,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1239,17 +2383,48 @@
    },
    "palette": {
     "offset": 6418600
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 036 — 48x48 portrait, palette 52 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 41472,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418600
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 037 — portrait, palette 53 (no record)",
+   "name": "Portrait 037 — 40x48 portrait, palette 53 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 35520,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1271,17 +2446,48 @@
    },
    "palette": {
     "offset": 6418632
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 037 — 48x48 portrait, palette 53 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 42624,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418632
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 038 — portrait, palette 54 (no record)",
+   "name": "Portrait 038 — 40x48 portrait, palette 54 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 36480,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1303,17 +2509,48 @@
    },
    "palette": {
     "offset": 6418664
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 038 — 48x48 portrait, palette 54 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 43776,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418664
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 039 — portrait, palette 55 (no record)",
+   "name": "Portrait 039 — 40x48 portrait, palette 55 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 37440,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1335,17 +2572,48 @@
    },
    "palette": {
     "offset": 6418696
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 039 — 48x48 portrait, palette 55 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 44928,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418696
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 040 — portrait, palette 56 (no record)",
+   "name": "Portrait 040 — 40x48 portrait, palette 56 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 38400,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1367,17 +2635,48 @@
    },
    "palette": {
     "offset": 6418728
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 040 — 48x48 portrait, palette 56 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 46080,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418728
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 041 — portrait, palette 57 (no record)",
+   "name": "Portrait 041 — 40x48 portrait, palette 57 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 39360,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1399,17 +2698,48 @@
    },
    "palette": {
     "offset": 6418760
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 041 — 48x48 portrait, palette 57 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 47232,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418760
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 042 — portrait, palette 58 (no record)",
+   "name": "Portrait 042 — 40x48 portrait, palette 58 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 40320,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1431,17 +2761,48 @@
    },
    "palette": {
     "offset": 6418792
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 042 — 48x48 portrait, palette 58 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 48384,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418792
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 043 — portrait, palette 59 (no record)",
+   "name": "Portrait 043 — 40x48 portrait, palette 59 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 41280,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1463,17 +2824,48 @@
    },
    "palette": {
     "offset": 6418824
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 043 — 48x48 portrait, palette 59 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 49536,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418824
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 044 — portrait, palette 60 (no record)",
+   "name": "Portrait 044 — 40x48 portrait, palette 60 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 42240,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1495,17 +2887,48 @@
    },
    "palette": {
     "offset": 6418856
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 044 — 48x48 portrait, palette 60 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 50688,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418856
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 045 — portrait, palette 61 (no record)",
+   "name": "Portrait 045 — 40x48 portrait, palette 61 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 43200,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1527,17 +2950,48 @@
    },
    "palette": {
     "offset": 6418888
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 045 — 48x48 portrait, palette 61 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 51840,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418888
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 046 — portrait, palette 62 (no record)",
+   "name": "Portrait 046 — 40x48 portrait, palette 62 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 44160,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1559,17 +3013,48 @@
    },
    "palette": {
     "offset": 6418920
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 046 — 48x48 portrait, palette 62 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 52992,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418920
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 047 — portrait, palette 63 (no record)",
+   "name": "Portrait 047 — 40x48 portrait, palette 63 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 45120,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1591,17 +3076,48 @@
    },
    "palette": {
     "offset": 6418952
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 047 — 48x48 portrait, palette 63 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 54144,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418952
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 048 — portrait, palette 64 (record 45, 63, 110)",
+   "name": "Portrait 048 — 40x48 portrait, palette 64 (record 45, 63, 110)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 46080,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1623,17 +3139,48 @@
    },
    "palette": {
     "offset": 6418984
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 048 — 48x48 portrait, palette 64 (record 45, 63, 110)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 55296,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6418984
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 049 — portrait, palette 65 (no record)",
+   "name": "Portrait 049 — 40x48 portrait, palette 65 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 47040,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1655,17 +3202,48 @@
    },
    "palette": {
     "offset": 6419016
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 049 — 48x48 portrait, palette 65 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 56448,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419016
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 050 — portrait, palette 66 (no record)",
+   "name": "Portrait 050 — 40x48 portrait, palette 66 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 48000,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1687,17 +3265,48 @@
    },
    "palette": {
     "offset": 6419048
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 050 — 48x48 portrait, palette 66 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 57600,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419048
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 051 — portrait, palette 67 (no record)",
+   "name": "Portrait 051 — 40x48 portrait, palette 67 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 48960,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1719,17 +3328,48 @@
    },
    "palette": {
     "offset": 6419080
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 051 — 48x48 portrait, palette 67 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 58752,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419080
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 052 — portrait, palette 68 (no record)",
+   "name": "Portrait 052 — 40x48 portrait, palette 68 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 49920,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1751,17 +3391,48 @@
    },
    "palette": {
     "offset": 6419112
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 052 — 48x48 portrait, palette 68 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 59904,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419112
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 053 — portrait, palette 69 (no record)",
+   "name": "Portrait 053 — 40x48 portrait, palette 69 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 50880,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1783,17 +3454,48 @@
    },
    "palette": {
     "offset": 6419144
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 053 — 48x48 portrait, palette 69 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 61056,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419144
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 054 — portrait, palette 70 (no record)",
+   "name": "Portrait 054 — 40x48 portrait, palette 70 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 51840,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1815,17 +3517,48 @@
    },
    "palette": {
     "offset": 6419176
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 054 — 48x48 portrait, palette 70 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 62208,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419176
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 055 — portrait, palette 71 (no record)",
+   "name": "Portrait 055 — 40x48 portrait, palette 71 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 52800,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1847,17 +3580,48 @@
    },
    "palette": {
     "offset": 6419208
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 055 — 48x48 portrait, palette 71 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 63360,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419208
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 056 — portrait, palette 71 (no record)",
+   "name": "Portrait 056 — 40x48 portrait, palette 71 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 53760,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1879,17 +3643,48 @@
    },
    "palette": {
     "offset": 6419208
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 056 — 48x48 portrait, palette 71 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 64512,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419208
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 057 — portrait, palette 71 (no record)",
+   "name": "Portrait 057 — 40x48 portrait, palette 71 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 54720,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1911,17 +3706,48 @@
    },
    "palette": {
     "offset": 6419208
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 057 — 48x48 portrait, palette 71 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 65664,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419208
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 058 — portrait, palette 71 (no record)",
+   "name": "Portrait 058 — 40x48 portrait, palette 71 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 55680,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1943,17 +3769,48 @@
    },
    "palette": {
     "offset": 6419208
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 058 — 48x48 portrait, palette 71 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 66816,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419208
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 059 — portrait, palette 71 (no record)",
+   "name": "Portrait 059 — 40x48 portrait, palette 71 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 56640,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -1975,17 +3832,48 @@
    },
    "palette": {
     "offset": 6419208
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 059 — 48x48 portrait, palette 71 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 67968,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419208
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 060 — portrait, palette 71 (no record)",
+   "name": "Portrait 060 — 40x48 portrait, palette 71 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 57600,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2007,17 +3895,48 @@
    },
    "palette": {
     "offset": 6419208
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 060 — 48x48 portrait, palette 71 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 69120,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419208
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 061 — portrait, palette 71 (no record)",
+   "name": "Portrait 061 — 40x48 portrait, palette 71 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 58560,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2039,17 +3958,48 @@
    },
    "palette": {
     "offset": 6419208
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 061 — 48x48 portrait, palette 71 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 70272,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419208
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 062 — portrait, palette 71 (no record)",
+   "name": "Portrait 062 — 40x48 portrait, palette 71 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 59520,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2071,17 +4021,48 @@
    },
    "palette": {
     "offset": 6419208
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 062 — 48x48 portrait, palette 71 (no record)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 71424,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419208
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 063 — portrait, palette 71 (record 1, 124)",
+   "name": "Portrait 063 — 40x48 portrait, palette 71 (record 1, 124)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 60480,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2103,17 +4084,48 @@
    },
    "palette": {
     "offset": 6419208
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 063 — 48x48 portrait, palette 71 (record 1, 124)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 72576,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419208
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 064 — overlay over 063, palette 72 (record 1)",
+   "name": "Portrait 064 — 40x48 overlay over 063, palette 72 (record 1)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 61440,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2135,17 +4147,48 @@
    },
    "palette": {
     "offset": 6419240
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 064 — 48x48 overlay over 063, palette 72 (record 1)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 73728,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419240
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 065 — portrait, palette 73 (record 2)",
+   "name": "Portrait 065 — 40x48 portrait, palette 73 (record 2)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 62400,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2167,17 +4210,48 @@
    },
    "palette": {
     "offset": 6419272
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 065 — 48x48 portrait, palette 73 (record 2)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 74880,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419272
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 066 — portrait, palette 74 (record 3)",
+   "name": "Portrait 066 — 40x48 portrait, palette 74 (record 3)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 63360,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2199,17 +4273,48 @@
    },
    "palette": {
     "offset": 6419304
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 066 — 48x48 portrait, palette 74 (record 3)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 76032,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419304
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 067 — portrait, palette 75 (record 4, 125)",
+   "name": "Portrait 067 — 40x48 portrait, palette 75 (record 4, 125)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 64320,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2231,17 +4336,48 @@
    },
    "palette": {
     "offset": 6419336
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 067 — 48x48 portrait, palette 75 (record 4, 125)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 77184,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419336
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 068 — portrait, palette 76 (record 5)",
+   "name": "Portrait 068 — 40x48 portrait, palette 76 (record 5)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 65280,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2263,17 +4399,48 @@
    },
    "palette": {
     "offset": 6419368
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 068 — 48x48 portrait, palette 76 (record 5)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 78336,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419368
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 069 — portrait, palette 77 (record 6, 67)",
+   "name": "Portrait 069 — 40x48 portrait, palette 77 (record 6, 67)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 66240,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2295,17 +4462,48 @@
    },
    "palette": {
     "offset": 6419400
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 069 — 48x48 portrait, palette 77 (record 6, 67)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 79488,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419400
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 070 — overlay over 069, palette 78 (record 6, 67)",
+   "name": "Portrait 070 — 40x48 overlay over 069, palette 78 (record 6, 67)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 67200,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2327,17 +4525,48 @@
    },
    "palette": {
     "offset": 6419432
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 070 — 48x48 overlay over 069, palette 78 (record 6, 67)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 80640,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419432
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 071 — portrait, palette 79 (record 7)",
+   "name": "Portrait 071 — 40x48 portrait, palette 79 (record 7)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 68160,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2359,17 +4588,48 @@
    },
    "palette": {
     "offset": 6419464
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 071 — 48x48 portrait, palette 79 (record 7)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 81792,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419464
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 072 — overlay over 071, palette 80 (record 7)",
+   "name": "Portrait 072 — 40x48 overlay over 071, palette 80 (record 7)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 69120,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2391,17 +4651,48 @@
    },
    "palette": {
     "offset": 6419496
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 072 — 48x48 overlay over 071, palette 80 (record 7)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 82944,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419496
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 073 — portrait, palette 81 (record 8, 9)",
+   "name": "Portrait 073 — 40x48 portrait, palette 81 (record 8, 9)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 70080,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2423,17 +4714,48 @@
    },
    "palette": {
     "offset": 6419528
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 073 — 48x48 portrait, palette 81 (record 8, 9)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 84096,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419528
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 074 — portrait, palette 82 (record 10, 11)",
+   "name": "Portrait 074 — 40x48 portrait, palette 82 (record 10, 11)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 71040,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2455,17 +4777,48 @@
    },
    "palette": {
     "offset": 6419560
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 074 — 48x48 portrait, palette 82 (record 10, 11)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 85248,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419560
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 075 — portrait, palette 83 (record 12, 13)",
+   "name": "Portrait 075 — 40x48 portrait, palette 83 (record 12, 13)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 72000,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2487,17 +4840,48 @@
    },
    "palette": {
     "offset": 6419592
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 075 — 48x48 portrait, palette 83 (record 12, 13)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 86400,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419592
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 076 — portrait, palette 84 (record 14, 66)",
+   "name": "Portrait 076 — 40x48 portrait, palette 84 (record 14, 66)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 72960,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2519,17 +4903,48 @@
    },
    "palette": {
     "offset": 6419624
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 076 — 48x48 portrait, palette 84 (record 14, 66)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 87552,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419624
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 077 — portrait, palette 85 (record 15, 16, 68)",
+   "name": "Portrait 077 — 40x48 portrait, palette 85 (record 15, 16, 68)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 73920,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2551,17 +4966,48 @@
    },
    "palette": {
     "offset": 6419656
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 077 — 48x48 portrait, palette 85 (record 15, 16, 68)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 88704,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419656
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 078 — portrait, palette 86 (record 17, 18, 69)",
+   "name": "Portrait 078 — 40x48 portrait, palette 86 (record 17, 18, 69)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 74880,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2583,17 +5029,48 @@
    },
    "palette": {
     "offset": 6419688
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 078 — 48x48 portrait, palette 86 (record 17, 18, 69)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 89856,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419688
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 079 — portrait, palette 87 (record 19)",
+   "name": "Portrait 079 — 40x48 portrait, palette 87 (record 19)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 75840,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2615,17 +5092,48 @@
    },
    "palette": {
     "offset": 6419720
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 079 — 48x48 portrait, palette 87 (record 19)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 91008,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419720
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 080 — portrait, palette 88 (record 20)",
+   "name": "Portrait 080 — 40x48 portrait, palette 88 (record 20)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 76800,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2647,17 +5155,48 @@
    },
    "palette": {
     "offset": 6419752
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 080 — 48x48 portrait, palette 88 (record 20)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 92160,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419752
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 081 — portrait, palette 89 (record 21)",
+   "name": "Portrait 081 — 40x48 portrait, palette 89 (record 21)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 77760,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2679,17 +5218,48 @@
    },
    "palette": {
     "offset": 6419784
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 081 — 48x48 portrait, palette 89 (record 21)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 93312,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419784
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 082 — portrait, palette 90 (record 23, 70)",
+   "name": "Portrait 082 — 40x48 portrait, palette 90 (record 23, 70)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 78720,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2711,17 +5281,48 @@
    },
    "palette": {
     "offset": 6419816
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 082 — 48x48 portrait, palette 90 (record 23, 70)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 94464,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419816
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 083 — portrait, palette 91 (record 24, 25)",
+   "name": "Portrait 083 — 40x48 portrait, palette 91 (record 24, 25)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 79680,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2743,17 +5344,48 @@
    },
    "palette": {
     "offset": 6419848
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 083 — 48x48 portrait, palette 91 (record 24, 25)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 95616,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419848
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 084 — overlay over 083, palette 92 (record 24, 25)",
+   "name": "Portrait 084 — 40x48 overlay over 083, palette 92 (record 24, 25)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 80640,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2775,17 +5407,48 @@
    },
    "palette": {
     "offset": 6419880
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 084 — 48x48 overlay over 083, palette 92 (record 24, 25)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 96768,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419880
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 085 — portrait, palette 93 (record 26)",
+   "name": "Portrait 085 — 40x48 portrait, palette 93 (record 26)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 81600,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2807,17 +5470,48 @@
    },
    "palette": {
     "offset": 6419912
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 085 — 48x48 portrait, palette 93 (record 26)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 97920,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419912
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 086 — portrait, palette 94 (record 27)",
+   "name": "Portrait 086 — 40x48 portrait, palette 94 (record 27)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 82560,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2839,17 +5533,48 @@
    },
    "palette": {
     "offset": 6419944
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 086 — 48x48 portrait, palette 94 (record 27)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 99072,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419944
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 087 — portrait, palette 95 (record 28)",
+   "name": "Portrait 087 — 40x48 portrait, palette 95 (record 28)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 83520,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2871,17 +5596,48 @@
    },
    "palette": {
     "offset": 6419976
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 087 — 48x48 portrait, palette 95 (record 28)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 100224,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6419976
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 088 — portrait, palette 96 (record 29)",
+   "name": "Portrait 088 — 40x48 portrait, palette 96 (record 29)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 84480,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2903,17 +5659,48 @@
    },
    "palette": {
     "offset": 6420008
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 088 — 48x48 portrait, palette 96 (record 29)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 101376,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6420008
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 089 — portrait, palette 97 (record 30)",
+   "name": "Portrait 089 — 40x48 portrait, palette 97 (record 30)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 85440,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2935,17 +5722,48 @@
    },
    "palette": {
     "offset": 6420040
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 089 — 48x48 portrait, palette 97 (record 30)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 102528,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6420040
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 090 — overlay over 089, palette 98 (record 30)",
+   "name": "Portrait 090 — 40x48 overlay over 089, palette 98 (record 30)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 86400,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2967,17 +5785,48 @@
    },
    "palette": {
     "offset": 6420072
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 090 — 48x48 overlay over 089, palette 98 (record 30)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 103680,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6420072
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 091 — portrait, palette 99 (record 31)",
+   "name": "Portrait 091 — 40x48 portrait, palette 99 (record 31)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 87360,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -2999,17 +5848,48 @@
    },
    "palette": {
     "offset": 6420104
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 091 — 48x48 portrait, palette 99 (record 31)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 104832,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6420104
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 092 — overlay over 091, palette 100 (record 31)",
+   "name": "Portrait 092 — 40x48 overlay over 091, palette 100 (record 31)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 88320,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3031,17 +5911,48 @@
    },
    "palette": {
     "offset": 6420136
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 092 — 48x48 overlay over 091, palette 100 (record 31)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 105984,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6420136
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 093 — portrait, palette 101 (record 32)",
+   "name": "Portrait 093 — 40x48 portrait, palette 101 (record 32)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 89280,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3063,17 +5974,48 @@
    },
    "palette": {
     "offset": 6420168
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 093 — 48x48 portrait, palette 101 (record 32)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 107136,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6420168
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 094 — portrait, palette 102 (record 33)",
+   "name": "Portrait 094 — 40x48 portrait, palette 102 (record 33)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 90240,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3095,17 +6037,48 @@
    },
    "palette": {
     "offset": 6420200
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 094 — 48x48 portrait, palette 102 (record 33)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 108288,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6420200
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 095 — overlay over 094, palette 103 (record 33)",
+   "name": "Portrait 095 — 40x48 overlay over 094, palette 103 (record 33)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 91200,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3127,17 +6100,48 @@
    },
    "palette": {
     "offset": 6420232
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 095 — 48x48 overlay over 094, palette 103 (record 33)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 109440,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6420232
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 096 — portrait, palette 104 (record 34, 74)",
+   "name": "Portrait 096 — 40x48 portrait, palette 104 (record 34, 74)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 92160,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3159,17 +6163,48 @@
    },
    "palette": {
     "offset": 6420264
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 096 — 48x48 portrait, palette 104 (record 34, 74)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 110592,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6420264
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 097 — overlay over 096, palette 105 (record 34, 74)",
+   "name": "Portrait 097 — 40x48 overlay over 096, palette 105 (record 34, 74)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 93120,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3191,17 +6226,48 @@
    },
    "palette": {
     "offset": 6420296
+   },
+   "reshape_id": "reshape.lodis-portrait"
+  },
+  {
+   "kind": "slice",
+   "name": "Portrait 097 — 48x48 overlay over 096, palette 105 (record 34, 74)",
+   "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
+   "parent": "slice",
+   "parent_index": 2,
+   "slice_offset": 111744,
+   "slice_length": 1152,
+   "compression_id": "compression.none",
+   "session": {
+    "pixel_preset_id": "preset.pixel.gba-4bpp",
+    "palette_preset_id": "preset.palette.bgr555",
+    "palette_mode": "offset",
+    "compression_id": "compression.none"
+   },
+   "view": {
+    "columns": 6,
+    "rows": 6,
+    "palette_row": 0,
+    "offset": 0,
+    "byte_nudge": 0,
+    "block_columns": 1,
+    "block_rows": 1,
+    "block_order": "row",
+    "two_dimensional": false,
+    "bitmap_width": 0
+   },
+   "palette": {
+    "offset": 6420296
    }
   },
   {
    "kind": "slice",
-   "name": "Portrait 098 — portrait, palette 106 (record 96)",
+   "name": "Portrait 098 — 40x48 portrait, palette 106 (record 96)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 94080,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3223,17 +6289,17 @@
    },
    "palette": {
     "offset": 6420328
-   }
+   },
+   "reshape_id": "reshape.lodis-portrait"
   },
   {
    "kind": "slice",
-   "name": "Portrait 099 — portrait, palette 107 (record 97)",
+   "name": "Portrait 099 — 40x48 portrait, palette 107 (record 97)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 95040,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3255,17 +6321,17 @@
    },
    "palette": {
     "offset": 6420360
-   }
+   },
+   "reshape_id": "reshape.lodis-portrait"
   },
   {
    "kind": "slice",
-   "name": "Portrait 100 — portrait, palette 108 (record 99)",
+   "name": "Portrait 100 — 40x48 portrait, palette 108 (record 99)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 96000,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3287,17 +6353,17 @@
    },
    "palette": {
     "offset": 6420392
-   }
+   },
+   "reshape_id": "reshape.lodis-portrait"
   },
   {
    "kind": "slice",
-   "name": "Portrait 101 — portrait, palette 109 (record 100)",
+   "name": "Portrait 101 — 40x48 portrait, palette 109 (record 100)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 96960,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3319,17 +6385,17 @@
    },
    "palette": {
     "offset": 6420424
-   }
+   },
+   "reshape_id": "reshape.lodis-portrait"
   },
   {
    "kind": "slice",
-   "name": "Portrait 102 — portrait, palette 110 (record 101)",
+   "name": "Portrait 102 — 40x48 portrait, palette 110 (record 101)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 97920,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3351,17 +6417,17 @@
    },
    "palette": {
     "offset": 6420456
-   }
+   },
+   "reshape_id": "reshape.lodis-portrait"
   },
   {
    "kind": "slice",
-   "name": "Portrait 103 — portrait, palette 111 (record 98)",
+   "name": "Portrait 103 — 40x48 portrait, palette 111 (record 98)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 98880,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3383,17 +6449,17 @@
    },
    "palette": {
     "offset": 6420488
-   }
+   },
+   "reshape_id": "reshape.lodis-portrait"
   },
   {
    "kind": "slice",
-   "name": "Portrait 104 — portrait, palette 112 (record 103)",
+   "name": "Portrait 104 — 40x48 portrait, palette 112 (record 103)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 99840,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3415,17 +6481,17 @@
    },
    "palette": {
     "offset": 6420520
-   }
+   },
+   "reshape_id": "reshape.lodis-portrait"
   },
   {
    "kind": "slice",
-   "name": "Portrait 105 — portrait, palette 113 (record 104)",
+   "name": "Portrait 105 — 40x48 portrait, palette 113 (record 104)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 100800,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3447,17 +6513,17 @@
    },
    "palette": {
     "offset": 6420552
-   }
+   },
+   "reshape_id": "reshape.lodis-portrait"
   },
   {
    "kind": "slice",
-   "name": "Portrait 106 — portrait, palette 114 (record 105)",
+   "name": "Portrait 106 — 40x48 portrait, palette 114 (record 105)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 101760,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3479,17 +6545,17 @@
    },
    "palette": {
     "offset": 6420584
-   }
+   },
+   "reshape_id": "reshape.lodis-portrait"
   },
   {
    "kind": "slice",
-   "name": "Portrait 107 — portrait, palette 115 (record 106)",
+   "name": "Portrait 107 — 40x48 portrait, palette 115 (record 106)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 102720,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3511,17 +6577,17 @@
    },
    "palette": {
     "offset": 6420616
-   }
+   },
+   "reshape_id": "reshape.lodis-portrait"
   },
   {
    "kind": "slice",
-   "name": "Portrait 108 — portrait, palette 116 (record 111)",
+   "name": "Portrait 108 — 40x48 portrait, palette 116 (record 111)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 103680,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3543,17 +6609,17 @@
    },
    "palette": {
     "offset": 6420648
-   }
+   },
+   "reshape_id": "reshape.lodis-portrait"
   },
   {
    "kind": "slice",
-   "name": "Portrait 109 — portrait, palette 117 (record 112, 113)",
+   "name": "Portrait 109 — 40x48 portrait, palette 117 (record 112, 113)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 104640,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3575,17 +6641,17 @@
    },
    "palette": {
     "offset": 6420680
-   }
+   },
+   "reshape_id": "reshape.lodis-portrait"
   },
   {
    "kind": "slice",
-   "name": "Portrait 110 — portrait, palette 118 (record 114, 115)",
+   "name": "Portrait 110 — 40x48 portrait, palette 118 (record 114, 115)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 105600,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3607,17 +6673,17 @@
    },
    "palette": {
     "offset": 6420712
-   }
+   },
+   "reshape_id": "reshape.lodis-portrait"
   },
   {
    "kind": "slice",
-   "name": "Portrait 111 — portrait, palette 119 (record 116, 117, 118)",
+   "name": "Portrait 111 — 40x48 portrait, palette 119 (record 116, 117, 118)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 106560,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3639,17 +6705,17 @@
    },
    "palette": {
     "offset": 6420744
-   }
+   },
+   "reshape_id": "reshape.lodis-portrait"
   },
   {
    "kind": "slice",
-   "name": "Portrait 112 — portrait, palette 120 (record 119)",
+   "name": "Portrait 112 — 40x48 portrait, palette 120 (record 119)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 107520,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3671,17 +6737,17 @@
    },
    "palette": {
     "offset": 6420776
-   }
+   },
+   "reshape_id": "reshape.lodis-portrait"
   },
   {
    "kind": "slice",
-   "name": "Portrait 113 — portrait, palette 121 (no record)",
+   "name": "Portrait 113 — 40x48 portrait, palette 121 (no record)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 108480,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3703,17 +6769,17 @@
    },
    "palette": {
     "offset": 6420808
-   }
+   },
+   "reshape_id": "reshape.lodis-portrait"
   },
   {
    "kind": "slice",
-   "name": "Portrait 114 — portrait, palette 122 (record 126, 156)",
+   "name": "Portrait 114 — 40x48 portrait, palette 122 (record 126, 156)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 109440,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3735,17 +6801,17 @@
    },
    "palette": {
     "offset": 6420840
-   }
+   },
+   "reshape_id": "reshape.lodis-portrait"
   },
   {
    "kind": "slice",
-   "name": "Portrait 115 — portrait, palette 123 (record 137)",
+   "name": "Portrait 115 — 40x48 portrait, palette 123 (record 137)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 110400,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3767,17 +6833,17 @@
    },
    "palette": {
     "offset": 6420872
-   }
+   },
+   "reshape_id": "reshape.lodis-portrait"
   },
   {
    "kind": "slice",
-   "name": "Portrait 116 — portrait, palette 124 (record 127)",
+   "name": "Portrait 116 — 40x48 portrait, palette 124 (record 127)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 111360,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3799,17 +6865,17 @@
    },
    "palette": {
     "offset": 6420904
-   }
+   },
+   "reshape_id": "reshape.lodis-portrait"
   },
   {
    "kind": "slice",
-   "name": "Portrait 117 — portrait, palette 125 (record 144)",
+   "name": "Portrait 117 — 40x48 portrait, palette 125 (record 144)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 112320,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3831,17 +6897,17 @@
    },
    "palette": {
     "offset": 6420936
-   }
+   },
+   "reshape_id": "reshape.lodis-portrait"
   },
   {
    "kind": "slice",
-   "name": "Portrait 118 — portrait, palette 227 (record 80)",
+   "name": "Portrait 118 — 40x48 portrait, palette 227 (record 80)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 113280,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3863,17 +6929,17 @@
    },
    "palette": {
     "offset": 6424200
-   }
+   },
+   "reshape_id": "reshape.lodis-portrait"
   },
   {
    "kind": "slice",
-   "name": "Portrait 119 — portrait, palette 225 (record 72)",
+   "name": "Portrait 119 — 40x48 portrait, palette 225 (record 72)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 114240,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3895,17 +6961,17 @@
    },
    "palette": {
     "offset": 6424136
-   }
+   },
+   "reshape_id": "reshape.lodis-portrait"
   },
   {
    "kind": "slice",
-   "name": "Portrait 120 — portrait, palette 226 (record 73)",
+   "name": "Portrait 120 — 40x48 portrait, palette 226 (record 73)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 115200,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3927,17 +6993,17 @@
    },
    "palette": {
     "offset": 6424168
-   }
+   },
+   "reshape_id": "reshape.lodis-portrait"
   },
   {
    "kind": "slice",
-   "name": "Portrait 121 — portrait, palette 229 (record 81)",
+   "name": "Portrait 121 — 40x48 portrait, palette 229 (record 81)",
    "path": "Tactics Ogre - The Knight of Lodis (USA).gba",
    "parent": "slice",
    "parent_index": 1,
    "slice_offset": 116160,
    "slice_length": 960,
-   "reshape_id": "reshape.lodis-portrait",
    "compression_id": "compression.none",
    "session": {
     "pixel_preset_id": "preset.pixel.gba-4bpp",
@@ -3959,7 +7025,8 @@
    },
    "palette": {
     "offset": 6424264
-   }
+   },
+   "reshape_id": "reshape.lodis-portrait"
   },
   {
    "kind": "bookmark",
