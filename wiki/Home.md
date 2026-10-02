@@ -24,5 +24,5 @@ Feature tutorials:
 
 Reference:
 
-- **[Project File Format](Project-File-Format)**: the `.celpix` file, key by key.
+- **[Project File Format](Project-File-Format)**: a complete reference for the `.celpix` file type.
 - **[Sample Projects](Sample-Projects)**: sample projects, demoing various features.
