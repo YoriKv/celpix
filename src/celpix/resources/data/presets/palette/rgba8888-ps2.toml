@@ -1,0 +1,18 @@
+# PS2 Graphics Synthesizer CLUT entry (PSMCT32): file bytes R,G,B,A, the
+# `rgba8888` layout, but the GS reads alpha as 0x00-0x80 with 0x80 = opaque.
+# Read as plain 8-bit alpha, a 0x80 palette draws everything half transparent.
+#
+# Only alpha bit 7 is read: CLUTs hold 0x80 or 0x00 almost without exception,
+# and those two round-trip exactly. An alpha in between decodes by its top bit
+# and saves as 0x80 or 0x00 — the mask engine has no 0x80-is-full scale. The
+# 16-bit CLUT format (PSMCT16) is `bgr555`, with bit 15 the alpha bit.
+# See docs/graphics-formats-reference/implementation-guide.md §4.
+id = "preset.palette.rgba8888-ps2"
+name = "PS2 CLUT (RGBA8888, alpha 0x80)"
+engine_id = "codec.palette.mask"
+category = "Sony"
+
+[params]
+bytes_per_entry = 4
+byte_order = "little"
+fields = "a... .... bbbb bbbb gggg gggg rrrr rrrr"

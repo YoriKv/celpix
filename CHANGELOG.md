@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.2.4 - unreleased
+
+- Added PS2 CLUT palette format with 0x80 as max alpha
+
 ## v1.2.3 - 2026-09-30
 
 - Big code review and re-org, lots of small fixes

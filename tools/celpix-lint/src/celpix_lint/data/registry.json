@@ -655,6 +655,7 @@
       "preset.palette.rgb565-be",
       "preset.palette.rgb888",
       "preset.palette.rgba8888",
+      "preset.palette.rgba8888-ps2",
       "preset.palette.sms-6bpp",
       "preset.palette.ws-gray"
     ],
