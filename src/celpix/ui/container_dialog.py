@@ -210,9 +210,9 @@ class ContainerDialog(QDialog):
         form.addRow(files_caption)
         form.addRow(self._files)
         add_form_row(form, "Content:", self._content)
-        # A palette file gets the container row alone (``FileStageRows``).
+        # A palette file gets no compression row (``FileStageRows``).
         self._stages.add_to(form)
-        self._stages.fill(kind, self._stages.stages())  # hides a palette's rows
+        self._stages.fill(kind, self._stages.stages())  # hides a palette's row
         # Last, because it is the one row that changes the file rather than how
         # the rows above it are read.
         self._size_caption.setBuddy(self._size_units)

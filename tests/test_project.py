@@ -27,6 +27,7 @@ from celpix.project.workspace import (
     Entry,
     EntryKind,
     EntrySession,
+    FileStages,
     PaletteSource,
     TileMode,
     TileSource,
@@ -222,7 +223,13 @@ def test_headless_palette_entry_carries_its_decoded_colours(tmp_path) -> None:
     doc = loaded.doc
 
     expected = load_palette(
-        file_palette_config(str(pal), 0, "preset.palette.bgr555", RAW_CONTAINER),
+        file_palette_config(
+            str(pal),
+            0,
+            "preset.palette.bgr555",
+            FileStages(RAW_CONTAINER),
+            default_registry(),
+        ),
         registry,
     ).palette.colors
     assert not loaded.problems
@@ -1158,6 +1165,64 @@ def test_a_files_compression_round_trips_and_the_default_is_omitted(
     raw = json.loads(project.read_text(encoding="utf-8"))
     assert raw["entries"][0]["compression_id"] == "compression.gba-rle"
     assert load_project(str(project)).entries[0].compression_id == "compression.gba-rle"
+
+
+def test_a_palette_files_reshape_reads_both_halves_and_round_trips(tmp_path) -> None:
+    """A colour table stored word-swapped: the palette half (the colours the
+    dock and every graphic read) and the swatch half (the sheet the entry opens
+    as) both read the file through its reshape, so one byte order describes
+    both — and the project file keeps it."""
+    from celpix.plugins.base import NO_RESHAPE
+    from celpix.project.composites import swatch_preset_id
+    from celpix.project.workspace import pixel_config_for
+
+    reg = default_registry()
+    words = bytes(range(64))  # 32 BGR555 words, stored byte-swapped
+    pal = tmp_path / "colors.pal"
+    pal.write_bytes(words)
+    ws = Workspace()
+    entry = ws.add_palette(str(pal), "preset.palette.bgr555")
+    plain = load_palette(
+        file_palette_config(
+            str(pal), 0, "preset.palette.bgr555", entry.file_stages, reg
+        ),
+        reg,
+    ).palette.colors
+    entry.reshape_id = "reshape.swap-bytes-2"
+    swapped = load_palette(
+        file_palette_config(
+            str(pal), 0, "preset.palette.bgr555", entry.file_stages, reg
+        ),
+        reg,
+    )
+    assert swapped.palette.colors != plain
+    # What the file holds once un-swapped, read plainly, is what the reshape reads.
+    unswapped = tmp_path / "plain.pal"
+    unswapped.write_bytes(
+        bytes(b for pair in zip(words[1::2], words[::2], strict=True) for b in pair)
+    )
+    expected = load_palette(
+        file_palette_config(
+            str(unswapped), 0, "preset.palette.bgr555", FileStages(RAW_CONTAINER), reg
+        ),
+        reg,
+    ).palette.colors
+    assert swapped.palette.colors == expected
+    # The swatch half reads the same reordered bytes.
+    cfg = pixel_config_for(entry, swatch_preset_id(reg), reg)
+    assert cfg.reshape_id == "reshape.swap-bytes-2" and cfg.write_enabled
+
+    project = tmp_path / "p.celpix"
+    save_project(ws, str(project))
+    loaded = load_project(str(project)).entries[0]
+    assert loaded.kind is EntryKind.PALETTE
+    assert loaded.reshape_id == "reshape.swap-bytes-2"
+    entry.reshape_id = NO_RESHAPE
+    save_project(ws, str(project))
+    assert (
+        "reshape_id"
+        not in json.loads(project.read_text(encoding="utf-8"))["entries"][0]
+    )
 
 
 def test_slot_fill_round_trips_and_the_default_is_omitted(tmp_path) -> None:

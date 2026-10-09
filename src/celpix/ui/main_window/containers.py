@@ -55,7 +55,6 @@ from celpix.plugins.detect import tilemap_preset_for
 from celpix.project.workspace import (
     Entry,
     EntryKind,
-    FileStages,
     file_kind,
     pixel_config_for,
     retarget_files,
@@ -252,15 +251,10 @@ class ContainersMixin:
         )
         if edit is None:
             return
+        # The dialog's stages are already the kind's: a palette's compression
+        # row is hidden and holds the pass-through (``FileStageRows.fill``).
         kind_after = edit.content_kind or file_kind(entry)
         edit = replace(edit, content_kind=kind_after)
-        if kind_after is ContentKind.PALETTE:
-            # No reshape or compression for a palette: the palette half of a
-            # palette document (the colours the dock and every File-mode graphic
-            # read) takes the file without either, so one here would transform
-            # the swatches alone and leave the two halves describing different
-            # bytes of one file.
-            edit = replace(edit, stages=FileStages(edit.stages.container_id))
         moved = edit.paths != entry.paths
         converting = kind_after is not file_kind(entry)
         if (
@@ -488,13 +482,11 @@ class ContainersMixin:
         assembled here: they are what decide whether a stage can write at all —
         a plugin this build hasn't got leaves the pathway view-only — and a
         second answer to that question is exactly the kind that goes quietly
-        out of date. A palette file's is its palette pathway, which takes the
-        container alone (:class:`~celpix.project.entry.FileStages`).
+        out of date. A palette file's is its palette pathway — its container
+        and reshape, never a compression (:class:`~celpix.project.entry.FileStages`).
         """
         if file_kind(entry) is ContentKind.PALETTE:
-            return self._file_palette_config(
-                entry.path, 0, codec_id, entry.container_id
-            )
+            return self._file_palette_config(entry.path, 0, codec_id, entry.file_stages)
         if entry.content_kind is ContentKind.TILEMAP:
             return tilemap_config_for(entry, codec_id, self._registry)
         return pixel_config_for(entry, codec_id, self._registry)

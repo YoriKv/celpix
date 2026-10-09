@@ -31,7 +31,7 @@ Qt-free, like everything under ``project``.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from celpix.core.address import format_hex
@@ -49,7 +49,6 @@ from celpix.plugins.base import (
     InputKind,
     InputSpec,
 )
-from celpix.plugins.detect import resolved_container_id
 from celpix.plugins.registry import Registry
 
 if TYPE_CHECKING:
@@ -599,12 +598,10 @@ def _packed_region_bytes(entry: Entry, registry: Registry) -> tuple[bytes, int]:
     recorded where the bytes are the file's, 0 under a reshape (the
     :func:`~celpix.project.configs.entry_view_bytes` rule, short of the
     decompressor)."""
-    cfg = PathwayConfig(
-        source=FileRef(entry.paths),
-        interpret_preset_id=DEFAULT_PIXEL_PRESET,
-        container_id=resolved_container_id(registry, entry.container_id),
-        reshape_id=registry.resolve_stage(Stage.RESHAPE, entry.reshape_id)[0],
+    stages = replace(
+        entry.file_stages.resolve(registry).stages, compression_id=NO_COMPRESSION
     )
+    cfg = stages.config(FileRef(entry.paths), DEFAULT_PIXEL_PRESET)
     data, ctx = pipeline.read_region(cfg, registry)
     return data, ctx.get(KEY_SOURCE_OFFSET, 0) if cfg.reads_raw_bytes else 0
 

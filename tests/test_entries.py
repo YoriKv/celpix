@@ -3046,7 +3046,7 @@ def test_container_dialog_offers_compression_under_reshape(qtbot, tmp_path) -> N
     )
     qtbot.addWidget(palette)
     rows = palette._stages
-    assert rows.reshape.isHidden() and rows.compression.isHidden()
+    assert not rows.reshape.isHidden() and rows.compression.isHidden()
 
 
 def test_a_file_decompressed_whole_shows_the_stream_and_writes_it_back_packed(
@@ -3125,8 +3125,8 @@ def test_a_file_decompressed_whole_shows_the_stream_and_writes_it_back_packed(
 
 def test_container_dialog_content_row_drives_the_stage_rows(qtbot, tmp_path) -> None:
     """Content sits above Container and decides what the rows below describe:
-    a palette has the container row alone and its own container list, and the
-    size row waits for a changed content to be applied."""
+    a palette has no compression row and its own container list, and the size
+    row waits for a changed content to be applied."""
     from celpix.core.capabilities import ContentKind
     from celpix.plugins.registry import default_registry
     from celpix.ui.container_dialog import ContainerDialog
@@ -3153,7 +3153,7 @@ def test_container_dialog_content_row_drives_the_stage_rows(qtbot, tmp_path) -> 
     dialog._content.setCurrentIndex(dialog._content.findData(ContentKind.PALETTE))
     assert dialog.content_kind() is ContentKind.PALETTE
     rows = dialog._stages
-    assert rows.reshape.isHidden() and rows.compression.isHidden()
+    assert not rows.reshape.isHidden() and rows.compression.isHidden()
     palettes = set(_combo_ids(dialog._container))
     assert "container.ines" in pixels and "container.ines" not in palettes
     assert "Apply the new content first" in dialog._size.text()

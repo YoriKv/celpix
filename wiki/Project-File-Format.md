@@ -152,7 +152,7 @@ Unknown or missing `kind` reads as `file`.
 | `path` | ● | ● | ● | ● | – |
 | `extra_paths` | ○ | ○ | ○ | – | – |
 | `container_id` | ○ | – | – | ○ | – |
-| `reshape_id` | ○ | ○ | – | – | – |
+| `reshape_id` | ○ | ○ | – | ○ | – |
 | `compression_id` | ○ | ● | – | – | – |
 | `parent` | – | ○ | ○ | – | – |
 | `parent_index` | – | ○ | – | – | – |
@@ -238,6 +238,7 @@ Required keys: an entry without them is skipped (`path`) or opens on defaults.
 |---|---|---|---|---|
 | `palette_preset_id` | id | `preset.palette.bgr555` | always | Color codec the file is decoded with |
 | `container_id` | id | `container.raw-file` | omitted at default | Which bytes of the file are colors |
+| `reshape_id` | id | `reshape.none` | omitted at default | Byte reordering of the file, read by the swatch sheet and the colors alike |
 
 - `session` and `view`: present only once the palette has been opened as a swatch sheet. Absent `session` stays absent on re-save.
 - Never carries a `palette` sub-object.

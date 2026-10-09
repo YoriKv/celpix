@@ -47,11 +47,12 @@ from celpix.core.notices import warn
 from celpix.core.palette import FULL_PALETTE_COUNT, MISSING_COLOR, Palette
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
-from celpix.plugins.base import RAW_CONTAINER, FileRef
+from celpix.plugins.base import FileRef
 from celpix.plugins.detect import detect_container
 from celpix.project import documents
 from celpix.project.workspace import (
     Entry,
+    FileStages,
     PaletteMode,
     PaletteSource,
     swatch_session_for,
@@ -293,7 +294,7 @@ class PaletteSourceMixin:
             entry.path,
             0,
             entry.palette_preset_id or self._palette_import_preset_id(),
-            entry.container_id,
+            entry.file_stages,
         )
         try:
             loaded = pipeline.load_palette(cfg, self._registry)
@@ -555,7 +556,7 @@ class PaletteSourceMixin:
         """
         if cfg.interpret_preset_id != self._palette_import_preset_id():
             return None
-        adopted = self._file_palette_config(entry.path, 0, wanted, entry.container_id)
+        adopted = self._file_palette_config(entry.path, 0, wanted, entry.file_stages)
         try:
             regeared = pipeline.load_palette(adopted, self._registry)
         except (PipelineError, OSError):
@@ -574,15 +575,13 @@ class PaletteSourceMixin:
         """
         return detect_container(self._registry, path, kind=ContentKind.PALETTE)
 
-    @staticmethod
     def _file_palette_config(
-        path: str,
-        offset: int,
-        preset_id: str,
-        container_id: str = RAW_CONTAINER,
+        self, path: str, offset: int, preset_id: str, stages: FileStages
     ) -> PathwayConfig:
         """:func:`~celpix.project.documents.file_palette_config`."""
-        return documents.file_palette_config(path, offset, preset_id, container_id)
+        return documents.file_palette_config(
+            path, offset, preset_id, stages, self._registry
+        )
 
     def _file_palette_colors(self, palette: Entry) -> list[int]:
         """The colors a removed file palette hands each graphic as a custom copy.
@@ -596,9 +595,7 @@ class PaletteSourceMixin:
         preset = palette.palette_preset_id or self._palette_preset_id()
         try:
             loaded = pipeline.load_palette(
-                self._file_palette_config(
-                    palette.path, 0, preset, palette.container_id
-                ),
+                self._file_palette_config(palette.path, 0, preset, palette.file_stages),
                 self._registry,
             )
         except (PipelineError, OSError):

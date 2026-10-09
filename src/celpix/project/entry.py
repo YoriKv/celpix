@@ -14,20 +14,25 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from typing import TYPE_CHECKING, Any
 
 from celpix.core.capabilities import Capability, ContentKind, supports
 from celpix.core.document import Document, ViewOptions
-from celpix.core.errors import PipelineError, fault_report
+from celpix.core.errors import PipelineError, Stage, fault_report
 from celpix.core.font import Glyph
 from celpix.core.tilemap import IndexAddressing
-from celpix.pipeline.pathway import DEFAULT_SLOT_FILL, SlotFill
+from celpix.pipeline.pathway import DEFAULT_SLOT_FILL, PathwayConfig, SlotFill
 from celpix.plugins.base import (
     DEFAULT_PALETTE_PRESET,
     NO_COMPRESSION,
     NO_RESHAPE,
     RAW_CONTAINER,
+    FileRef,
 )
 from celpix.project.inputs import InputBinding
+
+if TYPE_CHECKING:
+    from celpix.plugins.registry import Registry
 
 
 class EntryKind(Enum):
@@ -417,14 +422,69 @@ class FileStages:
     one value rather than three. Defaults are the pass-throughs, which is what
     a file is until something says otherwise.
 
-    A **palette** file carries only the container: its colours are read without
-    a reshape or a decompressor, so neither is offered for one
-    (``ui/file_stages.py``).
+    A **palette** file carries the container and the reshape and never a
+    compression: its colours are read through both halves of its document
+    alike (``docs/design/palette-editing.md`` §2), and a reordering belongs to
+    the file as much as to a graphic, where a packed colour table is a slice's
+    case rather than a file's (``ui/file_stages.py``).
     """
 
     container_id: str = RAW_CONTAINER
     reshape_id: str = NO_RESHAPE
     compression_id: str = NO_COMPRESSION
+
+    def resolve(self, registry: Registry) -> ResolvedStages:
+        """These stages as ``registry`` can run them.
+
+        An id this build hasn't got falls back to its stage's pass-through so
+        the file still opens, is named in ``missing`` so the load can say which
+        plugin to install, and leaves the pathway view-only — the one answer
+        every config built from an entry's stages gives
+        (:meth:`~celpix.plugins.registry.Registry.resolve_stage`).
+        """
+        wanted = (
+            (Stage.CONTAINER, self.container_id),
+            (Stage.RESHAPE, self.reshape_id),
+            (Stage.COMPRESSION, self.compression_id),
+        )
+        resolved = [
+            registry.resolve_stage(stage, plugin_id) for stage, plugin_id in wanted
+        ]
+        return ResolvedStages(
+            FileStages(*(plugin_id for plugin_id, _writes in resolved)),
+            all(writes for _plugin_id, writes in resolved),
+            tuple(
+                (stage, plugin_id)
+                for (stage, plugin_id), (found, _writes) in zip(
+                    wanted, resolved, strict=True
+                )
+                if found != plugin_id
+            ),
+        )
+
+    def config(self, source: FileRef, preset_id: str, **options: Any) -> PathwayConfig:
+        """A pathway reading ``source`` through these stages into ``preset_id``,
+        ``options`` being any other :class:`~celpix.pipeline.pathway.PathwayConfig`
+        field — the one spelling of "these three ids, as a config"."""
+        return PathwayConfig(
+            source=source,
+            interpret_preset_id=preset_id,
+            container_id=self.container_id,
+            reshape_id=self.reshape_id,
+            compression_id=self.compression_id,
+            **options,
+        )
+
+
+@dataclass(frozen=True)
+class ResolvedStages:
+    """:meth:`FileStages.resolve`'s answer: the ids to run, whether every one
+    of them can write back, and the ``(stage, wanted id)`` pairs this build
+    hasn't got."""
+
+    stages: FileStages
+    writable: bool
+    missing: tuple[tuple[Stage, str], ...]
 
 
 @dataclass(frozen=True)
@@ -638,11 +698,13 @@ class Entry:
     # notify. What is stored is only the last measurement.
     match_parent: bool = False
     # The region-scoped byte reordering the entry's bytes go through, between
-    # container and decompressor. Unlike ``container_id`` this lives on **both
-    # FILE and SLICE** entries: a reshape is a property of the region, and a
-    # region is either a whole file (a joined ROM pair) or a slice of one (a
-    # plane-split range inside a larger ROM) — the slice's bounded window *is*
-    # the region its reshape applies to, so no coordinates are invalidated.
+    # container and decompressor. Unlike ``container_id`` this lives on **FILE,
+    # PALETTE and SLICE** entries alike: a reshape is a property of the region,
+    # and a region is a whole file (a joined ROM pair, a colour table stored
+    # word-swapped) or a slice of one (a plane-split range inside a larger ROM)
+    # — the slice's bounded window *is* the region its reshape applies to, so
+    # no coordinates are invalidated. A palette file reads it through both
+    # halves of its document (``docs/design/palette-editing.md`` §2).
     reshape_id: str = NO_RESHAPE
     # The container this file is read and written through, picked by signature
     # when the file is opened and changeable afterwards. FILE and PALETTE: a

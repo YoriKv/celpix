@@ -277,8 +277,8 @@ def _entry_dict(
         data["extra_paths"] = [_store_path(p, base_dir) for p in entry.extra_paths]
     # Only when it isn't the pass-through default, so the ordinary un-reshaped
     # entry adds nothing to the file — and so a project written before the
-    # Reshape stage existed round-trips unchanged. Files and slices alike: a
-    # reshape is a property of the region, whichever kind holds it.
+    # Reshape stage existed round-trips unchanged. Files, palettes and slices
+    # alike: a reshape is a property of the region, whichever kind holds it.
     if entry.reshape_id != NO_RESHAPE:
         data["reshape_id"] = entry.reshape_id
     # A file that decompresses whole names its scheme the way a slice always
@@ -642,6 +642,7 @@ def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
             kind=kind,
             path=path,
             container_id=_plugin_id(raw.get("container_id"), RAW_CONTAINER),
+            reshape_id=_plugin_id(raw.get("reshape_id"), NO_RESHAPE),
             palette_preset_id=_plugin_id(
                 raw.get("palette_preset_id"), DEFAULT_PALETTE_PRESET
             ),

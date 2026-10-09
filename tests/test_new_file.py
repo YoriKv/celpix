@@ -273,8 +273,8 @@ def test_dialog_states_the_byte_size_and_the_unbuildable_framing(qtbot) -> None:
 
 def test_dialog_offers_reshape_and_compression_except_to_a_palette(qtbot) -> None:
     """The stage rows are Edit File Container's, narrowed to what writes: a
-    scheme with no compressor cannot produce a file. A palette file gets the
-    container row alone, and its params say so."""
+    scheme with no compressor cannot produce a file. A palette file gets no
+    compression row, and its params say so."""
     from celpix.plugins.base import writes_back
     from uihelpers import _combo_ids
 
@@ -297,7 +297,7 @@ def test_dialog_offers_reshape_and_compression_except_to_a_palette(qtbot) -> Non
     )
 
     dialog._content.setCurrentIndex(dialog._content.findData(ContentKind.PALETTE))
-    assert not rows.reshape.isVisibleTo(dialog)
+    assert rows.reshape.isVisibleTo(dialog)  # a palette may be word-swapped
     assert not rows.compression.isVisibleTo(dialog)
     dialog._accept()
     assert dialog._params.stages == FileStages()

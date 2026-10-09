@@ -12,7 +12,7 @@ performs. A composite's config is :mod:`celpix.project.composites`'.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from os.path import getsize
 from typing import TYPE_CHECKING
 
@@ -126,50 +126,28 @@ def pixel_config_for(
     # A palette file is a whole file like any other on this pathway: its
     # container cuts the colour words out of whatever frames them, and the
     # swatch codec reads those (``docs/design/palette-editing.md`` §2).
-    whole = entry.kind in (EntryKind.FILE, EntryKind.PALETTE)
-    stages = [
-        (Stage.RESHAPE, entry.reshape_id),
-        (Stage.COMPRESSION, entry.compression_id),
-    ]
-    if whole:
-        stages.append((Stage.CONTAINER, entry.container_id))
-    resolved = {
-        stage: registry.resolve_stage(stage, wanted) for stage, wanted in stages
-    }
-    missing = tuple(
-        (stage, wanted) for stage, wanted in stages if resolved[stage][0] != wanted
-    )
-    writable = all(writes for _id, writes in resolved.values())
-    reshape_id = resolved[Stage.RESHAPE][0]
-    if whole:
-        own = _resolved_compression(
-            entry, resolved[Stage.COMPRESSION][0], registry, workspace
-        )
-        return PathwayConfig(
-            source=FileRef(entry.paths),
-            interpret_preset_id=preset_id,
+    # A slice's container is the plain-bytes default — it reads through its
+    # parent's — so the one resolution serves every kind.
+    resolved = entry.file_stages.resolve(registry)
+    stages, writable, missing = resolved.stages, resolved.writable, resolved.missing
+    if entry.kind in (EntryKind.FILE, EntryKind.PALETTE):
+        own = _resolved_compression(entry, stages.compression_id, registry, workspace)
+        return replace(stages, compression_id=own.compression_id).config(
+            FileRef(entry.paths),
+            preset_id,
             interpret_params=interpret_params_for(entry, preset_id, registry),
-            container_id=resolved[Stage.CONTAINER][0],
-            reshape_id=reshape_id,
-            compression_id=own.compression_id,
             write_enabled=writable and own.resolvable,
             missing_plugins=missing,
             inputs=own.inputs,
             input_problems=own.problems,
         )
-    half = _slice_half(
-        entry,
-        preset_id,
-        registry,
-        workspace,
-        resolved[Stage.COMPRESSION][0],
-    )
+    half = _slice_half(entry, preset_id, registry, workspace, stages.compression_id)
     return PathwayConfig(
         source=half.source,
         dest=half.dest,
         interpret_preset_id=preset_id,
         interpret_params=interpret_params_for(entry, preset_id, registry),
-        reshape_id=reshape_id,
+        reshape_id=stages.reshape_id,
         compression_id=half.compression_id,
         slot_fill=entry.slot_fill,
         write_enabled=writable and half.writable,
@@ -474,15 +452,15 @@ def tilemap_config_for(
     if entry.kind is EntryKind.FILE:
         # A map that is one compressed blob of its own: unpacked whole on load
         # and re-packed whole by the save, on the pixel side's rule.
-        scheme, packs = registry.resolve_stage(Stage.COMPRESSION, entry.compression_id)
-        own = _resolved_compression(entry, scheme, registry, workspace)
-        return PathwayConfig(
-            source=FileRef(entry.paths),
-            interpret_preset_id=preset_id,
-            container_id=resolved_container_id(registry, entry.container_id),
-            reshape_id=entry.reshape_id,
-            compression_id=own.compression_id,
-            write_enabled=writable and packs and own.resolvable,
+        resolved = entry.file_stages.resolve(registry)
+        own = _resolved_compression(
+            entry, resolved.stages.compression_id, registry, workspace
+        )
+        return replace(resolved.stages, compression_id=own.compression_id).config(
+            FileRef(entry.paths),
+            preset_id,
+            write_enabled=writable and resolved.writable and own.resolvable,
+            missing_plugins=resolved.missing,
             inputs={**inputs, **own.inputs},
             input_problems=own.problems + problems,
         )

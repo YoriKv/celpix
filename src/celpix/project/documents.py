@@ -107,6 +107,7 @@ from celpix.project.palettes import (
 from celpix.project.workspace import (
     Entry,
     EntryKind,
+    FileStages,
     PaletteMode,
     PaletteSource,
     TileSource,
@@ -884,7 +885,8 @@ def _palette_entry_colors(
         entry.path,
         0,
         entry.palette_preset_id or DEFAULT_PALETTE_PRESET,
-        entry.container_id,
+        entry.file_stages,
+        registry,
     )
     try:
         loaded = pipeline.load_palette(cfg, registry)
@@ -1043,13 +1045,17 @@ def restored_palette(
             detect_container,  # noqa: PLC0415 — file mode only
         )
 
-        container = (
-            owner.container_id
-            if owner is not None and owner.container_id
-            else detect_container(registry, source.path, kind=ContentKind.PALETTE)
+        # The registered palette's own stages, where there is one: a reshape
+        # on the palette file reorders the colours every graphic reads from it.
+        stages = (
+            owner.file_stages
+            if owner is not None
+            else FileStages(
+                detect_container(registry, source.path, kind=ContentKind.PALETTE)
+            )
         )
         cfg = replace(
-            file_palette_config(source.path, source.offset, preset, container),
+            file_palette_config(source.path, source.offset, preset, stages, registry),
             write_enabled=False,
         )
     elif session.palette_mode is PaletteMode.ENTRY:

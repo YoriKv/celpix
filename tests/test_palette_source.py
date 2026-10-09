@@ -2766,14 +2766,12 @@ def test_a_stated_palette_format_does_not_overrule_a_chosen_one(
     assert entry.palette_preset_id == "preset.palette.rgb444"
 
 
-def test_a_palette_format_pick_keeps_an_edit_the_bytes_never_took(
-    qtbot, tmp_path
-) -> None:
-    """A colour edit on a palette file whose swatch half can't be written lives
-    only on the palette half; a toolbar format pick re-decodes from the bytes,
-    which never held the edit, so the edit has to survive it — or the entry
-    would read unsaved with nothing left to write."""
-    from celpix.pipeline import pipeline
+def test_a_palette_files_two_halves_share_one_reading(qtbot, tmp_path) -> None:
+    """The colours the dock edits and the swatches the sheet shows are one file
+    read through one set of stages, so a reshape this build hasn't got leaves
+    *both* view-only — and a colour edit then leaves nothing unsaved, where a
+    half that could still deposit would have read unsaved with nowhere to
+    write. A format pick still re-decodes the bytes as they stand."""
     from celpix.project.workspace import EntryKind
 
     pal = tmp_path / "locked.pal"
@@ -2782,26 +2780,20 @@ def test_a_palette_format_pick_keeps_an_edit_the_bytes_never_took(
     qtbot.addWidget(window)
     window._add_palette_file(str(pal))
     entry = next(e for e in window._workspace.entries if e.kind is EntryKind.PALETTE)
-    # A reshape this build hasn't got degrades the swatch side to a view-only
-    # pass-through; the palette half reads the file without one, and stays
-    # writable.
     entry.reshape_id = "reshape.not-installed"
     window._activate_entry(entry)
     assert not entry.doc.pixel_config.write_enabled
-    assert entry.doc.palette_config.write_enabled
+    assert not entry.doc.palette_config.write_enabled
     before = bytes(entry.doc.pixel_data)
 
     window._palette_panel._select(1)
     window._on_color_changed(0xFFFFFFFF)
     assert bytes(entry.doc.pixel_data) == before  # nothing deposited
-    assert entry.palette_dirty
+    assert not entry.palette_dirty  # and nothing left to write
 
     window._apply_palette_view_format("preset.palette.rgb565")
     assert entry.doc.palette_config.interpret_preset_id == "preset.palette.rgb565"
-    assert entry.doc.palette.color(1) == 0xFFFFFFFF
-    assert entry.palette_dirty
-    written = pipeline.spliced_palette_bytes(entry.doc, window._registry)
-    assert written[2:4] == b"\xff\xff"  # RGB565 white, still there to write
+    assert not entry.doc.palette_config.write_enabled
 
 
 def test_a_palette_command_on_the_open_palette_file_renders_once(

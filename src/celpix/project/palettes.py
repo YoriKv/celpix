@@ -25,6 +25,7 @@ from celpix.plugins.registry import Registry
 from celpix.project.workspace import (
     Entry,
     EntryKind,
+    FileStages,
     PaletteSource,
     Workspace,
     can_supply_palette,
@@ -347,18 +348,25 @@ def entry_palette_config(
 
 
 def file_palette_config(
-    path: str, offset: int, preset_id: str, container_id: str
+    path: str, offset: int, preset_id: str, stages: FileStages, registry: Registry
 ) -> PathwayConfig:
-    """The writable pathway a PALETTE entry reads and writes its ``.pal`` with.
+    """The pathway a PALETTE entry reads and writes its ``.pal`` with.
 
-    Source and dest are the same file; ``container_id`` is what cuts the colors
-    out of a file that holds more than colors, and re-wraps them on the way back.
+    Source and dest are the same file; ``stages`` are the entry's
+    (:attr:`~celpix.project.entry.Entry.file_stages`): the container cuts the
+    colours out of a file that holds more than colours and re-wraps them on the
+    way back, and the reshape reorders them — the same two the swatch half of
+    the document reads through, so the two halves describe one byte order. A
+    stage with no save half, or one this build lacks, leaves the colours
+    view-only, as it leaves a graphic.
     """
-    return PathwayConfig(
-        source=FileRef(path, offset=offset),
+    resolved = stages.resolve(registry)
+    return resolved.stages.config(
+        FileRef(path, offset=offset),
+        preset_id,
         dest=FileRef(path, offset=offset),
-        interpret_preset_id=preset_id,
-        container_id=container_id,
+        write_enabled=resolved.writable,
+        missing_plugins=resolved.missing,
     )
 
 

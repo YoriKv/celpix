@@ -14,10 +14,11 @@ produce a file with, where an existing file may be read through any stage and
 merely opens read-only. **What the rows say**: each dialog tips the container
 row in its own words, so the pickers are exposed for it to do so.
 
-A **palette** file has the container row only. Its colours are read without a
-reshape or a decompressor — the palette half of a palette document takes the
-file plain — so the other two rows are hidden for it rather than offered and
-ignored, and hold the pass-through
+A **palette** file has no compression row. A colour table stored word-swapped
+is a palette with a reshape, read that way by both halves of its document; a
+*packed* colour table is a structure inside a larger file, which is a slice's
+case. So the row is hidden for a palette rather than offered and ignored, and
+holds the pass-through so the answer read back is the kind's
 (:class:`~celpix.project.entry.FileStages`).
 """
 
@@ -29,7 +30,7 @@ from PySide6.QtWidgets import QFormLayout, QLabel
 
 from celpix.core.capabilities import ContentKind
 from celpix.core.errors import Stage
-from celpix.plugins.base import writes_back
+from celpix.plugins.base import NO_COMPRESSION, writes_back
 from celpix.plugins.detect import (
     container_write_enabled,
     containers_for,
@@ -122,7 +123,7 @@ class FileStageRows:
         # re-apply the mark to a different row later.
         self.container_names: dict[str, str] = {}
         self._form: QFormLayout | None = None
-        self._region_rows: list[QLabel] = []
+        self._compression_row: QLabel | None = None
         for combo in self.pickers:
             combo.currentIndexChanged.connect(on_change)
 
@@ -134,20 +135,17 @@ class FileStageRows:
         """Lay the three rows into ``form``, in pipeline order."""
         self._form = form
         add_form_row(form, "Container:", self.container)
-        for caption, combo in (
-            ("Reshape:", self.reshape),
-            ("Compression:", self.compression),
-        ):
-            self._region_rows.append(add_form_row(form, caption, combo))
+        add_form_row(form, "Reshape:", self.reshape)
+        self._compression_row = add_form_row(form, "Compression:", self.compression)
 
     def fill(self, kind: ContentKind, stages: FileStages) -> None:
         """Offer the stages that frame a ``kind`` of file, selecting ``stages``.
 
         Only the containers that frame this kind: offering a palette the
         wrappers that unwrap ROMs would be inviting a choice that cannot come out
-        well, and the two sets do not overlap. A palette gets the container row
-        alone (module docstring); the other two rows are hidden, holding the
-        pass-through so :meth:`stages` reads as it would for shown ones.
+        well, and the two sets do not overlap. A palette gets no compression row
+        (module docstring): it is hidden and snapped to the pass-through, so
+        :meth:`stages` answers for the kind whatever the row held before.
 
         Signals stay blocked across the refill, and the dialog refreshes once
         after it: a fill emits a change per item, and a heading is briefly
@@ -163,10 +161,14 @@ class FileStageRows:
         self.container_names = {info.id: info.name for info in offered}
         with signals_blocked(self.container):
             fill_grouped(self.container, info_rows(offered), stages.container_id)
-        region = kind is not ContentKind.PALETTE
+        packs = kind is not ContentKind.PALETTE
         for stage, combo, wanted in (
             (Stage.RESHAPE, self.reshape, stages.reshape_id),
-            (Stage.COMPRESSION, self.compression, stages.compression_id),
+            (
+                Stage.COMPRESSION,
+                self.compression,
+                stages.compression_id if packs else NO_COMPRESSION,
+            ),
         ):
             plugins = [
                 plugin
@@ -175,9 +177,8 @@ class FileStageRows:
             ]
             with signals_blocked(combo):
                 fill_grouped(combo, plugin_rows(plugins), wanted)
-        if self._form is not None:
-            for row in self._region_rows:
-                self._form.setRowVisible(row, region)
+        if self._form is not None and self._compression_row is not None:
+            self._form.setRowVisible(self._compression_row, packs)
 
     def stages(self) -> FileStages:
         """What the pickers hold, as one value."""
