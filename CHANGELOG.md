@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.2.6 - unreleased
+
+- Edit File Container gains a Compression dropdown: a compressed blob extracted whole from a ROM decompresses on load and is re-packed on save, no slice needed
+- New File gains Reshape and Compression dropdowns: a new pixel or tilemap file can be created already packed and reordered, and opens through those stages
+
 ## v1.2.5 - 2026-10-09
 
 - Fixed Write putting old pixels back where an Offset palette's window overlaps the graphic

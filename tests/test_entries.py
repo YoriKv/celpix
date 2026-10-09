@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 from celpix.plugins.base import RAW_CONTAINER
-from celpix.project.workspace import PaletteMode
+from celpix.project.workspace import FileStages, PaletteMode
 from celpix.ui.main_window import MainWindow
 from uihelpers import (
     _drag_payload,
@@ -882,7 +882,8 @@ def test_slice_of_a_reshaped_two_chip_region_writes_back_through_its_parent(
     parent = window._workspace.current
     paths = (str(first), str(second))
     window._apply_container_edit(
-        parent, ContainerEdit(RAW_CONTAINER, paths, "reshape.split-planes-2")
+        parent,
+        ContainerEdit(FileStages(RAW_CONTAINER, "reshape.split-planes-2"), paths),
     )
     reshape = SplitPartsReshape(2)
     joined = reshape.reshape(chip_a + chip_b, PipelineContext())
@@ -1032,7 +1033,9 @@ def test_a_slice_edit_reaches_its_parent_and_the_parents_container(
     qtbot.addWidget(window)
     window._load_pixel(str(rom))
     parent = window._workspace.current
-    window._apply_container_edit(parent, ContainerEdit("container.gb-rom", (str(rom),)))
+    window._apply_container_edit(
+        parent, ContainerEdit(FileStages("container.gb-rom"), (str(rom),))
+    )
 
     cut = window._workspace.add_slice(parent.path, "gfx", 0x4000, 0x100)
     window._workspace.set_current(cut)
@@ -2921,7 +2924,9 @@ def test_change_container_re_reads_the_file(qtbot, tmp_path, monkeypatch) -> Non
     # Magic claims it whatever the suffix says, so detection already found iNES.
     assert entry.container_id == "container.ines"
 
-    _answer_container_dialog(monkeypatch, ContainerEdit(RAW_CONTAINER, (str(cart),)))
+    _answer_container_dialog(
+        monkeypatch, ContainerEdit(FileStages(RAW_CONTAINER), (str(cart),))
+    )
     window._change_container_for(entry)
     assert entry.container_id == RAW_CONTAINER
     assert entry.doc.pixel_data == whole  # plain bytes: the header is back
@@ -3003,6 +3008,121 @@ def test_container_dialog_edits_the_file_list(qtbot, tmp_path, monkeypatch) -> N
     assert dialog.paths() == (spare,)
 
 
+def test_container_dialog_offers_compression_under_reshape(qtbot, tmp_path) -> None:
+    """A file that is one compressed blob picks its scheme here, below Reshape;
+    a palette file gets neither row; and the size row waits for a changed
+    scheme to be applied, since its count was measured under the old one."""
+    from celpix.core.capabilities import ContentKind
+    from celpix.plugins.base import NO_COMPRESSION
+    from celpix.plugins.registry import default_registry
+    from celpix.ui.container_dialog import ContainerDialog
+
+    px = _make_snes_file(tmp_path)
+    dialog = ContainerDialog(
+        default_registry(),
+        paths=(str(px),),
+        codec_id="preset.pixel.snes-4bpp",
+        units=8,
+    )
+    qtbot.addWidget(dialog)
+    form = dialog.layout()
+    captions = [
+        form.itemAt(row, form.ItemRole.LabelRole).widget().text()
+        for row in range(form.rowCount())
+        if form.itemAt(row, form.ItemRole.LabelRole) is not None
+    ]
+    assert captions.index("Compression:") == captions.index("Reshape:") + 1
+    assert dialog.stages().compression_id == NO_COMPRESSION
+    assert dialog._size_units.isEnabled()
+
+    rows = dialog._stages
+    rows.compression.setCurrentIndex(rows.compression.findData("compression.gba-rle"))
+    assert dialog.stages().compression_id == "compression.gba-rle"
+    assert not dialog._size_units.isEnabled()
+    assert "Apply the new compression first" in dialog._size.text()
+
+    palette = ContainerDialog(
+        default_registry(), paths=(str(px),), kind=ContentKind.PALETTE
+    )
+    qtbot.addWidget(palette)
+    rows = palette._stages
+    assert rows.reshape.isHidden() and rows.compression.isHidden()
+
+
+def test_a_file_decompressed_whole_shows_the_stream_and_writes_it_back_packed(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """Edit File Container… with a compression scheme unpacks the whole file:
+    the view is the stream on 0-based positions, a slice carved from it reads
+    those same bytes, an edit is re-packed into the file, and undo puts the
+    packed reading back."""
+    from celpix.core.context import PipelineContext
+    from celpix.core.errors import Stage
+    from celpix.plugins.base import NO_COMPRESSION
+    from celpix.ui.container_dialog import ContainerEdit
+    from celpix.ui.slice_dialog import SliceDialog, SliceParams
+
+    raw = bytes(((i // 5) * 37) & 0xFF for i in range(1024))  # runs: it packs
+    window = MainWindow()
+    qtbot.addWidget(window)
+    rle = window._registry.plugin(Stage.COMPRESSION, "compression.gba-rle")
+    packed = rle.compress(raw, PipelineContext())
+    assert packed != raw
+    blob = tmp_path / "blob.4bpp.sfc"
+    blob.write_bytes(packed)
+    window._load_pixel(str(blob))
+    entry = window._workspace.current
+    assert bytes(window._doc.pixel_data) == packed
+
+    _answer_container_dialog(
+        monkeypatch,
+        ContainerEdit(
+            FileStages(RAW_CONTAINER, compression_id="compression.gba-rle"),
+            (str(blob),),
+        ),
+    )
+    window._change_container_for(entry)
+    assert entry.compression_id == "compression.gba-rle"
+    assert bytes(window._doc.pixel_data) == raw
+    assert window._anchor_base() == 0  # positions are the stream's, not the file's
+    assert window._doc.pixel_config.write_enabled
+
+    # A slice carved from the view holds exactly the stream bytes on screen.
+    window._columns.setValue(4)
+    window._rows.setValue(2)  # a page of 8 SNES tiles = 256 bytes
+    window._nav_rows(1)  # ...starting one row in, at stream byte 128
+    monkeypatch.setattr(
+        SliceDialog,
+        "get_slice",
+        staticmethod(
+            lambda *_a, **kw: SliceParams(
+                "cut", kw["offset"], kw["length"], kw["compression_id"]
+            )
+        ),
+    )
+    window._new_slice_from_view()
+    cut = window._workspace.entries[-1]
+    assert (cut.slice_offset, cut.slice_length) == (128, 256)
+    window._workspace.set_current(cut)
+    assert bytes(window._doc.pixel_data) == raw[128:384]
+    assert raw[128:384] != packed[128:384]
+
+    # An edit through the slice lands in the stream and is re-packed whole.
+    window._doc.replace_bytes(0, b"\xa5" * 16)
+    window._workspace.set_pixel_revision(cut, window._workspace.next_revision())
+    assert window._write_entry(cut)
+    edited = raw[:128] + b"\xa5" * 16 + raw[144:]
+    assert rle.decompress(blob.read_bytes(), PipelineContext()) == edited
+
+    # Back past the slice, the view steps and the container edit: the packed
+    # reading comes back, over the re-packed file.
+    while entry.compression_id != NO_COMPRESSION:
+        assert window._undo_stack.canUndo()
+        window._undo_stack.undo()
+    window._workspace.set_current(entry)
+    assert bytes(window._doc.pixel_data) == blob.read_bytes()
+
+
 def test_container_dialog_marks_detection_for_the_first_file(qtbot, tmp_path) -> None:
     """The (detected) marker follows the file it describes when row 1 changes."""
     from celpix.plugins.registry import default_registry
@@ -3055,7 +3175,7 @@ def test_editing_the_file_list_repoints_the_file_and_its_slices(
     assert entry.doc.pixel_data == first.read_bytes()
 
     _answer_container_dialog(
-        monkeypatch, ContainerEdit(RAW_CONTAINER, (str(first), str(second)))
+        monkeypatch, ContainerEdit(FileStages(RAW_CONTAINER), (str(first), str(second)))
     )
     window._change_container_for(entry)
     assert entry.paths == (str(first), str(second))
@@ -3082,7 +3202,9 @@ def test_file_list_refuses_an_already_open_first_file(
     window._load_pixel(str(two))
     entry = window._workspace.find_file(str(one))
 
-    _answer_container_dialog(monkeypatch, ContainerEdit(RAW_CONTAINER, (str(two),)))
+    _answer_container_dialog(
+        monkeypatch, ContainerEdit(FileStages(RAW_CONTAINER), (str(two),))
+    )
     window._change_container_for(entry)
     assert entry.paths == (str(one),)  # refused, and said so
     assert window._workspace.find_file(str(two)) is not entry

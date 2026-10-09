@@ -209,6 +209,20 @@ def container_label(
     return (info.short_name or info.name) if short else info.name
 
 
+def compression_label(registry: Registry, compression_id: str) -> str:
+    """The name of ``compression_id``'s scheme, for a row's tooltip.
+
+    The id itself for one the registry no longer has — unlike
+    :func:`container_label`, since here the tooltip is saying what the entry
+    *asks* to be unpacked through, and an absent scheme is what the user has to
+    go and find.
+    """
+    try:
+        return registry.plugin(Stage.COMPRESSION, compression_id).info.name
+    except KeyError:
+        return compression_id
+
+
 def resolved_container_id(registry: Registry, container_id: str) -> str:
     """``container_id`` if the registry still has it, plain bytes if it does not.
 

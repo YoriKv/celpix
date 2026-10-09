@@ -8,10 +8,12 @@ from pathlib import Path
 import pytest
 
 from celpix.core.capabilities import ContentKind
-from celpix.core.errors import PipelineError
+from celpix.core.errors import PipelineError, Stage
 from celpix.pipeline import pipeline
-from celpix.plugins.base import RAW_CONTAINER
+from celpix.pipeline.pathway import PathwayConfig
+from celpix.plugins.base import NO_COMPRESSION, NO_RESHAPE, RAW_CONTAINER, FileRef
 from celpix.plugins.registry import default_registry
+from celpix.project.workspace import FileStages
 from celpix.ui.main_window import MainWindow
 from celpix.ui.new_file_dialog import NewFileDialog, NewFileParams
 
@@ -21,6 +23,27 @@ _SNES_BG = "preset.tilemap.snes-bg"
 # The 4bpp variant of the tile-bank family: 0x8000 bytes of tiles, which at 32
 # bytes a tile is 16x64. The one size that container builds a bank around.
 _CGX_4BPP_TILES = 0x8000 // 32
+
+
+def _cfg(
+    path,
+    container_id: str = RAW_CONTAINER,
+    *,
+    codec_id: str = _4BPP,
+    reshape_id: str = NO_RESHAPE,
+    compression_id: str = NO_COMPRESSION,
+    write_enabled: bool = True,
+) -> PathwayConfig:
+    """The pathway a new file is written through: its stages over a path that
+    need not exist yet."""
+    return PathwayConfig(
+        source=FileRef((str(path),)),
+        interpret_preset_id=codec_id,
+        container_id=container_id,
+        reshape_id=reshape_id,
+        compression_id=compression_id,
+        write_enabled=write_enabled,
+    )
 
 
 def test_blank_size_counts_units_through_the_codec() -> None:
@@ -45,9 +68,8 @@ def test_create_file_writes_the_payload_through_a_plain_container(tmp_path) -> N
     reg = default_registry()
     path = tmp_path / "tiles.bin"
     size = pipeline.create_file(
-        str(path),
+        _cfg(path, RAW_CONTAINER, codec_id=_4BPP),
         kind=ContentKind.PIXELS,
-        container_id=RAW_CONTAINER,
         codec_id=_4BPP,
         units=64,
         reg=reg,
@@ -66,9 +88,8 @@ def test_create_file_replaces_rather_than_splicing_into_what_is_there(
     path = tmp_path / "tiles.bin"
     path.write_bytes(b"\xee" * 4096)
     pipeline.create_file(
-        str(path),
+        _cfg(path, RAW_CONTAINER, codec_id=_4BPP),
         kind=ContentKind.PIXELS,
-        container_id=RAW_CONTAINER,
         codec_id=_4BPP,
         units=8,
         reg=reg,
@@ -84,9 +105,8 @@ def test_create_file_builds_a_container_that_can_frame_a_fresh_payload(
     reg = default_registry()
     path = tmp_path / "bank.cgx"
     size = pipeline.create_file(
-        str(path),
+        _cfg(path, "container.scgcad-cgx", codec_id=_4BPP),
         kind=ContentKind.PIXELS,
-        container_id="container.scgcad-cgx",
         codec_id=_4BPP,
         units=_CGX_4BPP_TILES,
         reg=reg,
@@ -104,16 +124,34 @@ def test_frames_new_file_probes_the_container_at_this_size() -> None:
     reg = default_registry()
     cgx = "container.scgcad-cgx"
     assert pipeline.frames_new_file(
-        ContentKind.PIXELS, cgx, _4BPP, _CGX_4BPP_TILES, reg
+        _cfg("x", cgx, codec_id=_4BPP),
+        kind=ContentKind.PIXELS,
+        codec_id=_4BPP,
+        units=_CGX_4BPP_TILES,
+        reg=reg,
     )
-    assert not pipeline.frames_new_file(ContentKind.PIXELS, cgx, _4BPP, 16, reg)
+    assert not pipeline.frames_new_file(
+        _cfg("x", cgx, codec_id=_4BPP),
+        kind=ContentKind.PIXELS,
+        codec_id=_4BPP,
+        units=16,
+        reg=reg,
+    )
     # Plain bytes frame nothing, and iNES can only preserve a header it was
     # shown - neither adds anything to a payload handed over fresh.
     assert not pipeline.frames_new_file(
-        ContentKind.PIXELS, RAW_CONTAINER, _4BPP, 256, reg
+        _cfg("x", RAW_CONTAINER, codec_id=_4BPP),
+        kind=ContentKind.PIXELS,
+        codec_id=_4BPP,
+        units=256,
+        reg=reg,
     )
     assert not pipeline.frames_new_file(
-        ContentKind.PIXELS, "container.ines", _4BPP, 256, reg
+        _cfg("x", "container.ines", codec_id=_4BPP),
+        kind=ContentKind.PIXELS,
+        codec_id=_4BPP,
+        units=256,
+        reg=reg,
     )
 
 
@@ -126,9 +164,8 @@ def test_new_file_refuses_a_size_the_container_cannot_frame(tmp_path) -> None:
     path = tmp_path / "tiles.smd"
     with pytest.raises(PipelineError, match="would hold 0 bytes"):
         pipeline.create_file(
-            str(path),
+            _cfg(path, smd, codec_id=_4BPP),
             kind=ContentKind.PIXELS,
-            container_id=smd,
             codec_id=_4BPP,
             units=256,
             reg=reg,
@@ -137,8 +174,20 @@ def test_new_file_refuses_a_size_the_container_cannot_frame(tmp_path) -> None:
     # The dialog's probe is the same call, so it refuses at the same size and
     # goes through at a whole block.
     with pytest.raises(PipelineError):
-        pipeline.frames_new_file(ContentKind.PIXELS, smd, _4BPP, 256, reg)
-    assert pipeline.frames_new_file(ContentKind.PIXELS, smd, _4BPP, 512, reg)
+        pipeline.frames_new_file(
+            _cfg("x", smd, codec_id=_4BPP),
+            kind=ContentKind.PIXELS,
+            codec_id=_4BPP,
+            units=256,
+            reg=reg,
+        )
+    assert pipeline.frames_new_file(
+        _cfg("x", smd, codec_id=_4BPP),
+        kind=ContentKind.PIXELS,
+        codec_id=_4BPP,
+        units=512,
+        reg=reg,
+    )
 
 
 def test_new_tpl_palette_names_its_codec_in_the_header(tmp_path) -> None:
@@ -150,9 +199,8 @@ def test_new_tpl_palette_names_its_codec_in_the_header(tmp_path) -> None:
     tpl = "container.tpl-palette"
     path = tmp_path / "colors.tpl"
     pipeline.create_file(
-        str(path),
+        _cfg(path, tpl, codec_id=_BGR555),
         kind=ContentKind.PALETTE,
-        container_id=tpl,
         codec_id=_BGR555,
         units=16,
         reg=reg,
@@ -162,7 +210,11 @@ def test_new_tpl_palette_names_its_codec_in_the_header(tmp_path) -> None:
     # A codec the header has no byte for is refused rather than guessed at.
     with pytest.raises(PipelineError, match="not a format a TPL header can name"):
         pipeline.blank_file_bytes(
-            ContentKind.PALETTE, tpl, "preset.palette.bgr555-snes", 16, reg
+            _cfg("x", tpl, codec_id="preset.palette.bgr555-snes"),
+            kind=ContentKind.PALETTE,
+            codec_id="preset.palette.bgr555-snes",
+            units=16,
+            reg=reg,
         )
 
 
@@ -219,6 +271,65 @@ def test_dialog_states_the_byte_size_and_the_unbuildable_framing(qtbot) -> None:
     assert "will not reopen as that format" in dialog._note.text()
 
 
+def test_dialog_offers_reshape_and_compression_except_to_a_palette(qtbot) -> None:
+    """The stage rows are Edit File Container's, narrowed to what writes: a
+    scheme with no compressor cannot produce a file. A palette file gets the
+    container row alone, and its params say so."""
+    from celpix.plugins.base import writes_back
+    from uihelpers import _combo_ids
+
+    reg = default_registry()
+    dialog = NewFileDialog(reg)
+    qtbot.addWidget(dialog)
+    rows = dialog._stages
+    assert rows.reshape.isVisibleTo(dialog) and rows.compression.isVisibleTo(dialog)
+    offered = set(_combo_ids(rows.compression))
+    assert "compression.gba-rle" in offered
+    assert not any(
+        not writes_back(reg.plugin(Stage.COMPRESSION, plugin_id), Stage.COMPRESSION)
+        for plugin_id in offered
+    )
+
+    rows.compression.setCurrentIndex(rows.compression.findData("compression.gba-rle"))
+    dialog._accept()
+    assert dialog._params.stages == FileStages(
+        RAW_CONTAINER, compression_id="compression.gba-rle"
+    )
+
+    dialog._content.setCurrentIndex(dialog._content.findData(ContentKind.PALETTE))
+    assert not rows.reshape.isVisibleTo(dialog)
+    assert not rows.compression.isVisibleTo(dialog)
+    dialog._accept()
+    assert dialog._params.stages == FileStages()
+
+
+def test_create_file_packs_a_compressed_file_that_reopens_blank(tmp_path) -> None:
+    """A file asked for as a packed stream is written by the scheme that will
+    unpack it, and reads back — through the same stages — as the zeroes asked
+    for; the probe sees the packing rather than mistaking it for framing."""
+    reg = default_registry()
+    path = tmp_path / "tiles.rle"
+    cfg = _cfg(path, compression_id="compression.gba-rle")
+    assert not pipeline.frames_new_file(
+        cfg, kind=ContentKind.PIXELS, codec_id=_4BPP, units=64, reg=reg
+    )
+    size = pipeline.create_file(
+        cfg, kind=ContentKind.PIXELS, codec_id=_4BPP, units=64, reg=reg
+    )
+    assert size == 64 * 32
+    assert 0 < path.stat().st_size < size  # the stream, not the zeroes
+    assert pipeline.read_region(cfg, reg)[0] == bytes(size)
+    # A pathway with no write half has nothing to produce a file with.
+    with pytest.raises(ValueError, match="read-only"):
+        pipeline.create_file(
+            _cfg(path, write_enabled=False),
+            kind=ContentKind.PIXELS,
+            codec_id=_4BPP,
+            units=64,
+            reg=reg,
+        )
+
+
 def test_dialog_params_fold_a_palettes_count_into_one_axis(qtbot) -> None:
     dialog = NewFileDialog(default_registry())
     qtbot.addWidget(dialog)
@@ -254,7 +365,7 @@ def test_new_file_creates_the_file_and_stamps_its_answers_on_the_entry(
         window,
         monkeypatch,
         path,
-        NewFileParams(ContentKind.PIXELS, RAW_CONTAINER, _4BPP, 8, 4),
+        NewFileParams(ContentKind.PIXELS, FileStages(), _4BPP, 8, 4),
     )
     entry = window._workspace.current
     assert path.read_bytes() == bytes(8 * 4 * 32)
@@ -267,6 +378,28 @@ def test_new_file_creates_the_file_and_stamps_its_answers_on_the_entry(
     assert (entry.doc.view.columns, entry.doc.view.rows) == (8, 4)
 
 
+def test_new_file_with_stages_carries_them_and_opens_blank(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """The stages go on the entry as Edit File Container would put them, and
+    the file is written through the very pathway the entry then reads."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    path = tmp_path / "sheet.rle"
+    stages = FileStages(RAW_CONTAINER, "reshape.swap-bytes-2", "compression.gba-rle")
+    _run_new_file(
+        window,
+        monkeypatch,
+        path,
+        NewFileParams(ContentKind.PIXELS, stages, _4BPP, 8, 4),
+    )
+    entry = window._workspace.current
+    assert entry.file_stages == stages
+    assert bytes(window._doc.pixel_data) == bytes(8 * 4 * 32)
+    assert path.stat().st_size < 8 * 4 * 32  # packed on disk
+    assert window._doc.pixel_config.write_enabled
+
+
 def test_new_tilemap_file_carries_its_cell_codec(qtbot, tmp_path, monkeypatch) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
@@ -275,7 +408,7 @@ def test_new_tilemap_file_carries_its_cell_codec(qtbot, tmp_path, monkeypatch) -
         window,
         monkeypatch,
         path,
-        NewFileParams(ContentKind.TILEMAP, RAW_CONTAINER, _SNES_BG, 32, 32),
+        NewFileParams(ContentKind.TILEMAP, FileStages(), _SNES_BG, 32, 32),
     )
     entry = window._workspace.current
     assert path.stat().st_size == 32 * 32 * 2
@@ -294,7 +427,7 @@ def test_new_palette_file_registers_under_the_codec_it_was_written_with(
         window,
         monkeypatch,
         path,
-        NewFileParams(ContentKind.PALETTE, RAW_CONTAINER, _BGR555, 128, 1),
+        NewFileParams(ContentKind.PALETTE, FileStages(), _BGR555, 128, 1),
     )
     entry = window._workspace.find_palette(str(path))
     assert entry is not None
@@ -311,7 +444,7 @@ def test_new_file_refuses_a_path_already_open(
     window = MainWindow()
     qtbot.addWidget(window)
     path = tmp_path / "sheet.bin"
-    params = NewFileParams(ContentKind.PIXELS, RAW_CONTAINER, _4BPP, 8, 4)
+    params = NewFileParams(ContentKind.PIXELS, FileStages(), _4BPP, 8, 4)
     _run_new_file(window, monkeypatch, path, params)
     before = path.read_bytes()
     path.write_bytes(b"\x77" * len(before))
@@ -332,7 +465,7 @@ def test_undoing_a_new_file_closes_the_entry_and_keeps_the_file(
         window,
         monkeypatch,
         path,
-        NewFileParams(ContentKind.PIXELS, RAW_CONTAINER, _4BPP, 8, 4),
+        NewFileParams(ContentKind.PIXELS, FileStages(), _4BPP, 8, 4),
     )
     window._undo_stack.undo()
     assert window._workspace.entries == []

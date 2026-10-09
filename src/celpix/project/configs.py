@@ -95,13 +95,15 @@ def pixel_config_for(
     reached through the chain above it (:func:`_parent_read`).
 
     A compression scheme that can be decoded but not re-encoded yields a config
-    with ``write_enabled=False`` — the slice loads and views fine, it just can't
-    be written back. A whole file is the same rule applied to its **container**
+    with ``write_enabled=False`` — the entry loads and views fine, it just can't
+    be written back. A whole file adds the same rule for its **container**
     (``Entry.container_id``) — a slice does not go through one, for the reason
-    given on that field — and both kinds apply it to their **reshape**
-    (``Entry.reshape_id``), which either may carry. A stage whose plugin this
-    build hasn't got at all is view-only too, and named in ``missing_plugins`` so
-    the load can tell the user which one to install
+    given on that field — and both kinds apply it to their **reshape** and
+    their **compression** (``Entry.reshape_id``, ``Entry.compression_id``),
+    which either may carry: a file that is one compressed blob lifted out of a
+    ROM decompresses whole on load and is re-packed whole on save. A stage
+    whose plugin this build hasn't got at all is view-only too, and named in
+    ``missing_plugins`` so the load can tell the user which one to install
     (:meth:`~celpix.plugins.registry.Registry.resolve_stage`).
 
     A slice is saved **through its parent** (``writes_through_parent``) rather
@@ -125,11 +127,12 @@ def pixel_config_for(
     # container cuts the colour words out of whatever frames them, and the
     # swatch codec reads those (``docs/design/palette-editing.md`` §2).
     whole = entry.kind in (EntryKind.FILE, EntryKind.PALETTE)
-    stages = [(Stage.RESHAPE, entry.reshape_id)]
+    stages = [
+        (Stage.RESHAPE, entry.reshape_id),
+        (Stage.COMPRESSION, entry.compression_id),
+    ]
     if whole:
         stages.append((Stage.CONTAINER, entry.container_id))
-    else:
-        stages.append((Stage.COMPRESSION, entry.compression_id))
     resolved = {
         stage: registry.resolve_stage(stage, wanted) for stage, wanted in stages
     }
@@ -139,14 +142,20 @@ def pixel_config_for(
     writable = all(writes for _id, writes in resolved.values())
     reshape_id = resolved[Stage.RESHAPE][0]
     if whole:
+        own = _resolved_compression(
+            entry, resolved[Stage.COMPRESSION][0], registry, workspace
+        )
         return PathwayConfig(
             source=FileRef(entry.paths),
             interpret_preset_id=preset_id,
             interpret_params=interpret_params_for(entry, preset_id, registry),
             container_id=resolved[Stage.CONTAINER][0],
             reshape_id=reshape_id,
-            write_enabled=writable,
+            compression_id=own.compression_id,
+            write_enabled=writable and own.resolvable,
             missing_plugins=missing,
+            inputs=own.inputs,
+            input_problems=own.problems,
         )
     half = _slice_half(
         entry,
@@ -211,20 +220,7 @@ def _slice_half(
     # of nested slices that is every link's, since each is saved through the one
     # above it. A tilemap slice is held to it as much as a pixel one: its cells
     # are bytes of the same file.
-    writable = read.writable
-    # What the scheme needs from outside the slice — a shared code table, an
-    # output size, how many parts a de-interleaved stream weaves — resolved here
-    # because only the host can reach the parent's buffer and the other entries a
-    # binding names. A scheme whose inputs do not resolve is put on the
-    # pass-through, exactly as a scheme this build lacks is: the bytes show
-    # packed, Write greys out, and the notice says what to bind
-    # (``docs/design/plugin-inputs.md`` §4).
-    inputs, problems = _resolved_stage_inputs(
-        entry, Stage.COMPRESSION, compression_id, registry, workspace
-    )
-    if problems:
-        compression_id = NO_COMPRESSION
-        writable = False
+    own = _resolved_compression(entry, compression_id, registry, workspace)
     source = FileRef(
         # The parent's *whole* file list, not just the file the slice is named
         # after: a slice's offset addresses the parent's joined buffer, so
@@ -245,12 +241,48 @@ def _slice_half(
     return _SliceHalf(
         source=source,
         dest=_slice_dest(entry, source, read),
-        compression_id=compression_id,
-        inputs=inputs,
-        problems=problems,
-        writable=writable,
+        compression_id=own.compression_id,
+        inputs=own.inputs,
+        problems=own.problems,
+        writable=read.writable and own.resolvable,
         through=read.through,
     )
+
+
+@dataclass(frozen=True)
+class _ResolvedCompression:
+    """An entry's own compression scheme with its inputs resolved: the scheme
+    the config runs, the values it is handed, the problems the load reports,
+    and whether the stage can honestly run at all."""
+
+    compression_id: str
+    inputs: dict[Stage, dict[str, bytes | int | str]]
+    problems: tuple[tuple[Stage, str, str], ...]
+    resolvable: bool
+
+
+def _resolved_compression(
+    entry: Entry,
+    compression_id: str,
+    registry: Registry,
+    workspace: Workspace | None,
+) -> _ResolvedCompression:
+    """``compression_id`` as ``entry``'s config will run it, inputs resolved.
+
+    Shared by a slice's config and a whole file's: either may decompress, and the
+    scheme's inputs — a shared code table, an output size, how many parts a
+    de-interleaved stream weaves — are resolved here because only the host can
+    reach the parent's buffer and the other entries a binding names. A scheme
+    whose inputs do not resolve is put on the pass-through, exactly as a scheme
+    this build lacks is: the bytes show packed, Write greys out, and the notice
+    says what to bind (``docs/design/plugin-inputs.md`` §4).
+    """
+    inputs, problems = _resolved_stage_inputs(
+        entry, Stage.COMPRESSION, compression_id, registry, workspace
+    )
+    if problems:
+        return _ResolvedCompression(NO_COMPRESSION, inputs, problems, False)
+    return _ResolvedCompression(compression_id, inputs, problems, True)
 
 
 @dataclass(frozen=True)
@@ -440,14 +472,19 @@ def tilemap_config_for(
     # FILE alone, where the pixel side also takes a PALETTE: a palette's content
     # kind is PIXELS (its swatches), so it never reaches a tilemap read.
     if entry.kind is EntryKind.FILE:
+        # A map that is one compressed blob of its own: unpacked whole on load
+        # and re-packed whole by the save, on the pixel side's rule.
+        scheme, packs = registry.resolve_stage(Stage.COMPRESSION, entry.compression_id)
+        own = _resolved_compression(entry, scheme, registry, workspace)
         return PathwayConfig(
             source=FileRef(entry.paths),
             interpret_preset_id=preset_id,
             container_id=resolved_container_id(registry, entry.container_id),
             reshape_id=entry.reshape_id,
-            write_enabled=writable,
-            inputs=inputs,
-            input_problems=problems,
+            compression_id=own.compression_id,
+            write_enabled=writable and packs and own.resolvable,
+            inputs={**inputs, **own.inputs},
+            input_problems=own.problems + problems,
         )
     half = _slice_half(entry, preset_id, registry, workspace, entry.compression_id)
     return PathwayConfig(
@@ -503,6 +540,8 @@ def reorders_bytes(entry: Entry, registry: Registry) -> bool:
     a ``.smd``, an interleaved SNES image, a byte-swapped N64 dump. In both cases
     the entry's buffer is the ROM as the machine addresses it and the file is a
     scrambled encoding of that, so a position in one names nothing in the other.
+    True as well for a file that **decompresses whole**: its buffer is the
+    unpacked stream, which the file holds no byte of.
 
     Everything that resolves an offset against this entry's coordinates keys off
     this: a slice of it has to read (and cannot write) through its buffer, and so
@@ -510,6 +549,11 @@ def reorders_bytes(entry: Entry, registry: Registry) -> bool:
     registry no longer has reads as plain bytes, which preserve positions.
     """
     if registry.resolve_stage(Stage.RESHAPE, entry.reshape_id)[0] != NO_RESHAPE:
+        return True
+    if (
+        registry.resolve_stage(Stage.COMPRESSION, entry.compression_id)[0]
+        != NO_COMPRESSION
+    ):
         return True
     plugin = registry.plugin(
         Stage.CONTAINER, resolved_container_id(registry, entry.container_id)
@@ -526,11 +570,15 @@ def entry_view_bytes(
     """``entry``'s view buffer and the file offset its first byte sits at.
 
     The single definition of "what this entry shows": its live document's bytes
-    when one is loaded, else the region read fresh through its own container and
-    reshape (``pipeline.read_region`` — the preset is inert, the read stops
-    before any codec runs). The base is what Read **recorded**, not what the
-    config asked for: only the container knows where it actually began (past a
-    copier header, past the iNES header and PRG banks).
+    when one is loaded, else the region read fresh through its own container,
+    reshape and decompressor (``pipeline.read_region`` — the preset is inert,
+    the read stops before any codec runs). The base follows the document's
+    :attr:`~celpix.core.document.Document.anchor_base` rule whether or not one
+    exists: what Read **recorded** where the buffer is the file's bytes — only
+    the container knows where it actually began (past a copier header, past the
+    iNES header and PRG banks) — and 0 under a reshape or a decompressor, whose
+    buffer is a different address space from the file, so that an offset
+    written down against it is the same number the view shows.
 
     Everything that resolves an offset in this entry's coordinates reads through
     this — a slice of a reordering parent, an Offset palette — so they can never
@@ -543,11 +591,10 @@ def entry_view_bytes(
     bytes, and this returns neither. The two must move together.
     """
     if entry.doc is not None:
-        return entry.doc.pixel_data, entry.doc.pixel_ctx.get(KEY_SOURCE_OFFSET, 0)
-    data, ctx = pipeline.read_region(
-        pixel_config_for(entry, preset_id, registry, workspace), registry
-    )
-    return data, ctx.get(KEY_SOURCE_OFFSET, 0)
+        return entry.doc.pixel_data, entry.doc.anchor_base
+    cfg = pixel_config_for(entry, preset_id, registry, workspace)
+    data, ctx = pipeline.read_region(cfg, registry)
+    return data, ctx.get(KEY_SOURCE_OFFSET, 0) if cfg.reads_raw_bytes else 0
 
 
 def _parent_view_bytes(
@@ -565,11 +612,11 @@ def _parent_view_bytes(
     window onto them, because then the slice's offset lands on the same bytes
     either way. Two things make the parent's buffer the only correct source:
 
-    - **A parent that reorders** (``reordered``, from :func:`reorders_bytes`).
-      Then the file simply does not hold the bytes the slice's offset names,
-      dirty or not — so the buffer is read even when the parent has no document
-      of its own (it is re-read for this), since falling back to disk would
-      quietly hand back a scrambled region.
+    - **A parent that reorders** (``reordered``, from :func:`reorders_bytes`),
+      or decompresses whole. Then the file simply does not hold the bytes the
+      slice's offset names, dirty or not — so the buffer is read even when the
+      parent has no document of its own (it is re-read for this), since falling
+      back to disk would quietly hand back a scrambled region.
     - **Unsaved pixel edits.** A dirty parent's live bytes are what the slice is a
       view of; the file still holds the old ones. A dirty *palette* doesn't
       qualify — it lives on the other pathway and in another file, so it says

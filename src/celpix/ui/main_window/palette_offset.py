@@ -43,15 +43,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from celpix.core.address import format_hex, parse_hex
-from celpix.core.context import (
-    KEY_SOURCE_OFFSET,
-)
 from celpix.core.document import Document
 from celpix.core.errors import PipelineError
 from celpix.core.palette import FULL_PALETTE_COUNT
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
-from celpix.plugins.base import NO_RESHAPE, FileRef
+from celpix.plugins.base import FileRef
 from celpix.project import documents
 from celpix.project.workspace import (
     Entry,
@@ -308,14 +305,12 @@ class PaletteOffsetMixin:
             return
         # The same addressing rule as _offset_palette_space, recomputed live
         # rather than trusted from the ref's data_base (the owner's document may
-        # have been rebuilt since): 0-based under a reshape, the recorded start
-        # under a permuting container.
-        base = (
-            0
-            if pixel_owner.reshape_id != NO_RESHAPE
-            else target.pixel_ctx.get(KEY_SOURCE_OFFSET, 0)
+        # have been rebuilt since): the owner's own anchor — 0-based under a
+        # reshape or a decompressor, the recorded start under a permuting
+        # container.
+        target.replace_bytes(
+            doc.palette_config.source.offset - target.anchor_base, window
         )
-        target.replace_bytes(doc.palette_config.source.offset - base, window)
 
     def _offset_palette_source(
         self,

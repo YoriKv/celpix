@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from celpix.project.workspace import PaletteMode
+from celpix.project.workspace import FileStages, PaletteMode
 from celpix.ui.main_window import MainWindow
 from uihelpers import (
     _bound_screen,
@@ -2665,7 +2665,7 @@ def test_a_palette_entrys_container_can_be_corrected(qtbot, tmp_path, monkeypatc
     # Repick it as plain bytes, as a user correcting a wrong guess would.
     monkeypatch.setattr(
         "celpix.ui.main_window.containers.ContainerDialog.edit_container",
-        lambda *a, **k: ContainerEdit(RAW_CONTAINER, entry.paths, entry.reshape_id),
+        lambda *a, **k: ContainerEdit(FileStages(RAW_CONTAINER), entry.paths),
     )
     window._change_container_for(entry)
 

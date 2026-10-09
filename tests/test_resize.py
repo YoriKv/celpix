@@ -11,6 +11,7 @@ from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import NO_RESHAPE, RAW_CONTAINER, FileRef
 from celpix.plugins.registry import default_registry
+from celpix.project.workspace import FileStages
 from celpix.ui.container_dialog import ContainerDialog, ContainerEdit
 from celpix.ui.main_window import MainWindow
 from uihelpers import _make_snes_file
@@ -34,9 +35,12 @@ def _config(path: str, container_id: str = RAW_CONTAINER) -> PathwayConfig:
 def _blank(tmp_path, units: int, container_id: str = RAW_CONTAINER):
     path = tmp_path / "tiles.bin"
     pipeline.create_file(
-        str(path),
+        PathwayConfig(
+            source=FileRef((str(path),)),
+            interpret_preset_id=_4BPP,
+            container_id=container_id,
+        ),
         kind=ContentKind.PIXELS,
-        container_id=container_id,
         codec_id=_4BPP,
         units=units,
         reg=default_registry(),
@@ -94,9 +98,12 @@ def test_resize_rebuilds_the_container_framing(tmp_path) -> None:
     reg = default_registry()
     path = tmp_path / "bank.cgx"
     pipeline.create_file(
-        str(path),
+        PathwayConfig(
+            source=FileRef((str(path),)),
+            interpret_preset_id=_4BPP,
+            container_id=_CGX,
+        ),
         kind=ContentKind.PIXELS,
-        container_id=_CGX,
         codec_id=_4BPP,
         units=_CGX_TILES,
         reg=reg,
@@ -119,18 +126,13 @@ def test_resize_refuses_a_size_a_fixed_format_cannot_hold(tmp_path) -> None:
     reg = default_registry()
     scr, cells = "container.scgcad-scr", "preset.tilemap.snes-bg"
     path = tmp_path / "screen.scr"
-    pipeline.create_file(
-        str(path),
-        kind=ContentKind.TILEMAP,
-        container_id=scr,
-        codec_id=cells,
-        units=64 * 64,
-        reg=reg,
-    )
-    before = path.read_bytes()
     cfg = PathwayConfig(
         source=FileRef((str(path),)), interpret_preset_id=cells, container_id=scr
     )
+    pipeline.create_file(
+        cfg, kind=ContentKind.TILEMAP, codec_id=cells, units=64 * 64, reg=reg
+    )
+    before = path.read_bytes()
     with pytest.raises(PipelineError, match="keeps 8,192 bytes"):
         pipeline.resize_file(
             cfg, kind=ContentKind.TILEMAP, codec_id=cells, units=32 * 32, reg=reg
@@ -146,9 +148,12 @@ def test_resize_refuses_to_grow_a_bank_past_its_family(tmp_path) -> None:
     reg = default_registry()
     path = tmp_path / "bank.cgx"
     pipeline.create_file(
-        str(path),
+        PathwayConfig(
+            source=FileRef((str(path),)),
+            interpret_preset_id=_4BPP,
+            container_id=_CGX,
+        ),
         kind=ContentKind.PIXELS,
-        container_id=_CGX,
         codec_id=_4BPP,
         units=_CGX_TILES,
         reg=reg,
@@ -291,7 +296,7 @@ def test_edit_container_resizes_the_file_and_re_reads(
     entry = window._workspace.find_file(str(px))
     assert len(entry.doc.pixel_data) == 8 * 32
 
-    _answer(monkeypatch, ContainerEdit(RAW_CONTAINER, (str(px),), units=12))
+    _answer(monkeypatch, ContainerEdit(FileStages(RAW_CONTAINER), (str(px),), units=12))
     window._change_container_for(entry)
     assert px.stat().st_size == 12 * 32
     assert len(entry.doc.pixel_data) == 12 * 32  # the entry re-read the new bytes
@@ -336,7 +341,7 @@ def test_growing_asks_nothing(qtbot, tmp_path, monkeypatch, confirmations) -> No
     window._load_pixel(str(px))
     entry = window._workspace.find_file(str(px))
 
-    _answer(monkeypatch, ContainerEdit(RAW_CONTAINER, (str(px),), units=16))
+    _answer(monkeypatch, ContainerEdit(FileStages(RAW_CONTAINER), (str(px),), units=16))
     window._change_container_for(entry)
     assert confirmations.asked == []  # and so the default Cancel never bit
     assert px.stat().st_size == 16 * 32
@@ -358,7 +363,7 @@ def test_a_slice_matching_the_files_size_follows_a_resize(
     window._activate_entry(entry)
     assert len(tail.doc.pixel_data) == 192
 
-    _answer(monkeypatch, ContainerEdit(RAW_CONTAINER, (str(px),), units=12))
+    _answer(monkeypatch, ContainerEdit(FileStages(RAW_CONTAINER), (str(px),), units=12))
     window._change_container_for(entry)
     assert tail.slice_length == 12 * 32 - 64
     window._activate_entry(tail)
@@ -375,7 +380,7 @@ def test_shrink_prompt_names_the_slices_it_would_orphan(
     entry = window._workspace.find_file(str(px))
     window._workspace.add_slice(str(px), "late", 192, 32)  # past a 2-tile file
 
-    _answer(monkeypatch, ContainerEdit(RAW_CONTAINER, (str(px),), units=2))
+    _answer(monkeypatch, ContainerEdit(FileStages(RAW_CONTAINER), (str(px),), units=2))
     window._change_container_for(entry)
     assert "late" in confirmations.asked[0]
 
@@ -392,7 +397,9 @@ def test_a_resize_is_not_on_the_undo_stack(qtbot, tmp_path, monkeypatch) -> None
 
     _answer(
         monkeypatch,
-        ContainerEdit(RAW_CONTAINER, (str(px),), "reshape.swap-bytes-2", units=16),
+        ContainerEdit(
+            FileStages(RAW_CONTAINER, "reshape.swap-bytes-2"), (str(px),), units=16
+        ),
     )
     window._change_container_for(entry)
     assert px.stat().st_size == 16 * 32

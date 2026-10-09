@@ -629,3 +629,51 @@ def test_a_side_key_that_cannot_work_is_refused(side, message) -> None:
         TilemapCodec().decode(
             b"\x00", {"fields": "vhii iiii", **side}, PipelineContext()
         )
+
+
+def test_a_file_decompressed_whole_reads_its_table_from_the_packed_bytes(
+    tmp_path,
+) -> None:
+    """A file that is one compressed blob unpacks whole on load, and the inputs
+    its scheme needs are read from the file *before* that scheme runs — the
+    only bytes there are until it has. The regression to fear is the resolver
+    reading the file's view for them, which is the decode that needs them."""
+    reg = _registry()
+    rom = tmp_path / "blob.bin"
+    body = bytearray(0x400)
+    body[0x100 : 0x100 + len(TABLE)] = TABLE
+    body[0x200 : 0x200 + len(STREAM)] = STREAM
+    rom.write_bytes(bytes(body))
+    ws = Workspace()
+    blob = ws.open_file(str(rom))
+    blob.compression_id = XOR_ID
+    blob.inputs = {XOR_ID: {"table": RegionBinding(offset=0x100, length=len(TABLE))}}
+
+    cfg, px = _load(blob, ws, reg)
+    assert cfg.compression_id == XOR_ID and cfg.write_enabled
+    assert px.data == _xor(bytes(body), TABLE)
+    # Its own scheme is a section of its inputs, the way a slice's is.
+    assert [s.plugin_id for s in declared_inputs(blob, reg)] == [XOR_ID]
+
+    # The whole file is re-packed on save, through the same binding.
+    doc = Document(
+        pixel_data=bytearray(px.data),
+        bytes_per_tile=32,
+        tile_width=8,
+        tile_height=8,
+        palette=Palette([0]),
+        pixel_config=cfg,
+        palette_config=cfg,
+        pixel_ctx=px.ctx,
+    )
+    doc.replace_bytes(0x200, b"\xa5" * 8)
+    pipeline.save(doc, reg, palette=False)
+    saved = rom.read_bytes()
+    assert saved[0x100 : 0x100 + len(TABLE)] == TABLE  # still the key, in place
+    assert _xor(saved, TABLE)[0x200:0x208] == b"\xa5" * 8
+
+    # A slice of it counts in the unpacked stream from 0, as a nested slice does.
+    cut = ws.add_slice(blob.path, "cut", 0x200, 8)
+    cut_cfg = pixel_config_for(cut, PIXEL, reg, ws)
+    assert cut_cfg.source.data is not None and cut_cfg.source.data_base == 0
+    assert pipeline.load_pixel_data(cut_cfg, reg).data == b"\xa5" * 8

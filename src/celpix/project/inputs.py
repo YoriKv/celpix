@@ -44,10 +44,12 @@ from celpix.plugins.base import (
     DEFAULT_PIXEL_PRESET,
     DEFAULT_TILEMAP_PRESET,
     INPUT_STAGES,
+    NO_COMPRESSION,
     FileRef,
     InputKind,
     InputSpec,
 )
+from celpix.plugins.detect import resolved_container_id
 from celpix.plugins.registry import Registry
 
 if TYPE_CHECKING:
@@ -235,15 +237,20 @@ def engine_id_of(registry: Registry, preset_id: str | None) -> str:
 def plugin_id_at(entry: Entry, stage: Stage, registry: Registry) -> str:
     """The plugin ``entry``'s bindings for ``stage`` are keyed by, or ``""``.
 
-    A slice's compression scheme; a tilemap's cell engine. A **file** entry has
-    no compression of its own — its bindings at that stage are the preview's,
+    A slice's compression scheme; a tilemap's cell engine; a file's own scheme
+    where it decompresses whole. A **file** on the pass-through has no
+    compression of its own — its bindings at that stage are the preview's,
     keyed by whatever codec the preview is set to, which the UI asks for
     directly rather than through here.
     """
     from celpix.project.workspace import EntryKind  # noqa: PLC0415 — circular by nature
 
     if stage is Stage.COMPRESSION:
-        return entry.compression_id if entry.kind is EntryKind.SLICE else ""
+        if entry.kind is EntryKind.SLICE:
+            return entry.compression_id
+        if entry.kind is EntryKind.FILE and entry.compression_id != NO_COMPRESSION:
+            return entry.compression_id
+        return ""
     if stage is Stage.INTERPRET_TILEMAP:
         if entry.content_kind is not ContentKind.TILEMAP:
             return ""
@@ -545,6 +552,14 @@ def _source_bytes(
     as a raw slice of it would be. A
     named entry is read as it reads itself — container, reshape, decompressor —
     and its offsets are into that result, so the base comes back as 0.
+
+    A file that **decompresses whole** is read *before* its decompressor as the
+    entry's own file: the table its scheme needs sits beside the stream in the
+    packed bytes — the only bytes there are until the scheme has run, and
+    reading the decoded buffer for them would need the decode that needs them.
+    The same rule a nested slice has (a code table lives in the ROM beside the
+    stream, never inside it), and the one the window's *This file* bindings
+    keep by refusing to offer view positions under a decompressor.
     """
     from celpix.project import workspace as ws  # noqa: PLC0415 — circular by nature
 
@@ -573,7 +588,25 @@ def _source_bytes(
             registry,
         )
         return data, ctx.get(KEY_SOURCE_OFFSET, 0)
+    if owner.compression_id != NO_COMPRESSION:
+        return _packed_region_bytes(owner, registry)
     return _view_bytes(owner, registry, workspace)
+
+
+def _packed_region_bytes(entry: Entry, registry: Registry) -> tuple[bytes, int]:
+    """``entry``'s region as it stands before its own decompressor — through its
+    container and reshape only — and the base its offsets count from: what Read
+    recorded where the bytes are the file's, 0 under a reshape (the
+    :func:`~celpix.project.configs.entry_view_bytes` rule, short of the
+    decompressor)."""
+    cfg = PathwayConfig(
+        source=FileRef(entry.paths),
+        interpret_preset_id=DEFAULT_PIXEL_PRESET,
+        container_id=resolved_container_id(registry, entry.container_id),
+        reshape_id=registry.resolve_stage(Stage.RESHAPE, entry.reshape_id)[0],
+    )
+    data, ctx = pipeline.read_region(cfg, registry)
+    return data, ctx.get(KEY_SOURCE_OFFSET, 0) if cfg.reads_raw_bytes else 0
 
 
 def _view_bytes(

@@ -3,12 +3,20 @@
 Owns everything that answers "how big, in tiles, cells or colors" for a region
 the user is sizing rather than reading — the arithmetic between those units and
 bytes (:func:`blank_size`, :func:`blank_units`), a new file's bytes with its
-container's framing on (:func:`blank_file_bytes`, :func:`create_file`), and a
+stages' framing on (:func:`blank_file_bytes`, :func:`create_file`), and a
 resize of an existing region, written in place (:func:`resize_file`) or packed
 back into a compressed slice's slot (:func:`resized_slot_bytes`)
 (``docs/design/new-file.md``). Every result is read back through the same
 stages before it is handed over, so a container whose format fixes a length is
 refused rather than trusted (:func:`_check_payload_held`).
+
+**A new file and a resize are one operation at two sizes.** Both take the
+:class:`~celpix.pipeline.pathway.PathwayConfig` the file is read through — its
+container, reshape and compression, the same three a load uses — grow or cut a
+payload to a count of units, and run it out through the save's write half; a
+new file is the case where the payload starts empty and the destination is
+treated as empty too. So a file created compressed is packed by the very stage
+that will unpack it, and reopens as the blank sheet that was asked for.
 
 A resize runs the load's read half and the save's write half, which live in
 :mod:`celpix.pipeline.pipeline`. That module re-exports this one's public names,
@@ -32,7 +40,7 @@ from celpix.pipeline.metrics import (
     tilemap_cell_bytes,
 )
 from celpix.pipeline.pathway import PathwayConfig
-from celpix.plugins.base import ContainerPlugin, ReadSource, WriteTarget
+from celpix.plugins.base import ContainerPlugin, WriteTarget
 from celpix.plugins.registry import Registry
 
 
@@ -64,13 +72,15 @@ def blank_size(kind: ContentKind, codec_id: str, units: int, reg: Registry) -> i
 
 
 def blank_file_bytes(
+    cfg: PathwayConfig,
+    *,
     kind: ContentKind,
-    container_id: str,
     codec_id: str,
     units: int,
     reg: Registry,
 ) -> bytes:
-    """A whole new file's bytes: a blank payload with its container's framing on.
+    """A whole new file's bytes: a blank payload, packed and framed by ``cfg``'s
+    stages.
 
     The payload is **zero bytes** — :func:`blank_size` of them. Zero is what an
     empty region reads as for every codec celPix carries: index 0 in a tile (the
@@ -79,17 +89,19 @@ def blank_file_bytes(
     which would need a decoded shape for a codec whose geometry the preset alone
     does not fix.
 
-    The framing is the container's, which is what makes this more than
-    ``bytes(n)``: the tile-bank and screen formats build a header and a clear
-    table around a payload that is not theirs to invent, and hand back a file
-    their own reader recognises.
+    It then goes out through the save's write half — compressed and un-reshaped
+    by the config's stages (:func:`_repack`), then framed by its container —
+    which is what makes this more than ``bytes(n)``: a file asked for as a
+    packed stream *is* that stream, and the tile-bank and screen formats build
+    a header and a clear table around a payload that is not theirs to invent,
+    and hand back a file their own reader recognises.
 
     **The destination is treated as empty.** A container's write is normally
     shown what is already there so it can keep what it did not decode; a new file
     has nothing to keep, and showing it a file about to be replaced would splice
     a blank payload into bytes the user asked to be rid of. So a container that
     can only *preserve* its framing returns the bare payload here, and the result
-    being exactly ``blank_size`` long is how a caller can tell
+    being exactly the packed payload is how a caller can tell
     (:func:`frames_new_file`) — behaviourally, without any container declaring it.
 
     The context carries the codec the payload is in (:func:`_seed_codec`), for a
@@ -101,24 +113,43 @@ def blank_file_bytes(
     blocks — and a container handed a length it does not have quietly makes the
     file it can: the screen padded or cut to its size, the copier image with the
     partial block dropped. Neither is the file that was asked for, so the result
-    is read through the same container and refused when it does not hold
-    ``blank_size`` bytes of payload (:func:`_check_payload_held`).
+    is read through the same stages and refused when it does not hold
+    ``blank_size`` bytes of payload (:func:`_check_payload_held`). ``cfg``'s
+    source is never opened: the read-back is of the bytes just built.
     """
+    pathway = _new_file_pathway(kind)
     size = blank_size(kind, codec_id, units, reg)
-    payload = bytes(size)
-    container = reg.plugin(Stage.CONTAINER, container_id, ContainerPlugin)
     ctx = PipelineContext()
     _seed_codec(ctx, kind, codec_id)
+    shaped = _repack(cfg, b"", size, ctx, reg, pathway)
+    container = reg.plugin(Stage.CONTAINER, cfg.container_id, ContainerPlugin)
 
     def build() -> bytes:
-        data = container.write(payload, WriteTarget(b""), ctx)
-        held = len(container.read(ReadSource(data), PipelineContext()))
+        data = container.write(shaped, WriteTarget(b""), ctx)
+        held = _payload_held(cfg, data, reg, pathway)
         _check_payload_held(container, kind, codec_id, held, size, reg, "would hold")
         return data
 
-    return run_stage(
-        Stage.CONTAINER, _new_file_pathway(kind), build, "write", plugin=container_id
+    return run_stage(Stage.CONTAINER, pathway, build, "write", plugin=cfg.container_id)
+
+
+def _payload_held(
+    cfg: PathwayConfig, data: bytes, reg: Registry, pathway: Pathway
+) -> int:
+    """How many payload bytes ``data`` — a file as a container just wrote it —
+    holds once read back through every stage ``cfg`` reads through.
+
+    The one check a new file and a resize both make before trusting a write:
+    the bytes are read as the entry will read them, while they are still only
+    bytes, so a container that kept the file at a length of its own is caught
+    before anything reaches disk.
+    """
+    from celpix.pipeline.pipeline import (  # noqa: PLC0415 — circular by nature
+        _read_reshape_decompress,
     )
+
+    preview = replace(cfg, source=replace(cfg.source, data=data, data_base=0))
+    return len(_read_reshape_decompress(preview, PipelineContext(), reg, pathway))
 
 
 # The unit each kind is counted in, for a refusal that has to say how many of
@@ -190,51 +221,84 @@ def _check_payload_held(
 
 
 def frames_new_file(
+    cfg: PathwayConfig,
+    *,
     kind: ContentKind,
-    container_id: str,
     codec_id: str,
     units: int,
     reg: Registry,
 ) -> bool:
-    """Whether ``container_id`` builds framing around a payload it is handed fresh.
+    """Whether ``cfg``'s container builds framing around a payload it is handed
+    fresh.
 
     Probed by running the write against an empty destination and seeing whether
-    anything came back beyond the payload — behavioural, for the same reason
-    :func:`~celpix.pipeline.metrics.palette_has_alpha` is: it then holds for a
-    third-party container too, with nothing new to declare, and it reports what
-    the container really does rather than what it claims.
+    anything came back beyond the packed payload — behavioural, for the same
+    reason :func:`~celpix.pipeline.metrics.palette_has_alpha` is: it then holds
+    for a third-party container too, with nothing new to declare, and it
+    reports what the container really does rather than what it claims.
 
     It depends on the size as well as the container, and has to: a bank format
     builds its header for the payload lengths its family has and passes anything
-    else through.
+    else through. Measured against the payload as the stages pack it, so a
+    compressed file is not mistaken for a framed one.
     """
     size = blank_size(kind, codec_id, units, reg)
-    return len(blank_file_bytes(kind, container_id, codec_id, units, reg)) != size
+    packed = _repack(cfg, b"", size, PipelineContext(), reg, _new_file_pathway(kind))
+    return len(
+        blank_file_bytes(cfg, kind=kind, codec_id=codec_id, units=units, reg=reg)
+    ) != len(packed)
 
 
 def create_file(
-    path: str,
+    cfg: PathwayConfig,
     *,
     kind: ContentKind,
-    container_id: str,
     codec_id: str,
     units: int,
     reg: Registry,
 ) -> int:
-    """Create a blank file at ``path``; returns how many payload bytes it holds.
+    """Create the blank file ``cfg`` writes to; returns how many payload bytes it
+    holds.
 
     :func:`blank_file_bytes` decides what goes in it — see there for the payload
     and the framing. The file is written whole rather than spliced into, so
     naming an existing path replaces it, which is what the picker's overwrite
-    prompt already asked about.
+    prompt already asked about. The same two refusals as :func:`resize_file`,
+    for the same reasons: one file, and a pathway with a write half.
     """
-    data = blank_file_bytes(kind, container_id, codec_id, units, reg)
+    _check_resizable(cfg)
+    data = blank_file_bytes(cfg, kind=kind, codec_id=codec_id, units=units, reg=reg)
     # Outside :func:`~celpix.pipeline._stage.run_stage`, unlike the framing
     # above: a path that cannot be written is the operating system's answer
     # about a filename, not a stage failing, and the caller has a better message
     # for it than a pipeline report.
-    Path(path).write_bytes(data)
+    Path(cfg.write_target().path).write_bytes(data)
     return blank_size(kind, codec_id, units, reg)
+
+
+def _check_resizable(cfg: PathwayConfig) -> None:
+    """Refuse, before anything is read, a region whose size cannot be set.
+
+    - A region of **several files** cannot change size. Its boundaries are the
+      lengths the files have on disk, and they are the only thing that says which
+      bytes belong to which chip — see :func:`~celpix.pipeline.pipeline._deposit`,
+      which refuses the same thing at the deposit for the same reason. Refused
+      here as well so the caller is told before a multi-megabyte read, and told
+      what is wrong rather than that some buffer was the wrong length.
+    - A **view-only** pathway has no write half to put the bytes back through,
+      which is the same reason :func:`~celpix.pipeline.pipeline.save` skips it.
+    """
+    target = cfg.write_target()
+    if len(target.paths) > 1:
+        raise ValueError(
+            f"this region is {len(target.paths)} files joined, and resizing it "
+            "would move the boundaries between them; nothing was written"
+        )
+    if not cfg.write_enabled:
+        raise ValueError(
+            "this region is read-only, so its size cannot be changed; nothing "
+            "was written"
+        )
 
 
 def blank_units(kind: ContentKind, codec_id: str, nbytes: int, reg: Registry) -> int:
@@ -289,16 +353,8 @@ def resize_file(
     as for every codec celPix carries, and the end of the region is the only
     place a caller can add or remove units without moving the ones already there.
 
-    Two refusals, both before anything is read:
-
-    - A region of **several files** cannot change size. Its boundaries are the
-      lengths the files have on disk, and they are the only thing that says which
-      bytes belong to which chip — see :func:`~celpix.pipeline.pipeline._deposit`,
-      which refuses the same thing at the deposit for the same reason. Refused
-      here as well so the caller is told before a multi-megabyte read, and told
-      what is wrong rather than that some buffer was the wrong length.
-    - A **view-only** pathway has no write half to put the bytes back through,
-      which is the same reason :func:`~celpix.pipeline.pipeline.save` skips it.
+    Two refusals before anything is read (:func:`_check_resizable`): a region of
+    several files, and a view-only pathway.
 
     And one after the write has run but before it reaches disk: a container
     whose format fixes the payload's length — a screen, a tile bank outside its
@@ -312,20 +368,10 @@ def resize_file(
     """
     from celpix.pipeline.pipeline import (  # noqa: PLC0415 — circular by nature
         _deposit,
-        _read_reshape_decompress,
     )
 
+    _check_resizable(cfg)
     target = cfg.write_target()
-    if len(target.paths) > 1:
-        raise ValueError(
-            f"this region is {len(target.paths)} files joined, and resizing it "
-            "would move the boundaries between them; nothing was written"
-        )
-    if not cfg.write_enabled:
-        raise ValueError(
-            "this region is read-only, so its size cannot be changed; nothing "
-            "was written"
-        )
     current, size, ctx, pathway = _resize_read(cfg, kind, codec_id, units, reg)
     if size == len(current):
         return size
@@ -334,13 +380,10 @@ def resize_file(
 
     def produce(dest: WriteTarget) -> bytes:
         result = container.write(shaped, dest, ctx)
-        # Read the result back through every stage the entry reads through,
-        # while it is still only bytes: a container whose format fixes the
-        # payload's length keeps the file at that length whatever it was handed
-        # (:func:`_check_payload_held`), and the only honest answers are the size
-        # that was asked for or nothing written.
-        preview = replace(cfg, source=replace(cfg.source, data=result, data_base=0))
-        held = len(_read_reshape_decompress(preview, PipelineContext(), reg, pathway))
+        # A container whose format fixes the payload's length keeps the file at
+        # that length whatever it was handed, and the only honest answers are
+        # the size that was asked for or nothing written.
+        held = _payload_held(cfg, result, reg, pathway)
         _check_payload_held(container, kind, codec_id, held, size, reg, "keeps")
         return result
 
@@ -441,6 +484,7 @@ def _repack(
     """``current`` grown with zeroes or cut at the tail to ``size``, then
     compressed and un-reshaped — the payload a resize hands the container, or
     splices into a slot (:func:`resize_file` says why zeroes, and why the tail).
+    Handed nothing, it is a new file's whole payload (:func:`blank_file_bytes`).
     """
     from celpix.pipeline.pipeline import (
         _compress_unshape,  # noqa: PLC0415 — circular by nature

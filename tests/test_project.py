@@ -1137,6 +1137,29 @@ def test_reshape_round_trips_and_the_default_is_omitted(tmp_path) -> None:
     assert loaded_slice.reshape_id == "reshape.split-planes-2"
 
 
+def test_a_files_compression_round_trips_and_the_default_is_omitted(
+    tmp_path,
+) -> None:
+    # A file that decompresses whole names its scheme as a slice always does;
+    # the pass-through is left out, so every project written before a file
+    # could carry one — and every file still on it — is written as before.
+    rom = tmp_path / "blob.bin"
+    rom.write_bytes(b"\x00" * 64)
+    ws = Workspace()
+    file_entry = ws.open_file(str(rom))
+
+    project = tmp_path / "p.celpix"
+    save_project(ws, str(project))
+    raw = json.loads(project.read_text(encoding="utf-8"))
+    assert "compression_id" not in raw["entries"][0]
+
+    file_entry.compression_id = "compression.gba-rle"
+    save_project(ws, str(project))
+    raw = json.loads(project.read_text(encoding="utf-8"))
+    assert raw["entries"][0]["compression_id"] == "compression.gba-rle"
+    assert load_project(str(project)).entries[0].compression_id == "compression.gba-rle"
+
+
 def test_slot_fill_round_trips_and_the_default_is_omitted(tmp_path) -> None:
     # The slice's answer for the room a tighter re-pack leaves. Omitted at the
     # default so every project written before the choice existed round-trips

@@ -1305,11 +1305,11 @@ class CompositeEditCommand(_InPlaceCommand):
 
 
 class ContainerEditCommand(_InPlaceCommand):
-    """Re-pointing a file's file list, container and reshape (Edit File
-    Container…).
+    """Re-pointing a file's file list, container, reshape and compression (Edit
+    File Container…).
 
-    The three settle together because they decide the same thing between them —
-    which bytes the region even has — so one command carries all three, and undo
+    The four settle together because they decide the same thing between them —
+    which bytes the region even has — so one command carries all four, and undo
     puts the whole :class:`~celpix.ui.container_dialog.ContainerEdit` back and
     re-reads. Like :class:`SliceEditCommand` it restores the *coordinates*, not
     unsaved edits discarded when the documents were dropped (the dialog confirms

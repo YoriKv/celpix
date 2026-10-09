@@ -184,6 +184,8 @@ class PathwayConfig:
         position-for-position mapping back — so nothing in it can anchor a slice
         *beside* this one, whose offset has to name where the *compressed*
         structure starts. A slice nested *in* this one is the other case, and is
-        not asked here: its offset counts in exactly this decoded buffer.
+        not asked here: its offset counts in exactly this decoded buffer — as
+        does a slice of a whole **file** that decompresses, which has nothing
+        beside it to anchor at all (``ui/main_window/slices.py``).
         """
         return self.compression_id == NO_COMPRESSION

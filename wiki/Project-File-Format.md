@@ -153,12 +153,12 @@ Unknown or missing `kind` reads as `file`.
 | `extra_paths` | ○ | ○ | ○ | – | – |
 | `container_id` | ○ | – | – | ○ | – |
 | `reshape_id` | ○ | ○ | – | – | – |
+| `compression_id` | ○ | ● | – | – | – |
 | `parent` | – | ○ | ○ | – | – |
 | `parent_index` | – | ○ | – | – | – |
 | `slice_offset` | – | ● | – | – | – |
 | `slice_length` | – | ● | – | – | – |
 | `match_parent` | – | ○ | – | – | – |
-| `compression_id` | – | ● | – | – | – |
 | `slot_fill` | – | ○ | – | – | – |
 | `offset` | – | – | ● | – | – |
 | `palette_preset_id` | – | – | – | ● | – |
@@ -199,6 +199,7 @@ Required keys: an entry without them is skipped (`path`) or opens on defaults.
 | `extra_paths` | array of path | `[]` | omitted when empty | Further files joined after `path`, in join order, forming one region. On a slice/bookmark: the parent's list; on a nested slice: the root file's. Offsets are into the joined bytes |
 | `container_id` | id | `container.raw-file` | omitted at default | Container the bytes are read and written through |
 | `reshape_id` | id | `reshape.none` | omitted at default | Byte reordering of the region |
+| `compression_id` | id | `compression.none` | file: omitted at default; slice: always | Scheme the region is decompressed and recompressed with. On a file: the whole file, as one stream |
 | `content_kind` | string | `"pixels"` | omitted at default | `"pixels"` \| `"tilemap"` \| `"palette"`. Unknown reads as `"pixels"` |
 | `palette_row_base` | int | unset | omitted when unset; **written at 0** | Palette row the entry's row 0 counts from. Unset = the format's value. Signed |
 | `font` | object | — | omitted when empty | §5.9 |
@@ -214,7 +215,6 @@ Required keys: an entry without them is skipped (`path`) or opens on defaults.
 | `slice_offset` | int | `0` | always | Start, in bytes, absolute from byte 0 of the parent region. Not relative to any container header. Nested slice: from byte 0 of the parent slice's decoded bytes (after its reshape and decompression) |
 | `slice_length` | int \| `null` | `null` | always | Length in bytes. `null` = determined by decompression on first load. Always an int when `reshape_id` is set |
 | `match_parent` | bool | `false` | omitted when `false` | `true`: the length is the parent's end less `slice_offset`, re-measured on every read; `slice_length` holds the last measurement. Parent's end: the file size (joined), the parent's buffer under a reordering container, or the parent slice's decoded length when nested. Only a literal `true` counts |
-| `compression_id` | id | `compression.none` | always | Codec the slice is decompressed and recompressed with |
 | `slot_fill` | string | `"ff"` | omitted at default | Padding after a recompressed stream shorter than its slot: `"ff"` (pad `$FF`), `"zero"` (pad `$00`), `"keep"` (leave old bytes). Unknown reads as `"ff"` |
 | `parent` | string | `"file"` | omitted when `"file"` | Kind of row the slice is cut from: `"file"` \| `"palette"` \| `"slice"` (nested). Other values read as `"file"` |
 | `parent_index` | entry ref | — | when `parent` is `"slice"` | Position in `entries` of the parent slice. Read only when `parent` is `"slice"`. Written `-1` when the parent is not in the list |

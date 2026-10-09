@@ -10,7 +10,7 @@ lifecycle (open/add/remove) is itself undoable with object identity preserved.
 
 from __future__ import annotations
 
-from celpix.project.workspace import Entry, EntryKind
+from celpix.project.workspace import Entry, EntryKind, FileStages
 from celpix.ui.main_window import MainWindow
 from celpix.ui.undo_commands import (
     AddEntryCommand,
@@ -342,7 +342,7 @@ def test_container_edit_round_trip(qtbot, tmp_path, monkeypatch) -> None:
         "edit_container",
         staticmethod(
             lambda *_a, **_k: ContainerEdit(
-                RAW_CONTAINER, joined, "reshape.split-planes-2"
+                FileStages(RAW_CONTAINER, "reshape.split-planes-2"), joined
             )
         ),
     )

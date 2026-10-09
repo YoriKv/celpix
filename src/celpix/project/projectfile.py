@@ -281,6 +281,11 @@ def _entry_dict(
     # reshape is a property of the region, whichever kind holds it.
     if entry.reshape_id != NO_RESHAPE:
         data["reshape_id"] = entry.reshape_id
+    # A file that decompresses whole names its scheme the way a slice always
+    # does (below); omitted on the pass-through, which every file was before a
+    # file could carry one, so those projects round-trip unchanged.
+    if entry.kind is EntryKind.FILE and entry.compression_id != NO_COMPRESSION:
+        data["compression_id"] = entry.compression_id
     # Only when it isn't the plain-bytes default, so detection's usual answer
     # adds nothing to the file — and so a project written before containers
     # existed round-trips unchanged. A palette carries one for the same reason a

@@ -15,6 +15,17 @@ region's bytes are assembled — which files, in what order, through what
 wrapper. It has no signature to detect, so unlike the container there is no
 "(detected)" marker to show.
 
+**Compression** follows it, for the file that is one compressed blob lifted
+out of a ROM whole: rather than slicing a region that is the entire file, the
+file itself decompresses on load and is re-packed on save. The choice is the
+same stage a slice's dialog offers, and so is its cost — the view's positions
+are then positions in the unpacked stream, which no byte of the file has.
+
+The three rows are the ones New File… asks about a file that does not exist
+yet, and are the same component (:class:`~celpix.ui.file_stages.FileStageRows`):
+here every registered plugin is offered and a stage with no save half opens the
+file read-only, where a new file can only be made through stages that write.
+
 It is also where a region's **file list** is edited: a graphics region is not
 always one file, and only the user can state the order of the chips it is joined
 from (:class:`~celpix.ui.path_list_editor.PathListEditor`).
@@ -51,44 +62,19 @@ from typing import Any
 from PySide6.QtWidgets import QDialog, QFormLayout, QLabel, QWidget
 
 from celpix.core.capabilities import ContentKind
-from celpix.core.errors import Stage
-from celpix.plugins.base import NO_RESHAPE, RAW_CONTAINER
-from celpix.plugins.detect import (
-    container_write_enabled,
-    containers_for,
-    detect_container,
-    stage_write_enabled,
-)
+from celpix.plugins.detect import detect_container
 from celpix.plugins.registry import Registry
+from celpix.project.entry import FileStages
+from celpix.ui.file_stages import FileStageRows
 from celpix.ui.path_list_editor import PathListEditor
-from celpix.ui.searchable_combo import (
-    SearchableComboBox,
-    fill_grouped,
-    fill_stage_combo,
-    info_rows,
-)
 from celpix.ui.size_row import GROWTH_TIPS, UnitCountRow
 from celpix.ui.theme import WARNING_INK, set_ink
 from celpix.ui.widgets import (
-    PRESET_COMBO_WIDTH,
-    add_form_row,
     dialog_buttons,
     run_modal,
 )
 
 __all__ = ["ContainerDialog", "ContainerEdit"]
-
-_TIP = (
-    "How the file is unwrapped before decoding: a header\n"
-    "to skip, an interleave to undo, a wrapper to strip\n"
-    "Raw binary file passes every byte through"
-)
-
-_RESHAPE_TIP = (
-    "Byte reordering undone after the container, e.g. a\n"
-    "plane-per-chip split or a ROM-pair word interleave\n"
-    "Addresses and slices then count in the reordered bytes"
-)
 
 _FILES_TIP = "Files joined end to end to form this entry, in order"
 
@@ -106,24 +92,24 @@ _SIZE_TIPS = {
 
 @dataclass(frozen=True)
 class ContainerEdit:
-    """What the dialog was left holding: files, container, and reshape.
+    """What the dialog was left holding: the file's stages and its files.
 
-    All together, because the dialog settles them and the caller applies them as
-    one change — the file list decides which bytes there are, the container how
-    they are unwrapped, the reshape how the region is reordered, and any one
-    alone leaves the entry re-read.
+    Together, because the dialog settles them and the caller applies them as
+    one change — the file list decides which bytes there are, the stages how
+    they are unwrapped, reordered and unpacked
+    (:class:`~celpix.project.entry.FileStages`), and any one alone leaves the
+    entry re-read.
 
-    ``units`` is the odd one out and is **not** part of that change: the three
-    above only decide how bytes are read and so can be undone by putting them
-    back, while a resize rewrites the file. It is carried here because the dialog
-    is where it was asked for, and it is ``None`` — the ordinary case — wherever
+    ``units`` is the odd one out and is **not** part of that change: the above
+    only decide how bytes are read and so can be undone by putting them back,
+    while a resize rewrites the file. It is carried here because the dialog is
+    where it was asked for, and it is ``None`` — the ordinary case — wherever
     no size was asked for at all, so a caller applying the rest does nothing to
     the file (:meth:`ContainerDialog.resize_units`).
     """
 
-    container_id: str
+    stages: FileStages
     paths: tuple[str, ...]
-    reshape_id: str = NO_RESHAPE
     units: int | None = None
 
 
@@ -133,12 +119,10 @@ class ContainerDialog(QDialog):
         registry: Registry,
         *,
         paths: tuple[str, ...] | list[str],
-        container_id: str = RAW_CONTAINER,
-        reshape_id: str = NO_RESHAPE,
+        stages: FileStages | None = None,
         kind: ContentKind = ContentKind.PIXELS,
         codec_id: str = "",
         units: int = 0,
-        offer_reshape: bool = True,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -147,21 +131,22 @@ class ContainerDialog(QDialog):
         self._files = PathListEditor(paths, _FILES_TIP)
         self.setWindowTitle(f"Edit File Container - {basename(self.paths()[0])}")
 
-        self._container = SearchableComboBox(PRESET_COMBO_WIDTH)
-        self._container.setToolTip(_TIP)
-        # Kept unadorned so the "(detected)" marker can be re-applied to a
-        # different entry when the first file changes.
-        # Only the containers that frame this kind of entry: offering a palette
-        # the wrappers that unwrap ROMs would be inviting a choice that cannot
-        # come out well, and the two sets do not overlap.
-        offered = containers_for(registry, kind)
-        self._names = {info.id: info.name for info in offered}
+        # Every registered plugin, not only the plausible ones: the point of
+        # reaching for this dialog is that detection already had its turn. A
+        # stage with no save half is allowed and opens the file read-only, which
+        # the note below says before the user edits rather than after. Both
+        # answers decide whether there is a write half to put resized bytes
+        # back through, so the size row follows them as the note does.
+        self._stages = FileStageRows(
+            registry, writable_only=False, on_change=self._on_stage_change
+        )
+        self._stages.fill(kind, stages or FileStages())
+        self._container = self._stages.container  # what detection is marked on
         self._detected = ""
-        fill_grouped(self._container, info_rows(offered), container_id)
-
-        self._reshape = SearchableComboBox(PRESET_COMBO_WIDTH)
-        self._reshape.setToolTip(_RESHAPE_TIP)
-        fill_stage_combo(self._reshape, registry.plugins(Stage.RESHAPE), reshape_id)
+        # What the size row's count was measured under. A different scheme
+        # unpacks to a different length, so until it is applied the count
+        # describes a reading the file is not being given (``_resize_blocked``).
+        self._compression_before = self._stages.stages().compression_id
 
         # **A total count, not a grid**, which is the one place this differs
         # from the New File dialog's otherwise identical row. A file has a
@@ -177,17 +162,9 @@ class ContainerDialog(QDialog):
         self._size_caption = self._count.caption
         self._size = self._count.note
 
-        # A container or reshape with no save half of its own can still be read
-        # through, but the entry then opens read-only — worth saying before the
-        # user edits, not after.
         self._note = QLabel()
         self._note.setWordWrap(True)
         set_ink(self._note, WARNING_INK)
-        # Both answers decide whether there is a write half to put resized bytes
-        # back through, so the size row follows them as the note does.
-        for combo in (self._container, self._reshape):
-            combo.currentIndexChanged.connect(self._refresh_note)
-            combo.currentIndexChanged.connect(self._refresh_size)
         self._refresh_note()
 
         files_caption = QLabel("Files:")
@@ -199,16 +176,9 @@ class ContainerDialog(QDialog):
         # the room the paths need from every row at once.
         form.addRow(files_caption)
         form.addRow(self._files)
-        add_form_row(form, "Container:", self._container)
-        # Left out where the caller cannot apply one (a palette file: see
-        # ``_change_container_for``). The combo stays, hidden but parented so it
-        # never stands alone as a window, holding the value it was given, so the
-        # results and the note read it as they would a shown one.
-        if offer_reshape:
-            add_form_row(form, "Reshape:", self._reshape)
-        else:
-            self._reshape.setParent(self)
-            self._reshape.hide()
+        # A palette file gets the container row alone (``FileStageRows``).
+        self._stages.add_to(form)
+        self._stages.fill(kind, self._stages.stages())  # hides a palette's rows
         # Last, because it is the one row that changes the file rather than how
         # the rows above it are read.
         self._size_caption.setBuddy(self._size_units)
@@ -246,10 +216,13 @@ class ContainerDialog(QDialog):
             )
         if self._count.bytes_before is None:
             return "No format is registered to measure this file in."
-        if not container_write_enabled(self._registry, self._container.currentData()):
-            return "This container cannot write, so the file's size is fixed."
-        if not self._reshape_writes_back():
-            return "This reshape cannot be undone, so the file's size is fixed."
+        fixed = self._stages.size_fixed_reason()
+        if fixed:
+            return fixed
+        if self._stages.stages().compression_id != self._compression_before:
+            # The count was measured under the scheme the file opened with, and
+            # another unpacks to another length — the slice dialog's rule.
+            return "Apply the new compression first."
         return ""
 
     def _refresh_size(self, *_args: object) -> None:
@@ -282,6 +255,10 @@ class ContainerDialog(QDialog):
         self._refresh_detected()
         self._refresh_size()
 
+    def _on_stage_change(self, *_args: object) -> None:
+        self._refresh_note()
+        self._refresh_size()
+
     # -- the container -------------------------------------------------------
     def _refresh_detected(self) -> None:
         """Mark the container detection would pick for the *first* file.
@@ -294,47 +271,26 @@ class ContainerDialog(QDialog):
         if detected == self._detected:
             return
         self._detected = detected
+        names = self._stages.container_names
         for index in range(self._container.count()):
             if self._container.is_heading(index):
                 continue
             plugin_id = self._container.itemData(index)
-            name = self._names[plugin_id]
+            name = names[plugin_id]
             self._container.setItemText(
                 index, f"{name}  (detected)" if plugin_id == detected else name
             )
 
     def _refresh_note(self) -> None:
-        if not container_write_enabled(self._registry, self._container.currentData()):
-            self._note.setText(
-                "This container has no writer, so the file opens read-only.\n"
-                "Saving plain bytes back would undo the unwrapping rather\n"
-                "than reverse it, leaving the file corrupt."
-            )
-            self._note.setVisible(True)
-        elif not self._reshape_writes_back():
-            self._note.setText(
-                "This reshape has no unshape half, so the file opens\n"
-                "read-only: without the inverse, saved bytes could not be\n"
-                "returned to the places they came from."
-            )
-            self._note.setVisible(True)
-        else:
-            self._note.setVisible(False)
-
-    def _reshape_writes_back(self) -> bool:
-        # A missing reshape answers True here, where a missing *container*
-        # (:func:`container_write_enabled`) answers False: an id this registry
-        # lacks isn't this note's problem, and the entry's open reports it.
-        return stage_write_enabled(
-            self._registry, Stage.RESHAPE, self._reshape.currentData(), missing=True
-        )
+        # A stage with no save half of its own can still be read through, but
+        # the entry then opens read-only — worth saying before the user edits.
+        note = self._stages.view_only_note()
+        self._note.setText(note)
+        self._note.setVisible(bool(note))
 
     # -- results -------------------------------------------------------------
-    def container_id(self) -> str:
-        return self._container.currentData()
-
-    def reshape_id(self) -> str:
-        return self._reshape.currentData()
+    def stages(self) -> FileStages:
+        return self._stages.stages()
 
     def paths(self) -> tuple[str, ...]:
         return self._files.paths()
@@ -349,7 +305,5 @@ class ContainerDialog(QDialog):
         """
         return run_modal(
             ContainerDialog(registry, parent=parent, **options),
-            lambda d: ContainerEdit(
-                d.container_id(), d.paths(), d.reshape_id(), d.resize_units()
-            ),
+            lambda d: ContainerEdit(d.stages(), d.paths(), d.resize_units()),
         )

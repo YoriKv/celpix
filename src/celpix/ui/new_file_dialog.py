@@ -10,9 +10,16 @@ lived only in memory would be a fourth kind of entry answering to none of that.
 
 **Content is the first row and it drives the rest.** Which containers can frame
 the bytes, which codecs can read them, and what a unit of size even *is* all
-follow from it, so changing it refills both pickers and reshapes the size row
+follow from it, so changing it refills the pickers and reshapes the size row
 rather than the user starting over. Same reason it is first on the slice dialog:
 it decides what the rest of the dialog is describing.
+
+**The stage rows are Edit File Container…'s** — container, reshape and
+compression, one component (:class:`~celpix.ui.file_stages.FileStageRows`) —
+narrowed here to the plugins that *write*: a view-only stage has no save half,
+so there is nothing for it to produce a file with. A file asked for as a packed
+stream is written as one, by the scheme that will unpack it, and reopens as the
+blank sheet that was asked for (:func:`~celpix.pipeline.pipeline.create_file`).
 
 **Size is stated in the units the user thinks in** — tiles across and down for a
 graphic, cells for a map, a plain count of colors for a palette, which is a run
@@ -48,18 +55,20 @@ from PySide6.QtWidgets import (
 from celpix.core.capabilities import ContentKind
 from celpix.core.errors import PipelineError, Stage
 from celpix.pipeline import pipeline
+from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import (
     PALETTE_SWATCH_ENGINE,
     RAW_CONTAINER,
     STAGE_DEFAULT_PRESET,
+    FileRef,
     format_size,
 )
-from celpix.plugins.detect import container_write_enabled, containers_for
 from celpix.plugins.registry import Registry
+from celpix.project.entry import FileStages
+from celpix.ui.file_stages import FileStageRows
 from celpix.ui.searchable_combo import (
     SearchableComboBox,
     fill_grouped,
-    info_rows,
     preset_rows,
     tilemap_codec_label,
 )
@@ -113,7 +122,8 @@ _CODEC_STAGES = {
 
 @dataclass(frozen=True)
 class NewFileParams:
-    """The settled answers: what to create, how to frame it, and how big.
+    """The settled answers: what to create, the stages it is written through,
+    and how big.
 
     ``columns``/``rows`` are counted in whatever unit ``content_kind`` measures —
     tiles for pixels, cells for a tilemap. A **palette has no grid**, so its whole
@@ -122,7 +132,7 @@ class NewFileParams:
     """
 
     content_kind: ContentKind
-    container_id: str
+    stages: FileStages
     codec_id: str
     columns: int
     rows: int = 1
@@ -169,8 +179,13 @@ class NewFileDialog(QDialog):
         ):
             self._content.addItem(label, data)
 
-        self._container = SearchableComboBox(PRESET_COMBO_WIDTH)
-        self._container.setToolTip(_CONTAINER_TIP)
+        self._stages = FileStageRows(
+            registry, writable_only=True, on_change=self._refresh
+        )
+        # Tipped for a file being written, where the shared rows speak of one
+        # being read.
+        self._stages.container.setToolTip(_CONTAINER_TIP)
+        self._container = self._stages.container
         self._codec = SearchableComboBox(PRESET_COMBO_WIDTH)
         self._codec.setToolTip(_CODEC_TIP)
 
@@ -198,7 +213,7 @@ class NewFileDialog(QDialog):
 
         form = QFormLayout(self)
         add_form_row(form, "Content:", self._content)
-        add_form_row(form, "Container:", self._container)
+        self._stages.add_to(form)
         add_form_row(form, "Codec:", self._codec)
         # Captioned and tipped per content kind (:meth:`_apply_content_kind`).
         self._size_caption = add_form_row(form, "", self._size_field)
@@ -208,7 +223,6 @@ class NewFileDialog(QDialog):
         self._ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
 
         self._content.currentIndexChanged.connect(self._apply_content_kind)
-        self._container.currentIndexChanged.connect(self._refresh)
         self._codec.currentIndexChanged.connect(self._on_codec_change)
         self._apply_content_kind()
 
@@ -224,12 +238,7 @@ class NewFileDialog(QDialog):
         self._refresh()
 
     def _apply_content_kind(self, *_args: object) -> None:
-        """Refill both pickers and reshape the size row for the chosen content.
-
-        Only the containers that can *write* are offered: a view-only container
-        has no save half, so there is nothing for it to produce a file with —
-        a different failure from opening a file that cannot be saved, and one
-        there is no reason to let the user reach.
+        """Refill the pickers and reshape the size row for the chosen content.
 
         Signals stay blocked across the refill and one refresh runs after it. A
         fill emits a change per item, and a heading is briefly current before the
@@ -237,16 +246,10 @@ class NewFileDialog(QDialog):
         a live handler would be asked to size a file against a category name.
         """
         kind = self._kind()
-        offered = [
-            info
-            for info in containers_for(self._registry, kind)
-            if container_write_enabled(self._registry, info.id)
-        ]
-        # Plain bytes first for every kind: a new file is the one case detection
-        # has nothing to go on, and the payload alone always reopens as what was
-        # just written.
-        with signals_blocked(self._container):
-            fill_grouped(self._container, info_rows(offered), RAW_CONTAINER)
+        # Pass-through stages first for every kind: a new file is the one case
+        # detection has nothing to go on, and the payload alone always reopens
+        # as what was just written.
+        self._stages.fill(kind, FileStages())
 
         stage = _CODEC_STAGES[kind]
         label = tilemap_codec_label if kind is ContentKind.TILEMAP else None
@@ -303,8 +306,8 @@ class NewFileDialog(QDialog):
         params its engine rejects, a third-party format that raises. That is a
         reason not to offer OK, not a reason to close the dialog.
         """
-        codec, container_id = self._codec.currentData(), self._container.currentData()
-        if not codec or not container_id:
+        codec, stages = self._codec.currentData(), self._stages.stages()
+        if not codec or not stages.container_id:
             self._fail("No format is registered for this kind of file.")
             return
         try:
@@ -314,7 +317,7 @@ class NewFileDialog(QDialog):
             if size <= 0:
                 self._fail("This format reports no size, so there is nothing to write.")
                 return
-            note = self._note_text(str(container_id), str(codec), size)
+            note = self._note_text(stages, str(codec), size)
         except PipelineError as exc:
             self._fail(str(exc))
             return
@@ -326,7 +329,7 @@ class NewFileDialog(QDialog):
         self._note.setVisible(bool(note))
         self._ok.setEnabled(True)
 
-    def _note_text(self, container_id: str, codec_id: str, size: int) -> str:
+    def _note_text(self, stages: FileStages, codec_id: str, size: int) -> str:
         """The caution for a container that will not frame this file, or ``""``.
 
         A container's write is handed the destination as it stands so it can keep
@@ -339,10 +342,23 @@ class NewFileDialog(QDialog):
 
         Plain bytes are exempt: framing nothing is what that container is for.
         """
-        if container_id == RAW_CONTAINER:
+        if stages.container_id == RAW_CONTAINER:
             return ""
+        # The stages as the file will be read through them, over a source that
+        # does not exist yet: the probe builds bytes and never opens one.
+        probe = PathwayConfig(
+            source=FileRef(("",)),
+            interpret_preset_id=codec_id,
+            container_id=stages.container_id,
+            reshape_id=stages.reshape_id,
+            compression_id=stages.compression_id,
+        )
         if pipeline.frames_new_file(
-            self._kind(), container_id, codec_id, self._units(), self._registry
+            probe,
+            kind=self._kind(),
+            codec_id=codec_id,
+            units=self._units(),
+            reg=self._registry,
         ):
             return ""
         return (
@@ -363,7 +379,7 @@ class NewFileDialog(QDialog):
         palette = kind is ContentKind.PALETTE
         self._params = NewFileParams(
             content_kind=kind,
-            container_id=str(self._container.currentData()),
+            stages=self._stages.stages(),
             codec_id=str(self._codec.currentData()),
             columns=self._colors.value() if palette else self._columns.value(),
             rows=1 if palette else self._rows.value(),

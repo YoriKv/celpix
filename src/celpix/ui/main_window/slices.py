@@ -179,22 +179,25 @@ class SlicesMixin:
     def _slice_source(self) -> tuple[Entry, Document] | None:
         """The current entry + document if a slice can be carved from the view.
 
-        Whatever is on screen can be carved out of, as long as its positions are
-        the coordinates a slice offset is written in
-        (:attr:`~celpix.pipeline.pathway.PathwayConfig.positions_are_slice_offsets`)
-        - which a reshaped or interleaved view's are, because a slice of such a
-        parent reads that same reordered buffer. A **slice** always qualifies,
-        decompressed or not: what is carved from it is nested in it, and a nested
-        slice's offset is a position in exactly the buffer on screen. ``None``
-        when nothing qualifies; callers add any gesture-specific guard (a
-        selection, a found structure).
+        Whatever is on screen can be carved out of, because its positions are
+        the coordinates a slice offset is written in: a file's own, which a
+        reshaped, interleaved or whole-file-decompressed view's still are,
+        since a slice of such a parent reads that same buffer
+        (:func:`~celpix.project.workspace.reorders_bytes`). A **slice** always
+        qualifies too, decompressed or not: what is carved from it is nested in
+        it, and a nested slice's offset is a position in exactly the buffer on
+        screen. (:attr:`~celpix.pipeline.pathway.PathwayConfig.
+        positions_are_slice_offsets` is not asked: it answers for a slice
+        *beside* a decompressed one, and a new slice is always *under* what is
+        on screen.) ``None`` when nothing qualifies; callers add any
+        gesture-specific guard (a selection, a found structure).
         """
         entry, doc = self._workspace.current, self._doc
         if entry is None or doc is None:
             return None
         if entry.kind is EntryKind.SLICE:
             return (entry, doc) if self._can_hold_slices(entry) else None
-        return (entry, doc) if doc.pixel_config.positions_are_slice_offsets else None
+        return (entry, doc)
 
     def _new_slice_current(self) -> None:
         """File ▸ New Slice… on the current entry's file."""
@@ -833,9 +836,11 @@ class SlicesMixin:
             )
             return
         # A slice parent's decoded bytes bound the new slice's offsets, in place
-        # of the files' size: a nested slice counts from byte 0 of them.
+        # of the files' size: a nested slice counts from byte 0 of them. So do a
+        # file's that decompresses whole, whose slices count in its unpacked
+        # stream — longer than the file, which would bound them short.
         extent = None
-        if parent.kind is EntryKind.SLICE:
+        if parent.kind is EntryKind.SLICE or parent.compression_id != NO_COMPRESSION:
             extent = self._slice_buffer_length(parent)
             if extent is None:
                 return  # reported: a parent that cannot be read has no bytes
@@ -887,8 +892,9 @@ class SlicesMixin:
         self._push_command(AddEntryCommand(self, entry, f'new slice "{entry.name}"'))
 
     def _slice_buffer_length(self, entry: Entry) -> int | None:
-        """How many bytes a slice's own decoded buffer holds — what a slice
-        nested in it is bounded by — or None, reported, when it cannot be read.
+        """How many bytes an entry's own decoded buffer holds — what a slice
+        cut from a parent slice, or from a file that decompresses whole, is
+        bounded by — or None, reported, when it cannot be read.
 
         Its live document's bytes when it has one (a map's are its cells'
         buffer, :func:`~celpix.project.workspace.own_bytes`), else the region

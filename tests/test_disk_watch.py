@@ -358,7 +358,7 @@ def test_the_watch_follows_a_retargeted_file_through_undo_and_redo(
     entry = window._workspace.current
     other = tmp_path / "other.4bpp.sfc"
     other.write_bytes(bytes(32 * 8))
-    edit = ContainerEdit(entry.container_id, (str(other),))
+    edit = ContainerEdit(entry.file_stages, (str(other),))
     monkeypatch.setattr(
         ContainerDialog, "edit_container", staticmethod(lambda *_a, **_k: edit)
     )

@@ -405,6 +405,29 @@ class CompositePiece:
 
 
 @dataclass(frozen=True)
+class FileStages:
+    """The byte stages a whole file is read and written through: its container,
+    its reshape and its compression.
+
+    The three settle together — in Edit File Container… for a file that exists,
+    in New File… for one about to — because between them they decide which bytes
+    the region even has, and any one alone leaves the entry re-read. Plain,
+    Qt-free data so the dialog that asks, the entry that carries the answer
+    (:attr:`Entry.file_stages`) and the config a load builds from it can pass
+    one value rather than three. Defaults are the pass-throughs, which is what
+    a file is until something says otherwise.
+
+    A **palette** file carries only the container: its colours are read without
+    a reshape or a decompressor, so neither is offered for one
+    (``ui/file_stages.py``).
+    """
+
+    container_id: str = RAW_CONTAINER
+    reshape_id: str = NO_RESHAPE
+    compression_id: str = NO_COMPRESSION
+
+
+@dataclass(frozen=True)
 class SliceParams:
     """The entry fields a slice's coordinates comprise.
 
@@ -591,6 +614,13 @@ class Entry:
     extra_paths: tuple[str, ...] = ()
     slice_offset: int = 0
     slice_length: int | None = None
+    # The scheme the entry's bytes are unpacked through on load and re-packed
+    # through on save. A SLICE's, chosen in the slice dialog — the usual case,
+    # a structure inside a larger ROM. A FILE may carry one too, from Edit File
+    # Container…: a blob lifted out of a ROM whole decompresses whole, and its
+    # buffer is then the unpacked stream rather than any byte of the file, so
+    # its slices and Offset palettes count in that buffer from 0 as a nested
+    # slice's do (:func:`~celpix.project.configs.reorders_bytes`).
     compression_id: str = NO_COMPRESSION
     # What fills the room a re-compressed blob leaves at the end of this slice's
     # slot when it packs tighter than the one it replaces
@@ -866,6 +896,21 @@ class Entry:
     # rebuilding it would mean re-reading every source to find out where a click
     # landed (``docs/design/composite-entry.md``).
     piece_spans: tuple[PieceSpan, ...] = ()
+
+    @property
+    def file_stages(self) -> FileStages:
+        """The byte stages this file is read through, as one value
+        (:class:`FileStages`) — what Edit File Container… opens on and what an
+        undo of it puts back. Meaningful for a FILE or PALETTE; a slice carries
+        its parent's container and its own reshape and compression."""
+        return FileStages(self.container_id, self.reshape_id, self.compression_id)
+
+    def set_file_stages(self, stages: FileStages) -> None:
+        """Put ``stages`` on this entry — the three fields at once, since any one
+        alone leaves the entry re-read (:class:`FileStages`)."""
+        self.container_id = stages.container_id
+        self.reshape_id = stages.reshape_id
+        self.compression_id = stages.compression_id
 
     @property
     def paths(self) -> tuple[str, ...]:

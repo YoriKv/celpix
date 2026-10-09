@@ -212,10 +212,11 @@ class ContainersMixin:
         override for what only a person can settle (an interleaved image is
         indistinguishable from a plain one, a headerless dump still ends in
         ``.nes``) — and, beside it, the list of files whose bytes make up the
-        region and the region's reshape, neither of which anything can detect
-        at all. Slices are excluded for the reason on
-        :attr:`Entry.container_id` — theirs are their parent's coordinates, and
-        its file list; a *slice's* reshape is edited in the slice dialog.
+        region, the region's reshape and the scheme a file that is one
+        compressed blob unpacks through, none of which anything can detect at
+        all. Slices are excluded for the reason on :attr:`Entry.container_id`
+        — theirs are their parent's coordinates, and its file list; a
+        *slice's* reshape and compression are edited in the slice dialog.
 
         A **palette** entry is included, and gets a different list: its file can
         be framed too (colours that stop before the bytes do), and the dialog is
@@ -225,33 +226,31 @@ class ContainersMixin:
         if entry.kind not in (EntryKind.FILE, EntryKind.PALETTE):
             return
         codec_id = self._entry_codec_id(entry)
-        # No reshape for a palette: the palette half of a palette document (the
-        # colours the dock and every File-mode graphic read) takes the file
-        # without one, so a reshape here would reorder the swatches alone and
-        # leave the two halves describing different byte orders of one file.
+        # No reshape or compression for a palette: the palette half of a palette
+        # document (the colours the dock and every File-mode graphic read) takes
+        # the file without either, so one here would transform the swatches
+        # alone and leave the two halves describing different bytes of one file.
         palette = entry.kind is EntryKind.PALETTE
         edit = ContainerDialog.edit_container(
             self,
             self._registry,
             paths=entry.paths,
-            container_id=entry.container_id,
-            reshape_id=entry.reshape_id,
+            stages=entry.file_stages,
             kind=file_kind(entry),
             codec_id=codec_id,
             units=self._entry_units(entry, codec_id),
-            offer_reshape=not palette,
         )
         if edit is None:
             return
         if palette:
-            edit = replace(edit, reshape_id=entry.reshape_id)
+            edit = replace(
+                edit,
+                stages=replace(
+                    entry.file_stages, container_id=edit.stages.container_id
+                ),
+            )
         moved = edit.paths != entry.paths
-        if (
-            not moved
-            and edit.units is None
-            and edit.container_id == entry.container_id
-            and edit.reshape_id == entry.reshape_id
-        ):
+        if not moved and edit.units is None and edit.stages == entry.file_stages:
             return
         if moved and not self._retarget_allowed(entry, edit.paths[0]):
             return
@@ -277,7 +276,7 @@ class ContainersMixin:
             entry, edit, codec_id
         ):
             return
-        before = ContainerEdit(entry.container_id, entry.paths, entry.reshape_id)
+        before = self._container_state(entry)
         # The size is dropped on the way in: it is already on disk, and a command
         # holding it would offer a redo of a write that has no undo.
         after = replace(edit, units=None)
@@ -292,6 +291,12 @@ class ContainersMixin:
         self._push_command(
             ContainerEditCommand(self, entry, before=before, after=after)
         )
+
+    @staticmethod
+    def _container_state(entry: Entry) -> ContainerEdit:
+        """``entry``'s reading as it stands, in the dialog's own shape — what an
+        undo puts back, and what a measurement is taken under."""
+        return ContainerEdit(entry.file_stages, entry.paths)
 
     # -- resizing a file -----------------------------------------------------
     def _entry_codec_id(self, entry: Entry) -> str:
@@ -321,32 +326,34 @@ class ContainersMixin:
         """The pathway a resize of ``entry`` reads and writes its file through.
 
         Built from the **edit** rather than from the entry as it stands: the
-        container and reshape the dialog was left holding are the ones the file
-        is about to be read through, so they are the ones the resized bytes have
-        to go back out through. Framing a payload with the old container and
-        re-reading it with the new one would not produce the region the size row
-        was describing.
-
-        Through the same three builders a load uses, on an entry copied with the
-        edit applied, rather than a config assembled here: they are what decide
-        whether a stage can write at all — a plugin this build hasn't got leaves
-        the pathway view-only — and a second answer to that question is exactly
-        the kind that goes quietly out of date.
+        stages the dialog was left holding are the ones the file is about to be
+        read through, so they are the ones the resized bytes have to go back out
+        through. Framing a payload with the old container and re-reading it with
+        the new one would not produce the region the size row was describing.
         """
-        edited = replace(
-            entry,
-            path=edit.paths[0],
-            extra_paths=tuple(edit.paths[1:]),
-            container_id=edit.container_id,
-            reshape_id=edit.reshape_id,
-        )
+        edited = replace(entry, path=edit.paths[0], extra_paths=tuple(edit.paths[1:]))
+        edited.set_file_stages(edit.stages)
+        return self._file_config(edited, codec_id)
+
+    def _file_config(self, entry: Entry, codec_id: str) -> PathwayConfig:
+        """The pathway ``entry``'s own file is read and written through, measured
+        in ``codec_id`` — what a resize, and a file about to be created, run
+        the save's write half with.
+
+        Through the same three builders a load uses rather than a config
+        assembled here: they are what decide whether a stage can write at all —
+        a plugin this build hasn't got leaves the pathway view-only — and a
+        second answer to that question is exactly the kind that goes quietly
+        out of date. A palette file's is its palette pathway, which takes the
+        container alone (:class:`~celpix.project.entry.FileStages`).
+        """
         if file_kind(entry) is ContentKind.PALETTE:
             return self._file_palette_config(
-                edited.path, 0, codec_id, edited.container_id
+                entry.path, 0, codec_id, entry.container_id
             )
         if entry.content_kind is ContentKind.TILEMAP:
-            return tilemap_config_for(edited, codec_id, self._registry)
-        return pixel_config_for(edited, codec_id, self._registry)
+            return tilemap_config_for(entry, codec_id, self._registry)
+        return pixel_config_for(entry, codec_id, self._registry)
 
     def _entry_units(self, entry: Entry, codec_id: str) -> int:
         """How many tiles, cells or colours ``entry``'s region holds right now.
@@ -359,7 +366,7 @@ class ContainersMixin:
         """
         if not codec_id:
             return 0
-        before = ContainerEdit(entry.container_id, entry.paths, entry.reshape_id)
+        before = self._container_state(entry)
         units = self._region_units(
             lambda: self._resize_config(entry, before, codec_id),
             file_kind(entry),
@@ -451,8 +458,9 @@ class ContainersMixin:
         )
 
     def _apply_container_edit(self, entry: Entry, edit: ContainerEdit) -> None:
-        """Put ``edit``'s file list, container and reshape on ``entry`` and
-        re-read - the application path for container edits and their undos.
+        """Put ``edit``'s file list, container, reshape and compression on
+        ``entry`` and re-read - the application path for container edits and
+        their undos.
 
         The children come along whenever the file list moved, and the slices
         nested under them: a slice's offset addresses the parent's *joined*
@@ -464,8 +472,7 @@ class ContainersMixin:
         moved = edit.paths != entry.paths
         family = [entry, *self._workspace.descendants_of(entry)] if moved else [entry]
         family += self._size_followers(entry, family)
-        entry.container_id = edit.container_id
-        entry.reshape_id = edit.reshape_id
+        entry.set_file_stages(edit.stages)
         # Format, arrangement and view survive the re-read for the same reason
         # they survive a slice re-point (see
         # :meth:`~...slices.SlicesMixin._apply_slice_params`): what

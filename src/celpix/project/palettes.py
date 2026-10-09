@@ -20,7 +20,7 @@ from celpix.core.errors import Pathway, PipelineError, Stage
 from celpix.core.palette import FULL_PALETTE_COUNT, Palette
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
-from celpix.plugins.base import DEFAULT_PIXEL_PRESET, NO_RESHAPE, FileRef
+from celpix.plugins.base import DEFAULT_PIXEL_PRESET, FileRef
 from celpix.plugins.registry import Registry
 from celpix.project.workspace import (
     Entry,
@@ -148,8 +148,9 @@ def offset_palette_space(
 
     ``view`` is the owner's ``(buffer, base)`` when it reorders bytes, else
     ``None``, meaning offsets are file offsets into the joined files. ``base``
-    mirrors the owner's own anchor: under an active reshape offsets are 0-based
-    buffer positions; under a permuting container they keep the recorded start.
+    is the owner's own anchor (:func:`~celpix.project.configs.entry_view_bytes`):
+    under an active reshape or a decompressor offsets are 0-based buffer
+    positions; under a permuting container they keep the recorded start.
     """
     owner = palette_offset_owner(workspace, entry)
     view = (
@@ -159,8 +160,6 @@ def offset_palette_space(
     )
     if view is not None:
         data, base = view
-        if owner is not None and owner.reshape_id != NO_RESHAPE:
-            base = 0
         return (data, base), base + len(data)
     paths = offset_palette_files(workspace, entry)
     return None, sum(Path(p).stat().st_size for p in paths)

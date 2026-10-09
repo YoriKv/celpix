@@ -87,12 +87,15 @@ class EntriesMixin:
         *where*, and only then is anything written — so a cancel at either step
         has left no file behind.
 
-        The file is written before the entry exists because an entry is a
+        The file is written before the entry is *added* because an entry is a
         reference to a path, and everything downstream of one — the load, a save,
-        the project file — is written against a file that is there. The entry
-        then carries exactly the answers the dialog gave rather than
-        re-detecting them: detection reads a signature, and a blank payload has
-        none to read.
+        the project file — is written against a file that is there. It is built
+        first, though: the pathway the file is written through is the one the
+        entry will read it through, and the one place that says what that is
+        (:meth:`~...containers.ContainersMixin._file_config`) answers for an
+        entry — the same answer a resize of the file gets. The entry carries
+        exactly the answers the dialog gave rather than re-detecting them:
+        detection reads a signature, and a blank payload has none to read.
 
         Undo removes the entry, as it does for an opened file. The file itself
         stays on disk — deleting a user's file is not something an undo of "add
@@ -119,11 +122,11 @@ class EntriesMixin:
                 title="celPix - new file",
             )
             return
+        entry = self._new_file_entry(path, params)
         try:
             size = pipeline.create_file(
-                path,
+                self._file_config(entry, params.codec_id),
                 kind=params.content_kind,
-                container_id=params.container_id,
                 codec_id=params.codec_id,
                 units=params.units,
                 reg=self._registry,
@@ -131,10 +134,9 @@ class EntriesMixin:
         except PipelineError as exc:
             self._report(exc)
             return
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             self._alert(f"Cannot write {path}: {exc}", title="celPix - new file")
             return
-        entry = self._new_file_entry(path, params)
         self._push_command(AddEntryCommand(self, entry, f"new file {entry.name}"))
         self.statusBar().showMessage(
             f"Created {entry.name} - {self._new_file_extent(params)}, {size:,} bytes"
@@ -148,7 +150,7 @@ class EntriesMixin:
         default — that is also what lets the file be *re-detected* as that format
         when it is opened again from disk in another session.
         """
-        info = self._registry.plugin(Stage.CONTAINER, params.container_id).info
+        info = self._registry.plugin(Stage.CONTAINER, params.stages.container_id).info
         file_filter, suffix = self._NEW_FILTERS[params.content_kind]
         if info.extensions:
             suffix = info.extensions[0]
@@ -165,32 +167,34 @@ class EntriesMixin:
         """The workspace entry for a file just created with ``params``.
 
         Every answer the dialog gave is stamped on rather than re-derived: the
-        codec goes on the session (or, for a map, on the entry's own cell format
+        stages go on the entry as Edit File Container… would put them, the
+        codec on the session (or, for a map, on the entry's own cell format
         and, for a palette file, on its recorded import format), and the size
-        goes on the pending view so the sheet opens at the shape it was asked
-        for instead of at the window's default 16x16.
+        on the pending view so the sheet opens at the shape it was asked for
+        instead of at the window's default 16x16.
         """
         name = Path(path).name
         if params.content_kind is ContentKind.PALETTE:
             # A palette entry is registered, never activated: it has no session
             # and no view of its own, and the codec it was written with is the
             # one it must be read back with (``docs/design/project-format.md`` §4).
-            return Entry(
+            entry = Entry(
                 name=name,
                 kind=EntryKind.PALETTE,
                 path=path,
-                container_id=params.container_id,
                 palette_preset_id=params.codec_id,
             )
+            entry.set_file_stages(params.stages)
+            return entry
         tilemap = params.content_kind is ContentKind.TILEMAP
         entry = Entry(
             name=name,
             kind=EntryKind.FILE,
             path=path,
-            container_id=params.container_id,
             content_kind=params.content_kind,
             tilemap_preset_id=params.codec_id if tilemap else None,
         )
+        entry.set_file_stages(params.stages)
         entry.session = EntrySession(
             pixel_preset_id=(self._pixel_preset_id() if tilemap else params.codec_id),
             palette_preset_id=self._palette_preset_id(),

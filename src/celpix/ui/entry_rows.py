@@ -22,7 +22,8 @@ from PySide6.QtWidgets import QTreeWidgetItem
 from celpix.core.address import format_hex
 from celpix.core.capabilities import ContentKind
 from celpix.core.notices import Notice
-from celpix.plugins.detect import container_label
+from celpix.plugins.base import NO_COMPRESSION
+from celpix.plugins.detect import compression_label, container_label
 from celpix.project.workspace import (
     Entry,
     EntryKind,
@@ -224,6 +225,12 @@ class EntryRowsMixin:
             full = container_label(self._registry, entry.container_id, short=False)
             if full:
                 tip += f"\nContainer {full}"
+            # A file unpacked whole shows a stream no byte of the file holds —
+            # said here, since a slice says it in its default name and a file's
+            # name says nothing.
+            if entry.compression_id != NO_COMPRESSION:
+                scheme = compression_label(self._registry, entry.compression_id)
+                tip += f"\nDecompressed with {scheme}"
         marker, what = self._entry_marker(entry)
         # Always set, empty included: a row keeps whatever icon it was last given,
         # so a kind that no longer wears one has to say so rather than leaving the

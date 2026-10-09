@@ -160,7 +160,12 @@ class InputsMixin:
         sections = declared_inputs(entry, self._registry)
         if entry is self._workspace.current:
             preview = self._preview_codec_inputs(entry)
-            if preview is not None:
+            # A file that decompresses whole already lists its own scheme, and
+            # the preview set to that same scheme reads the same bindings: one
+            # section, not the one set twice.
+            if preview is not None and not any(
+                s.plugin_id == preview.plugin_id for s in sections
+            ):
                 sections.append(preview)
         return sections
 
