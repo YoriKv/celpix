@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.2.5 - unreleased
+## v1.2.5 - 2026-10-09
 
 - Fixed Write putting old pixels back where an Offset palette's window overlaps the graphic
 
