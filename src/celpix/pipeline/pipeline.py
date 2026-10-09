@@ -1258,14 +1258,27 @@ def _save_palette(doc: Document, reg: Registry) -> None:
     its masks is dropped, and an indexed codec has no inverse at all. So writing
     a full re-encode would rewrite — and corrupt — entries the user never
     touched. Instead the freshly encoded bytes of edited entries are spliced
-    into the buffer the palette was read from, leaving every other byte exactly
-    as it was found (see :attr:`Document.palette_base_bytes`).
+    into the window **as the target holds it now**, leaving every other byte
+    exactly as it is found.
+
+    Now, not as it was read (:attr:`Document.palette_base_bytes`): an Offset
+    window sized to 256 entries routinely runs on into the graphic it colours,
+    and that graphic's own write may have just changed those bytes. Splicing
+    into the copy taken at load wrote the old tiles back over the new ones. For
+    the same reason a palette with no edited entries is not written at all —
+    there is nothing of its own to put down.
 
     Falls back to a whole-palette encode when there is nothing to splice into —
     no original bytes, or a palette whose length no longer matches them (a
     format switch changes the entry size, so the old buffer doesn't apply).
     """
-    data = spliced_palette_bytes(doc, reg)
+    encoded, engine, preset = _encoded_palette(doc, reg)
+    base = doc.palette_base_bytes
+    if base and len(base) == len(encoded):
+        if not doc.palette_edits:
+            return
+        base = _palette_window_now(doc, reg, base)
+    data = _splice_palette(doc, encoded, engine, preset, base)
     _compress_unshape_write(
         doc.palette_config, data, doc.palette_ctx, reg, Pathway.PALETTE
     )
@@ -1285,6 +1298,12 @@ def spliced_palette_bytes(doc: Document, reg: Registry) -> bytes:
     splicing this into the owning entry's pixel buffer rather than through its
     own (write-disabled) pathway (``docs/design/palette-editing.md`` §2).
     """
+    encoded, engine, preset = _encoded_palette(doc, reg)
+    return _splice_palette(doc, encoded, engine, preset, doc.palette_base_bytes)
+
+
+def _encoded_palette(doc: Document, reg: Registry):  # noqa: ANN202 - (bytes, codec, preset)
+    """The whole palette encoded, with the codec and preset that encoded it."""
     cfg = doc.palette_config
     engine, preset = reg.engine_for(cfg.interpret_preset_id, ColorCodecPlugin)
     encoded = run_stage(
@@ -1293,11 +1312,32 @@ def spliced_palette_bytes(doc: Document, reg: Registry) -> bytes:
         lambda: engine.encode(doc.palette, preset.params, doc.palette_ctx),
         plugin=preset.id,
     )
-    return _splice_palette(doc, encoded, engine, preset)
+    return encoded, engine, preset
 
 
-def _splice_palette(doc: Document, encoded: bytes, engine, preset) -> bytes:  # noqa: ANN001
-    original = doc.palette_base_bytes
+def _palette_window_now(doc: Document, reg: Registry, fallback: bytes) -> bytes:
+    """The palette's window as its target holds it at this moment.
+
+    What :func:`_save_palette` splices into. ``fallback`` — the bytes as last
+    read or written — stands in when the window can no longer be read at its old
+    size, which leaves the write no worse than splicing into the load-time copy.
+    """
+    try:
+        now = _read_reshape_decompress(
+            doc.palette_config, PipelineContext(), reg, Pathway.PALETTE
+        )
+    except PipelineError:
+        return fallback
+    return now if len(now) == len(fallback) else fallback
+
+
+def _splice_palette(
+    doc: Document,
+    encoded: bytes,
+    engine,  # noqa: ANN001
+    preset,  # noqa: ANN001
+    original: bytes,
+) -> bytes:
     if not original or len(original) != len(encoded):
         return encoded
     size = run_stage(

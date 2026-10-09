@@ -296,8 +296,9 @@ class Document:
     # (BGR555's bit 15), and byte values that aren't valid entries at all (an
     # out-of-range indexed color), do not survive decode+encode. Re-encoding a
     # whole palette to save one edited color would therefore corrupt every
-    # other entry, so Write reuses these original bytes for anything the user
-    # did not touch (docs/design/palette-editing.md §2).
+    # other entry, so Write splices only the edited entries into the window as
+    # the file holds it then, falling back to these bytes when it cannot be
+    # re-read (docs/design/palette-editing.md §2).
     palette_base_bytes: bytes = b""
     palette_edits: set[int] = field(default_factory=set)
     # ``pixel_data`` exactly as it was read, or as it was last written — what

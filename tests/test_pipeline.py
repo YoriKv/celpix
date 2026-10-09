@@ -817,6 +817,40 @@ def test_palette_save_without_edits_is_a_no_op(tmp_path) -> None:
     assert pal.read_bytes() == raw
 
 
+def test_palette_save_without_edits_leaves_bytes_changed_since_the_load(
+    tmp_path,
+) -> None:
+    # An Offset window of 256 entries runs on into the graphic it colours, and
+    # that graphic's write lands first: an unedited palette written after it
+    # put the tiles read at load back over the new ones.
+    raw = bytes([0x21, 0xC3, 0x45, 0xE6, 0x67, 0x8A, 0x9B, 0xFC])
+    doc, pal, reg = _pal_doc(tmp_path, raw)
+    redrawn = bytes(range(8))
+    pal.write_bytes(redrawn)
+
+    pipeline.save(doc, reg, pixel=False)
+
+    assert pal.read_bytes() == redrawn
+
+
+def test_palette_save_splices_into_the_bytes_the_target_holds_now(tmp_path) -> None:
+    # The same overlap with a colour edited: only that entry is written, and
+    # every other byte is what the file holds at the write, not at the load.
+    raw = bytes([0x21, 0xC3, 0x45, 0xE6, 0x67, 0x8A, 0x9B, 0xFC])
+    doc, pal, reg = _pal_doc(tmp_path, raw)
+    redrawn = bytes(range(8))
+    pal.write_bytes(redrawn)
+
+    doc.palette = doc.palette.with_color(1, 0xFFFFFFFF)
+    doc.palette_edits.add(1)
+    pipeline.save(doc, reg, pixel=False)
+
+    written = pal.read_bytes()
+    assert written[2:4] == b"\xff\x7f"
+    assert written[0:2] == redrawn[0:2]
+    assert written[4:8] == redrawn[4:8]
+
+
 def test_indexed_palette_save_preserves_out_of_range_bytes(tmp_path) -> None:
     # An indexed codec has no inverse: a byte past the hardware table decodes to
     # the missing-color sentinel and would encode back as a *different* index.

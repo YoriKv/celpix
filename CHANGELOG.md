@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.2.5 - unreleased
+
+- Fixed Write putting old pixels back where an Offset palette's window overlaps the graphic
+
 ## v1.2.4 - 2026-10-05
 
 - Added PS2 CLUT palette format with 0x80 as max alpha
