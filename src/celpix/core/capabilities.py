@@ -92,6 +92,7 @@ class Capability(Enum):
     NAVIGATION = auto()  # offset, nudge, the address bar
     GRID = auto()  # the grid overlay settings
     HEX_VIEW = auto()  # the hex panel
+    COMPRESSION_PREVIEW = auto()  # the compression picker and its decoded overlay
     COMPRESSION_SCAN = auto()  # structure scanning over the entry's bytes
 
     # -- tilemap-only
@@ -106,8 +107,11 @@ class Capability(Enum):
 # NAVIGATION is deliberately *not* here. It is about moving a view window
 # through a file, and only a document that has one can do that. Nor is
 # COMPRESSION_SCAN, for the same reason one step removed: the scan hunts for a
-# structure *in the current window* and previews it as tiles, so a document with
-# no window and no tiles of its own has nothing to point it at.
+# structure *in the current window*, so a document with no window has nothing to
+# point it at. COMPRESSION_PREVIEW is apart from it and is not here either, for
+# a different reason: the preview decodes the entry's own bytes and draws them
+# as what the entry *is* — tiles, or a map's cells over its bank — and a palette
+# file's bytes are colours, which have nothing to unpack.
 _BYTE_LEVEL = frozenset(
     {
         Capability.GRID,
@@ -118,6 +122,7 @@ _BYTE_LEVEL = frozenset(
 CAPABILITIES: dict[ContentKind, frozenset[Capability]] = {
     ContentKind.PIXELS: _BYTE_LEVEL
     | {
+        Capability.COMPRESSION_PREVIEW,
         Capability.COMPRESSION_SCAN,
         Capability.NAVIGATION,
         Capability.PIXEL_EDIT,
@@ -166,9 +171,11 @@ CAPABILITIES: dict[ContentKind, frozenset[Capability]] = {
     # window to move through it and no offset to jump to. The row count and the
     # position bar address a coordinate space it does not have
     # (``docs/design/tilemap-entry.md`` §8). COMPRESSION_SCAN follows it out for
-    # the same reason — the scan reads the current window and previews it as
-    # tiles — and takes the compression picker with it, leaving the cell format
-    # in the place the pixel format has on a pixel entry.
+    # the same reason — the scan reads the current window — and takes the Scan
+    # and Jump buttons with it. The compression *picker* stays
+    # (COMPRESSION_PREVIEW): a map that is one packed blob is as common as a
+    # bank that is, and the overlay draws the unpacked cells over the map's own
+    # bank exactly as the canvas would draw them.
     #
     # CELL_ROTATE is declared even though no shipped cell format has a rotation
     # bit. Whether a cell can be turned varies by *format* — the axis the flips
@@ -193,6 +200,7 @@ CAPABILITIES: dict[ContentKind, frozenset[Capability]] = {
     # says that.
     ContentKind.TILEMAP: _BYTE_LEVEL
     | {
+        Capability.COMPRESSION_PREVIEW,
         Capability.PIXEL_EDIT,
         Capability.PALETTE_EDIT,
         Capability.PALETTE_ROW,

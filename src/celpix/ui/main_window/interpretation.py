@@ -374,6 +374,10 @@ class InterpretationMixin:
             "Used by the preview and by slices cut under it"
         )
         self._compression_inputs_badge.clicked.connect(self._inputs_current)
+        # The three buttons read the *view window* — hop past the structure in
+        # it, hunt forward from it — which a tilemap has not got, so they are
+        # gated as a group apart from the picker (``capability_sync._GATES``).
+        self._scan_tools = (self._jump_next, self._scan_button, self._smart_scan_button)
         # The picker and the three buttons it drives travel together: they are
         # one feature, and the buttons with no codec to run would be furniture.
         self._compression_action = codecs.addWidget(
@@ -810,10 +814,13 @@ class InterpretationMixin:
 
         Runs from the tail of :meth:`~...capability_sync.CapabilitySyncMixin.
         _sync_capabilities`, after the kind's own gate on the compression group
-        has had its say: a tilemap shows neither, whatever the pixel picker holds.
+        has had its say: a palette file shows neither, whatever the pixel picker
+        holds, and a tilemap keeps the compression group — its pixel picker is
+        off the bar, so what that picker holds says nothing about the map.
         """
-        allowed = self._can(Capability.COMPRESSION_SCAN)
-        swatches = allowed and self._palette_view_active()
+        allowed = self._can(Capability.COMPRESSION_PREVIEW)
+        tilemap = self._doc is not None and self._doc.is_tilemap
+        swatches = allowed and not tilemap and self._palette_view_active()
         self._compression_action.setVisible(allowed and not swatches)
         self._palette_view_action.setVisible(swatches)
 

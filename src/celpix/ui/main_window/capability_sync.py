@@ -151,7 +151,11 @@ _GATES: dict[Capability, tuple[str, ...]] = {
     # actions, because a toolbar hides the action rather than the widget.
     Capability.PIXEL_CODEC: ("_pixel_codec_action",),
     Capability.TILEMAP_CODEC: ("_tilemap_codec_action",),
-    Capability.COMPRESSION_SCAN: ("_compression_action",),
+    # The picker and its overlay stay on a tilemap, where the window-reading
+    # buttons beside it go: two gates over one group, so the group's action is
+    # hidden by the first and the three buttons inside it by the second.
+    Capability.COMPRESSION_PREVIEW: ("_compression_action",),
+    Capability.COMPRESSION_SCAN: ("_scan_tools",),
     # The whole Arrangement row, as one bar rather than five names: every control
     # on it states how a linear run of bytes is cut and grouped, and a tilemap
     # places nothing linearly, so they go or stay together.
@@ -251,6 +255,7 @@ _HIDDEN = frozenset(
         "_pixel_codec_action",
         "_tilemap_codec_action",
         "_compression_action",
+        "_scan_tools",
         "_arrange_toolbar",
     }
 )
@@ -264,7 +269,9 @@ _HIDDEN = frozenset(
 # in :data:`_GATE_OWNS` instead would do the opposite — hand a bar back over a
 # missing file, which is the grant this pass promises never to make. Hidden, it
 # needs neither: an invisible bar has nothing left to switch off.
-_VISIBILITY_ONLY = frozenset({"_arrange_toolbar"})
+# The scan buttons are the other: their enabled state is the overlay's answer
+# about the scheme in view (``_refresh_overlay``), re-decided on every refresh.
+_VISIBILITY_ONLY = frozenset({"_arrange_toolbar", "_scan_tools"})
 
 # Controls whose enabled state **nothing else manages**: they are built enabled
 # and no ``_sync_*`` ever touches them, because until capabilities existed they

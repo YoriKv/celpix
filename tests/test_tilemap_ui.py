@@ -2050,9 +2050,9 @@ def test_changing_the_cell_codec_rereads_the_map(qtbot, tmp_path) -> None:
 def test_the_codecs_bar_swaps_its_format_pickers_by_content_kind(
     qtbot, tmp_path
 ) -> None:
-    """A tilemap's bytes are cells, so the pixel format and the compression
-    preview say nothing about it — the cell format takes their place rather than
-    joining them (``docs/design/tilemap-entry.md`` §4)."""
+    """A tilemap's bytes are cells, so the pixel format says nothing about it
+    and the cell format takes its place; the compression picker stays, its
+    window-reading buttons going (``docs/design/tilemap-entry.md`` §4)."""
     from celpix.core.tilemap import Cell
 
     window = MainWindow()
@@ -2064,7 +2064,8 @@ def test_the_codecs_bar_swaps_its_format_pickers_by_content_kind(
 
     window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1)])))
     assert not window._pixel_codec_action.isVisible()
-    assert not window._compression_action.isVisible()
+    assert window._compression_action.isVisible()  # the picker stays on a map
+    assert all(button.isHidden() for button in window._scan_tools)
     assert window._tilemap_codec_action.isVisible()
 
     # Back again, and enabled with it: a hidden group that came back grey would
@@ -2175,7 +2176,8 @@ def test_a_missing_entry_is_gated_as_the_kind_it_is(qtbot, tmp_path) -> None:
     window._activate_entry(tilemap)
     assert window._tilemap_codec_action.isVisible()
     assert not window._pixel_codec_action.isVisible()
-    assert not window._compression_action.isVisible()
+    assert window._compression_action.isVisible()  # the picker stays on a map
+    assert all(button.isHidden() for button in window._scan_tools)
     assert window._tile_offset_bar.isHidden()
     assert window._show_tile_ids_action.isEnabled()
     assert not window._show_palette_regions_action.isEnabled()
@@ -3692,3 +3694,49 @@ def test_a_grouped_map_offers_and_takes_only_the_records_a_byte_names(
     window._set_cell_index(37)
     assert doc.cells[0].index == 40
     assert "cannot store stamp $25" in window.statusBar().currentMessage()
+
+
+def test_a_tilemap_keeps_the_compression_picker_and_previews_its_cells(
+    qtbot, tmp_path
+) -> None:
+    """The picker stays beside the tilemap format where the window-reading
+    buttons go, and the overlay draws a map's packed cells unpacked — through
+    the map's own cell format and composer, over its (here unbound) bank."""
+    from celpix.core.capabilities import ContentKind
+    from celpix.core.context import PipelineContext
+    from celpix.core.errors import Stage
+    from celpix.core.tilemap import Cell
+    from celpix.plugins.builtins.tilemap_codec import TilemapCodec
+    from celpix.plugins.registry import default_registry
+
+    reg = default_registry()
+    params = reg.preset("preset.tilemap.snes-bg").params
+    cells = [Cell(index=i % 7, palette_row=i % 3) for i in range(32 * 4)]
+    plain = TilemapCodec().encode(cells, params, PipelineContext())
+    packed = reg.plugin(Stage.COMPRESSION, "compression.gba-rle").compress(
+        plain, PipelineContext()
+    )
+    path = tmp_path / "map.bin"
+    path.write_bytes(packed)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(path), content_kind=ContentKind.TILEMAP)
+    assert window._doc.is_tilemap
+    assert window._compression_action.isVisible()
+    assert all(button.isHidden() for button in window._scan_tools)
+    assert not window._overlay.isVisible()
+
+    window._compression.setCurrentIndex(
+        window._compression.findData("compression.gba-rle")
+    )
+    assert window._overlay.isVisible()
+    assert not window._overlay._canvas._image.isNull()
+    assert "128 cells" in window._overlay._status.currentMessage()
+    # The map itself is untouched: its cells are still the packed bytes read raw.
+    assert window._doc.tilemap_config.compression_id == "compression.none"
+
+    # A pixel entry gets its buttons back.
+    px = _make_snes_file(tmp_path)
+    window._load_pixel(str(px))
+    assert not any(button.isHidden() for button in window._scan_tools)

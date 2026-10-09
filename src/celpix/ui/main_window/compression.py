@@ -39,7 +39,7 @@ from celpix.core.context import (
 )
 from celpix.core.errors import Stage
 from celpix.pipeline import pipeline
-from celpix.plugins.base import NO_COMPRESSION, self_delimiting
+from celpix.plugins.base import NO_COMPRESSION, TilemapCodecPlugin, self_delimiting
 from celpix.plugins.builtins.lz16 import KEY_LZ16_ROWS
 from celpix.ui.decompress_overlay import Badge
 from celpix.ui.searchable_combo import fill_stage_combo
@@ -82,8 +82,11 @@ class CompressionMixin:
         compression_id = self._compression_id()
         # A color table has nothing to unpack: while the bytes are read as
         # palette swatches the picker is off the bar, and the scheme it still
-        # holds is kept for the next tile format rather than run here.
-        active = compression_id != NO_COMPRESSION and not self._palette_view_active()
+        # holds is kept for the next tile format rather than run here. A map's
+        # pixel picker is off the bar altogether, so what it holds says nothing.
+        active = compression_id != NO_COMPRESSION and (
+            self._doc.is_tilemap or not self._palette_view_active()
+        )
         # A scan looks for a structure's *end* inside the probe, and a scheme
         # with no end marker never reports one — so on those the button would
         # only ever say "no match", and it stays off instead (``_on_scan``).
@@ -111,11 +114,94 @@ class CompressionMixin:
 
     def _present_overlay(self, compression_id: str | None) -> None:
         """The overlay body of :meth:`_refresh_overlay` (which owns the button
-        state around every early exit here)."""
+        state around every early exit here): the pixel reading or the tilemap
+        one, by what the document is."""
         assert self._doc is not None
         if compression_id is None:
             self._overlay.hide_overlay()
+        elif self._doc.is_tilemap:
+            self._present_tilemap_overlay(compression_id)
+        else:
+            self._present_pixel_overlay(compression_id)
+
+    def _present_tilemap_overlay(self, compression_id: str) -> None:
+        """The map's own cell bytes unpacked and drawn as cells over its bank.
+
+        The tilemap twin of :meth:`_present_pixel_overlay`: the whole cell
+        buffer rather than a view window, since a map is shown entire and has
+        no window to cut, decoded under the map's own cell format and composed
+        exactly as the canvas composes the map (``expand_cells`` over the bound
+        tiles, the block being the cell). Nothing is armed for navigation —
+        Jump and Scan read a window the map has not got — so the status line
+        says how far the structure reached and no more.
+        """
+        doc = self._doc
+        assert doc is not None
+        cfg = doc.tilemap_config
+        window = bytes(doc.tilemap_data)
+        if cfg is None or not window:
+            self._overlay.hide_overlay()
             return
+        ctx = PipelineContext()
+        ctx.set(KEY_DECOMPRESS_PARTIAL, True)
+        inputs = self._preview_config_inputs(compression_id)
+        if inputs is None:
+            self._overlay.hide_overlay()
+            return
+        if inputs:
+            ctx.set(KEY_INPUTS, inputs[Stage.COMPRESSION])
+        try:
+            plugin = self._registry.plugin(Stage.COMPRESSION, compression_id)
+            raw = plugin.decompress(window, ctx)
+            if not raw:
+                self._overlay.hide_overlay()
+                return
+            engine, preset = self._registry.engine_for(
+                cfg.interpret_preset_id, TilemapCodecPlugin
+            )
+            # A copy, so a decode that publishes what it found (a width, a
+            # stamp size) does not write it into the document's own context.
+            cells = engine.decode(raw, preset.params, doc.tilemap_ctx.copy())
+            tiles, layout = pipeline.expand_cells(
+                doc, self._registry, cells, self._tilemap_columns()
+            )
+            image = self._tilemap_grid_image(
+                pipeline.compose_tiles(tiles, layout, None)
+            )
+        except Exception:  # noqa: BLE001 - any failure means "not a structure"
+            self._overlay.hide_overlay()
+            return
+        parts = [
+            f"{format_hex(len(raw), None)} B raw from "
+            f"{format_hex(len(window), None)} B of cells",
+            f"{len(cells)} cells",
+        ]
+        consumed = ctx.get(KEY_COMPRESSED_SIZE)
+        badge = None
+        if consumed and ctx.get(KEY_DECOMPRESS_COMPLETE):
+            parts.append(f"structure {format_hex(consumed, None)} B")
+        elif self_delimiting(plugin, inputs.get(Stage.COMPRESSION)):
+            badge = Badge(
+                "end not found",
+                "The end marker is not in the map's bytes, so the\n"
+                "preview stops where they do",
+                warning=True,
+            )
+        self._overlay.show_result(
+            image,
+            self._pixel_tile_size(),
+            doc.view,
+            self._grid_settings(),
+            f"Decompressed - {plugin.info.name}",
+            ", ".join(parts),
+            badge,
+            block=(*doc.cell_tiles, "row"),
+        )
+
+    def _present_pixel_overlay(self, compression_id: str) -> None:
+        """The view window's bytes unpacked and drawn as tiles — the overlay for
+        a pixel document, laid out through the live arrangement path."""
+        assert self._doc is not None
         view = self._doc.view
         window = self._doc.window_bytes(
             self._offset, view.columns * self._view_rows(), view.byte_nudge

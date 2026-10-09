@@ -65,14 +65,17 @@ class DecompressOverlay(ToolWindow):
         title: str,
         status: str,
         badge: Badge | None = None,
+        block: tuple[int, int, str] | None = None,
     ) -> None:
         """Present a freshly rendered decompression (showing the window if hidden).
 
         ``view`` is the main view's options and ``grid`` the project's grid
         settings, since the preview is drawn through the same zoom, arrangement
         and lattice — the point of it is to look like the picture would if the
-        bytes were already decompressed. ``status`` is the sizes line; ``badge``
-        annotates it, or None when the decode has nothing to add.
+        bytes were already decompressed. ``block`` overrides the view's block
+        arrangement where the picture groups its tiles another way: a tilemap's
+        block is its cell, as on the canvas. ``status`` is the sizes line;
+        ``badge`` annotates it, or None when the decode has nothing to add.
         """
         self.setWindowTitle(title)
         self.set_status(status, badge)
@@ -80,7 +83,7 @@ class DecompressOverlay(ToolWindow):
         self._canvas.set_tile_size(tw, th)
         self._canvas.set_zoom(view.zoom)
         self._canvas.set_arrangement(
-            view.block_columns, view.block_rows, view.block_order
+            *(block or (view.block_columns, view.block_rows, view.block_order))
         )
         self._canvas.set_grid(*grid)
         self._canvas.set_image(image)

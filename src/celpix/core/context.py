@@ -456,6 +456,13 @@ class PipelineContext:
     def get(self, key: str, default: Any = None) -> Any:
         return self._entries.get(key, default)
 
+    def copy(self) -> PipelineContext:
+        """A context holding the same entries, for a run beside the real one — a
+        preview decode that must not publish into the document's context."""
+        other = PipelineContext()
+        other._entries = dict(self._entries)
+        return other
+
     def discard(self, key: str) -> None:
         """Remove ``key`` if present.
 
