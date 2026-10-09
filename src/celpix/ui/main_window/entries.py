@@ -490,6 +490,26 @@ class EntriesMixin:
         self._apply_close_entry(palette)
         self._reshow_current_entry()
 
+    def _apply_rehome_palette_consumers(
+        self, palette: Entry, consumers: list[PaletteConsumerLink]
+    ) -> None:
+        """Freeze the palette's colours into each graphic as a Custom copy,
+        leaving the palette in place - :class:`RehomePaletteConsumersCommand`'s
+        redo, and the first half of :meth:`_apply_remove_palette_to_custom`."""
+        colors = self._file_palette_colors(palette)
+        preset = palette.palette_preset_id or self._palette_preset_id()
+        for link in consumers:
+            self._convert_graphic_to_custom(link.entry, colors, preset)
+        self._reshow_current_entry()
+
+    def _apply_relink_palette_consumers(
+        self, consumers: list[PaletteConsumerLink]
+    ) -> None:
+        """Point every graphic back at the palette it had - the command's undo."""
+        for link in consumers:
+            self._relink_graphic_to_file_palette(link)
+        self._reshow_current_entry()
+
     def _apply_restore_palette_consumers(
         self,
         victims: list[tuple[int, Entry]],

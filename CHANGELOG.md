@@ -4,6 +4,7 @@
 
 - Edit File Container gains a Compression dropdown: a compressed blob extracted whole from a ROM decompresses on load and is re-packed on save, no slice needed
 - New File gains Reshape and Compression dropdowns: a new pixel or tilemap file can be created already packed and reordered, and opens through those stages
+- Edit File Container gains a Content dropdown: a file opened as the wrong kind is converted in place between pixels, tilemap and palette, slices and bookmarks following it
 
 ## v1.2.5 - 2026-10-09
 

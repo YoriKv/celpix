@@ -1655,6 +1655,35 @@ class PaletteConsumerLink:
     loaded: bool
 
 
+class RehomePaletteConsumersCommand(QUndoCommand):
+    """Re-home the graphics rendering a file palette onto Custom copies of its
+    colours, without removing the palette.
+
+    The re-homing half of :class:`RemovePaletteWithConsumersCommand` on its own,
+    for a palette that is about to stop *being* one: Edit File Container…
+    converting a palette file to pixels or a tilemap leaves nothing for a
+    File-mode graphic to render through, so each keeps the colours as its own
+    first — pushed ahead of the conversion in one macro, so undo relinks them
+    after the palette is a palette again.
+    """
+
+    def __init__(
+        self, window: MainWindow, palette: Entry, consumers: list[PaletteConsumerLink]
+    ) -> None:
+        super().__init__(f'release "{palette.name}" from its graphics')
+        self._window = window
+        self._palette = palette
+        self._consumers = consumers
+
+    def redo(self) -> None:
+        with self._window._undo_apply():
+            self._window._apply_rehome_palette_consumers(self._palette, self._consumers)
+
+    def undo(self) -> None:
+        with self._window._undo_apply():
+            self._window._apply_relink_palette_consumers(self._consumers)
+
+
 class RemovePaletteWithConsumersCommand(QUndoCommand):
     """Remove a file palette that graphics use, re-homing each as a Custom copy.
 

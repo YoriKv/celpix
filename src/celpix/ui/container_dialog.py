@@ -26,6 +26,14 @@ yet, and are the same component (:class:`~celpix.ui.file_stages.FileStageRows`):
 here every registered plugin is offered and a stage with no save half opens the
 file read-only, where a new file can only be made through stages that write.
 
+**Content** sits above them, as it does on New File, and for the same reason:
+it decides what the rows below are describing — which containers frame the
+file, whether it has region stages at all — so a file opened as the wrong kind
+is corrected here rather than closed and reopened. Pixels, Tilemap or Palette,
+the three readings a file has (:class:`~celpix.core.capabilities.ContentKind`);
+what changing it does to the entry is the caller's
+(``ui/main_window/containers.py``).
+
 It is also where a region's **file list** is edited: a graphics region is not
 always one file, and only the user can state the order of the chips it is joined
 from (:class:`~celpix.ui.path_list_editor.PathListEditor`).
@@ -59,7 +67,7 @@ from dataclasses import dataclass
 from os.path import basename
 from typing import Any
 
-from PySide6.QtWidgets import QDialog, QFormLayout, QLabel, QWidget
+from PySide6.QtWidgets import QComboBox, QDialog, QFormLayout, QLabel, QWidget
 
 from celpix.core.capabilities import ContentKind
 from celpix.plugins.detect import detect_container
@@ -70,6 +78,7 @@ from celpix.ui.path_list_editor import PathListEditor
 from celpix.ui.size_row import GROWTH_TIPS, UnitCountRow
 from celpix.ui.theme import WARNING_INK, set_ink
 from celpix.ui.widgets import (
+    add_form_row,
     dialog_buttons,
     run_modal,
 )
@@ -77,6 +86,14 @@ from celpix.ui.widgets import (
 __all__ = ["ContainerDialog", "ContainerEdit"]
 
 _FILES_TIP = "Files joined end to end to form this entry, in order"
+
+_CONTENT_TIP = (
+    "What the file holds:\n"
+    "• Pixels - tile graphics\n"
+    "• Palette - colors in a color format\n"
+    "• Tilemap - indices into tiles stored elsewhere\n"
+    "Changing it re-reads the file as that kind"
+)
 
 # A total rather than a grid across and down, which is why these are not the
 # New File dialog's tips: see :meth:`ContainerDialog._build_size_row`.
@@ -110,6 +127,10 @@ class ContainerEdit:
 
     stages: FileStages
     paths: tuple[str, ...]
+    # What the file holds, where the dialog was asked to say; ``None`` keeps the
+    # entry's own kind, so a caller that builds an edit for the stages alone
+    # cannot convert an entry by leaving a field at its default.
+    content_kind: ContentKind | None = None
     units: int | None = None
 
 
@@ -127,9 +148,21 @@ class ContainerDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self._registry = registry
-        self._kind = kind
+        # What the entry holds *now*: the kind its size was measured in, and
+        # the one the Content row opens on.
+        self._kind_before = kind
         self._files = PathListEditor(paths, _FILES_TIP)
         self.setWindowTitle(f"Edit File Container - {basename(self.paths()[0])}")
+
+        self._content = QComboBox()
+        self._content.setToolTip(_CONTENT_TIP)
+        for label, data in (
+            ("Pixels", ContentKind.PIXELS),
+            ("Palette", ContentKind.PALETTE),
+            ("Tilemap", ContentKind.TILEMAP),
+        ):
+            self._content.addItem(label, data)
+        self._content.setCurrentIndex(max(0, self._content.findData(kind)))
 
         # Every registered plugin, not only the plausible ones: the point of
         # reaching for this dialog is that detection already had its turn. A
@@ -176,6 +209,7 @@ class ContainerDialog(QDialog):
         # the room the paths need from every row at once.
         form.addRow(files_caption)
         form.addRow(self._files)
+        add_form_row(form, "Content:", self._content)
         # A palette file gets the container row alone (``FileStageRows``).
         self._stages.add_to(form)
         self._stages.fill(kind, self._stages.stages())  # hides a palette's rows
@@ -195,7 +229,23 @@ class ContainerDialog(QDialog):
         # Appending or dropping a file is what decides whether there is a size
         # to change at all, and the first file is what detection is marked for.
         self._files.paths_changed.connect(self._refresh_files)
+        self._content.currentIndexChanged.connect(self._on_content_change)
         self._refresh_files()
+
+    # -- the content ---------------------------------------------------------
+    def _kind(self) -> ContentKind:
+        # Back through the enum: ``ContentKind`` is str-valued, so a QVariant
+        # round trip hands back a bare string that fails every ``is`` test.
+        return ContentKind(self._content.currentData())
+
+    def _on_content_change(self, *_args: object) -> None:
+        """Re-offer the stages for the kind just chosen, keeping what still
+        applies, and re-ask detection — which is per kind, since the containers
+        that frame a palette and those that unwrap a ROM are different sets."""
+        self._stages.fill(self._kind(), self._stages.stages())
+        self._detected = ""  # force the marker to be re-applied to the new list
+        self._refresh_detected()
+        self._on_stage_change()
 
     # -- the size -----------------------------------------------------------
     def _resize_blocked(self) -> str:
@@ -219,6 +269,10 @@ class ContainerDialog(QDialog):
         fixed = self._stages.size_fixed_reason()
         if fixed:
             return fixed
+        if self._kind() is not self._kind_before:
+            # The count is in the units the file held when the dialog opened —
+            # tiles, cells or colours — and another kind counts in another.
+            return "Apply the new content first."
         if self._stages.stages().compression_id != self._compression_before:
             # The count was measured under the scheme the file opened with, and
             # another unpacks to another length — the slice dialog's rule.
@@ -267,7 +321,7 @@ class ContainerDialog(QDialog):
         something to remember — and it tracks the row it describes, since pointing
         the first row at another file moves what detection would have said.
         """
-        detected = detect_container(self._registry, self.paths()[0], kind=self._kind)
+        detected = detect_container(self._registry, self.paths()[0], kind=self._kind())
         if detected == self._detected:
             return
         self._detected = detected
@@ -292,6 +346,9 @@ class ContainerDialog(QDialog):
     def stages(self) -> FileStages:
         return self._stages.stages()
 
+    def content_kind(self) -> ContentKind:
+        return self._kind()
+
     def paths(self) -> tuple[str, ...]:
         return self._files.paths()
 
@@ -305,5 +362,7 @@ class ContainerDialog(QDialog):
         """
         return run_modal(
             ContainerDialog(registry, parent=parent, **options),
-            lambda d: ContainerEdit(d.stages(), d.paths(), d.resize_units()),
+            lambda d: ContainerEdit(
+                d.stages(), d.paths(), d.content_kind(), d.resize_units()
+            ),
         )

@@ -3123,6 +3123,135 @@ def test_a_file_decompressed_whole_shows_the_stream_and_writes_it_back_packed(
     assert bytes(window._doc.pixel_data) == blob.read_bytes()
 
 
+def test_container_dialog_content_row_drives_the_stage_rows(qtbot, tmp_path) -> None:
+    """Content sits above Container and decides what the rows below describe:
+    a palette has the container row alone and its own container list, and the
+    size row waits for a changed content to be applied."""
+    from celpix.core.capabilities import ContentKind
+    from celpix.plugins.registry import default_registry
+    from celpix.ui.container_dialog import ContainerDialog
+    from uihelpers import _combo_ids
+
+    px = _make_snes_file(tmp_path)
+    dialog = ContainerDialog(
+        default_registry(),
+        paths=(str(px),),
+        codec_id="preset.pixel.snes-4bpp",
+        units=8,
+    )
+    qtbot.addWidget(dialog)
+    form = dialog.layout()
+    captions = [
+        form.itemAt(row, form.ItemRole.LabelRole).widget().text()
+        for row in range(form.rowCount())
+        if form.itemAt(row, form.ItemRole.LabelRole) is not None
+    ]
+    assert captions.index("Content:") == captions.index("Container:") - 1
+    assert dialog.content_kind() is ContentKind.PIXELS
+    pixels = set(_combo_ids(dialog._container))
+
+    dialog._content.setCurrentIndex(dialog._content.findData(ContentKind.PALETTE))
+    assert dialog.content_kind() is ContentKind.PALETTE
+    rows = dialog._stages
+    assert rows.reshape.isHidden() and rows.compression.isHidden()
+    palettes = set(_combo_ids(dialog._container))
+    assert "container.ines" in pixels and "container.ines" not in palettes
+    assert "Apply the new content first" in dialog._size.text()
+    assert not dialog._size_units.isEnabled()
+
+
+def test_edit_container_converts_a_pixel_file_to_a_tilemap_and_back(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """The Content row converts the entry in place: it keeps its identity and
+    moves to the Tilemaps section, opens as a map under the default cell
+    format, and undo makes it pixels again."""
+    from celpix.core.capabilities import ContentKind
+    from celpix.project.workspace import FileStages
+    from celpix.ui.container_dialog import ContainerEdit
+
+    px = _make_snes_file(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    entry = window._workspace.current
+    assert not window._doc.is_tilemap
+
+    _answer_container_dialog(
+        monkeypatch,
+        ContainerEdit(FileStages(RAW_CONTAINER), (str(px),), ContentKind.TILEMAP),
+    )
+    window._change_container_for(entry)
+    assert entry is window._workspace.current
+    assert entry.content_kind is ContentKind.TILEMAP
+    assert window._doc.is_tilemap
+    assert window._files_panel.section_of(entry) is ContentKind.TILEMAP
+    assert (
+        window._files_panel._items[entry].parent()
+        is (window._files_panel._sections[ContentKind.TILEMAP])
+    )
+
+    window._undo_stack.undo()
+    assert entry.content_kind is ContentKind.PIXELS
+    assert not window._doc.is_tilemap
+    assert window._files_panel.section_of(entry) is ContentKind.PIXELS
+
+
+def test_edit_container_converts_between_a_graphics_file_and_a_palette(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """A file becoming a palette flips the kind of row it is, and its slice
+    follows it into Palettes; a palette becoming a file first leaves the
+    graphic rendering it a Custom copy of its colours, which undo relinks."""
+    from celpix.core.capabilities import ContentKind
+    from celpix.project.workspace import EntryKind, FileStages, PaletteMode
+    from celpix.ui.container_dialog import ContainerEdit
+
+    px = _make_snes_file(tmp_path)
+    pal = tmp_path / "colors.pal"
+    pal.write_bytes(bytes(range(256)) * 2)  # 256 BGR555 words
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    graphic = window._workspace.current
+    window._load_pixel(str(pal))
+    entry = window._workspace.current
+    cut = window._workspace.add_slice(str(pal), "cut", 0, 32)
+    assert entry.kind is EntryKind.FILE and cut.parent_kind is EntryKind.FILE
+
+    # Pixels -> palette: the row and its slice refile under Palettes.
+    _answer_container_dialog(
+        monkeypatch,
+        ContainerEdit(FileStages(RAW_CONTAINER), (str(pal),), ContentKind.PALETTE),
+    )
+    window._change_container_for(entry)
+    assert entry.kind is EntryKind.PALETTE
+    assert cut.parent_kind is EntryKind.PALETTE
+    assert window._workspace.find_palette(str(pal)) is entry
+    assert window._workspace.children_of(entry) == [cut]
+    assert window._files_panel.section_of(cut) is ContentKind.PALETTE
+    assert cut in window._files_panel._items
+
+    # Make the graphic render through it, then take the palette away again.
+    window._activate_entry(graphic)
+    window._use_palette_entry(entry)
+    window._capture_session()
+    assert graphic.session.palette_mode is PaletteMode.FILE
+    monkeypatch.setattr(window, "_confirm", lambda *a, **k: True)
+    _answer_container_dialog(
+        monkeypatch,
+        ContainerEdit(FileStages(RAW_CONTAINER), (str(pal),), ContentKind.PIXELS),
+    )
+    window._change_container_for(entry)
+    assert entry.kind is EntryKind.FILE and cut.parent_kind is EntryKind.FILE
+    assert window._workspace.find_file(str(pal)) is entry
+    assert graphic.session.palette_mode is PaletteMode.CUSTOM
+
+    window._undo_stack.undo()  # the macro: conversion, then the re-homing
+    assert entry.kind is EntryKind.PALETTE
+    assert graphic.session.palette_mode is PaletteMode.FILE
+
+
 def test_container_dialog_marks_detection_for_the_first_file(qtbot, tmp_path) -> None:
     """The (detected) marker follows the file it describes when row 1 changes."""
     from celpix.plugins.registry import default_registry

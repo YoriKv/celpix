@@ -2,7 +2,12 @@
 
 An entry's **container** says how much of its file is payload and what frames
 it; Edit File Container… changes it, or the file list a joined region reads,
-and the entry is re-read through the new one. The Size row on the same dialog
+and the entry is re-read through the new one. The same dialog changes what the
+file **is** — pixels, a tilemap, a palette — and the entry is converted in place
+(:meth:`~ContainersMixin._convert_entry_kind`): its row moves to the section
+for what it now holds, its slices and bookmarks follow it, and a palette that
+graphics were rendering through leaves them Custom copies of its colours first,
+as removing it would. The Size row on the same dialog
 **resizes the file** — the payload grown or cut to a number of tiles, cells or
 colours and written back through the pathway the edit is about to install — with
 the slices whose size matched the file's following it.
@@ -46,9 +51,11 @@ from celpix.plugins.base import (
     STAGE_DEFAULT_PRESET,
     FileRef,
 )
+from celpix.plugins.detect import tilemap_preset_for
 from celpix.project.workspace import (
     Entry,
     EntryKind,
+    FileStages,
     file_kind,
     pixel_config_for,
     retarget_files,
@@ -58,6 +65,8 @@ from celpix.ui.container_dialog import ContainerDialog, ContainerEdit
 from celpix.ui.container_info_dialog import ContainerInfoDialog
 from celpix.ui.undo_commands import (
     ContainerEditCommand,
+    PaletteConsumerLink,
+    RehomePaletteConsumersCommand,
 )
 from celpix.ui.widgets import (
     confirm_destructive,
@@ -222,15 +231,16 @@ class ContainersMixin:
         be framed too (colours that stop before the bytes do), and the dialog is
         filtered to the containers that frame a palette so the two sets of
         formats never appear in each other's menu.
+
+        The dialog's **Content** row converts the entry to another kind on the
+        way (:meth:`_convert_entry_kind`): a file opened as pixels that is really
+        a map, a ``.pal`` opened as graphics. Conversion is part of the one undo
+        step with the rest of the edit, bar the re-homing a palette's graphics
+        get first, which is its own command ahead of it in a macro.
         """
         if entry.kind not in (EntryKind.FILE, EntryKind.PALETTE):
             return
         codec_id = self._entry_codec_id(entry)
-        # No reshape or compression for a palette: the palette half of a palette
-        # document (the colours the dock and every File-mode graphic read) takes
-        # the file without either, so one here would transform the swatches
-        # alone and leave the two halves describing different bytes of one file.
-        palette = entry.kind is EntryKind.PALETTE
         edit = ContainerDialog.edit_container(
             self,
             self._registry,
@@ -242,17 +252,27 @@ class ContainersMixin:
         )
         if edit is None:
             return
-        if palette:
-            edit = replace(
-                edit,
-                stages=replace(
-                    entry.file_stages, container_id=edit.stages.container_id
-                ),
-            )
+        kind_after = edit.content_kind or file_kind(entry)
+        edit = replace(edit, content_kind=kind_after)
+        if kind_after is ContentKind.PALETTE:
+            # No reshape or compression for a palette: the palette half of a
+            # palette document (the colours the dock and every File-mode graphic
+            # read) takes the file without either, so one here would transform
+            # the swatches alone and leave the two halves describing different
+            # bytes of one file.
+            edit = replace(edit, stages=FileStages(edit.stages.container_id))
         moved = edit.paths != entry.paths
-        if not moved and edit.units is None and edit.stages == entry.file_stages:
+        converting = kind_after is not file_kind(entry)
+        if (
+            not moved
+            and edit.units is None
+            and edit.stages == entry.file_stages
+            and not converting
+        ):
             return
         if moved and not self._retarget_allowed(entry, edit.paths[0]):
+            return
+        if converting and not self._conversion_allowed(entry, edit):
             return
         # A container decides which bytes the file even has, and so does the file
         # list — so applying either is a re-read, and pixel edits describe
@@ -266,6 +286,12 @@ class ContainersMixin:
         # so it is re-read with the file, and its edits are on the table too.
         family += self._size_followers(entry, family)
         if not self._confirm_container_discard(family):
+            return
+        # A palette about to stop being one leaves its graphics nothing to render
+        # through: they keep its colours as their own first, as a removal would
+        # leave them, and are told so.
+        released = self._released_consumers(entry, kind_after)
+        if released and not self._confirm_release(entry, released):
             return
         # Before the command, and outside it: this one writes the file, and a
         # truncated tail is not something an undo can put back — so it is settled
@@ -288,15 +314,133 @@ class ContainersMixin:
             with self._undo_apply():
                 self._apply_container_edit(entry, after)
             return
-        self._push_command(
-            ContainerEditCommand(self, entry, before=before, after=after)
-        )
+        command = ContainerEditCommand(self, entry, before=before, after=after)
+        if not released:
+            self._push_command(command)
+            return
+        # The re-homing ahead of the conversion, so a redo frees the graphics
+        # before the palette they read goes, and an undo relinks them after it
+        # is a palette again.
+        self._undo_stack.beginMacro(command.text())
+        try:
+            self._push_command(RehomePaletteConsumersCommand(self, entry, released))
+            self._push_command(command)
+        finally:
+            self._undo_stack.endMacro()
 
     @staticmethod
     def _container_state(entry: Entry) -> ContainerEdit:
         """``entry``'s reading as it stands, in the dialog's own shape — what an
         undo puts back, and what a measurement is taken under."""
-        return ContainerEdit(entry.file_stages, entry.paths)
+        return ContainerEdit(entry.file_stages, entry.paths, file_kind(entry))
+
+    # -- converting what the file holds ----------------------------------------
+    def _conversion_allowed(self, entry: Entry, edit: ContainerEdit) -> bool:
+        """Whether ``entry`` may become what ``edit`` says it holds.
+
+        The same identity rule as a retarget, read across the two kinds a path
+        can be open as at once: a graphics file and a registered palette may
+        share a path (:meth:`~celpix.project.workspace.Workspace.find_palette`),
+        so converting one into the other's kind would make two rows of one kind
+        editing the same bytes. And a palette file is one file — its colours are
+        read from ``path`` alone — so a joined region cannot become one.
+        """
+        if edit.content_kind is ContentKind.PALETTE:
+            if len(edit.paths) > 1:
+                self._alert(
+                    f"{entry.name} is {len(edit.paths)} files joined, and a "
+                    "palette file is one file. Drop the joined files first.",
+                    title="celPix - edit container",
+                )
+                return False
+            clash = self._workspace.find_palette(edit.paths[0])
+            what = "registered as a palette"
+        else:
+            clash = self._workspace.find_file(edit.paths[0])
+            what = "open as a graphics file"
+        if clash is None or clash is entry:
+            return True
+        self._alert(
+            f"{Path(edit.paths[0]).name} is already {what} in this project, so "
+            f"{entry.name} can't become one too. Close the other first.",
+            title="celPix - edit container",
+        )
+        return False
+
+    def _released_consumers(
+        self, entry: Entry, kind_after: ContentKind
+    ) -> list[PaletteConsumerLink]:
+        """The graphics rendering ``entry`` as their palette, captured for
+        re-homing, where the edit takes the palette away from them — a palette
+        file becoming pixels or a map. Empty everywhere else."""
+        if entry.kind is not EntryKind.PALETTE or kind_after is ContentKind.PALETTE:
+            return []
+        # The current graphic's palette mode reaches its session only on a
+        # switch, so a palette in use right now would otherwise look unused.
+        self._capture_session()
+        return [
+            self._consumer_link(entry, consumer)
+            for consumer in self._workspace.palette_consumers(entry)
+        ]
+
+    def _confirm_release(
+        self, entry: Entry, released: list[PaletteConsumerLink]
+    ) -> bool:
+        names = ", ".join(sorted(link.entry.name for link in released))
+        return self._confirm(
+            f"{entry.name} is the palette of {counted(len(released), 'graphic')} "
+            f"({names}). Converting it leaves them keeping these colors as "
+            "their own custom palette, stored in the project.",
+            title="celPix - edit container",
+            accept="Convert",
+        )
+
+    def _convert_entry_kind(self, entry: Entry, kind: ContentKind) -> None:
+        """Make ``entry`` hold ``kind`` — pixels, a tilemap or a palette — in
+        place, keeping its identity, its slices and its bookmarks.
+
+        In place rather than closed and reopened, because the entry is what
+        everything else holds: a slice's parent, a map's tile source, a
+        composite's piece, the undo stack's target. Only the fields that say
+        what the file is move. A **palette** is a kind of row rather than a
+        content kind (:attr:`Entry.kind`), its bytes being pixels — swatches —
+        so becoming one or ceasing to be one flips the kind, and the children
+        cut from it say which kind of row they hang off
+        (:attr:`Entry.parent_kind`). A swatch session names a colour codec as
+        its pixel format, which a graphic must not open on, so a palette turned
+        file opens fresh; a file turned palette has its session put right by
+        the loader every palette opens through.
+
+        The rows follow: a row is filed by what it holds, and the panel refiles
+        a top-level row but not the rows under it, so the whole group is
+        re-added in list order.
+        """
+        # Asked before the kind moves: the child test reads it.
+        children = self._workspace.children_of(entry)
+        descendants = self._workspace.descendants_of(entry)
+        if kind is ContentKind.PALETTE:
+            entry.kind = EntryKind.PALETTE
+            entry.content_kind = ContentKind.PIXELS
+            if not entry.palette_preset_id:
+                session = entry.session
+                entry.palette_preset_id = (
+                    session.palette_view_preset_id if session is not None else ""
+                ) or self._palette_import_preset_id()
+        else:
+            if entry.kind is EntryKind.PALETTE:
+                entry.session = None
+                entry.pending_view = None
+            entry.kind = EntryKind.FILE
+            entry.content_kind = kind
+            if kind is ContentKind.TILEMAP and not entry.tilemap_preset_id:
+                entry.tilemap_preset_id = (
+                    tilemap_preset_for(self._registry, entry.container_id) or None
+                )
+        for child in children:
+            child.parent_kind = entry.kind
+        self._files_panel.remove_entry(entry)
+        for row in (entry, *descendants):
+            self._on_entry_added(row)
 
     # -- resizing a file -----------------------------------------------------
     def _entry_codec_id(self, entry: Entry) -> str:
@@ -473,6 +617,8 @@ class ContainersMixin:
         family = [entry, *self._workspace.descendants_of(entry)] if moved else [entry]
         family += self._size_followers(entry, family)
         entry.set_file_stages(edit.stages)
+        if edit.content_kind is not None and edit.content_kind is not file_kind(entry):
+            self._convert_entry_kind(entry, edit.content_kind)
         # Format, arrangement and view survive the re-read for the same reason
         # they survive a slice re-point (see
         # :meth:`~...slices.SlicesMixin._apply_slice_params`): what

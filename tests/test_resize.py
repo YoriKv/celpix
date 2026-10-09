@@ -204,7 +204,7 @@ def test_resize_refuses_a_read_only_pathway(tmp_path) -> None:
 # -- the size row -----------------------------------------------------------
 def _dialog(path, **kwargs) -> ContainerDialog:
     defaults = {
-        "container_id": RAW_CONTAINER,
+        "stages": FileStages(RAW_CONTAINER),
         "kind": ContentKind.PIXELS,
         "codec_id": _4BPP,
     }
@@ -323,7 +323,7 @@ def test_shrinking_asks_first_and_a_refusal_calls_the_whole_edit_off(
     _answer(
         monkeypatch,
         ContainerEdit(
-            RAW_CONTAINER, (str(px),), reshape_id="reshape.swap-bytes-2", units=4
+            FileStages(RAW_CONTAINER, "reshape.swap-bytes-2"), (str(px),), units=4
         ),
     )
     window._change_container_for(entry)
