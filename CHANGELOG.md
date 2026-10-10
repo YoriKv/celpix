@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.2.7 - unreleased
+## v1.2.7 - 2026-10-10
 
 - More fine grained palette offset control (hold ctrl or shift for big jumps)
 - Copy/Paste View Settings (Ctrl+Shift+C/V)
