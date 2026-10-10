@@ -152,6 +152,8 @@ def test_refresh_reloads_edited_preset_and_reruns(qtbot, tmp_path, monkeypatch) 
     _write_planar_preset(plugdir, bpp=2)
     window._refresh_plugins()
     assert window._doc.tile_count == 4
+    # The Files panel keeps a registry of its own, and has to be handed the new one.
+    assert window._files_panel._registry is window._registry
 
 
 def test_refresh_re_reads_a_bound_tilemap_instead_of_its_own_bytes(
@@ -943,6 +945,47 @@ def test_a_project_naming_a_missing_format_opens_on_the_default_and_says_so(
     assert any(title == "celPix - missing formats" for title, _msg in captured_alerts)
 
 
+def test_a_codec_failing_in_the_render_is_reported_once_and_drawn_blank(
+    qtbot, tmp_path, monkeypatch, captured_alerts
+) -> None:
+    """A codec that raises on every repaint is told once, as a pipeline error
+    naming it, and the refresh runs to its end over a blank window — the tool
+    windows drawing the same tiles included. The rearranged route meets the
+    same boundary instead of a dialog per repaint. Picking a working format and
+    then the failing one again is a new question, and is told again."""
+    from celpix.core.tilerearrangement import TileRearrangement
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    # A font sheet, so the Font Alphabet's sheet decodes in the refresh tail.
+    window._workspace.current.use_as_font = True
+    window._sync_font_alphabet()
+    assert window._font_alphabet.isVisible()
+    preset_id = window._doc.pixel_config.interpret_preset_id
+    engine, _ = window._registry.engine_for(preset_id)
+
+    def boom(*_args, **_kwargs):
+        raise ValueError("plugin bug")
+
+    monkeypatch.setattr(engine, "decode", boom)
+    window._refresh_view()
+    window._refresh_view()
+    ((title, message),) = captured_alerts
+    assert title == "celPix - pipeline error"
+    assert "preset.pixel.snes-4bpp" in message and "plugin bug" in message
+    assert window._canvas._image.isNull()
+    assert not window._font_alphabet.isVisible()
+
+    window._set_tile_rearrangement(TileRearrangement().swap(0, 5))  # refreshes
+    assert not window._active_tile_rearrangement().is_identity()
+    assert len(captured_alerts) == 1
+
+    for preset in ("preset.pixel.dc-rgb888-be", preset_id):
+        window._pixel_preset.setCurrentIndex(window._pixel_preset.findData(preset))
+    assert len(captured_alerts) == 2
+
+
 def test_a_declined_code_plugin_is_not_reported_as_a_failure(
     qtbot, captured_alerts
 ) -> None:
@@ -1028,3 +1071,54 @@ def test_view_as_palette_swaps_the_compression_group_for_a_color_format(
     assert session.palette_view_preset_id == "preset.palette.rgb888"
     combo.setCurrentIndex(combo.findData("preset.pixel.view-as-palette"))
     assert window._doc.bytes_per_tile == 3
+
+
+def test_a_files_row_context_menu_is_deleted_after_it_closes(
+    qtbot, opened_menus
+) -> None:
+    # Every action of the menu closes over the right-clicked entry, so a menu
+    # left parented to the panel keeps a removed entry — and its whole document
+    # — alive, one more of them per right-click.
+    from PySide6.QtCore import QEvent
+    from PySide6.QtWidgets import QMenu
+
+    from celpix.project.workspace import Entry, EntryKind
+    from celpix.ui.file_list_panel import FileListPanel
+
+    panel = FileListPanel()
+    qtbot.addWidget(panel)
+    entry = Entry(name="a.bin", kind=EntryKind.FILE, path="/x/a.bin")
+    panel.add_entry(entry)
+    pos = panel._tree.visualItemRect(panel._items[entry]).center()
+    panel._show_menu(pos)
+    panel._show_menu(pos)
+    assert len(opened_menus) == 2
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert panel.findChildren(QMenu) == []
+
+
+def test_a_restored_earlier_copy_does_not_borrow_the_last_copys_bindings(
+    qtbot,
+) -> None:
+    # The entries a copy remembers are the last copy's only, and a clipboard
+    # history can put an earlier copy of ours back: under one token per process
+    # its keys were read against the later copy's entries and bound wrongly.
+    from PySide6.QtCore import QByteArray, QMimeData
+    from PySide6.QtGui import QGuiApplication
+
+    from celpix.project.projectfile import payload_session
+    from celpix.ui import clipboard
+
+    class Entry:  # anything weak-referenceable stands in for one
+        pass
+
+    first, second = Entry(), Entry()
+    clipboard.put_entries({"session": clipboard.SESSION_TOKEN}, [], {0: first})
+    earlier = bytes(QGuiApplication.clipboard().mimeData().data(clipboard.ENTRIES_MIME))
+    clipboard.put_entries({"session": clipboard.SESSION_TOKEN}, [], {0: second})
+    assert payload_session(clipboard.take_entries()) == clipboard.SESSION_TOKEN
+
+    restored = QMimeData()
+    restored.setData(clipboard.ENTRIES_MIME, QByteArray(earlier))
+    QGuiApplication.clipboard().setMimeData(restored)
+    assert payload_session(clipboard.take_entries()) != clipboard.SESSION_TOKEN

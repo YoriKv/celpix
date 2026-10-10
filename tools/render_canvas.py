@@ -170,7 +170,8 @@ def _silence_modals() -> list[tuple[str, str]]:
     no relocation walk, so a project whose files have moved reports that rather
     than opening a file picker nobody can see.
     """
-    from celpix.ui.main_window import MainWindow, entries
+    from celpix.ui import settings
+    from celpix.ui.main_window import MainWindow
 
     alerts: list[tuple[str, str]] = []
 
@@ -191,8 +192,18 @@ def _silence_modals() -> list[tuple[str, str]]:
     MainWindow._confirm = lambda self, message, **_kwargs: False
     MainWindow._relocate_missing = lambda self, *, prompt_summary=False: None
     # Opening a project records it in the app's recent list. Rendering is not a
-    # session, so it leaves no trace in the user's settings.
-    entries.remember_recent_project = lambda path: None
+    # session, so it leaves no trace in the user's settings. Callers import the
+    # function by name, so each holds its own copy: replace it in the module that
+    # defines it and in every module bound to it, which reaches the call wherever
+    # the main window's split puts it, and any module imported later copies the
+    # replacement.
+    remember = settings.remember_recent_project
+    for name, module in list(sys.modules.items()):
+        if (
+            name.startswith("celpix.ui.")
+            and getattr(module, "remember_recent_project", None) is remember
+        ):
+            module.remember_recent_project = lambda path: None
     return alerts
 
 

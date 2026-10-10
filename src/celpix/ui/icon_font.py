@@ -217,10 +217,18 @@ def _ink_bounds(image: QImage) -> QRect | None:
 
 
 def _icon_font(family: str, pixel_size: int) -> QFont:
-    """The icon face at ``pixel_size``, on celPix's weight."""
+    """The icon face at ``pixel_size``, on celPix's weight.
+
+    **No fallback to another font.** A codepoint the subset lacks must draw
+    nothing — that blank is how a member added without re-running the subset
+    tool gets caught — and left to merge, Qt draws it from whatever installed
+    font maps it. Windows ships icon faces over the same private-use range, so
+    the wrong mark would show there, and pass the test that looks for ink.
+    """
     font = QFont(family)
     font.setPixelSize(pixel_size)
     font.setVariableAxis(QFont.Tag("wght"), _WEIGHT)
+    font.setStyleStrategy(QFont.StyleStrategy.NoFontMerging)
     return font
 
 

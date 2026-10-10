@@ -68,8 +68,9 @@ INPUTS_MIME = "application/x-celpix-inputs"
 # This process, so a paste can tell a copy taken from the running editor from one
 # taken from another window (or another day). It buys exactly one thing: it says
 # the entry objects remembered beside the last copy (_COPIED_BINDINGS) are the
-# ones *this* payload means, since only a payload this process wrote can have
-# been written with them.
+# ones *this* payload means. A payload read back off the clipboard carries it
+# only when it is that last copy — see _JsonFlavour, which is where a copy's own
+# token stands in for it on the way out and is answered with it on the way in.
 SESSION_TOKEN = uuid4().hex
 
 
@@ -180,6 +181,15 @@ class _JsonFlavour:
     written together and replaced together, and the session token on the payload
     is what says they still belong to each other.
 
+    **A token per copy, not per process.** :attr:`refs` holds the last copy's
+    entries only, and a clipboard history (Win+V, a desktop's clipboard manager)
+    can put an *earlier* copy of ours back — same process, so a process token
+    would vouch for it, and its keys would be read against the later copy's
+    entries. So a payload written with :data:`SESSION_TOKEN` goes out under a
+    token minted for that copy, and :meth:`take` answers with
+    :data:`SESSION_TOKEN` only for the copy whose entries are the ones held; an
+    earlier one keeps its own token and pastes unbound, like a foreign copy.
+
     **Weak**, so a copy taken and then forgotten about does not pin a closed
     entry's document in memory for the rest of the session. An entry that has
     gone that thoroughly is one nothing can be bound to anyway, and the paste
@@ -195,6 +205,9 @@ class _JsonFlavour:
     def __init__(self, mime: str) -> None:
         self.mime = mime
         self.refs: dict[int, weakref.ref] = {}
+        #: The token the last copy went out under, or None when it named another
+        #: session (:meth:`put`).
+        self.token: str | None = None
 
     def put(
         self, payload: dict, remembered: dict[int, object], text: str | None = None
@@ -208,6 +221,10 @@ class _JsonFlavour:
         self.refs.update(
             {key: weakref.ref(target) for key, target in remembered.items()}
         )
+        self.token = None
+        if payload.get("session") == SESSION_TOKEN:
+            self.token = uuid4().hex
+            payload = {**payload, "session": self.token}
         mime = QMimeData()
         mime.setData(self.mime, QByteArray(json.dumps(payload).encode("utf-8")))
         if text is not None:
@@ -223,7 +240,11 @@ class _JsonFlavour:
             payload = json.loads(bytes(mime.data(self.mime)).decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
             return None
-        return payload if isinstance(payload, dict) else None
+        if not isinstance(payload, dict):
+            return None
+        if self.token is not None and payload.get("session") == self.token:
+            payload["session"] = SESSION_TOKEN  # the copy :attr:`refs` belongs to
+        return payload
 
     def remembered(self) -> dict[int, object]:
         """The entries the last copy remembered, minus any since freed."""

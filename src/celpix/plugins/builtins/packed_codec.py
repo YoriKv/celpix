@@ -227,9 +227,6 @@ class PackedCodec:
         fields_per_row = width // ppb
         order = self._row_byte_order(width, ppb, reverse)
         tile_pixels = width * height  # one tile's pixels
-        # A split index has to be masked into halves; an unsplit one has no other
-        # half to keep out, so it keeps the overflow into the next field.
-        field_mask = (1 << field_bpp) - 1 if stride else 0xFF
 
         def pack(y: int, i: int, source_shift: int) -> bytes:
             """Row ``y``'s field ``i``, for every tile — the bits above
@@ -237,9 +234,7 @@ class PackedCodec:
             return or_all(
                 [
                     pixels[y * width + i * ppb + j :: tile_pixels].translate(
-                        field_packing(
-                            j, ppb, field_bpp, msb_first, source_shift, field_mask
-                        )
+                        field_packing(j, ppb, field_bpp, msb_first, source_shift)
                     )
                     for j in range(ppb)
                 ]

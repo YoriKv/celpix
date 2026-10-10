@@ -1446,3 +1446,143 @@ def test_a_malformed_pixel_aspect_degrades_to_unanswered(tmp_path) -> None:
             encoding="utf-8",
         )
         assert load_project(str(path)).pixel_aspect is None, stored
+
+
+def test_renamed_ids_reach_entry_bindings_and_the_hidden_pixel_filter(
+    tmp_path,
+) -> None:
+    """Two stored ids outside a session go through the alias table as well. An
+    entry-shaped binding under a renamed engine has to stay bound to its entry:
+    left as "this file" it reads the map's own bytes at that offset, and the
+    next save writes it without the entry, making the loss permanent. A hidden
+    preset renamed since has to stay hidden."""
+    for name in ("a.bin", "b.bin"):
+        (tmp_path / name).write_bytes(bytes(64))
+    project = tmp_path / "p.celpix"
+    project.write_text(
+        json.dumps(
+            {
+                "version": PROJECT_VERSION,
+                "hidden_pixel_presets": ["preset.pixel.chunky-8bpp"],
+                "entries": [
+                    {"kind": "file", "path": "a.bin"},
+                    {
+                        "kind": "file",
+                        "path": "b.bin",
+                        "content_kind": "tilemap",
+                        "tilemap_preset_id": "format.tilemap.ys-spr",
+                        "inputs": {
+                            "codec.tilemap.ys-spr": {
+                                "arrays": {"offset": 8, "length": 4, "entry_index": 0}
+                            }
+                        },
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = load_project(str(project))
+    binding = loaded.entries[1].inputs["format.tilemap.ys-spr"]["arrays"]
+    assert binding.entry is loaded.entries[0]
+    assert loaded.hidden_pixel_presets == {"preset.pixel.8bpp-linear"}
+
+
+def test_every_kinds_optional_keys_survive_a_save_and_a_load(tmp_path) -> None:
+    """What the writer emits, the reader keeps: a key the reader drops never
+    shows as an unsaved change (the baseline is taken after the load), so it
+    vanishes on the next save instead. One entry of every kind with every
+    optional key set, compared as the documents they save to."""
+    from celpix.project.inputs import RegionBinding
+    from celpix.project.workspace import CompositePiece, PaletteMode
+
+    for name in ("rom.bin", "rom2.bin", "map.bin", "c.pal"):
+        (tmp_path / name).write_bytes(bytes(0x400))
+    path = str(tmp_path / "p.celpix")
+    ws = Workspace()
+    view = ViewOptions(columns=8, rows=4, palette_row=2, tile_offset=3)
+    font = dict(use_as_font=True, font_chars="ABC", font_base=0x20, font_prepend=1)
+    rom = ws.open_file(str(tmp_path / "rom.bin"), (str(tmp_path / "rom2.bin"),))
+    rom.set_file_stages(
+        FileStages("container.smd", "reshape.swap-bytes-2", "compression.gba-rle")
+    )
+    rom.session = _session(preview_compression_id="compression.gba-rle")
+    rom.pending_view = view
+    rom.pending_palette = PaletteSource(path=str(tmp_path / "c.pal"))
+    rom.palette_row_base = 0
+    rom.inputs = {"compression.lz2": {"table": RegionBinding(offset=4, length=8)}}
+    for key, value in font.items():
+        setattr(rom, key, value)
+    sliced = ws.add_slice(
+        str(tmp_path / "rom.bin"),
+        "cut",
+        0x10,
+        0x40,
+        "compression.lz2",
+        "reshape.swap-bytes-2",
+    )
+    sliced.slot_fill = SlotFill.KEEP
+    sliced.match_parent = True
+    sliced.inputs = {
+        "compression.lz2": {"table": RegionBinding(entry=rom, offset=0, length=4)}
+    }
+    sliced.pending_palette = PaletteSource(offset=0x20)
+    ws.add_slice_under(sliced, "inner", 4, 8)
+    ws.entries.append(
+        Entry(
+            name="mark",
+            kind=EntryKind.BOOKMARK,
+            path=str(tmp_path / "rom.bin"),
+            slice_offset=6,
+        )
+    )
+    tilemap = ws.open_file(str(tmp_path / "map.bin"))
+    tilemap.content_kind = ContentKind.TILEMAP
+    tilemap.tilemap_preset_id = "preset.tilemap.snes-bg"
+    tilemap.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=rom, base_index=3, addressing=IndexAddressing.ORDINAL
+    )
+    tilemap.sprite_size_pair = (1, 2)
+    tilemap.palette_row_base = 4
+    palette = ws.add_palette(str(tmp_path / "c.pal"), "preset.palette.bgr555")
+    palette.set_file_stages(FileStages("container.smd", "reshape.swap-bytes-2"))
+    palette.session = _session(palette_view_preset_id="preset.palette.bgr444")
+    palette.pending_view = view
+    palette.palette_row_base = 3
+    palette.inputs = {"compression.lz2": {"table": RegionBinding(offset=0, length=4)}}
+    for key, value in font.items():
+        setattr(palette, key, value)
+    ws.entries.append(
+        Entry(
+            name="joined",
+            kind=EntryKind.COMPOSITE,
+            path="",
+            pieces=(
+                CompositePiece(entry=rom, measured=0x400),
+                CompositePiece(entry=sliced, offset=8, length=16),
+                CompositePiece(entry=palette, offset=0x20, measured=0x3E0),
+                CompositePiece(length=32),
+            ),
+            palette_row_base=1,
+            session=_session(palette_mode=PaletteMode.ENTRY),
+            pending_view=view,
+            pending_palette=PaletteSource(entry=palette, offset=2),
+            **font,
+        )
+    )
+    for entry in ws.entries:
+        # Every kind but a palette reads a default session back from nothing,
+        # so the comparison is of entries that have one, as every opened one does.
+        if entry.session is None and entry.kind is not EntryKind.PALETTE:
+            entry.session = _session()
+    ws.hidden_pixel_presets = {"preset.pixel.nes-2bpp"}
+    ws.pixel_aspect = (1, 2)
+    ws.current = tilemap
+
+    save_project(ws, path)
+    loaded = load_project(path)
+    back = Workspace()
+    back.replace(loaded.entries, loaded.current)
+    back.hidden_pixel_presets = loaded.hidden_pixel_presets
+    back.pixel_aspect = loaded.pixel_aspect
+    assert project_dict(back, path) == project_dict(ws, path)

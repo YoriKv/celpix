@@ -14,15 +14,21 @@ from enum import Enum
 from pathlib import Path
 
 # Where a traceback frame is *not* plugin code: the celpix package itself, and
-# the interpreter's own libraries.
+# the interpreter's own libraries. Paths, not strings, so containment is by whole
+# components — ``celpix-plugins`` beside ``celpix`` is not inside it — and, on
+# Windows, without regard to case.
 _HOST_ROOTS = tuple(
-    str(Path(root).resolve())
+    Path(root).resolve()
     for root in (
         Path(__file__).parents[1],
         *(sysconfig.get_paths().get(key, "") for key in ("stdlib", "purelib")),
     )
     if str(root)
 )
+
+
+def _is_host(path: Path) -> bool:
+    return any(path.is_relative_to(root) for root in _HOST_ROOTS)
 
 
 def fault_origin(exc: BaseException) -> str:
@@ -37,11 +43,7 @@ def fault_origin(exc: BaseException) -> str:
     frames = traceback.extract_tb(exc.__traceback__)
     if not frames:
         return ""
-    own = [
-        frame
-        for frame in frames
-        if not str(Path(frame.filename).resolve()).startswith(_HOST_ROOTS)
-    ]
+    own = [frame for frame in frames if not _is_host(Path(frame.filename).resolve())]
     frame = (own or frames)[-1]
     return f"{Path(frame.filename).name}, line {frame.lineno}, in {frame.name}"
 

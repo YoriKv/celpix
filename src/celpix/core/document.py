@@ -55,6 +55,7 @@ from celpix.core.tilemap import (
     Geometry,
     IndexAddressing,
     column_order,
+    column_position,
     index_corner,
     page_assemblies,
     page_order,
@@ -545,9 +546,14 @@ class Document:
         # A column-major map's entries are turned into reading order here and
         # nowhere else, so everything downstream — the stamp expansion, the
         # render, the selection — sees one list in drawn order, as it does for a
-        # map that was stored that way to begin with.
+        # map that was stored that way to begin with. A ragged last column's
+        # missing positions draw as hidden ones.
         order = self.cell_permutation
-        cells = self.cells if order is None else [self.cells[at] for at in order]
+        cells = (
+            self.cells
+            if order is None
+            else [_NO_CELL_DRAWN if at == NO_CELL else self.cells[at] for at in order]
+        )
         if chain is None:
             self.resolved_cells = None if order is None else cells
             return
@@ -1580,7 +1586,9 @@ class Document:
         # the one step that says which entry of the file that is.
         entries = self.cell_permutation
         if entries is not None and 0 <= position < len(entries):
-            return entries[position]
+            position = entries[position]
+            # A ragged last column's hole: out of range, as for a record table's.
+            return len(self.cells or ()) if position == NO_CELL else position
         return position
 
     def cell_is_read(self, index: int) -> bool:
@@ -1595,22 +1603,23 @@ class Document:
 
         A **column-major** map is asked in reading order, as :meth:`resolve`
         reads it: the entry's position there is what lands on a corner or not
-        (:attr:`cell_permutation`), and an entry a ragged last column leaves
-        out of that order is never read at all.
+        (:func:`~celpix.core.tilemap.column_position`).
+
+        Called once per cell by a tile-usage count, so the answers that need no
+        position come first and the position is the closed-form inverse rather
+        than a scan of :attr:`cell_permutation`.
         """
-        position = index
-        order = self.cell_permutation
-        if order is not None:
-            try:
-                position = order.index(index)
-            except ValueError:
-                return False
-        chain = self.chain
         # The referrer's own entry grid, so the first hop's stamp: whatever the
         # later hops do happens to cells this file does not hold.
         stamp = self._first_hop_stamp
-        if chain is None or self._first_hop_dense or stamp == (1, 1):
+        if self.chain is None or self._first_hop_dense or stamp == (1, 1):
             return True
+        position = index
+        if self.column_major and self.cells:
+            count = len(self.cells)
+            if not 0 <= index < count:
+                return False
+            position = column_position(self.entry_columns, count, index)
         return stamp_origin(position, self.stamp_columns, stamp) == position
 
     def palette_row_group(self, index: int) -> list[int]:
@@ -1799,7 +1808,15 @@ class Document:
         """
         layout = self.glyph_layout
         if layout is not None:
-            return layout.block_slots(self.index_origin(cell.index))
+            block = self.index_origin(cell.index)
+            if block < 0:
+                # A code below the font's base names no glyph. A whole block's
+                # worth of out-of-range indices, so it draws blank and refuses a
+                # pixel edit like any missing tile, and the run keeps its length:
+                # the render lays runs end to end, and a short one shifts every
+                # cell after it.
+                return [-1] * layout.tiles_per_block
+            return layout.block_slots(block)
         across, down = self.cell_tiles
         geometry = self.index_geometry
         if across <= 1 and down <= 1:

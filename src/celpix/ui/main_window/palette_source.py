@@ -389,8 +389,9 @@ class PaletteSourceMixin:
             return
         if doc.palette_config.interpret_preset_id != preset_id:
             cfg = replace(doc.palette_config, interpret_preset_id=preset_id)
+            data = self._palette_entry_bytes(entry)
             probe = PathwayConfig(
-                source=FileRef(entry.paths, data=doc.pixel_data, data_base=0),
+                source=FileRef(entry.paths, data=data, data_base=0),
                 interpret_preset_id=preset_id,
             )
             try:
@@ -399,7 +400,9 @@ class PaletteSourceMixin:
                 self._land_palette_entry_error(entry, cfg, exc)
             else:
                 if self._palette_error(doc) is not None:
-                    # Out of an error palette: the file is a real palette again.
+                    # Out of an error palette: the file is a real palette again,
+                    # decoded from the bytes just read rather than the buffer.
+                    doc.pixel_data = data
                     doc.palette_ctx = loaded.ctx
                     cfg = replace(cfg, write_enabled=True)
                 doc.palette_config = cfg
@@ -415,6 +418,26 @@ class PaletteSourceMixin:
         if self._linked_palette_entry() is entry:
             select_combo_data(self._palette_preset, preset_id)
             self._refresh_palette_dock()
+
+    def _palette_entry_bytes(self, entry: Entry) -> bytes:
+        """The bytes a format pick decodes a PALETTE entry's colours from.
+
+        Its swatch half, edits and all — except on the way out of the error
+        palette with no swatch edit pending, where the file is read again
+        through the entry's own stages. The sentinel's colours are ours, so
+        leaving it is the one decode that must not trust a buffer they could
+        have been spliced into: decoded, they would hand back colours the file
+        never held, writable.
+        """
+        doc = entry.doc
+        assert doc is not None
+        if self._palette_error(doc) is None or entry.pixel_dirty:
+            return doc.pixel_data
+        cfg = self._pixel_config(entry, doc.pixel_config.interpret_preset_id)
+        try:
+            return pipeline.load_pixel_data(cfg, self._registry, 0).data
+        except (PipelineError, OSError):
+            return doc.pixel_data
 
     def _land_palette_entry_error(
         self, entry: Entry, cfg: PathwayConfig, exc: PipelineError
@@ -465,19 +488,33 @@ class PaletteSourceMixin:
             return
         session = swatch_session_for(entry, self._registry, self._palette_preset_id())
         session.palette_view_preset_id = doc.palette_config.interpret_preset_id
+        # An error palette's colours are sentinels, not the file's. Spliced in,
+        # they would replace the swatch bytes — the file's own, and the only
+        # copy a corrected format can be read back from — and a later Write
+        # would put them on disk. So the swatches keep their bytes and are only
+        # re-cut in the format the palette names.
+        error = self._palette_error(doc) is not None
         try:
             cfg = self._pixel_config(entry, session.pixel_preset_id)
             if doc.bytes_per_tile == 0:
                 px = pipeline.load_pixel_data(cfg, self._registry, 0)
                 doc.pixel_base_bytes = px.data
-                data = pipeline.spliced_palette_bytes(doc, self._registry)
+                data = (
+                    px.data
+                    if error
+                    else pipeline.spliced_palette_bytes(doc, self._registry)
+                )
                 if len(data) != len(px.data):
                     data = px.data
                 px = pipeline.reinterpret_pixel_data(
                     data, px.ctx, cfg, self._registry, 0
                 )
             else:
-                data = pipeline.spliced_palette_bytes(doc, self._registry)
+                data = (
+                    doc.pixel_data
+                    if error
+                    else pipeline.spliced_palette_bytes(doc, self._registry)
+                )
                 px = pipeline.reinterpret_pixel_data(
                     data, doc.pixel_ctx, cfg, self._registry, 0
                 )
@@ -1358,7 +1395,9 @@ class PaletteSourceMixin:
         ):
             cfg = replace(old, interpret_preset_id=self._palette_preset_id())
             probe = PathwayConfig(
-                source=FileRef(owner.paths, data=pal_doc.pixel_data, data_base=0),
+                source=FileRef(
+                    owner.paths, data=self._palette_entry_bytes(owner), data_base=0
+                ),
                 interpret_preset_id=cfg.interpret_preset_id,
             )
             try:

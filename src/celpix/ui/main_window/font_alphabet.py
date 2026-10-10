@@ -38,6 +38,7 @@ from celpix.core.arrangement import BlockLayout
 from celpix.core.capabilities import ContentKind
 from celpix.core.font import HOLE
 from celpix.pipeline import pipeline
+from celpix.project import documents
 from celpix.project.workspace import Entry
 from celpix.ui import render_bridge
 from celpix.ui.undo_commands import FontAlphabetCommand, FontAlphabetState
@@ -143,7 +144,11 @@ class FontAlphabetMixin:
             return
         self._font_alphabet_font = font
         if sheet:
-            drawn = self._font_sheet()
+            # The font's codec can raise here as it can on the canvas, so the
+            # sheet is drawn inside the same boundary: told once, and the window
+            # closed as for a font with no tiles, rather than the refresh this
+            # is the tail of stopping half-way.
+            drawn = self._quiet_render(self._font_sheet)
             if drawn is None:
                 self._font_alphabet.hide_overlay()
                 return
@@ -190,8 +195,8 @@ class FontAlphabetMixin:
         sheet-side route goes through :func:`~celpix.pipeline.pipeline.
         glyph_sheet` wherever that grouping is real, which lays one glyph per
         slot exactly as the fontmap route's cells do. Where it is 1x1 — every 8x8
-        font, and so nearly every font — nothing groups and the plain decode is
-        the one that was always here.
+        font, and so nearly every font — nothing groups and the plain decode
+        below draws one tile per slot.
 
         The colour table is never offset in either. The row is folded into the
         indices upstream — by :func:`~celpix.pipeline.pipeline.expand_cells` for
@@ -254,6 +259,7 @@ class FontAlphabetMixin:
             BlockLayout(FONT_SHEET_COLUMNS, 1, 1, "row"),
             False,
             max_rows=None,
+            plugin=preset.id,
         )
         return (
             image,
@@ -267,23 +273,17 @@ class FontAlphabetMixin:
 
         The sheet-side twin of :meth:`~...session.SessionMixin._glyph_layout_for`,
         which asks the same question of a *bound* font through a fontmap. Both
-        read the arrangement, because that is where the answer is: a glyph is a
-        block, and how wide the sheet is decides which tiles are in one.
+        read the arrangement through one rule
+        (:func:`~celpix.project.documents.glyph_layout_of_view`), because that is
+        where the answer is: a glyph is a Pattern block, and how wide the sheet
+        is decides which tiles are in one.
 
         Its own method rather than the session's because there is no binding to
         reach through here — the document on screen **is** the font — and taking
         the view off it directly is what lets the editor follow the Pattern
         picker the moment it moves.
         """
-        view = doc.view
-        if view.block_columns <= 1 and view.block_rows <= 1:
-            return None
-        return BlockLayout(
-            max(1, view.columns),
-            view.block_columns,
-            view.block_rows,
-            view.block_order,
-        )
+        return documents.glyph_layout_of_view(doc.view)
 
     def _font_alphabet_status(self, font: Entry) -> str:
         """The readout: how much of the sheet has been spelled, and whose it is.
@@ -481,6 +481,10 @@ class FontAlphabetMixin:
                 self, entry, f"use {entry.name} as a font", before, after
             )
         )
+        # Declaring a font is asking to type its alphabet up, so the editor opens
+        # here — and only here, not on the command's redo after an undo.
+        if self._font_alphabet_available():
+            self._show_font_alphabet()
 
     # -- the one apply path ------------------------------------------------
     def _apply_font_alphabet(self, font: Entry, state: FontAlphabetState) -> None:
@@ -493,13 +497,16 @@ class FontAlphabetMixin:
         The re-read goes through the **load path's own** builder
         (:meth:`~...session.SessionMixin._font_alphabet_for`) rather than calling
         the pipeline a second time here. It is the same question — what does this
-        string read its codes through — and asking it twice is how the two came to
-        disagree about whether an untick is read off ``use_as_font`` or off
-        :attr:`~celpix.project.workspace.Entry.is_font_sheet`.
+        string read its codes through — and a second answer here could disagree
+        with the load path about whether an untick is read off ``use_as_font`` or
+        off :attr:`~celpix.project.workspace.Entry.is_font_sheet`.
 
         Nothing here touches bytes, so no document is reloaded — an alphabet is a
-        reading of cells that are already decoded, and what changes is only what
-        they are read as.
+        reading of cells that are already decoded. Two things it moves besides the
+        reading: the **tick** decides whether the sheet's Pattern groups a bound
+        string's glyphs (:meth:`~...session.SessionMixin._resync_glyph_layouts`),
+        and a **dictionary** code spells out over as many positions as it has
+        characters, so the alphabet decides how many a cell draws.
         """
         (
             font.use_as_font,
@@ -509,6 +516,9 @@ class FontAlphabetMixin:
             font.font_chars,
             font.font_codes,
         ) = state
+        shown = self._doc
+        shown_tiles = shown.cell_tiles if shown is not None else None
+        shown_alphabet = shown.font_alphabet if shown is not None else None
         for entry in self._workspace.entries:
             doc = entry.doc
             if doc is None or not doc.is_fontmap:
@@ -520,13 +530,28 @@ class FontAlphabetMixin:
             if source is None or self._binding_target(source) is not font:
                 continue
             doc.font_alphabet = self._font_alphabet_for(entry, doc.cell_bytes)
-        # **Not** ``_refresh_view``, which is the whole window and, on a tilemap,
-        # a recompose of the entire map. Nothing here can move a pixel of it: an
-        # alphabet is a reading of cells that are already decoded, so the picture,
-        # the geometry and the bytes are all exactly as they were. What does
-        # change is what the string says, where its lines end, and the table
-        # itself — so those three are refreshed by name and nothing else runs.
-        # Doing it the other way put a full map recompose behind every keystroke.
+        self._resync_glyph_layouts(font)
+        moved = shown is not None and (
+            shown.cell_tiles != shown_tiles
+            or any(
+                alphabet is not None and alphabet.has_dictionary
+                for alphabet in (shown_alphabet, shown.font_alphabet)
+            )
+        )
+        if moved and shown.is_fontmap:
+            # The picture on screen moved: a glyph is a different number of
+            # tiles, or a dictionary code now spells out over a different number
+            # of positions. Only a full refresh recomposes it.
+            self._refresh_view()
+            self._sync_use_as_font()
+            self._font_alphabet_action.setEnabled(self._font_alphabet_available())
+            self._refresh_project_modified()
+            return
+        # Otherwise **not** ``_refresh_view``, which is the whole window and, on a
+        # tilemap, a recompose of the entire map — per keystroke in the editor.
+        # Nothing else here moves a pixel: what changes is what the string says,
+        # where its lines end, and the table itself, so those three are refreshed
+        # by name and nothing else runs.
         self._sync_use_as_font()
         # The tick decides whether there is an alphabet to edit at all, so the
         # menu item follows it here rather than waiting for the next full refresh
@@ -534,8 +559,13 @@ class FontAlphabetMixin:
         # would offer to open one over nothing.
         self._font_alphabet_action.setEnabled(self._font_alphabet_available())
         self._canvas.set_line_ends(self._line_end_slots())
-        self._refresh_text()
-        self._refresh_font_alphabet(sheet=False)
+        # Only the windows already open: a refresh shows its window, and one the
+        # user closed coming back on an edit or its undo would be unclosable.
+        # Ticking the box opens the editor on purpose (:meth:`_declare_use_as_font`).
+        if self._text.isVisible():
+            self._refresh_text()
+        if self._font_alphabet.isVisible():
+            self._refresh_font_alphabet(sheet=False)
         self._refresh_project_modified()
 
 

@@ -196,6 +196,23 @@ def test_revert_is_a_noop_when_nothing_moved(qtbot) -> None:
     assert editor.color() == 0xFF102030
 
 
+def test_enter_on_an_unchanged_hex_is_not_an_edit(qtbot) -> None:
+    # Enter re-commits the Hex box's text as it stands; announcing that colour
+    # would push an undo step — and fork a Default palette to Custom — over
+    # nothing having moved.
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    editor = ColorEditor()
+    qtbot.addWidget(editor)
+    editor.set_color(0xFF112233, mark_original=True)
+    seen: list[int] = []
+    editor.color_changed.connect(seen.append)
+
+    QTest.keyClick(editor._hex, Qt.Key.Key_Return)
+    assert seen == []
+
+
 def test_dialog_cancel_reverts_to_the_opening_color_and_closes(qtbot) -> None:
     # Cancel = revert to the marked original, then close (emitting `closed` so
     # the host cleans up) — the reject path must run both, not a bare hide.

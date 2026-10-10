@@ -58,6 +58,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from celpix.core.font import EncodedText
 from celpix.core.tilemap import Cell
 from celpix.ui.widgets import Badge
 
@@ -113,7 +114,9 @@ class TextMixin:
             (glyph.text, alphabet.token(glyph), glyph.description)
             for glyph in (alphabet.commands if alphabet is not None else ())
         ]
-        self._text.set_read_only(not doc.cells_editable)
+        # Read-only with no alphabet: there is nothing to encode a keystroke
+        # with, and a field that took typing would show text the cells never got.
+        self._text.set_read_only(not doc.cells_editable or alphabet is None)
         text = doc.text
         status, badge = self._text_status(text.body)
         # Read before the window is shown, because it is what makes an *opening*
@@ -205,7 +208,7 @@ class TextMixin:
         if typed is None or doc is None:
             room, unit = doc.text_room if doc is not None else (0, "cells")
             return f"{room} {unit}", None
-        encoded = doc.font_alphabet.encode(typed)
+        encoded = self._encode_typed(typed)
         # Counted by the fit the write will make, so the budget and the write
         # cannot disagree about where the region ends — in cells, or in bytes
         # where a two-byte letter costs two.
@@ -230,6 +233,26 @@ class TextMixin:
                 warning=True,
             )
         return line, None
+
+    def _encode_typed(self, body: str) -> EncodedText:
+        """``body`` as the cells it writes, every untouched piece kept as it is.
+
+        Only the span that differs from the file's own text is encoded
+        (:meth:`~celpix.core.font.FontAlphabet.encode_edit`). Encoding the whole
+        string is not the identity on what the file holds — a dictionary font
+        re-pairs a ``t``, ``h`` stored apart into one ``th`` — so a keystroke
+        would otherwise rewrite cells nowhere near the caret and slide the rest
+        of the region after them. The budget line and the write both ask here,
+        so they count the same cells.
+        """
+        doc = self._doc
+        cells = doc.cells or []
+        return doc.font_alphabet.encode_edit(
+            doc.text,
+            [cell.index for cell in cells],
+            [cell.ends_line for cell in cells],
+            body,
+        )
 
     def _on_text_drafted(self, body: str) -> None:
         """A ``[...]`` still being spelled: the readout keeps up, the file waits.
@@ -288,7 +311,7 @@ class TextMixin:
         if fresh:
             self._text_run += 1
         cells = list(doc.cells or [])
-        encoded = doc.font_alphabet.encode(body)
+        encoded = self._encode_typed(body)
         self._text.set_status(*self._text_status(body))
         # The terminator bit rides beside the index for the formats that have one
         # and is False everywhere else, so it is written unconditionally: a format
@@ -296,11 +319,11 @@ class TextMixin:
         fit = doc.fit_text(encoded.codes, encoded.ends_line, doc.font_alphabet.blank)
         codes, ends = fit.codes, fit.ends
         lost = doc.font_alphabet.decode(fit.lost_codes, fit.lost_ends).body
-        # Only the cells the string actually moved are rebuilt. A keystroke
-        # re-encodes the whole region — it has to, since a code standing for a
-        # pair can slide everything after it — but nearly all of what comes back
-        # is what was already there, and building a fresh record for every cell
-        # of a region that may hold tens of thousands is the cost of one letter.
+        # Only the cells the string actually moved are rebuilt. The codes span
+        # the whole region, but nearly all of them are what was already there —
+        # a pair code typed in can still slide everything after it — and
+        # building a fresh record for every cell of a region that may hold tens
+        # of thousands is the cost of one letter.
         # The comparison is the same one :meth:`_apply_cells` makes to decide
         # whether anything changed at all, done a field at a time instead of over
         # a whole list of records nobody needed to build.
@@ -375,12 +398,11 @@ class TextMixin:
     def _on_text_caret(self, first: int, last: int) -> None:
         """Follow the text selection with the canvas selection.
 
-        Half of the two views mirroring one another, and the half that was always
-        wanted: finding a word in the text is how a user finds it on the canvas.
+        Half of the two views mirroring one another: finding a word in the text
+        is how a user finds it on the canvas.
         ``[first, last)`` is what the field has selected, so picking a phrase out
         highlights the cells it occupies rather than the one cell the caret ended
-        on — and a bare caret still names its own cell (:meth:`span_of`), which is
-        what it named before there was a selection to report.
+        on — and a bare caret still names its own cell (:meth:`span_of`).
 
         Guarded against the mirror coming back the other way
         (:meth:`_sync_text_selection`). A cell selection is coarser than a caret —
@@ -398,11 +420,11 @@ class TextMixin:
 
         **Three numberings, and the answer travels through all of them**: the
         caret is at a character, a character comes from a cell, a cell is drawn at
-        one or more positions, and the canvas selects *tiles*. Two of those steps
-        used to be identity on every fontmap in existence, which is why they were
-        not there — a dictionary code that spells out is several positions to one
-        cell, and an 8x16 glyph is two tiles to one position. Skipping either
-        lands the highlight short of the word by whatever the ratio is.
+        one or more positions, and the canvas selects *tiles*. On most fontmaps
+        the last two steps are identity, which makes them easy to skip — but a
+        dictionary code that spells out is several positions to one cell, and an
+        8x16 glyph is two tiles to one position. Skipping either lands the
+        highlight short of the word by whatever the ratio is.
         """
         doc = self._doc
         if doc is None or not doc.is_fontmap or not doc.cells:

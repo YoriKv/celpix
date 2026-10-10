@@ -87,6 +87,12 @@ class SessionMixin:
         # Pixels floating over the entry being left belong to it, so they come
         # down before the view moves on rather than hovering over a stranger.
         self._commit_float()
+        # And a plain marquee with it: it is drawn in this entry's window
+        # coordinates, and carried over it would mask every tool on the next one
+        # and hand Cut and Clear pixels the user never selected there. No undo
+        # step - leaving is not a selection gesture, and undoing back to the
+        # marquee's own step switches here and restores it.
+        self._clear_pixel_selection()
         # So does anything still being typed in a tool window: a text draft and
         # an alphabet cell left open are edits to *this* entry, and landing them
         # after the switch would put them on the next one.
@@ -591,10 +597,19 @@ class SessionMixin:
 
         Nothing is reloaded. The glyph layout decides which *tiles* a code draws
         and no byte moves when it changes, so the bound documents are amended in
-        place and their next repaint composes the new picture. A no-op — a scan
-        of the open entries — on every sheet that is not a font.
+        place and their next repaint composes the new picture. A sheet that is
+        not a font groups nothing, so unticking **Use as Font** takes the
+        grouping off its strings here too; a document already on the answer is
+        left alone, cache and all.
+
+        Called on every render, so a sheet that is not a font leaves at once
+        unless some open document still carries a grouping it could be holding
+        — the one case an untick has something to take away.
         """
-        if not font.is_font_sheet:
+        if not font.is_font_sheet and not any(
+            other.doc is not None and other.doc.glyph_layout is not None
+            for other in self._workspace.entries
+        ):
             return
         for other in self._entries_bound_to(font):
             doc = other.doc
@@ -606,10 +621,13 @@ class SessionMixin:
                 # the load path), so it cannot take one away here either.
                 continue
             layout = self._glyph_layout_for(other)
-            doc.glyph_layout = layout
-            doc.cell_tiles = (
+            tiles = (
                 (1, 1) if layout is None else (layout.block_columns, layout.block_rows)
             )
+            if layout == doc.glyph_layout and tiles == doc.cell_tiles:
+                continue
+            doc.glyph_layout = layout
+            doc.cell_tiles = tiles
             doc.layout_cache = None
 
     def _font_alphabet_for(self, entry: Entry, cell_bytes: int):  # noqa: ANN201
@@ -921,6 +939,9 @@ class SessionMixin:
         self._selected_last = None
         self._rect_size, self._rect_tiles = None, ()
         self._canvas.set_selection(None)
+        # The pixel selection belongs to the document going away, as the tile
+        # selection above does; the action sync below then reads it as gone.
+        self._clear_pixel_selection()
         # No render runs on the way out of a document, so the sprite object's
         # pick has to be dropped here as well as in the refresh — an outline left
         # behind would sit over whatever is shown next.

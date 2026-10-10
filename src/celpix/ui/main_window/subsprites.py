@@ -60,12 +60,21 @@ class SubspritesMixin:
             return
         doc = self._doc
         entry = self._workspace.current
-        sheet = pipeline.subsprite_sheet(
-            doc,
-            self._registry,
-            self._subsprites.columns(),
-            by_frame=self._subsprites.by_frame(),
+        # The pieces are decoded through the object's tile codec, which can
+        # raise as the canvas's render can: inside the same boundary, so it is
+        # told once, and the sheet closes rather than the error escaping the
+        # window's refresh.
+        sheet = self._quiet_render(
+            lambda: pipeline.subsprite_sheet(
+                doc,
+                self._registry,
+                self._subsprites.columns(),
+                by_frame=self._subsprites.by_frame(),
+            )
         )
+        if sheet is None:
+            self._subsprites.hide_overlay()
+            return
         name = entry.name if entry is not None else "object"
         self._subsprites.show_sheet(
             self._tilemap_grid_image(sheet.grid),
@@ -148,7 +157,12 @@ class SubspritesMixin:
         The canvas outline and the tile source panel's ring read the pick the
         same way and this is the third of them; it moves a ring rather than
         recomposing, so it can run on every press.
+
+        Nothing while the sheet is hidden: its records were composed for
+        whatever entry it last showed, and are recomposed when it opens again.
         """
+        if not self._subsprites.isVisible():
+            return
         self._subsprites.set_marked(self._subsprite_square(self._subsprites.records()))
 
     def _subsprite_square(
@@ -178,11 +192,15 @@ class SubspritesMixin:
         if not (0 <= pick[0] < len(frames) and 0 <= pick[1] < len(frames[pick[0]])):
             return None
         key = pipeline.subsprite_key(frames[pick[0]][pick[1]])
+        # Bounds-checked: an open sheet's records trail an entry switch until its
+        # coalesced refresh lands, and may name records this object has not got.
         return next(
             (
                 record
                 for record in records
-                if pipeline.subsprite_key(frames[record[0]][record[1]]) == key
+                if 0 <= record[0] < len(frames)
+                and 0 <= record[1] < len(frames[record[0]])
+                and pipeline.subsprite_key(frames[record[0]][record[1]]) == key
             ),
             None,
         )

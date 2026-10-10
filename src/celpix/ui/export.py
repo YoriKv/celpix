@@ -88,7 +88,9 @@ def _palette_biases(doc: Document, columns: int, index_space: int) -> list[int] 
         (
             view.palette_row
             if row is None
-            else pipeline.drawn_palette_row(row, doc.palette_row_base, wrap)
+            else pipeline.drawn_palette_row(
+                row, doc.palette_row_base, wrap, 256 // index_space
+            )
         )
         * index_space
         for row in regions.rows_for(offsets, None)
@@ -170,6 +172,7 @@ def document_image(doc: Document, registry: Registry) -> QImage:
         view.two_dimensional,
         None,
         biases,
+        plugin=preset.id,
     )
     if grid.bytes_per_pixel == 4:
         # Direct-color: no palette; the ARGB carries its own alpha.

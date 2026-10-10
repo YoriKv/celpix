@@ -42,7 +42,6 @@ from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import (
     DEFAULT_PIXEL_PRESET,
-    DEFAULT_TILEMAP_PRESET,
     INPUT_STAGES,
     NO_COMPRESSION,
     FileRef,
@@ -83,10 +82,17 @@ class RegionBinding:
     entry's own file, or of another entry.
 
     ``entry`` is ``None`` for **the file this entry's bytes come from** — a
-    slice's parent, or a file entry itself — and then ``offset`` is absolute
-    from byte 0 of that file in the ``slice_offset`` coordinate space: past
-    nothing, so a container appearing or disappearing does not move it, and
-    counted through the join for a region spread over several chips. ``None``
+    slice's parent, or a file entry itself — and then ``offset`` counts in that
+    file's bytes as they stand **before its own decompressor**
+    (:func:`_source_bytes`): absolute from byte 0 of the file where those are
+    the file's bytes — past nothing, so a container appearing or disappearing
+    does not move it, and counted through the join for a region spread over
+    several chips — and in the reordered buffer under a reshape (from 0) or a
+    permuting container (from the start it recorded), as a child's offset
+    counts there (:func:`~celpix.project.configs.entry_view_bytes`). Before the
+    decompressor
+    because a scheme's table sits beside its stream in the packed bytes, which
+    are the only bytes there are until the scheme has run. ``None``
     rather than the parent object so that a binding made on a file for its
     compression preview copies onto a slice of that file unchanged
     (:func:`~celpix.project.workspace.slice_of`) — the one shape means "this
@@ -609,9 +615,9 @@ def _packed_region_bytes(entry: Entry, registry: Registry) -> tuple[bytes, int]:
 def _view_bytes(
     entry: Entry, registry: Registry, workspace: Workspace | None
 ) -> tuple[bytes, int]:
-    """``entry``'s own bytes and their base — the one definition of what it
-    shows, except for a tilemap file, whose pixel buffer is borrowed art and
-    whose own bytes are its cells."""
+    """``entry``'s own bytes and their base, read as its view shows them
+    (:func:`~celpix.project.configs.entry_view_bytes` — a tilemap's cells, not
+    the art it borrows)."""
     from celpix.project import workspace as ws  # noqa: PLC0415 — circular by nature
 
     preset = (
@@ -619,17 +625,6 @@ def _view_bytes(
         if entry.session is not None
         else DEFAULT_PIXEL_PRESET
     )
-    if entry.content_kind is ContentKind.TILEMAP:
-        data, ctx = pipeline.read_region(
-            ws.tilemap_config_for(
-                entry,
-                entry.tilemap_preset_id or DEFAULT_TILEMAP_PRESET,
-                registry,
-                workspace,
-            ),
-            registry,
-        )
-        return data, ctx.get(KEY_SOURCE_OFFSET, 0)
     return ws.entry_view_bytes(entry, registry, preset, workspace)
 
 

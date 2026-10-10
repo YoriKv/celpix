@@ -12,9 +12,12 @@ to its scroll area and its Zoom spin).
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import math
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 
-from PySide6.QtCore import QEvent, QObject, QPointF, QRect, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, Qt, Signal
+from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (
     QApplication,
     QDoubleSpinBox,
@@ -96,6 +99,24 @@ class ZoomSpinBox(QDoubleSpinBox):
         self.setValue(zoom_level_after(self.value(), steps))
 
 
+def whole_physical_pixels(zoom: float, ratio: float) -> float:
+    """``zoom`` as the physical pixels one image pixel covers, made whole.
+
+    ``ratio`` is the screen's physical pixels per logical one — 1.25 or 1.5 on a
+    Windows display scaled to 125% or 150%. A zoom of 1 there is 1.5 physical
+    pixels a pixel, and a nearest-neighbour blit can only land that as 2, 1, 2,
+    1, …: art drawn at uneven widths, the one distortion pixel art cannot carry.
+    So a magnification is rounded to whole physical pixels (half up, the way the
+    blit itself rounds its edges), and a reduction to a whole fraction of one —
+    1/2, 1/3 — so every image pixel is drawn the same size either way. A whole
+    ``ratio`` with a listed zoom comes back unchanged.
+    """
+    units = zoom * ratio
+    if units >= 1:
+        return float(math.floor(units + 0.5))
+    return 1.0 / max(1, math.floor(1 / units + 0.5))
+
+
 def _set_cursor(widget: QWidget, shape: Qt.CursorShape | None) -> None:
     """``shape`` on ``widget``, or back to whatever it inherits for ``None``."""
     if shape is None:
@@ -135,7 +156,7 @@ class PanZoomSurface:
 
     # Declared by the concrete widget (a Signal only registers on a QObject
     # subclass), and named here so the helpers below read as the whole gesture:
-    # ``pan_requested(dx, dy)`` in device pixels, ``zoom_requested(steps, pos)``
+    # ``pan_requested(dx, dy)`` in logical pixels, ``zoom_requested(steps, pos)``
     # with the cursor in the widget's own coordinates.
     pan_requested: Signal
     zoom_requested: Signal
@@ -160,21 +181,84 @@ class PanZoomSurface:
     #: the per-cell geometry helpers below are called inside paint loops that run
     #: once per cell of a window holding thousands.
     _aspect_scale: tuple[float, float] = (1.0, 1.0)
+    #: The screen's physical pixels per logical pixel, as last read — 0 until
+    #: the first read (:meth:`_ratio`), and re-read when the widget is shown or
+    #: moves to a screen at another scale (:meth:`event`).
+    _device_ratio: float = 0.0
+    #: :meth:`_zoom_xy`'s and :meth:`_physical_zoom`'s answers and what they
+    #: were worked out from: each pair is read once per cell inside paint loops,
+    #: and working it out is not free.
+    _zoom_memo: tuple[object, tuple[float, float], tuple[float, float]] | None = None
+    #: What a high-resolution wheel has turned that is not yet a whole notch
+    #: (:meth:`_report_zoom`), in the wheel's 1/8-degree units.
+    _wheel_rest: int = 0
+
+    def _ratio(self) -> float:
+        """The screen's physical pixels per logical pixel (1.5 at 150%)."""
+        if not self._device_ratio:
+            self._device_ratio = self.devicePixelRatioF() or 1.0
+        return self._device_ratio
+
+    def _physical_zoom(self) -> tuple[float, float]:
+        """Image pixels to **physical** pixels, per axis: the zoom made whole in
+        physical pixels (:func:`whole_physical_pixels`), times the aspect.
+
+        The aspect multiplies *after* the rounding, so a 1:2 pixel is still
+        exactly twice as tall as wide, and an 8:7 one is still the deliberately
+        uneven run it is at any scale.
+        """
+        return self._zooms()[2]
+
+    def _zoom_xy(self) -> tuple[float, float]:
+        """Image pixels to logical pixels, per axis — what every surface draws,
+        measures and hit-tests through (:attr:`_zoom_x`, :attr:`_zoom_y`).
+
+        The physical zoom over the screen's ratio, so a ``painter.scale`` by it
+        lands every image pixel on the same whole number of physical pixels. On
+        an unscaled screen it is just the zoom times the aspect.
+        """
+        return self._zooms()[1]
+
+    def _zooms(self) -> tuple[object, tuple[float, float], tuple[float, float]]:
+        """The memo behind :meth:`_zoom_xy` and :meth:`_physical_zoom`."""
+        key = (self._zoom, self._aspect_scale, self._ratio())
+        memo = self._zoom_memo
+        if memo is None or memo[0] != key:
+            ratio = key[2]
+            base = whole_physical_pixels(self._zoom, ratio)
+            px, py = base * self._aspect_scale[0], base * self._aspect_scale[1]
+            memo = self._zoom_memo = (key, (px / ratio, py / ratio), (px, py))
+        return memo
 
     @property
     def _zoom_x(self) -> float:
-        """Image pixels to device pixels, horizontally — zoom times the aspect.
+        """Image pixels to logical pixels, horizontally (:meth:`_zoom_xy`).
 
-        The pair below is what every surface draws, measures and hit-tests
-        through. They are equal on a square pixel, which is every existing view,
+        Equal to :attr:`_zoom_y` on a square pixel, which is every existing view,
         so a surface that reads both is unchanged wherever nothing has been set.
         """
-        return self._zoom * self._aspect_scale[0]
+        return self._zoom_xy()[0]
 
     @property
     def _zoom_y(self) -> float:
-        """Image pixels to device pixels, vertically — see :attr:`_zoom_x`."""
-        return self._zoom * self._aspect_scale[1]
+        """Image pixels to logical pixels, vertically — see :attr:`_zoom_x`."""
+        return self._zoom_xy()[1]
+
+    def event(self, event) -> bool:  # noqa: ANN001 — Qt override
+        """Re-fit when the screen's scale may have changed under the widget.
+
+        The zoom is whole in *physical* pixels (:meth:`_physical_zoom`), so a
+        window dragged to a monitor at another scale draws at another logical
+        size. Show is checked as well as the change itself: a surface measured
+        before it had a screen read the primary one's ratio.
+        """
+        if event.type() in (QEvent.Type.DevicePixelRatioChange, QEvent.Type.Show):
+            ratio = self.devicePixelRatioF() or 1.0
+            if ratio != self._device_ratio:
+                self._device_ratio = ratio
+                self._update_size()
+                self.update()
+        return super().event(event)
 
     def set_pixel_aspect(self, aspect: PixelAspect) -> None:
         """Draw one image pixel at ``aspect``'s shape from now on.
@@ -201,30 +285,88 @@ class PanZoomSurface:
         """
 
     def _scaled_size(self, width: int, height: int) -> tuple[int, int]:
-        """``width`` x ``height`` image pixels as whole device pixels.
+        """``width`` x ``height`` image pixels as whole logical pixels.
 
-        What every surface's ``_update_size`` measures with. Rounded rather than
-        truncated so a 7:8 pixel does not lose a device row off the bottom, and
-        floored at 1 so an empty picture still has a widget.
+        What every surface's ``_update_size`` measures with. The far edge is
+        rounded the way the blit rounds it (:func:`_edge`), in physical pixels,
+        and the widget then takes every logical pixel that edge reaches into —
+        so a 7:8 pixel does not lose a row off the bottom, nor a scaled screen a
+        physical column off the side. Floored at 1 so an empty picture still has
+        a widget.
         """
+        ratio = self._ratio()
+        px, py = self._physical_zoom()
         return (
-            max(1, round(width * self._zoom_x)),
-            max(1, round(height * self._zoom_y)),
+            max(1, math.ceil(_edge(width * px) / ratio - 1e-9)),
+            max(1, math.ceil(_edge(height * py) / ratio - 1e-9)),
         )
 
     def _scaled_rect(self, x: int, y: int, width: int, height: int) -> QRect:
-        """An image-pixel rectangle in device pixels.
+        """An image-pixel rectangle in logical pixels.
 
         Each edge is rounded on its own — right edge from ``x + width``, not from
         a rounded width — so abutting rectangles keep abutting under a fractional
-        aspect instead of leaving a seam between every pair.
+        aspect instead of leaving a seam between every pair. Rounded half up, as
+        the blit rounds the picture's own edges (:func:`_edge`), so an outline
+        drawn here and the pixel it outlines start on the same column.
         """
-        left, top = round(x * self._zoom_x), round(y * self._zoom_y)
-        right, bottom = (
-            round((x + width) * self._zoom_x),
-            round((y + height) * self._zoom_y),
-        )
+        zx, zy = self._zoom_xy()
+        left, top = _edge(x * zx), _edge(y * zy)
+        right, bottom = _edge((x + width) * zx), _edge((y + height) * zy)
         return QRect(left, top, right - left, bottom - top)
+
+    # -- drawing in physical pixels -------------------------------------------
+    # On a screen scaled to 125% or 150% the art's edges are whole *physical*
+    # pixels (:meth:`_physical_zoom`) that fall between logical ones, so a mark
+    # placed in logical pixels — :meth:`_scaled_rect` — lands up to a physical
+    # pixel off the edge it marks: a ring over a column of the art, a backing
+    # with a sliver of a tile showing inside it. Whatever has to sit on the art's
+    # edges is placed and drawn in physical pixels instead, through these. On an
+    # unscaled screen physical and logical pixels are the same, and so is all of
+    # it.
+
+    def _device_rect(self, x: int, y: int, width: int, height: int) -> QRect:
+        """An image-pixel rectangle in physical pixels: the very span the blit
+        covers, every edge rounded on its own as :meth:`_scaled_rect` rounds."""
+        px, py = self._physical_zoom()
+        left, top = _edge(x * px), _edge(y * py)
+        right, bottom = _edge((x + width) * px), _edge((y + height) * py)
+        return QRect(left, top, right - left, bottom - top)
+
+    def _device_area(self, exposed: QRect) -> QRect:
+        """``exposed`` (logical) as the physical pixels it covers."""
+        ratio = self._ratio()
+        return QRect(
+            QPoint(
+                math.floor(exposed.left() * ratio), math.floor(exposed.top() * ratio)
+            ),
+            QPoint(
+                math.ceil((exposed.right() + 1) * ratio) - 1,
+                math.ceil((exposed.bottom() + 1) * ratio) - 1,
+            ),
+        )
+
+    def _device_width(self, logical: int) -> int:
+        """A stroke ``logical`` pixels wide as whole physical pixels, at least
+        one — so a ring keeps its weight on a scaled screen and every side of it
+        comes out the same width."""
+        return max(1, _edge(logical * self._ratio()))
+
+    @contextmanager
+    def _device_pixels(self, painter: QPainter) -> Iterator[None]:
+        """Draw in physical pixels for the block: the screen's scale undone.
+
+        Saved and restored round the block, so a pen, a font or a clip set
+        inside does not outlive it.
+        """
+        ratio = self._ratio()
+        painter.save()
+        if ratio != 1:
+            painter.scale(1 / ratio, 1 / ratio)
+        try:
+            yield
+        finally:
+            painter.restore()
 
     def _exposed_rows(self, exposed: QRect, row_height: int) -> tuple[int, int]:
         """Which rows of ``row_height`` image pixels ``exposed`` touches.
@@ -265,12 +407,27 @@ class PanZoomSurface:
         )
 
     def _image_pixel(self, pos: QPointF) -> tuple[int, int]:
-        """The image pixel under a device position — the inverse of the above.
+        """The image pixel drawn under a logical position — the inverse of the
+        blit, not of the scale.
 
-        Floored, so the answer is the pixel the point is *inside*. Callers decide
-        what to do about a point outside the picture; this only undoes the scale.
+        A fractional scale (an 8:7 aspect, the 0.5 level) draws pixel *i* over
+        the physical columns from ``_edge(i·z)`` to ``_edge((i+1)·z)``, and plain
+        ``x // z`` disagrees with that wherever the rounding moved an edge — the
+        pencil then painted the pixel beside the one under the cursor. So the
+        physical pixel under ``pos`` is found first, and then the image pixel
+        whose drawn span holds it: ``_edge(i·z) <= X`` is ``i·z < X + ½``.
+        Callers decide what to do about a point outside the picture.
         """
-        return (int(pos.x() // self._zoom_x), int(pos.y() // self._zoom_y))
+        ratio = self._ratio()
+        px, py = self._physical_zoom()
+        # The epsilon absorbs the float error of a logical position that is an
+        # exact physical one (4/3 * 1.5 must be pixel 2, not 1.999…).
+        col = math.floor(pos.x() * ratio + 1e-6)
+        row = math.floor(pos.y() * ratio + 1e-6)
+        return (
+            math.ceil((col + 0.5) / px) - 1,
+            math.ceil((row + 0.5) / py) - 1,
+        )
 
     def set_pan_mode(self, on: bool) -> None:
         """Arm/disarm space-drag panning (the window drives this off the space key).
@@ -382,9 +539,18 @@ class PanZoomSurface:
         dy = event.angleDelta().y()
         if dy == 0:
             return False
-        # One step per 120-unit notch, but at least one so a high-resolution
-        # wheel sending small deltas still zooms.
-        steps = int(dy / 120) or (1 if dy > 0 else -1)
+        # One step per 120-unit notch, counted across events: a high-resolution
+        # wheel sends a notch as eight events of 15, and a touchpad as dozens,
+        # and a notch is one level however many events carry it. The remainder
+        # is dropped when the direction turns, so a reversal answers at once
+        # instead of first paying back what was left over.
+        if (dy > 0) != (self._wheel_rest > 0) and self._wheel_rest:
+            self._wheel_rest = 0
+        self._wheel_rest += dy
+        steps = int(self._wheel_rest / 120)
+        if steps == 0:
+            return False
+        self._wheel_rest -= steps * 120
         self.zoom_requested.emit(steps, pos)
         return True
 
@@ -483,8 +649,15 @@ class PanOnlyMouse:
             super().mouseReleaseEvent(event)
 
 
+def _edge(value: float) -> int:
+    """A scaled edge as a whole pixel, rounded half **up** — the rule Qt's
+    nearest-neighbour blit places a scaled image's pixel edges by, where
+    Python's ``round`` would send every other tie the other way."""
+    return math.floor(value + 0.5)
+
+
 def pan_scroll_area(scroll: QScrollArea, dx: int, dy: int) -> None:
-    """Shift ``scroll`` by a space-drag delta (device pixels).
+    """Shift ``scroll`` by a space-drag delta (logical pixels).
 
     The bars clamp to the content, so a pan can never push the picture off
     screen, and is a no-op while the view already fits the viewport — which is
@@ -513,12 +686,20 @@ def zoom_anchored(scroll: QScrollArea, spin, new: float, pos) -> None:  # noqa: 
         return
     hbar = scroll.horizontalScrollBar()
     vbar = scroll.verticalScrollBar()
+    # The scale the surface actually draws at, before and after, rather than
+    # the spin's level: the two part under a pixel aspect and on a scaled
+    # screen (:meth:`PanZoomSurface._zoom_xy`), and anchoring on the level
+    # would slide the art from under the pointer by the difference.
+    surface = scroll.widget()
+    drawn = isinstance(surface, PanZoomSurface)
+    before = surface._zoom_xy() if drawn else (old, old)
     # The cursor's spot in the viewport, and the content pixel it sits on now.
     view_x, view_y = pos.x() - hbar.value(), pos.y() - vbar.value()
-    img_x, img_y = pos.x() / old, pos.y() / old
+    img_x, img_y = pos.x() / before[0], pos.y() / before[1]
     spin.setValue(new)  # re-renders and resizes the view synchronously
-    hbar.setValue(round(img_x * new - view_x))
-    vbar.setValue(round(img_y * new - view_y))
+    after = surface._zoom_xy() if drawn else (new, new)
+    hbar.setValue(round(img_x * after[0] - view_x))
+    vbar.setValue(round(img_y * after[1] - view_y))
 
 
 def wheel_zoom(scroll: QScrollArea, spin, steps: int, pos) -> None:  # noqa: ANN001

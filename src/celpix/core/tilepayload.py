@@ -40,7 +40,7 @@ class TilePayload:
     window the tiles were *seen* through, which is what lets a paste into a
     different palette re-fit them by color instead of by raw index. ``columns``
     is how many cells wide the copy read on screen, so a paste can put a 2×2
-    metatile back down as a 2×2 metatile instead of a strip of four tiles.
+    block of tiles back down as a 2×2 block instead of a strip of four.
     """
 
     tile_width: int
@@ -118,6 +118,9 @@ class TilePayload:
                 return None
             size = int.from_bytes(raw[:4], "little")
             head = json.loads(raw[4 : 4 + size].decode("utf-8"))
+            # Any JSON value parses; only an object is a header.
+            if not isinstance(head, dict):
+                return None
             if head.get("version") != TILES_PAYLOAD_VERSION:
                 return None
             tw, th = int(head["tile_width"]), int(head["tile_height"])
@@ -127,7 +130,9 @@ class TilePayload:
             # Optional, so a payload without it (any copy that carries no block
             # shape) reads back as the single row a linear paste lays down.
             columns = int(head.get("columns") or count)
-        except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+        except (ValueError, KeyError, TypeError, UnicodeDecodeError, RecursionError):
+            # RecursionError: a deeply nested array is valid JSON the parser
+            # cannot finish.
             return None
         data = raw[4 + size :]
         if tw <= 0 or th <= 0 or count <= 0:

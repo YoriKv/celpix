@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence, QUndoCommand
 from PySide6.QtWidgets import QMenu
 
@@ -210,6 +211,11 @@ class ColorEditingMixin:
             # The palette moved under an editor no refresh has caught up with
             # yet: the color is the old swatch's, not an edit of this one.
             self._sync_color_editor(retarget=True)
+            return
+        # A colour put back unchanged is no edit — the Hex box re-announces the
+        # colour it holds on every Enter — and must not fork a Default or
+        # Emulator palette to Custom over nothing.
+        if index < len(doc.palette) and doc.palette.color(index) == argb:
             return
         # Forking is its own undo step, so it happens before the edit itself.
         if self._palette_needs_fork():
@@ -435,8 +441,17 @@ class ColorEditingMixin:
             # session's mode: a session's mode is only written on an entry
             # switch, so the graphic on screen would answer for the mode it was
             # opened with. An owner that *is* this entry's palette source is the
-            # entry case by construction; an Offset owner is never one.
-            if entry_palette_entry(owner) is pixel_owner or owner is pixel_owner:
+            # entry case by construction; an Offset owner is never one. A file
+            # holding its own Offset palette lands the same way — a deposit into
+            # its own bytes — unless it is a **map**, whose bytes are its cells
+            # and not the art the deposit would paint
+            # (:meth:`~...palette_offset.PaletteOffsetMixin._land_in_cells`).
+            own_map = (
+                owner is pixel_owner and owner.doc is not None and owner.doc.is_tilemap
+            )
+            if not own_map and (
+                entry_palette_entry(owner) is pixel_owner or owner is pixel_owner
+            ):
                 # ``index`` is the **marked** one, which is what was encoded into
                 # the splice base — the one whose read unit the deposit carries.
                 # A File palette is the second case: the owner *is* the palette
@@ -671,4 +686,7 @@ class ColorEditingMixin:
             action.setShortcut(shortcut)
             action.setEnabled(enabled)
             action.triggered.connect(slot)
+        # Parented to the window, so without this every right-click would leave
+        # a menu alive until the window closes.
+        menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         menu.exec(self._palette_panel.mapToGlobal(pos))

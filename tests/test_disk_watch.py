@@ -185,6 +185,30 @@ def test_a_slice_edit_rides_its_parent_through_the_reload(
     assert piece.pixel_dirty and parent.pixel_dirty
 
 
+def test_a_reload_shows_the_new_colours_of_an_offset_palette(
+    qtbot, tmp_path, monkeypatch, disk_reload_answer
+) -> None:
+    """The slice on screen is re-read after its file is, and its Offset palette
+    comes back decoded from the bytes on disk now - not the colours the document
+    it replaced was showing, which would disagree with its own base bytes."""
+    window, px = _window(qtbot, tmp_path, monkeypatch)
+    piece = window._workspace.add_slice(str(px), "piece", 64, 64)
+    window._activate_entry(piece)
+    window._on_slots_selected(0, 0)
+    window._load_palette_from_selection()  # an Offset palette at 64
+    before = window._doc.palette.colors[0]
+
+    data = bytearray(px.read_bytes())
+    data[64:66] = b"\x1f\x00"  # pure red, as entry 0
+    _rewrite(px, bytes(data))
+    disk_reload_answer.reload = True
+    window._check_disk_changes()
+
+    assert window._doc is piece.doc
+    assert window._doc.palette.colors[0] != before
+    assert window._doc.palette.colors[0] & 0xFFFFFF == 0xFF0000
+
+
 def test_a_slice_whose_file_is_closed_redraws_the_map_bound_to_it(
     qtbot, tmp_path, monkeypatch, disk_reload_answer
 ) -> None:

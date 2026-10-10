@@ -41,7 +41,7 @@ from celpix.core.context import (
     KEY_TILEMAP_PALETTE_ROW_BASE,
     PipelineContext,
 )
-from celpix.core.document import Document
+from celpix.core.document import Document, ViewOptions
 from celpix.core.errors import Pathway, PipelineError, Stage
 from celpix.core.font import FontAlphabet, font_alphabet
 from celpix.core.palette import Palette
@@ -252,7 +252,17 @@ def glyph_layout_for(entry: Entry) -> BlockLayout | None:
     if font is None or not font.is_font_sheet:
         return None
     view = font.doc.view if font.doc is not None else font.pending_view
-    if view is None or (view.block_columns <= 1 and view.block_rows <= 1):
+    return None if view is None else glyph_layout_of_view(view)
+
+
+def glyph_layout_of_view(view: ViewOptions) -> BlockLayout | None:
+    """How a font sheet viewed as ``view`` groups its tiles into glyphs.
+
+    The rule :func:`glyph_layout_for` reads through a binding, and the alphabet
+    editor reads off the sheet on screen: a glyph is one Pattern block at the
+    sheet's Cols. None where the block is 1x1, one tile per glyph.
+    """
+    if view.block_columns <= 1 and view.block_rows <= 1:
         return None
     return BlockLayout(
         max(1, view.columns), view.block_columns, view.block_rows, view.block_order
@@ -1054,8 +1064,14 @@ def restored_palette(
                 detect_container(registry, source.path, kind=ContentKind.PALETTE)
             )
         )
+        # Read whole, as the app reads it (the graphic mirrors the palette
+        # entry's own colours): a stored offset plays no part, since a run of a
+        # palette file is a slice of it applied in Entry mode. Reading from the
+        # offset instead would also run the file's reshape over a different
+        # region than the palette entry's, and a position- or length-dependent
+        # reshape would hand back colours the entry never shows.
         cfg = replace(
-            file_palette_config(source.path, source.offset, preset, stages, registry),
+            file_palette_config(source.path, 0, preset, stages, registry),
             write_enabled=False,
         )
     elif session.palette_mode is PaletteMode.ENTRY:

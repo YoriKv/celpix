@@ -37,3 +37,42 @@ def test_a_composite_reopens_a_palette_on_its_slices_format(qtbot, tmp_path) -> 
     reopened = window._workspace.find_palette(str(pal))
     assert reopened is not None
     assert reopened.palette_preset_id == RGB888
+
+
+def test_removing_a_used_palette_with_an_unavailable_entry_current(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """The re-home reshows whatever is current, and an entry whose file is gone
+    has no document to render: the removal completes and its consumer goes
+    Custom, rather than the command stopping half-applied."""
+    from PySide6.QtWidgets import QMessageBox
+
+    from celpix.project.workspace import PaletteMode
+
+    pal = tmp_path / "shared.pal"
+    pal.write_bytes(bytes(32))
+    graphic_file = tmp_path / "g.4bpp.sfc"
+    graphic_file.write_bytes(bytes(256))
+    gone = tmp_path / "m.4bpp.sfc"
+    gone.write_bytes(bytes(256))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(graphic_file))
+    window._add_palette_file(str(pal))
+    palette = next(e for e in window._workspace.entries if e.kind is EntryKind.PALETTE)
+    window._use_palette_entry(palette)
+    graphic = window._workspace.current
+    window._load_pixel(str(gone))
+    missing = window._workspace.current
+    window._activate_entry(graphic)
+    window._workspace.drop_document(missing)
+    gone.unlink()
+    window._activate_entry(missing)
+    assert window._doc is None
+
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes
+    )
+    window._remove_entry(palette)
+    assert window._workspace.find_palette(str(pal)) is None
+    assert graphic.session.palette_mode is PaletteMode.CUSTOM

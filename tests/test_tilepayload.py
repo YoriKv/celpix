@@ -17,3 +17,6 @@ def test_payload_round_trips_and_rejects_junk() -> None:
     assert TilePayload.from_bytes(raw[:-1]) is None
     assert TilePayload.from_bytes(b"") is None
     assert TilePayload.from_bytes(b"not a celpix payload") is None
+    # A header that parses as JSON but is no object — nor finishes parsing.
+    for head in (b"[1]", b"1", b'"x"', b"[" * 100_000):
+        assert TilePayload.from_bytes(len(head).to_bytes(4, "little") + head) is None

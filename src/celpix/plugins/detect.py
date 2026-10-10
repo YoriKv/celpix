@@ -6,10 +6,12 @@ claims a file, falling back to plain bytes when none does. Detection only decide
 where a file starts out; the user can override it afterwards.
 
 Matching is a byte comparison and a suffix test, with no plugin code executed: it
-runs across **every** registered container, including untrusted user ones, before
-the file is open. A container claims files by describing itself, not by
-inspecting them, which is why a signature is static data rather than a
-``sniff(head)`` hook. Qt-free.
+runs across **every** registered container, user plugins included, before the
+file is open. A container claims files by describing itself, not by inspecting
+them, which is why a signature is static data rather than a ``sniff(head)`` hook
+- and why a malformed one is refused at registration
+(:func:`~celpix.plugins.base.check_container_signature`) rather than left to
+raise here on every file. Qt-free.
 """
 
 from __future__ import annotations
@@ -90,8 +92,10 @@ def _score(info: PluginInfo, path: str, head: bytes, size: int) -> int:
         # Magic is an assertion about the format, so it decides on its own —
         # a matching suffix cannot rescue a container whose bytes disagree.
         return 2 if any(head[at : at + len(m)] == m for at, m in info.magic) else 0
+    # Both sides lowered: a plugin writing ".NES" means the same suffix, and a
+    # case it states would otherwise never match anything.
     lowered = path.lower()
-    return 1 if any(lowered.endswith(ext) for ext in info.extensions) else 0
+    return 1 if any(lowered.endswith(ext.lower()) for ext in info.extensions) else 0
 
 
 def detect_container(

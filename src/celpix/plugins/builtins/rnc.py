@@ -485,6 +485,13 @@ def decompress(
         return bytes(out), min(src.pos, len(data)), False
     if crc16(out) != int.from_bytes(data[12:14], "big"):
         raise _fail("unpacked data fails its CRC")
+    if not whole:
+        # Only ``partial`` gets here: the unpack finished on the bytes the buffer
+        # does hold (a zero-size stream, or one whose last bits lie in method 1's
+        # read slack), but the structure's packed bytes are not all present and
+        # their CRC went unchecked. Claiming ``end`` would report a whole,
+        # verified structure reaching past the buffer.
+        return bytes(out), min(src.pos, len(data)), False
     return bytes(out), end, True
 
 

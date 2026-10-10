@@ -16,11 +16,12 @@ name: Release
 # script locally therefore builds exactly what a release ships. Keep build
 # changes in that script, not in this file.
 #
-# Structure mirrors the CI workflow: a per-OS `build` matrix always uploads its
-# artifact to the run; a single `release` job (tag push only) downloads them all
-# and publishes ONE release, so the OS builds never race to create it. A manual
-# run (workflow_dispatch) runs only the build matrix — handy for testing the
-# build without publishing anything.
+# Structure: a per-OS `build` matrix always uploads its artifact to the run; a
+# single `release` job (tag push only) downloads them all and publishes ONE
+# release, so the OS builds never race to create it. A manual run
+# (workflow_dispatch) runs only the build matrix — handy for testing the build
+# without publishing anything. No test run gates any of it — a tag publishes
+# whatever its commit holds — so the suite is run locally before `release.sh`.
 
 on:
   push:

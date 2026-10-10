@@ -41,7 +41,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QItemSelectionModel, QSize, Qt, Signal
 from PySide6.QtGui import (
     QIcon,
     QKeySequence,
@@ -70,6 +70,7 @@ from celpix.ui.icons import Icon
 from celpix.ui.searchable_combo import matches_search, search_needles
 from celpix.ui.widgets import (
     IconBaker,
+    select_only,
     signals_blocked,
 )
 
@@ -365,10 +366,14 @@ class FileListPanel(EntryRowsMixin, EntryMenuMixin, IconBaker, QWidget):
             parent_item.insertChild(target, item)
             for row, expanded in was_expanded:
                 row.setExpanded(expanded)
-            # Current first: setting it clears the selection down to that one row
-            # (the tree selects extended), so the rest go back after it.
+            # The current row goes back with the selection cleared, and the
+            # picked rows after it — so the result is exactly the rows picked
+            # before. The command is explicit: a bare setCurrentItem reads the
+            # held modifiers as one, and a Ctrl-held move would toggle the row.
             if was_current is not None:
-                self._tree.setCurrentItem(was_current)
+                self._tree.setCurrentItem(
+                    was_current, 0, QItemSelectionModel.SelectionFlag.Clear
+                )
             for picked in was_selected:
                 picked.setSelected(True)
 
@@ -552,7 +557,7 @@ class FileListPanel(EntryRowsMixin, EntryMenuMixin, IconBaker, QWidget):
         """
         previous, self._current = self._current, entry
         with signals_blocked(self._tree):
-            self._tree.setCurrentItem(self._items.get(entry) if entry else None)
+            select_only(self._tree, self._items.get(entry) if entry else None)
         # The wash marks what the canvas is showing, so it moves with it: repaint
         # the row losing it and the row taking it, and nothing else.
         for changed in (previous, entry):
@@ -813,8 +818,9 @@ class FileListPanel(EntryRowsMixin, EntryMenuMixin, IconBaker, QWidget):
             if not needles:
                 self._restore_expansion()
             shown = self._items.get(self._current) if self._current else None
-            self._tree.setCurrentItem(
-                shown if shown is not None and not shown.isHidden() else None
+            select_only(
+                self._tree,
+                shown if shown is not None and not shown.isHidden() else None,
             )
 
     def _filter_subtree(self, item: QTreeWidgetItem, needles: list[str]) -> bool:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from celpix.core.context import KEY_SOURCE_FILES, KEY_SOURCE_PATH, PipelineContext
-from celpix.core.errors import PipelineError, Stage
+from celpix.core.errors import Pathway, PipelineError, Stage
 from celpix.core.index_grid import IndexGrid
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import DEFAULT_SLOT_FILL, PathwayConfig, SlotFill
@@ -1101,7 +1101,9 @@ def test_a_resized_result_is_refused_rather_than_split_wrong(tmp_path) -> None:
     reg = default_registry()
     pixel_cfg, palette_cfg = _joined_configs(tmp_path, paths)
     pixel_cfg.compression_id = "compression.stub"
-    reg.register(_StubCompression(b"\x00" * 100))  # 100 != the 128 on disk
+    # Longer than the 128 on disk: a shorter stream is filled back up to the
+    # region it was read from, so only growth can move a boundary.
+    reg.register(_StubCompression(b"\x00" * 200))
 
     doc = pipeline.load(pixel_cfg, palette_cfg, reg)
     with pytest.raises(PipelineError) as excinfo:
@@ -1344,3 +1346,234 @@ def test_scan_finds_a_stream_that_copies_from_before_itself(tmp_path) -> None:
         rom, lz4w.Lz4wCompression(), len(packed), 0x3F0
     )
     assert result.found == 0x400
+
+
+def test_a_save_compresses_against_the_buffer_the_read_used(tmp_path) -> None:
+    # A slice read out of its parent's live buffer decompressed against that
+    # buffer, so its compress has to see the same one — not the file on disk at
+    # a position that names the parent's view.
+    reg = default_registry()
+    probe = _SurroundProbe()
+    reg.register(probe)
+    px = tmp_path / "rom.bin"
+    px.write_bytes(b"DISK" + bytes(252))
+    view = b"VIEW" + bytes(252)
+    pixel_cfg = PathwayConfig(
+        source=FileRef(str(px), offset=0x40, length=0x40, data=view),
+        dest=FileRef(str(px), offset=0x40, length=0x40),
+        interpret_preset_id="preset.pixel.snes-4bpp",
+        compression_id=probe.info.id,
+        writes_through_parent=True,
+    )
+    loaded = pipeline.load_pixel_data(pixel_cfg, reg)
+    pipeline._compress_unshape(pixel_cfg, loaded.data, loaded.ctx, reg, Pathway.PIXEL)
+    assert probe.seen == [(view, 0x40), (view, 0x40)]
+
+
+def test_a_palette_write_inside_the_graphic_survives_its_next_pixel_write(
+    tmp_path,
+) -> None:
+    # An Offset palette in the graphic's own file lies inside its pixel buffer.
+    # The palette's write has to land in that buffer too, or the next pixel
+    # write — the whole buffer — puts the colours from before back on disk.
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(bytes(range(64)))
+    reg = default_registry()
+    pixel_cfg = PathwayConfig(
+        source=FileRef(str(rom)), interpret_preset_id="preset.pixel.snes-4bpp"
+    )
+    palette_cfg = PathwayConfig(
+        source=FileRef(str(rom), offset=32, length=32),
+        interpret_preset_id="preset.palette.bgr555",
+    )
+    doc = pipeline.load(pixel_cfg, palette_cfg, reg)
+    doc.palette = doc.palette.with_color(1, 0xFFFFFFFF)
+    doc.palette_edits.add(1)
+    record = pipeline.save(doc, reg, pixel=False)
+    assert (record.pixel, record.palette) == (False, True)
+    assert rom.read_bytes()[34:36] == b"\xff\x7f"
+
+    doc.replace_bytes(0, b"\xaa")
+    record = pipeline.save(doc, reg)
+    assert (record.pixel, record.palette) == (True, False)  # no colour edited
+    assert rom.read_bytes()[34:36] == b"\xff\x7f"
+    assert rom.read_bytes()[0] == 0xAA
+
+
+@pytest.mark.parametrize("reshape_id", ["reshape.none", "reshape.split-planes-2"])
+def test_a_whole_compressed_file_saves_back_at_the_length_it_was_read(
+    tmp_path, reshape_id
+) -> None:
+    # The read unpacks the stream at the front of the file and leaves the rest;
+    # the write fills the stream back out to the region with what was there, in
+    # reshaped space, so the trailer survives and the unshape runs over the
+    # region the read's reshape did.
+    from celpix.plugins.split_parts import SplitPartsReshape
+
+    reg = default_registry()
+    payload = bytes(range(32)) * 64
+    stream = reg.plugin(Stage.COMPRESSION, "compression.gba-lz77").compress(
+        payload, PipelineContext()
+    )
+    region = stream + b"TRAILER!" * 13
+    if reshape_id != "reshape.none":
+        region = SplitPartsReshape(2).unshape(region, PipelineContext())
+    px = tmp_path / "blob.bin"
+    px.write_bytes(region)
+    pixel_cfg = PathwayConfig(
+        source=FileRef(str(px)),
+        interpret_preset_id="preset.pixel.snes-4bpp",
+        compression_id="compression.gba-lz77",
+        reshape_id=reshape_id,
+    )
+    pl = tmp_path / "blob.pal"
+    pl.write_bytes(bytes(32))
+    palette_cfg = PathwayConfig(
+        source=FileRef(str(pl)), interpret_preset_id="preset.palette.bgr555"
+    )
+    doc = pipeline.load(pixel_cfg, palette_cfg, reg)
+    assert doc.pixel_data == payload
+    pipeline.save(doc, reg)
+    assert px.read_bytes() == region
+
+
+def _whole_compressed(tmp_path, region: bytes, compression_id: str, reshape_id: str):
+    px = tmp_path / "blob.bin"
+    px.write_bytes(region)
+    pl = tmp_path / "blob.pal"
+    pl.write_bytes(bytes(32))
+    pixel_cfg = PathwayConfig(
+        source=FileRef(str(px)),
+        interpret_preset_id="preset.pixel.snes-4bpp",
+        compression_id=compression_id,
+        reshape_id=reshape_id,
+    )
+    palette_cfg = PathwayConfig(
+        source=FileRef(str(pl)), interpret_preset_id="preset.palette.bgr555"
+    )
+    return px, pixel_cfg, palette_cfg
+
+
+def test_a_whole_file_with_no_end_marker_saves_as_its_stream_alone(tmp_path) -> None:
+    # PackBits decodes the whole region, so a shorter stream filled back out
+    # with the old tail would read that tail back as more pixels.
+    reg = default_registry()
+    payload = bytes((i * 37 + 11) & 0xFF for i in range(256))
+    stream = reg.plugin(Stage.COMPRESSION, "compression.packbits").compress(
+        payload, PipelineContext()
+    )
+    px, pixel_cfg, palette_cfg = _whole_compressed(
+        tmp_path, stream, "compression.packbits", "reshape.none"
+    )
+    doc = pipeline.load(pixel_cfg, palette_cfg, reg)
+    doc.replace_bytes(0, bytes(128))  # one run: a much shorter stream
+    pipeline.save(doc, reg, palette=False)
+    assert len(px.read_bytes()) < len(stream)
+    assert pipeline.load(pixel_cfg, palette_cfg, reg).pixel_data == doc.pixel_data
+
+
+def test_a_reshaped_whole_compressed_file_may_grow(tmp_path) -> None:
+    # The region is the file, so a longer file is still one region, split by
+    # the same fractions on its next read.
+    import random
+
+    from celpix.plugins.split_parts import SplitPartsReshape
+
+    reg = default_registry()
+    stream = reg.plugin(Stage.COMPRESSION, "compression.gba-lz77").compress(
+        bytes(1024), PipelineContext()
+    )
+    stream += bytes(len(stream) % 2)
+    px, pixel_cfg, palette_cfg = _whole_compressed(
+        tmp_path,
+        SplitPartsReshape(2).unshape(stream, PipelineContext()),
+        "compression.gba-lz77",
+        "reshape.split-planes-2",
+    )
+    doc = pipeline.load(pixel_cfg, palette_cfg, reg)
+    doc.replace_bytes(0, random.Random(0).randbytes(64))
+    pipeline.save(doc, reg, palette=False)
+    assert len(px.read_bytes()) > len(stream)
+    assert pipeline.load(pixel_cfg, palette_cfg, reg).pixel_data == doc.pixel_data
+
+
+def test_a_slice_with_no_length_folds_only_its_stream(tmp_path) -> None:
+    # Its read runs to the end of the parent, but the bytes past its stream are
+    # the parent's: a fold splicing them back from the config's snapshot would
+    # revert whatever the parent holds there now.
+    reg = default_registry()
+    lz = reg.plugin(Stage.COMPRESSION, "compression.gba-lz77")
+    rom = tmp_path / "rom.bin"
+    parent = bytes(0x40) + lz.compress(bytes(range(64)) * 4, PipelineContext())
+    parent += bytes(0x200)
+    rom.write_bytes(parent)
+    pl = tmp_path / "rom.pal"
+    pl.write_bytes(bytes(32))
+    pixel_cfg = PathwayConfig(
+        source=FileRef(str(rom), offset=0x40, data=parent),
+        dest=FileRef(str(rom), offset=0x40),
+        interpret_preset_id="preset.pixel.snes-4bpp",
+        compression_id="compression.gba-lz77",
+        writes_through_parent=True,
+    )
+    palette_cfg = PathwayConfig(
+        source=FileRef(str(pl)), interpret_preset_id="preset.palette.bgr555"
+    )
+    doc = pipeline.load(pixel_cfg, palette_cfg, reg)
+    doc.replace_bytes(0, bytes(32))
+    folded = pipeline.encoded_pixel_bytes(doc, reg)
+    assert folded == lz.compress(doc.pixel_data, PipelineContext())
+
+
+@pytest.mark.parametrize(
+    ("reshape_id", "size"), [("reshape.none", 257), ("reshape.split-planes-3", 261)]
+)
+def test_a_tilemap_save_keeps_the_bytes_past_its_last_cell(
+    tmp_path, reshape_id, size
+) -> None:
+    # A decode drops a trailing partial cell; the save hands it back, so an
+    # untouched map writes the region it read — and a reshaped one is permuted
+    # at that same length rather than one cell-multiple shorter.
+    from celpix.core.document import Document
+
+    reg = default_registry()
+    body = bytes((i * 7 + 1) & 0xFF for i in range(size))
+    path = tmp_path / "map.bin"
+    path.write_bytes(body)
+    cfg = PathwayConfig(
+        source=FileRef(str(path)),
+        interpret_preset_id="preset.tilemap.snes-bg",
+        reshape_id=reshape_id,
+    )
+    loaded = pipeline.load_tilemap_data(cfg, reg)
+    off = PathwayConfig(source=FileRef(""), interpret_preset_id="", write_enabled=False)
+    doc = Document(
+        pixel_data=b"",
+        bytes_per_tile=32,
+        tile_width=8,
+        tile_height=8,
+        palette=None,
+        pixel_config=off,
+        palette_config=off,
+        cells=loaded.cells,
+        tilemap_config=cfg,
+        tilemap_ctx=loaded.ctx,
+        tilemap_data=loaded.data,
+    )
+    assert pipeline.save(doc, reg, palette=False).pixel
+    assert path.read_bytes() == body
+
+
+def test_a_buffer_backed_palette_splices_into_the_window_it_is_given(
+    tmp_path,
+) -> None:
+    # An Offset palette over a reordered owner lands its edit in the owner's
+    # buffer, whose window may hold tiles painted since the palette was read:
+    # only the edited unit is the palette's, every other byte the buffer's now.
+    raw = bytes([0x21, 0xC3, 0x45, 0xE6, 0x67, 0x8A, 0x9B, 0xFC])
+    doc, _pal, reg = _pal_doc(tmp_path, raw)
+    doc.palette = doc.palette.with_color(1, 0xFFFFFFFF)
+    doc.palette_edits.add(1)
+    now = bytes(range(0xE0, 0xE8))
+    spliced = pipeline.spliced_palette_bytes(doc, reg, now)
+    assert spliced == now[:2] + b"\xff\x7f" + now[4:]

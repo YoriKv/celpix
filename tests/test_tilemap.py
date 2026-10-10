@@ -9,6 +9,7 @@ corrupted file rather than a missing feature.
 from __future__ import annotations
 
 import json
+import random
 from dataclasses import replace
 
 import pytest
@@ -35,7 +36,7 @@ from celpix.plugins.builtins.scgcad import (
     PnlContainer,
     ScrContainer,
 )
-from celpix.plugins.builtins.tilemap_codec import TilemapCodec
+from celpix.plugins.builtins.tilemap_codec import TILEMAP_ENGINE, TilemapCodec
 from celpix.plugins.detect import detect_container
 from celpix.plugins.registry import default_registry
 from modelhelpers import decoded_at_probe_length
@@ -153,6 +154,35 @@ def test_an_index_only_format_decodes_and_re_encodes_without_attributes() -> Non
         codec.encode([Cell(index=3, palette_row=5, flip_v=True)], params, ctx)
         == b"\x03"
     )
+
+
+def _packed_tilemap_ids() -> list[str]:
+    return sorted(
+        p.id
+        for p in default_registry().presets(Stage.INTERPRET_TILEMAP)
+        if p.engine_id == TILEMAP_ENGINE
+    )
+
+
+@pytest.mark.parametrize("preset_id", _packed_tilemap_ids())
+def test_every_packed_tilemap_preset_writes_back_the_bytes_it_read(
+    preset_id: str,
+) -> None:
+    """A save re-encodes every cell, so an unedited cell has to come back exactly.
+
+    A bit spelt ``.`` is written as zero, so a preset that marks a bit real data
+    carries as ``.`` rewrites the whole map on the first save - a dual-mode Neo
+    Geo Pocket Color game's mono palette bits, cleared on all 1,024 cells. Such a
+    bit is spelt ``f`` and rides in ``Cell.flags``; random bytes set all of them.
+    """
+    reg = default_registry()
+    preset = reg.preset(preset_id)
+    engine = reg.plugin(Stage.INTERPRET_TILEMAP, preset.engine_id)
+    size = engine.bytes_per_cell(preset.params)
+    data = random.Random(preset_id).randbytes(size * 64)
+    ctx = PipelineContext()
+    cells = engine.decode(data, preset.params, ctx)
+    assert engine.encode(cells, preset.params, ctx) == data
 
 
 @pytest.mark.parametrize(
@@ -926,6 +956,44 @@ def test_editing_a_tile_redraws_every_cell_that_draws_it() -> None:
     assert doc.tile_bank_cache is None
 
 
+def test_a_palette_row_past_the_index_space_is_ignored_on_an_8bpp_bank() -> None:
+    """A row is folded into the indices, and an 8bpp tile already spans all 256:
+    row 3 of it would shift every index past 255 and collapse the tile to one
+    colour. The hardware ignores a cell's palette bits in a 256-colour mode, and
+    so does the render — the row is capped by how many fit in the index space."""
+    from celpix.pipeline.pipeline import tilemap_image
+
+    doc = _bank_doc(bytes(range(64)), [Cell(index=0, palette_row=3)])
+    doc.bytes_per_tile = 64
+    doc.pixel_config = replace(
+        doc.pixel_config, interpret_preset_id="preset.pixel.snes-8bpp"
+    )
+    drawn = tilemap_image(doc, default_registry(), columns=1)
+
+    assert len(set(drawn.grid.data)) > 1  # not one saturated colour
+    assert drawn.palette_rows == 1
+
+
+def test_a_cell_past_a_direct_colour_bank_draws_a_blank_of_the_banks_type() -> None:
+    """The composer sizes its canvas off one tile and copies the rest in at that
+    stride, so the blank standing in for a missing tile has to be the bank's own
+    grid type — an index blank among four-byte pixels mis-strides every row."""
+    from celpix.core.argb_grid import ArgbGrid
+    from celpix.pipeline.pipeline import tilemap_image
+
+    red = (0xFFFF0000).to_bytes(4, "little")
+    doc = _bank_doc(red * 64, [Cell(index=0), Cell(index=9), Cell(index=0)])
+    doc.bytes_per_tile = 256
+    doc.pixel_config = replace(
+        doc.pixel_config, interpret_preset_id="preset.pixel.dc-argb8888"
+    )
+    grid = tilemap_image(doc, default_registry(), columns=3).grid
+
+    assert isinstance(grid, ArgbGrid)
+    assert len(grid.data) == 24 * 8 * 4
+    assert grid.get(16, 7) == 0xFFFF0000  # the tile after the blank, unshifted
+
+
 def test_a_format_answers_for_itself_which_transforms_it_can_do() -> None:
     """Which transforms a cell supports is a property of the *format*, and only
     the codec knows which bits say one. A preset that declares no flip field
@@ -1212,6 +1280,35 @@ def test_a_palette_row_shifts_a_subsprite_without_making_index_0_opaque() -> Non
     # Its transparent half let the one behind show through at *its* row (2),
     # rather than being painted with row 3's index 0.
     assert image.get(0, 0) == 15 + 2 * 16
+
+
+def test_a_direct_colour_subsprite_is_drawn_whole_and_clear_where_alpha_is_0() -> None:
+    """A sprite sheet is blitted, not composed, and a direct-colour pixel is four
+    bytes: an index canvas copied a row at a time would take each ARGB row as four
+    rows' worth of garbage indices. Transparency is alpha 0 there, the spelling of
+    index 0, so the piece behind still shows through a hole in the one in front.
+    """
+    from celpix.core.argb_grid import ArgbGrid
+    from celpix.core.sprite import Subsprite
+    from celpix.pipeline.pipeline import sprite_image
+
+    red = (0xFFFF0000).to_bytes(4, "little")
+    blue = (0xFF0000FF).to_bytes(4, "little")
+    clear = bytes(4)
+    # Tile 0 solid blue; tile 1 clear on its left half and red on its right.
+    bank = blue * 64 + (clear * 4 + red * 4) * 8
+    doc = _sprite_doc(
+        [], [(Subsprite(x=0, y=0, index=1), Subsprite(x=0, y=0, index=0))], bank=bank
+    )
+    doc.bytes_per_tile = 256
+    doc.pixel_config = replace(
+        doc.pixel_config, interpret_preset_id="preset.pixel.dc-argb8888"
+    )
+    image, _ = sprite_image(doc, default_registry(), columns=1)
+
+    assert isinstance(image, ArgbGrid)
+    assert image.get(7, 7) == 0xFFFF0000  # the front piece's opaque half
+    assert image.get(0, 7) == 0xFF0000FF  # the one behind, through the hole
 
 
 def test_a_pixel_resolves_to_the_subsprite_a_user_can_see_there() -> None:
@@ -4546,13 +4643,20 @@ def test_a_column_major_map_reads_down_each_column_and_edits_back_in_place() -> 
     edits the entry the file has there, and the cells keep the file's order so a
     save writes back what was read."""
     from celpix.core.document import CellChain, Document
-    from celpix.core.tilemap import column_order
+    from celpix.core.tilemap import NO_CELL, column_order, column_position
 
     # Position -> entry for a 3-wide, 4-tall map: entry 4 is column 1's top.
     assert column_order(3, 12) == (0, 4, 8, 1, 5, 9, 2, 6, 10, 3, 7, 11)
-    # A ragged last column has no position to be drawn at, so it is left out
-    # rather than drawn at another position's.
-    assert column_order(3, 11) == (0, 4, 8, 1, 5, 9, 2, 6, 10, 3, 7)
+    # A ragged last column is short at the bottom: its missing positions are
+    # holes, and every cell c still sits at column c // height, row c % height -
+    # dropping the holes would shift each later row left by one per hole.
+    assert column_order(3, 11) == (0, 4, 8, 1, 5, 9, 2, 6, 10, 3, 7, NO_CELL)
+    ragged = column_order(3, 10)
+    for position, cell in enumerate(ragged):
+        if cell != NO_CELL:
+            assert (position % 3, position // 3) == (cell // 4, cell % 4)
+            assert column_position(3, 10, cell) == position
+    assert ragged.count(NO_CELL) == 2
 
     source = [Cell(index=100 + at) for at in range(16)]
 
@@ -4592,6 +4696,18 @@ def test_a_column_major_map_reads_down_each_column_and_edits_back_in_place() -> 
     assert down.cell_at(0) == 0
     # The file's own order is untouched, which is what a save writes.
     assert [cell.index for cell in down.cells] == [0, 2, 8, 10]
+
+    # Ten entries three across: the holes draw hidden, and a click on one finds
+    # no entry to edit.
+    ragged_doc = doc_for(True)
+    ragged_doc.chain = None
+    ragged_doc.cells = [Cell(index=at) for at in range(10)]
+    ragged_doc.view.columns = 3
+    ragged_doc.resolve()
+    shown = [cell.index if cell.visible else None for cell in ragged_doc.drawn_cells]
+    assert shown == [0, 4, 8, 1, 5, 9, 2, 6, None, 3, 7, None]
+    assert ragged_doc.cell_at(8) == 10
+    assert ragged_doc.cell_at(9) == 3
 
 
 def test_a_table_offers_its_preset_stamp_whatever_its_engine() -> None:
@@ -5190,3 +5306,52 @@ def test_a_version_6_record_map_keeps_its_picture_with_its_base_in_records(
     ]
     doc = load_document(area, registry, reopened).doc
     assert _first_stamp(doc) == [8, 9, 10]  # record 0 + 8 cells, as v6 drew it
+
+
+@pytest.mark.parametrize("dirty", [False, True], ids=["reshaped", "unsaved-edit"])
+def test_a_slice_of_a_loaded_map_file_reads_its_cells_not_the_bound_art(
+    tmp_path, dirty
+) -> None:
+    """A slice reads its parent's view buffer where the parent reorders or holds
+    unsaved edits, and a map's view buffer is its cells: its ``pixel_data`` is
+    the art it borrows from its bound bank. Read as the parent's pixels, the
+    slice decodes the bank as cells, and a write folds that back into the map."""
+    from celpix.project.documents import load_document
+    from celpix.project.workspace import (
+        Entry,
+        EntryKind,
+        EntrySession,
+        TileMode,
+        TileSource,
+        Workspace,
+        slice_of,
+        tilemap_config_for,
+    )
+
+    registry, ws = default_registry(), Workspace()
+    bank_path = tmp_path / "bank.bin"
+    bank_path.write_bytes(b"\xee" * 4096)
+    bank = Entry(name="bank", kind=EntryKind.FILE, path=str(bank_path))
+    bank.session = EntrySession("preset.pixel.snes-4bpp", "preset.palette.bgr555")
+    cells = bytes(range(256)) * 8
+    map_path = tmp_path / "map.bin"
+    map_path.write_bytes(cells)
+    reshape = "reshape.none" if dirty else "reshape.swap-bytes-2"
+    tilemap = Entry(name="map", kind=EntryKind.FILE, path=str(map_path))
+    tilemap.reshape_id = reshape
+    tilemap.content_kind = ContentKind.TILEMAP
+    tilemap.tilemap_preset_id = "preset.tilemap.snes-bg"
+    tilemap.session = EntrySession("preset.pixel.snes-4bpp", "preset.palette.bgr555")
+    tilemap.tile_source = TileSource(mode=TileMode.ENTRY, entry=bank)
+    cut = slice_of(tilemap, "cut", 0x10, 0x20)
+    ws.entries.extend([bank, tilemap, cut])
+    swapped = zip(cells[1::2], cells[::2], strict=True)
+    view = cells if dirty else bytes(b for pair in swapped for b in pair)
+
+    load_document(tilemap, registry, ws)
+    if dirty:
+        ws.set_pixel_revision(tilemap, ws.next_revision())
+    source = tilemap_config_for(cut, "preset.tilemap.snes-bg", registry, ws).source
+    assert source.data is not None  # read through the parent's buffer
+    start = 0x10 - source.data_base
+    assert bytes(source.data[start : start + 0x20]) == view[0x10:0x30]

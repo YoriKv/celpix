@@ -16,9 +16,10 @@ container — a GB ROM carries two checksums over its own header:
   databases do.
 
 Both are repaired after the edited bytes are spliced in, so what is checksummed is
-the file as it will exist. A file too short to hold a header (``< 0x150`` bytes)
-is written through untouched — there is nothing to repair, and inventing a header
-would corrupt whatever it actually is.
+the file as it will exist. A file without the boot logo at ``0x104`` — or too
+short to hold a header at all — is written through untouched: the logo is what
+says a header is there, and checksumming one that is not would overwrite three
+bytes of whatever the file actually is.
 
 See ``docs/graphics-formats-reference/implementation-guide.md`` §5.
 """
@@ -51,10 +52,18 @@ _GLOBAL_SUM_AT = 0x14E
 _HEADER_END = 0x150  # smallest file that has a header at all
 
 
+def has_header(rom: bytes) -> bool:
+    """Whether ``rom`` carries a cartridge header: the boot logo, and room for it."""
+    return (
+        len(rom) >= _HEADER_END
+        and rom[_LOGO_AT : _LOGO_AT + len(_LOGO_HEAD)] == _LOGO_HEAD
+    )
+
+
 def repair_checksums(rom: bytes) -> bytes:
-    """``rom`` with the header and global checksums recomputed; short input
-    untouched."""
-    if len(rom) < _HEADER_END:
+    """``rom`` with the header and global checksums recomputed; a file with no
+    header (:func:`has_header`) untouched."""
+    if not has_header(rom):
         return rom
     out = bytearray(rom)
     start, end = _HEADER_SUM_RANGE
@@ -114,13 +123,13 @@ class GbRomContainer:
                 "This container exists to repair the checksums below",
             ),
         ]
-        if len(raw) < _HEADER_END:
+        if not has_header(bytes(raw)):
             fields.append(
                 untouched_field(
                     "Checksums",
                     "no header to repair",
-                    f"A file under {format_hex(_HEADER_END, None)} bytes "
-                    "has no cartridge header",
+                    f"A file under {format_hex(_HEADER_END, None)} bytes, "
+                    "or without the logo,\nhas no cartridge header",
                 )
             )
             return tuple(fields)

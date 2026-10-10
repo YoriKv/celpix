@@ -1057,16 +1057,36 @@ def column_order(columns: int, count: int) -> tuple[int, ...]:
     it sits beside it for the same caller (:attr:`~celpix.core.document.Document.
     cell_order`).
 
-    The column height is the count divided by the width, because the picture is
-    the rectangle the cells fill: the file states the width nowhere a map of this
-    shape can be read without one. A **ragged** last column has no position to
-    be drawn at, so its cells are left out rather than drawn at someone else's
-    position — the same honesty :func:`page_order` shows a partial page.
+    The column height is the count divided by the width, rounded up, because the
+    picture is the rectangle the cells fill: the file states the width nowhere a
+    map of this shape can be read without one. A **ragged** last column is short
+    at the bottom, and those positions are :data:`NO_CELL` — the convention
+    :func:`record_order` uses for a short last row. Dropping them instead would
+    shift every later position left by one per hole, so the whole picture is
+    always the full rectangle and cell ``c`` sits at column ``c // height``, row
+    ``c % height``. :func:`column_position` is the inverse.
+
+    Cached because :attr:`~celpix.core.document.Document.cell_permutation` asks
+    for it per call, and a click or a fill asks that per position.
     """
     width = max(1, columns)
     height = ceil_div(max(0, count), width)
-    order = [column * height + row for row in range(height) for column in range(width)]
-    return tuple(at for at in order if at < count)
+    return tuple(
+        at if (at := column * height + row) < count else NO_CELL
+        for row in range(height)
+        for column in range(width)
+    )
+
+
+def column_position(columns: int, count: int, cell: int) -> int:
+    """The drawn position cell ``cell`` lands at under :func:`column_order`.
+
+    The closed-form inverse, so a question asked per cell does not pay for a scan
+    of the whole permutation.
+    """
+    width = max(1, columns)
+    height = max(1, ceil_div(max(0, count), width))
+    return (cell % height) * width + cell // height
 
 
 @lru_cache(maxsize=16)

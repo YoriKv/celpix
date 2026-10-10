@@ -41,7 +41,7 @@ that lands them is the step — and every one re-renders the stamp preview, so
 what the ghost shows is what a press lays. Every declared field stays on the
 row while the tool is armed: Edit Tiles is where a stamp layout's editing
 happens at all, and its only fields are the drawn bit and the flags — hiding
-them left the row empty exactly where it was needed. One of them reads
+them would leave the row empty exactly where it is needed. One of them reads
 specially there. **Drawn** is a stamp-wide setting whatever is held, because
 the stamp otherwise forces the bit: checked is that default, and unchecking
 it turns the stamp into the **eraser** — every press lays undrawn cells, the
@@ -67,6 +67,7 @@ from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QSpinBox, QWidget
 
 from celpix.core.capabilities import Capability
 from celpix.core.tilemap import BLANK, Cell
+from celpix.ui.main_window.tilemap_edit import fit_cell
 from celpix.ui.widgets import add_labelled, hex_spin, signals_blocked, value_spin
 
 
@@ -152,6 +153,9 @@ class CellPropsMixin:
         # for no row. Rebuilding only when this moves is what keeps the sync
         # cheap enough to run from the selection pass.
         self._cell_props_signature: tuple = ()
+        # The field table the held record and brush were last fitted to — what
+        # tells the sync that an entry switch has put them on another format.
+        self._held_fields: dict[str, int] = {}
 
     def _rebuild_cell_props(self, signature: tuple) -> None:
         """Tear the row down and grow the controls ``signature`` names.
@@ -291,9 +295,13 @@ class CellPropsMixin:
         tile. Every declared field but **Drawn**: the eraser is armed by its
         box alone, never inherited from a record that happened to be undrawn.
         """
-        for field in self._cell_fields():
+        for field, limit in self._cell_fields().items():
             if field in _SPEC_BY_FIELD and field != "visible":
-                self._stamp_attrs[field] = getattr(record, field)
+                value = getattr(record, field)
+                # Clamped: a record can come off a map whose format holds more.
+                self._stamp_attrs[field] = (
+                    value if isinstance(value, bool) else min(value, limit)
+                )
 
     # -- sync ----------------------------------------------------------------
     def _sync_cell_props(self) -> None:
@@ -321,6 +329,8 @@ class CellPropsMixin:
             self._rebuild_cell_props(signature)
         for field in [name for name in self._stamp_attrs if name not in shown]:
             del self._stamp_attrs[field]
+        if fields and fields != self._held_fields:
+            self._fit_held_stamp(fields)
         if self._stamping:
             # The transform bar targets the same held stamp this row does, so
             # it converges wherever the row does: a pick changes what its
@@ -344,6 +354,26 @@ class CellPropsMixin:
                     self._show_cell_prop_check(widget, values)
                 else:
                     self._show_cell_prop_spin(widget, values)
+
+    def _fit_held_stamp(self, fields: dict[str, int]) -> None:
+        """Fit the eyedropped record and the canvas brush to ``fields``.
+
+        Both outlive an entry switch, so they can hold a flip or a row the
+        format now on screen has no field for. The landing is fitted again in
+        :meth:`~...tilemap_edit.TilemapEditMixin._apply_cells`; this is so the
+        ghost and the row show what a press will lay rather than what was lifted.
+        """
+        self._held_fields = dict(fields)
+        blank = Cell()
+        if self._source_cell is not None:
+            self._source_cell = fit_cell(self._source_cell, fields, blank)
+        brush = self._stamp_brush
+        if brush is not None:
+            for y in range(brush.height):
+                for x in range(brush.width):
+                    record = brush.get(x, y)
+                    if record is not None:
+                        brush.set(x, y, fit_cell(record, fields, blank))
 
     @staticmethod
     def _show_cell_prop_check(box: QCheckBox, values: set) -> None:

@@ -64,6 +64,10 @@ class SpriteSelectMixin:
         # fresh pick (:meth:`_cycled_pick`).
         self._pick_tile: tuple[int, int] | None = None
         self._pick_depth: int = 0
+        # The entry the pick was made on. A (frame, subsprite) pair names a
+        # record of *that* object; another object with as many records has one
+        # at the same pair, which the user never clicked.
+        self._picked_entry = None
 
     def _connect_sprite_canvas(self) -> None:
         """Wire the canvas's pixel report (called once the canvas exists)."""
@@ -112,6 +116,7 @@ class SpriteSelectMixin:
     def _set_picked_subsprite(self, pick: tuple[int, int] | None) -> None:
         """Hold ``pick``, and converge everything that reads it."""
         self._picked_subsprite = pick
+        self._picked_entry = self._workspace.current if pick is not None else None
         if pick is None:
             # Nothing picked is nothing to cycle: a press that found no piece,
             # and the document being closed, both land here.
@@ -147,12 +152,17 @@ class SpriteSelectMixin:
         run for the same two reasons: what is on screen may no longer be a sprite
         object at all, and the sheet's geometry moves under a pick that survives —
         Cols re-flows the frames, so the same subsprite is at a different pixel.
+        A pick made on another entry is dropped too, whether or not this object
+        happens to have a record at the same pair.
         """
-        if (
-            self._picked_subsprite is not None
-            and self._picked_subsprite_record() is None
+        if self._picked_subsprite is not None and (
+            self._picked_entry is not self._workspace.current
+            or self._picked_subsprite_record() is None
         ):
-            self._picked_subsprite = None
+            self._picked_subsprite = self._picked_entry = None
+            # Nor is there a press to cycle from: the next one on this object
+            # takes the front piece.
+            self._pick_tile, self._pick_depth = None, 0
         self._sync_subsprite_outline()
         # Before the sheet is recomposed, not after: that is debounced, and a
         # ring left on a record that is gone is a ring on a different piece.

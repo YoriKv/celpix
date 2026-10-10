@@ -219,9 +219,15 @@ class TileSourceDockMixin:
         binding bar shows it the Base tile spin for exactly that reason, so
         refusing the pointing gesture for the value that spin holds would be this
         panel disagreeing with the bar about the same number.
+
+        The pick is the one this map can reach (:meth:`~...stamp_tool.
+        StampToolMixin._held_tile_id`), not the raw held ID: that survives an
+        entry switch by design, and on a map that does not offer it the readout
+        says nothing is selected — a base set from it would act on a tile the
+        panel is not showing.
         """
         doc, entry = self._doc, self._workspace.current
-        if doc is None or entry is None or self._source_tile_id is None:
+        if doc is None or entry is None or self._held_tile_id() is None:
             return False
         if not doc.is_tilemap:
             return False
@@ -251,7 +257,7 @@ class TileSourceDockMixin:
         if not self._can_set_base_tile():
             return
         entry = self._workspace.current
-        tile_id = self._source_tile_id
+        tile_id = self._held_tile_id()
         assert entry is not None and tile_id is not None
         source = entry.tile_source or TileSource()
         base = source.base_index + tile_id
@@ -297,6 +303,11 @@ class TileSourceDockMixin:
         base as the change left it. Counting units, a place inside a unit
         rather than at its corner has no ID, and the pick is dropped rather than
         moved onto a neighbour the user did not pick.
+
+        A held **brush** comes down to that one pick whether or not its number
+        moved: its other squares are IDs in the unit it was swept in, and where
+        the top-left one happens to keep its number (an origin of 0) they would
+        go on stamping in the new unit what they named in the old.
         """
         doc = self._doc
         if origin is None or doc is None:
@@ -304,9 +315,10 @@ class TileSourceDockMixin:
         chain = doc.chain
         base = chain.base if chain is not None else doc.tile_base_index
         at = index_at(origin, doc.addressing_geometry, base)
+        brush = self._stamp_brush
         if at is None or at < 0:
             self._clear_source_tile()
-        elif at != self._source_tile_id:
+        elif at != self._source_tile_id or (brush is not None and len(brush)):
             self._set_source_tile(at)
 
     def _sync_set_base_tile(self) -> None:
@@ -546,19 +558,26 @@ class TileSourceDockMixin:
             self._sync_set_base_tile()
             return
         row = self._tile_source_row()
-        sheet = pipeline.tile_source_image(
-            doc,
-            self._registry,
-            self._tile_source_columns.value(),
-            self._cell_index_limit(),
-            row,
-            self._cell_index_runs(),
+        # Decoded through the bound bank's codec, which can raise like the
+        # canvas's own render, so inside the same boundary: told once, drawn
+        # empty, and the refresh this is the tail of runs on.
+        sheet = self._quiet_render(
+            lambda: pipeline.tile_source_image(
+                doc,
+                self._registry,
+                self._tile_source_columns.value(),
+                self._cell_index_limit(),
+                row,
+                self._cell_index_runs(),
+            )
         )
         self._tile_source_row_shown = row
-        if not sheet.ids:
+        if sheet is None or not sheet.ids:
             self._tile_source_panel.clear()
             self._tile_source_details.setText(
                 "The bound entry has no tiles this map can reach."
+                if sheet is not None
+                else "The bound entry's tiles could not be decoded."
             )
             self._sync_set_base_tile()
             return

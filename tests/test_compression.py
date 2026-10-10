@@ -446,6 +446,9 @@ def test_lz16_compress_rejects_partial_tile_rows() -> None:
         lz16.compress(bytes(511))
     with pytest.raises(ValueError):
         lz16.compress(b"")
+    # Past the probe ceiling a load could never find the row count again.
+    with pytest.raises(ValueError, match="probing at most"):
+        lz16.compress(bytes((lz16._PROBE_MAX_ROWS + 1) * lz16.BYTES_PER_TILE_ROW))
 
 
 # -- Konami NES RLE ---------------------------------------------------------
@@ -953,6 +956,18 @@ def test_rle2_stops_at_the_output_cap() -> None:
     assert complete is False
 
 
+def test_rle1_fills_a_whole_bank_and_refuses_past_it() -> None:
+    # The terminator is read before the cap is tested, so a stream that decodes
+    # to exactly one bank still ends. One byte more is refused at compress
+    # rather than written as a stream the decoder cuts short.
+    bank = bytes(0x10000)
+    packed = snes_rle.compress(bank, terminated=True)
+    assert snes_rle.decompress(packed, terminated=True) == (bank, len(packed), True)
+    for terminated in (True, False):
+        with pytest.raises(ValueError, match="cap at"):
+            snes_rle.compress(bank + b"\x00", terminated=terminated)
+
+
 # -- LZSS, 4 KiB ring, size-prefixed ----------------------------------------
 
 
@@ -1008,6 +1023,9 @@ def test_lzss_round_trip_across_shapes() -> None:
         out, consumed, complete = lzss_ring.decompress(packed)
         assert out == raw
         assert (consumed, complete) == (len(packed), True)
+    # The decoder rejects a zero size, so the encoder may not write one.
+    with pytest.raises(ValueError, match="empty payload"):
+        lzss_ring.compress(b"")
 
 
 def test_lzss_plugin_records_size_and_completeness() -> None:
@@ -1744,6 +1762,24 @@ def test_nemesis_truncation_is_an_error_unless_partial() -> None:
     assert ctx.get(KEY_DECOMPRESS_COMPLETE) is False
 
 
+def test_nemesis_does_not_finish_a_code_in_its_look_ahead() -> None:
+    """A stream one byte short must not decode as complete.
+
+    The reader peeks zeros past the end to match the last code, and a code
+    completed from those zeros is some other symbol. Every row still gets
+    filled, so only the truncation check stands between the cut and a
+    ``complete`` decode with a wrong last tile.
+    """
+    art = bytes((i * 37 + i // 7) & 0xFF for i in range(32 * 4))
+    stream = nemesis.compress(art)
+    assert stream[-1]  # a zero last byte would decode the same from padding
+    with pytest.raises(ValueError, match="source ended"):
+        nemesis.decompress(stream[:-1])
+    prefix, consumed, complete = nemesis.decompress(stream[:-1], partial=True)
+    assert not complete and consumed <= len(stream) - 1
+    assert art.startswith(prefix)
+
+
 @pytest.mark.parametrize(
     ("stream", "match"),
     # Each rejection is what keeps a scan for these streams from claiming
@@ -1995,6 +2031,21 @@ def test_enigma_truncation_is_an_error_unless_partial() -> None:
     assert 0 < len(prefix) < len(cells)
     assert cells.startswith(prefix)
     assert ctx.get(KEY_DECOMPRESS_COMPLETE) is False
+
+    # Zero bits past a cut spell a token of their own ("incrementing word x1"),
+    # so a partial decode stops at the last token the buffer holds whole.
+    three = _cells([1, 1, 1])
+    stream = enigma.compress(three)
+    prefix, consumed, _ = enigma.decompress(stream[:-1], partial=True)
+    assert three.startswith(prefix) and consumed <= len(stream) - 1
+
+    # A stream ending mid-word owns the rest of that word, but a buffer that
+    # stops before it cannot report it: a slice backfilled from the length
+    # would run past the end of the file.
+    aligned = enigma.compress(_cells([1, 1, 2]))
+    assert len(aligned) % 2 == 0 and aligned[-1] == 0
+    _, consumed, complete = enigma.decompress(aligned[:-1])
+    assert complete and consumed == len(aligned) - 1
 
 
 def test_enigma_plugin_reports_the_streams_own_length() -> None:
@@ -2386,6 +2437,26 @@ def test_lzw_round_trips_past_a_full_table(params: lzw.Params) -> None:
     assert (consumed, complete) == (len(stream), params.end_code is not None)
 
 
+def test_lzw_output_is_capped_against_a_self_defining_chain(monkeypatch) -> None:
+    """Every code here is the entry it defines, so each entry is a byte longer
+    than the last and output grows with the square of the stream: 128 KiB of
+    16-bit codes would ask for gigabytes. The cap is what bounds it."""
+    codes = [0, *range(0x100, 0x200)]  # literal 0, then 0x00 * 2, * 3 ... * 257
+    stream = _nemesis_bits("".join(f"{code:09b}" for code in codes))
+    fixed = lzw.Params(initial_bits=9, max_bits=9)
+    monkeypatch.setattr(lzw, "OUTPUT_CAP", 4096)
+    with pytest.raises(ValueError, match="output would exceed"):
+        lzw.decompress(stream, fixed)
+
+
+def test_lzw_without_an_end_code_refuses_a_pad_that_reads_as_a_code() -> None:
+    """With nothing to end it, the decode reads the zeros closing the last byte
+    as one more literal, so a narrow variant's save would reload longer."""
+    narrow = lzw.Params(initial_bits=3, max_bits=4, literal_bits=2, early_change=True)
+    with pytest.raises(ValueError, match="bind an end code"):
+        lzw.compress(bytes((0, 1, 2)), narrow)
+
+
 def test_lzw_rejects_special_codes_among_the_literals() -> None:
     with pytest.raises(ValueError, match="overlaps the literals"):
         lzw.Params(clear_code=0x41)
@@ -2608,6 +2679,13 @@ def test_rnc_rejects_corrupt_streams_and_forgives_only_a_short_buffer() -> None:
     assert not complete
     assert 0 < len(prefix) < len(plain)
     assert plain.startswith(prefix)
+
+    # An empty stream's unpack needs none of its packed bytes, so it finishes on
+    # a buffer that lacks them; it still must not claim the whole structure.
+    for method in (1, 2):
+        short = rnc.compress(b"", method=method)[:-1]
+        _, consumed, complete = rnc.decompress(short, method=method, partial=True)
+        assert not complete and consumed <= len(short)
 
 
 # -- Namco LZSS and the Strike variant ---------------------------------------

@@ -155,8 +155,9 @@ class TilemapBarMixin:
         # Go and look at what the combo names. The binding is the one control on
         # this bar whose value is *another entry*, and "Tiles from x" is not the
         # same as being able to see x - to check a tile, or edit it where it
-        # lives, the user had to find that row in the Files dock. Right beside the
-        # combo because it opens that combo's own answer, and Back returns
+        # lives, the user would otherwise have to find that row in the Files
+        # dock. Right beside the combo because it opens that combo's own
+        # answer, and Back returns
         # (:mod:`celpix.ui.main_window.history`). No keyboard shortcut: it is the
         # one gesture here that is about a different entry, not this map's state.
         #
@@ -388,11 +389,13 @@ class TilemapBarMixin:
         """
         bound = self._binding_target(source)
         self._tile_binding_jump.setEnabled(bound is not None)
-        self._tile_binding_jump.setToolTip(
-            f"Show the tile source, {bound.name}\nBack (Alt+Left) returns here"
-            if bound is not None
-            else "Show the tile source\nNothing is bound"
-        )
+        if bound is not None:
+            tip = f"Show the tile source, {bound.name}\nBack (Alt+Left) returns here"
+        elif source.is_bound:
+            tip = "Show the tile source\nThe entry it names is no longer open"
+        else:
+            tip = "Show the tile source\nNothing is bound"
+        self._tile_binding_jump.setToolTip(tip)
 
     def _sync_size_pair(self) -> None:
         """Show the subsprite sizes in force, on a sprite map and nowhere else.
@@ -587,9 +590,10 @@ class TilemapBarMixin:
     def _binding_note(self, entry: Entry, source: TileSource) -> str:
         """One line saying where the tiles come from, and how they are read.
 
-        The pixel format is the bound entry's own — a tilemap does not get a
-        second opinion about it — so this reports it rather than offering a
-        control that would fight the entry's own picker.
+        The pixel format is the one the bound read uses — the bound entry's own
+        where it has one; a tilemap does not get a second opinion about it — so
+        this reports it rather than offering a control that would fight the
+        entry's own picker.
         """
         if not source.is_bound:
             return (
@@ -625,12 +629,18 @@ class TilemapBarMixin:
                     " - edit them to change the stamps."
                 )
             return f"Stamped from {bound.name} - edit it there to change the stamps."
-        preset = bound.session.pixel_preset_id if bound.session is not None else ""
-        try:
-            name = self._registry.preset(preset).name
-        except KeyError:
-            name = preset or "its own format"
-        return f"Tiles from {bound.name}, read as {name}."
+        # The format the tiles are actually read in, by the bound read's own
+        # order: a loaded document's, then the entry's session, then the
+        # window's current one (:func:`~celpix.project.documents.
+        # tile_source_config`) — which an entry opened without a session is read
+        # in, so naming anything else here would describe another read.
+        if bound.doc is not None and not bound.doc.is_tilemap:
+            preset = bound.doc.pixel_config.interpret_preset_id
+        elif bound.session is not None:
+            preset = bound.session.pixel_preset_id
+        else:
+            preset = self._pixel_preset_id()
+        return f"Tiles from {bound.name}, read as {self._preset_name(preset)}."
 
     def _binding_combo_rows(self, entry: Entry) -> tuple[object, ...]:
         """Everything the binding combo's **rows** are made of, in one cheap pass.
@@ -638,8 +648,8 @@ class TilemapBarMixin:
         Refilling is not cheap — :meth:`~...bindings.BindingsMixin._can_supply_tiles`
         resolves each candidate's own binding against the open list, so the scan
         is quadratic in the entries — and the bar is refreshed from every render.
-        On a project of several hundred files that was a rebuild per edit, which
-        is the lag it buys back.
+        On a project of several hundred files a rebuild per edit would be felt
+        as lag on every stroke.
 
         The rows change only when the list does, and this says so without
         resolving anything: each entry itself, the name that is shown, the two

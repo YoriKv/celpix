@@ -159,10 +159,11 @@ class PathwayConfig:
     def reads_raw_bytes(self) -> bool:
         """Whether a position in the view still names a position in the file.
 
-        Both a decompression and a reshape are byte permutations, so under either
-        the on-screen bytes are no one's file offset and the address display has
-        nothing true to show. One statement of that rule, since every surface
-        that maps between the two spaces has to ask it.
+        A reshape permutes the bytes and a decompression replaces them with a
+        longer stream, so under either the on-screen bytes are no one's file
+        offset and the address display has nothing true to show. One statement of
+        that rule, since every surface that maps between the two spaces has to
+        ask it.
         """
         return self.compression_id == NO_COMPRESSION and self.reshape_id == NO_RESHAPE
 

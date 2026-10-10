@@ -529,4 +529,10 @@ class EntriesMixin:
         current = self._workspace.current
         if current is not None and current.doc is not None:
             self._restore_session(current)
-        self._refresh_view()
+        # A re-home runs whatever is current, and that can be an entry that is
+        # unavailable (its file gone, its load failed) or nothing at all - no
+        # document to render, only the dock, which reads the palette alone.
+        if self._doc is not None:
+            self._refresh_view()
+        else:
+            self._refresh_palette_dock()

@@ -485,7 +485,8 @@ def test_a_newline_with_no_bit_left_to_set_is_reported(typed: str) -> None:
 
 def test_a_break_code_beside_the_bit_is_what_makes_a_blank_line_expressible() -> None:
     """A format with both punctuations uses the bit first — it is free — and
-    falls back to the code for the newline the bit cannot hold."""
+    falls back to the code for the newline the bit cannot hold. The code reads
+    back as its token, since a newline there is the bit's spelling alone."""
     alphabet = FontAlphabet(
         [*sequential(0, "ABC"), Glyph(0xFE, "line break", GlyphRole.BREAK)],
         flag_break=True,
@@ -494,7 +495,41 @@ def test_a_break_code_beside_the_bit_is_what_makes_a_blank_line_expressible() ->
     assert encoded.ok
     assert encoded.codes == (0, 0xFE, 1)
     assert encoded.ends_line == (True, False, False)
-    assert alphabet.decode(encoded.codes, encoded.ends_line).body == "A\n\nB"
+    assert alphabet.decode(encoded.codes, encoded.ends_line).body == "A\n[line break]B"
+
+
+@pytest.mark.parametrize(
+    ("glyphs", "codes", "ends"),
+    [
+        # A break code beside the bit: read as a newline too, ``A`` then the code
+        # would type back as ``A`` flagged, one cell short.
+        (
+            [*sequential(0, "AB"), Glyph(0xFE, "end", GlyphRole.BREAK)],
+            [0, 0xFE, 1],
+            [False, False, False],
+        ),
+        # A flagged command with an operand: the bit stays on the command's cell
+        # rather than moving to the operand the newline is written after.
+        (
+            [*sequential(0, "AB"), Glyph(0x7A, "speed", GlyphRole.CONTROL, params=1)],
+            [0x7A, 0x05, 1],
+            [True, False, False],
+        ),
+        # A command named like a hex code: ``[$03]`` has to stay byte 3.
+        (
+            [*sequential(0, "AB"), Glyph(0x08, "$03", GlyphRole.CONTROL)],
+            [0x08, 0x03, 0],
+            [False, False, False],
+        ),
+    ],
+)
+def test_what_decode_writes_encodes_back_to_the_same_cells(glyphs, codes, ends) -> None:
+    """``encode(decode(cells))`` is the identity on cells — the promise the text
+    window's untouched pieces rest on, asked of each case where one string
+    could stand for two runs of cells."""
+    alphabet = FontAlphabet(glyphs, flag_break=True)
+    encoded = alphabet.encode(alphabet.decode(codes, ends).body)
+    assert (list(encoded.codes), list(encoded.ends_line)) == (codes, ends)
 
 
 def test_which_cells_end_a_line_is_one_rule_for_the_text_and_the_picture() -> None:

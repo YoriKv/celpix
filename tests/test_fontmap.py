@@ -303,6 +303,10 @@ def test_a_fontmap_with_no_alphabet_still_opens_and_says_so(qtbot, tmp_path) -> 
     assert window._text_available()  # gated on the declaration, not the alphabet
     _status, badge = window._text_status(None)
     assert badge is not None and badge.text == "no alphabet"
+    # And read-only: with nothing to encode a keystroke through, typing would
+    # show text the cells never get.
+    window._show_text()
+    assert window._text._edit.isReadOnly()
 
 
 def test_typing_in_the_text_window_lands_on_the_cells(qtbot, tmp_path) -> None:
@@ -569,6 +573,53 @@ def test_declining_the_declaration_calls_the_binding_off(qtbot, tmp_path) -> Non
     assert entry.tile_source is None
     assert window._undo_stack.count() == depth
     assert window._tile_binding.currentIndex() == 0  # (none), put back
+
+
+def test_unticking_use_as_font_takes_the_grouping_off_bound_strings(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """The tick decides whether the sheet's Pattern groups a string's glyphs, so
+    an untick has to reach the strings bound to it as a reload would."""
+    window, bank, entry = _stacked_font(qtbot, tmp_path, [2, 0, 1], chars="ABCD")
+    assert entry.doc.cell_tiles == (1, 2)
+    monkeypatch.setattr(window, "_confirm", lambda *a, **k: True)
+
+    window._use_as_font.setChecked(False)
+    assert (entry.doc.glyph_layout, entry.doc.cell_tiles) == (None, (1, 1))
+
+    window._undo_stack.undo()
+    assert entry.doc.cell_tiles == (1, 2)
+
+
+def test_a_dictionary_glyph_added_off_the_sheet_recomposes_the_string(
+    qtbot, tmp_path
+) -> None:
+    """A dictionary code past the sheet spells out over one position per
+    character, so naming one changes the picture, not only the reading."""
+    window, _bank, _entry = _fontmap(qtbot, tmp_path, [2, 0x0A, 1], chars="ABCDE")
+    assert window._canvas._image.width() == 3 * 8
+
+    window._on_font_alphabet_edited(
+        0, 0, 0, "ABCDE", (Glyph(0x0A, "BAD"),), "name a code"
+    )
+
+    assert window._doc.drawn_positions == 5
+    assert window._canvas._image.width() == 5 * 8
+
+
+def test_an_alphabet_edit_leaves_closed_windows_closed(qtbot, tmp_path) -> None:
+    """A refresh shows its window, so an edit or its undo refreshing one the user
+    closed would bring it back every time."""
+    window, _bank, _entry = _fontmap(qtbot, tmp_path, [2, 0, 1], chars="")
+    window._refresh_view()
+    window._text.close()
+    window._font_alphabet.close()
+
+    window._on_font_alphabet_edited(0, 0, 0, UPPER, (), "edit font alphabet")
+    window._undo_stack.undo()
+
+    assert not window._text.isVisible()
+    assert not window._font_alphabet.isVisible()
 
 
 def test_an_alphabet_edit_is_one_undo_step(qtbot, tmp_path) -> None:
@@ -1091,13 +1142,14 @@ def test_an_undo_settles_the_budget_line_on_what_it_restored(qtbot, tmp_path) ->
     window, _entry = _typing(qtbot, tmp_path, [2, 0, 1], 0)  # "CAB"
     field = window._text._edit
     qtbot.keyClicks(field, "X")  # typed over: one step on the stack
+    window._text._insert_mode.setChecked(True)
     qtbot.keyClicks(field, "[")  # and a code opened, which the file has not got
 
-    assert window._text.body == "X[B"
-    # Two, not one: the code being spelled costs its cell like any other piece,
-    # and a budget that only counted it once it was finished would be stale for
+    assert window._text.body == "X[AB"
+    # Four: the code being spelled costs its cell like any other piece, and a
+    # budget that only counted it once it was finished would be stale for
     # exactly as long as the user was typing it.
-    assert "2 / 3 cells" in window._text._status.currentMessage()
+    assert "4 / 3 cells" in window._text._status.currentMessage()
 
     window._undo_stack.undo()
 
@@ -1413,6 +1465,25 @@ def test_a_pair_typed_a_letter_at_a_time_lands_on_the_one_cell_it_costs(
     # shorter string that was typed to get there.
     assert window._doc.text.body == "THFOX "
     assert window._text.body == "THFOX "
+
+
+def test_a_keystroke_leaves_a_pair_the_file_stores_apart_as_it_is(
+    qtbot, tmp_path
+) -> None:
+    """Only the piece typed over is re-encoded.
+
+    The file holds ``T``, ``H`` as two codes, the font has one for the pair, and
+    encoding the whole string longest-first would pair both words on any
+    keystroke - rewriting cells the user never touched and sliding the rest of
+    the region left.
+    """
+    # "THE THE", every letter its own cell; the caret on the first E.
+    codes = [19, 7, 4, 36, 19, 7, 4]
+    window, _entry = _pair_typing(qtbot, tmp_path, codes, 2)
+
+    qtbot.keyClicks(window._text._edit, "A")
+
+    assert [cell.index for cell in window._doc.cells] == [19, 7, 0, 36, 19, 7, 4]
 
 
 def test_backspace_between_a_pairs_letters_takes_the_whole_pair(

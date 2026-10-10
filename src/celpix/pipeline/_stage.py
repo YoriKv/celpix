@@ -353,23 +353,31 @@ def tile_params(doc: Document, engine, params: dict) -> dict:  # noqa: ANN001
 def pixel_geometry(
     cfg: PathwayConfig, reg: Registry, bitmap_width: int = 0
 ) -> tuple[int, int, int]:
-    """``(bytes_per_tile, tile_width, tile_height)`` of ``cfg``'s pixel codec."""
+    """``(bytes_per_tile, tile_width, tile_height)`` of ``cfg``'s pixel codec.
+
+    Every codec call — ``tile_size`` inside :func:`bitmap_params` included — runs
+    as one stage, so a codec that raises arrives as the :class:`PipelineError`
+    callers handle rather than as whatever the plugin threw.
+    """
     engine, preset = reg.engine_for(cfg.interpret_preset_id, PixelCodecPlugin)
-    params = bitmap_params(
-        engine, {**preset.params, **cfg.interpret_params}, bitmap_width
-    )
-    tile_bytes = run_stage(
-        Stage.INTERPRET_PIXEL,
-        Pathway.PIXEL,
-        lambda: engine.bytes_per_tile(params),
+
+    def geometry() -> tuple[int, int, int]:
+        params = bitmap_params(
+            engine, {**preset.params, **cfg.interpret_params}, bitmap_width
+        )
+        return (engine.bytes_per_tile(params), *engine.tile_size(params))
+
+    tile_bytes, tile_w, tile_h = run_stage(
+        Stage.INTERPRET_PIXEL, Pathway.PIXEL, geometry, plugin=preset.id
     )
     if tile_bytes <= 0:
         raise PipelineError(
             Stage.INTERPRET_PIXEL,
             Pathway.PIXEL,
             f"bytes per tile ({tile_bytes}) is not positive",
+            plugin=preset.id,
         )
-    return (tile_bytes, *engine.tile_size(params))
+    return tile_bytes, tile_w, tile_h
 
 
 def acquire_source(ref: FileRef) -> tuple[ReadSource, tuple[SourceFile, ...]]:
@@ -402,9 +410,3 @@ def acquire_source(ref: FileRef) -> tuple[ReadSource, tuple[SourceFile, ...]]:
         at += len(blob)
     joined = b"".join(blobs)
     return ReadSource(joined, ref.path, ref.offset, ref.length), tuple(spans)
-
-
-# The spellings tests outside this package still import; the names above are
-# the package's own.
-_run = run_stage
-_cell_settler = cell_settler

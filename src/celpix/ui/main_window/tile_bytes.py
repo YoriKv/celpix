@@ -75,7 +75,9 @@ class TileBytesMixin:
             "anchor": self._offset,
         }
 
-    def _decode_run(self, first: int, count: int) -> list | None:
+    def _decode_run(
+        self, first: int, count: int, *, report: bool = True
+    ) -> list | None:
         """Decode ``count`` tiles from **virtual** index ``first``; None on refusal.
 
         The one place tiles are read, so it is also the one place the
@@ -97,15 +99,20 @@ class TileBytesMixin:
         Tiles come back in **display orientation** — a tile the map mirrors or
         turns is oriented here, once, so everything downstream sees what is on
         screen. :meth:`_actual_runs` undoes it on the way back out.
+
+        ``report=False`` lets the :class:`PipelineError` out instead of raising a
+        dialog: the render calls this on every repaint and reports a failure once
+        (:meth:`~...rendering.RenderingMixin._quiet_render`), where an edit is a
+        gesture whose every refusal is news.
         """
         assert self._doc is not None
         tile_rearrangement = self._active_tile_rearrangement()
         if tile_rearrangement.is_identity():
-            return self._decode_actual_run(first, count)
+            return self._decode_actual_run(first, count, report=report)
         wanted = tile_rearrangement.actual_run(first, count)
         decoded: dict[int, object] = {}
         for run_first, run_count in coalesce_runs(wanted):
-            tiles = self._decode_actual_run(run_first, run_count)
+            tiles = self._decode_actual_run(run_first, run_count, report=report)
             if tiles is None:
                 return None
             decoded.update((run_first + i, tile) for i, tile in enumerate(tiles))
@@ -118,7 +125,9 @@ class TileBytesMixin:
             )
         return gathered
 
-    def _decode_actual_run(self, first: int, count: int) -> list | None:
+    def _decode_actual_run(
+        self, first: int, count: int, *, report: bool = True
+    ) -> list | None:
         """Decode a run of **actual** tile indices; None if the pipeline refuses."""
         assert self._doc is not None
         try:
@@ -126,6 +135,8 @@ class TileBytesMixin:
                 self._doc, self._registry, first, count, **self._view_frame()
             )
         except PipelineError as exc:
+            if not report:
+                raise
             self._report(exc)
             return None
 

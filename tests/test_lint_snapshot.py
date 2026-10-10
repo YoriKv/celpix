@@ -14,7 +14,8 @@ person to add a preset. When it fails::
     uv run tools/celpix-lint/generate_snapshot.py
 
 The file is read as data rather than through ``celpix_lint``, which is not on
-this environment's path.
+this environment's path; the one test of the linter's hand-written schema puts
+its source on the path for itself.
 """
 
 from __future__ import annotations
@@ -113,3 +114,70 @@ def test_input_declarations_match(snapshot):
         assert snapshot.get("inputs", {}).get(stage.value, {}) == expected, (
             f"{stage.value} inputs {REGENERATE}"
         )
+
+
+def test_every_key_the_writer_emits_is_one_the_linter_reads_on_that_kind(
+    tmp_path, monkeypatch
+):
+    """The snapshot's counterpart for the linter's hand-written schema: a key
+    celPix writes on a kind the linter thinks never reads it is reported to the
+    user as doing nothing, which is the opposite of what happens. One entry of
+    every kind with every optional stage set, saved by the real writer."""
+    from celpix.core.capabilities import ContentKind
+    from celpix.project.inputs import RegionBinding
+    from celpix.project.projectfile import save_project
+    from celpix.project.workspace import (
+        CompositePiece,
+        Entry,
+        EntryKind,
+        FileStages,
+        TileMode,
+        TileSource,
+        Workspace,
+    )
+
+    monkeypatch.syspath_prepend(str(SNAPSHOT.parent.parent.parent))
+    from celpix_lint import schema
+
+    for name in ("rom.bin", "c.pal"):
+        (tmp_path / name).write_bytes(bytes(0x100))
+    rom_path, pal_path = str(tmp_path / "rom.bin"), str(tmp_path / "c.pal")
+    binding = {"compression.lz2": {"table": RegionBinding(offset=0, length=4)}}
+    ws = Workspace()
+    rom = ws.open_file(rom_path)
+    rom.set_file_stages(
+        FileStages("container.smd", "reshape.swap-bytes-2", "compression.lz2")
+    )
+    rom.inputs = binding
+    rom.content_kind = ContentKind.TILEMAP
+    rom.tile_source = TileSource(mode=TileMode.ENTRY, entry=rom)
+    cut = ws.add_slice(
+        rom_path, "cut", 0, 16, "compression.lz2", "reshape.swap-bytes-2"
+    )
+    cut.inputs = binding
+    ws.add_slice_under(cut, "inner", 0, 8)
+    ws.entries.append(Entry(name="mark", kind=EntryKind.BOOKMARK, path=rom_path))
+    palette = ws.add_palette(pal_path, "preset.palette.bgr555")
+    palette.set_file_stages(
+        FileStages("container.smd", "reshape.swap-bytes-2", "compression.lz2")
+    )
+    palette.inputs = binding
+    ws.entries.append(
+        Entry(
+            name="joined",
+            kind=EntryKind.COMPOSITE,
+            path="",
+            pieces=(CompositePiece(entry=cut),),
+        )
+    )
+    project = tmp_path / "p.celpix"
+    save_project(ws, str(project))
+    assert schema.KNOWN_PROJECT_VERSION == PROJECT_VERSION
+    for entry in json.loads(project.read_text(encoding="utf-8"))["entries"]:
+        for key in entry:
+            assert key in schema.ENTRY_KEYS, f"{key} is not in the linter's schema"
+            kinds = schema.KIND_ONLY.get(key)
+            assert kinds is None or entry["kind"] in kinds, (
+                f"celPix writes `{key}` on a {entry['kind']} entry; "
+                "the linter's KIND_ONLY says it is never read there"
+            )

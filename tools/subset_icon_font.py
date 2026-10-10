@@ -76,7 +76,11 @@ def main() -> int:
     if result.returncode != 0:
         return result.returncode
     size = args.output.stat().st_size
-    print(f"{args.output.relative_to(REPO)}: {len(unicodes)} glyphs, {size:,} bytes")
+    # Repo-relative for the shipped subset, as given for a trial written anywhere
+    # else — the font is already written, so naming it must not be what fails.
+    written = args.output.resolve()
+    shown = written.relative_to(REPO) if written.is_relative_to(REPO) else args.output
+    print(f"{shown}: {len(unicodes)} glyphs, {size:,} bytes")
     return 0
 
 

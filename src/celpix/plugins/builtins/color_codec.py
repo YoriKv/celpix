@@ -13,8 +13,14 @@ per bit, most significant first, the way the format's own notes draw it
 it, and ``bytes_per_entry`` is cross-checked against it where both are given.
 
 The round trip is exact: a ``w``-bit field decodes to 8 bits by replicating its
-high bits (``raw << (8-w) | raw >> (2w-8)``) and re-encodes by ``comp >> (8-w)``,
-recovering the original field, and unused bits stay 0.
+high bits (``raw << (8-w) | raw >> (2w-8)``) and re-encodes to the nearest field
+value, which for a decoded colour is the field it came from; unused bits stay 0.
+
+``alpha_max`` is for a format whose alpha scale stops short of its field: the PS2
+reads an 8-bit CLUT alpha with ``0x80`` as opaque. It names the field value that
+means opaque, and alpha scales against it instead of against all ones
+(:func:`~celpix.plugins.builtins._mask._alpha_up`), still exact for every value up
+to it.
 
 Three things exist for the handheld grayscale palettes, which are the same kernel
 seen through different-shaped holes:
@@ -74,6 +80,7 @@ class _Config:
     invert: bool
     gray: bool
     masks: dict[str, tuple[int, ...]]
+    alpha_max: int | None  # the alpha field's opaque value, if not all ones
 
 
 # Rec. 601 luma, the weighting the handhelds' own art tools reduced with. Scaled
@@ -149,6 +156,12 @@ class ColorCodec:
             # reading one field *is* a grey. Encode grays the colour first, which
             # makes the three writes agree and the OR exact.
             masks |= {"r": shade, "g": shade, "b": shade}
+        alpha_max = None
+        if params.get("alpha_max") is not None:
+            if "a" not in masks:
+                raise ValueError("alpha_max needs an alpha field (a) in the layout")
+            top = (1 << sum(bin(chunk).count("1") for chunk in masks["a"])) - 1
+            alpha_max = integer(params, "alpha_max", low=1, high=top)
         return _Config(
             unit_bytes=unit_bytes,
             per_unit=per_unit,
@@ -157,6 +170,7 @@ class ColorCodec:
             invert=flag(params, "invert"),
             gray=gray,
             masks=masks,
+            alpha_max=alpha_max,
         )
 
     def decode(
@@ -171,7 +185,9 @@ class ColorCodec:
             unit = int.from_bytes(data[off : off + cfg.unit_bytes], cfg.order)
             for at in range(cfg.per_unit):
                 value = (unit >> (at * cfg.entry_bits)) & slot
-                colors.append(value_to_argb(value, cfg.masks, sw, cfg.invert))
+                colors.append(
+                    value_to_argb(value, cfg.masks, sw, cfg.invert, cfg.alpha_max)
+                )
         return Palette(colors)
 
     def encode(
@@ -189,9 +205,9 @@ class ColorCodec:
             for at, argb in enumerate(palette.colors[base : base + cfg.per_unit]):
                 if cfg.gray:
                     argb = _to_gray(argb)
-                unit |= argb_to_value(argb, cfg.masks, sw, cfg.invert) << (
-                    at * cfg.entry_bits
-                )
+                unit |= argb_to_value(
+                    argb, cfg.masks, sw, cfg.invert, cfg.alpha_max
+                ) << (at * cfg.entry_bits)
             out += unit.to_bytes(cfg.unit_bytes, cfg.order)
         return bytes(out)
 

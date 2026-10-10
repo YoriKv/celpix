@@ -460,13 +460,20 @@ class TileSourcePanel(ShortcutIsland, SheetSurface):
         # inset one pixel inside it and slightly soft — so a tile that is both
         # still reads as two rings rather than one thick one, and the two answer
         # visibly different questions rather than sitting one alpha step apart.
-        if self._marked is not None:
-            paint_mark_ring(painter, self._cell_rect(self._slot_of(self._marked)))
-        self._paint_selection(painter, event.rect())
+        # Both in physical pixels, so on a scaled screen they sit on the
+        # squares' real edges, where the lattice is.
+        with self._device_pixels(painter):
+            ring = self._device_width(1)
+            if self._marked is not None:
+                paint_mark_ring(
+                    painter, self._device_cell_rect(self._slot_of(self._marked)), ring
+                )
+            self._paint_selection(painter, event.rect(), ring)
         painter.end()
 
-    def _paint_selection(self, painter: QPainter, exposed: QRect) -> None:
-        """Outline the picked tiles, one ring per contiguous run of a row.
+    def _paint_selection(self, painter: QPainter, exposed: QRect, ring: int) -> None:
+        """Outline the picked tiles, one ring per contiguous run of a row —
+        in physical pixels, ``ring`` each layer's width in those.
 
         The canvas's rule for a multi-tile selection (:meth:`~celpix.ui.canvas.
         Canvas._paint_selection`): a run drawn as one box reads as the stretch it
@@ -491,10 +498,10 @@ class TileSourcePanel(ShortcutIsland, SheetSurface):
         """
         if self._picked_rect is not None:
             x0, y0, x1, y1 = self._picked_rect
-            rect = self._cell_rect(y0 * self._columns + x0).united(
-                self._cell_rect(y1 * self._columns + x1)
+            rect = self._device_cell_rect(y0 * self._columns + x0).united(
+                self._device_cell_rect(y1 * self._columns + x1)
             )
-            paint_pick_ring(painter, rect)
+            paint_pick_ring(painter, rect, ring)
             return
         if not self._picked:
             return
@@ -514,7 +521,9 @@ class TileSourcePanel(ShortcutIsland, SheetSurface):
                 runs.append((slot, slot))
         for first, last in runs:
             paint_pick_ring(
-                painter, self._cell_rect(first).united(self._cell_rect(last))
+                painter,
+                self._device_cell_rect(first).united(self._device_cell_rect(last)),
+                ring,
             )
 
     def _paint_grid(self, painter: QPainter, exposed: QRect) -> None:

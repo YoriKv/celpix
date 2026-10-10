@@ -2,10 +2,11 @@
 # `rgba8888` layout, but the GS reads alpha as 0x00-0x80 with 0x80 = opaque.
 # Read as plain 8-bit alpha, a 0x80 palette draws everything half transparent.
 #
-# Only alpha bit 7 is read: CLUTs hold 0x80 or 0x00 almost without exception,
-# and those two round-trip exactly. An alpha in between decodes by its top bit
-# and saves as 0x80 or 0x00 — the mask engine has no 0x80-is-full scale. The
-# 16-bit CLUT format (PSMCT16) is `bgr555`, with bit 15 the alpha bit.
+# `alpha_max` scales the whole alpha byte against 0x80, so the graded ramps fonts
+# and soft sprites use (0x20, 0x40, ...) draw as the partial alpha they are and
+# every value 0x00-0x80 saves back as itself. A stored alpha above 0x80 draws
+# opaque and, once its entry is edited, saves as 0x80. The 16-bit CLUT format
+# (PSMCT16) is `bgr555`, with bit 15 the alpha bit.
 # See docs/graphics-formats-reference/implementation-guide.md §4.
 id = "preset.palette.rgba8888-ps2"
 name = "PS2 CLUT (RGBA8888, alpha 0x80)"
@@ -15,4 +16,5 @@ category = "Sony"
 [params]
 bytes_per_entry = 4
 byte_order = "little"
-fields = "a... .... bbbb bbbb gggg gggg rrrr rrrr"
+fields = "aaaa aaaa bbbb bbbb gggg gggg rrrr rrrr"
+alpha_max = 128

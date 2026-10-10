@@ -23,6 +23,8 @@ from typing import TypeVar
 
 from PySide6.QtCore import (
     QEvent,
+    QItemSelectionModel,
+    QModelIndex,
     QObject,
     QRect,
     QSize,
@@ -41,6 +43,7 @@ from PySide6.QtGui import (
     QValidator,
 )
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -288,6 +291,31 @@ def select_combo_data(combo: QComboBox, data: object) -> None:
             combo.setCurrentIndex(index)
 
 
+def select_only(view: QAbstractItemView, item: object | None) -> None:
+    """Make ``item`` the current row **and** the whole selection; ``None`` clears both.
+
+    Every programmatic pick goes through here rather than through the view's
+    one-argument ``setCurrentItem``, which derives its selection command from
+    the **live keyboard modifiers**. Under a held Ctrl that is *Toggle* — and
+    the program sets a row from inside key presses that hold one: an undo's
+    Ctrl+Z switches the entry back and re-points the Files pane, which would
+    add the row beside the old one, or take the row already picked off. The
+    explicit command makes the answer the same whatever the user is holding.
+
+    ``item`` is any item-view item the view hands out (tree, table or list); a
+    table cell selects its whole row.
+    """
+    model = view.selectionModel()
+    if item is None:
+        model.setCurrentIndex(QModelIndex(), QItemSelectionModel.SelectionFlag.Clear)
+        return
+    model.setCurrentIndex(
+        view.indexFromItem(item),
+        QItemSelectionModel.SelectionFlag.ClearAndSelect
+        | QItemSelectionModel.SelectionFlag.Rows,
+    )
+
+
 def ask_save_path(
     parent: QWidget, title: str, default: str, file_filter: str, suffix: str
 ) -> str | None:
@@ -297,11 +325,34 @@ def ask_save_path(
     because a typed name without one is the common case and every export here
     writes exactly one format — so the extension is not the user's decision to
     forget. One helper so no export path silently omits it.
+
+    **An appended name gets its own overwrite question.** The dialog confirmed
+    the name the user typed; Qt's own dialog and the Linux ones append nothing,
+    so ``mygame`` passed its check as a new file while ``mygame.celpix`` is
+    the one about to be replaced. No sends the user back to the dialog, as the
+    dialog's own question does.
     """
-    path, _ = QFileDialog.getSaveFileName(parent, title, default, file_filter)
-    if not path:
-        return None
-    return path if path.lower().endswith(suffix.lower()) else path + suffix
+    while True:
+        path, _ = QFileDialog.getSaveFileName(parent, title, default, file_filter)
+        if not path:
+            return None
+        if path.lower().endswith(suffix.lower()):
+            return path
+        path += suffix
+        if not os.path.exists(path):
+            return path
+        answer = QMessageBox.question(
+            parent,
+            title,
+            f"{Path(path).name} already exists.\nDo you want to replace it?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            return path
+        if answer != QMessageBox.StandardButton.No:
+            return None  # the box closed some other way: nothing was chosen
+        default = path
 
 
 def show_in_file_manager(path: str) -> bool:
@@ -450,7 +501,11 @@ class IconBaker:
 
 
 def paint_selection_outline(
-    painter: QPainter, rect: QRect, alpha: int = 255, color: QColor | None = None
+    painter: QPainter,
+    rect: QRect,
+    alpha: int = 255,
+    color: QColor | None = None,
+    width: int = 1,
 ) -> None:
     """The app's shared selection outline: a white ring over a black one.
 
@@ -469,16 +524,19 @@ def paint_selection_outline(
     ring off the art rather than on it.
 
     The outer layer sits flush on the selected area's boundary and the black one
-    just inside it, so the whole 2px band lands *within* ``rect``: an aliased
+    just inside it, so the whole band lands *within* ``rect``: an aliased
     ``drawRect`` renders one pixel past its path, hence the -1 insets.
+    ``width`` is each layer's, in whatever pixels the painter draws in — a
+    surface drawing in physical pixels on a scaled screen passes the ring's
+    weight in those (:meth:`~celpix.ui.panzoom.PanZoomSurface._device_width`).
     """
     painter.setBrush(Qt.BrushStyle.NoBrush)
     outer = QColor(color) if color is not None else QColor(255, 255, 255)
     outer.setAlpha(alpha)
-    painter.setPen(QPen(outer, 1))
-    painter.drawRect(rect.adjusted(0, 0, -1, -1))
-    painter.setPen(QPen(QColor(0, 0, 0, alpha), 1))
-    painter.drawRect(rect.adjusted(1, 1, -2, -2))
+    for layer, ink in enumerate((outer, QColor(0, 0, 0, alpha))):
+        painter.setPen(QPen(ink, 1))
+        for step in range(layer * width, (layer + 1) * width):
+            painter.drawRect(rect.adjusted(step, step, -1 - step, -1 - step))
 
 
 # The width every **format picker** takes: pixel, palette, tilemap, compression
@@ -839,24 +897,27 @@ def grid_step(
     return min(max(0, target), count - 1)
 
 
-def paint_pick_ring(painter: QPainter, rect: QRect) -> None:
+def paint_pick_ring(painter: QPainter, rect: QRect, width: int = 1) -> None:
     """A panel's own pick: the selection outline, inset a pixel and a touch soft.
 
     Inset so a square that is also *marked* (:func:`paint_mark_ring`) still
     reads as two rings rather than one thick one, and soft so it does not
-    overpower the small art it sits on.
+    overpower the small art it sits on. ``width`` as
+    :func:`paint_selection_outline` takes it, the inset with it.
     """
-    paint_selection_outline(painter, rect.adjusted(1, 1, -1, -1), alpha=230)
+    paint_selection_outline(
+        painter, rect.adjusted(width, width, -width, -width), alpha=230, width=width
+    )
 
 
-def paint_mark_ring(painter: QPainter, rect: QRect) -> None:
+def paint_mark_ring(painter: QPainter, rect: QRect, width: int = 1) -> None:
     """What the canvas is pointing at, on a panel: the outline in structural blue.
 
     White is where the user pointed; blue is what that resolved to — the colour
     that marks structure rather than choice everywhere else, so the ring is not
-    read as a second pick.
+    read as a second pick. ``width`` as :func:`paint_selection_outline` takes it.
     """
-    paint_selection_outline(painter, rect, color=GRID_STRUCTURE_COLOR)
+    paint_selection_outline(painter, rect, color=GRID_STRUCTURE_COLOR, width=width)
 
 
 def value_spin(low: int, high: int, value: int, on_change) -> QSpinBox:  # noqa: ANN001
@@ -1240,6 +1301,12 @@ class ChecklistPopupButton(QToolButton):
         self.clicked.connect(self._open)
 
     def _open(self) -> None:
+        # The last popup is closed by now (a popup goes on any click away) but,
+        # parented to this button, would stay alive with its checkboxes for the
+        # session — one more set per open. Deleted here rather than on close so
+        # the boxes stay valid for as long as they are the ones on record.
+        if self._popup is not None:
+            self._popup.deleteLater()
         popup = QWidget(self, Qt.WindowType.Popup)
         outer = QVBoxLayout(popup)
         buttons = QHBoxLayout()

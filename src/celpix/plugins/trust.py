@@ -51,20 +51,29 @@ class TrustStore:
         # plugin they already okayed without a prompt on every change. Starts
         # empty each launch, so changed code still re-prompts across runs.
         self._session_paths: set[str] = set()
+        # Digests let in by that developer loop rather than by the user. Never
+        # written to disk: the user approved an earlier version of the file, not
+        # this one, so the next launch has to ask about it.
+        self._session_digests: set[str] = set()
         if path is not None:
             self._load()
 
     def is_trusted(self, digest: str) -> bool:
-        return digest in self._trusted
+        return digest in self._trusted or digest in self._session_digests
 
     def is_session_path(self, path: str) -> bool:
         """True if this path was approved earlier in this run (developer loop)."""
         return path in self._session_paths
 
     def trust(self, digest: str, path: str) -> None:
+        """Remember ``digest`` as approved by the user, across runs."""
         self._trusted[digest] = path
         self._session_paths.add(path)
         self._save()
+
+    def trust_for_session(self, digest: str) -> None:
+        """Trust ``digest`` until the app exits, without persisting it."""
+        self._session_digests.add(digest)
 
     def _load(self) -> None:
         try:

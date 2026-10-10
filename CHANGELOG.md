@@ -2,11 +2,9 @@
 
 ## v1.2.6 - unreleased
 
-- Edit File Container gains a Compression dropdown: a compressed blob extracted whole from a ROM decompresses on load and is re-packed on save, no slice needed
-- New File gains Reshape and Compression dropdowns: a new pixel or tilemap file can be created already packed and reordered, and opens through those stages
-- Edit File Container gains a Content dropdown: a file opened as the wrong kind is converted in place between pixels, tilemap and palette, slices and bookmarks following it
-- Palette files take a Reshape too, in Edit File Container and New File: a word-swapped colour table reads right as swatches and as colors alike
-- The compression preview is offered on tilemaps: the picker sits beside the tilemap format and the Decompressed window shows the unpacked cells drawn over the map's bank
+- Added compression and reshape to all file types
+- Added a compression dropdown for tilemap views and tilemap preview
+- Lots of small fixes
 
 ## v1.2.5 - 2026-10-09
 

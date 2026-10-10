@@ -68,7 +68,7 @@ from __future__ import annotations
 
 from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
-from celpix.plugins.builtins._lz import corrupt
+from celpix.plugins.builtins._lz import PaddedBits, Truncated, corrupt
 
 HEADER_SIZE = 2
 XOR_FLAG = 0x8000
@@ -97,67 +97,6 @@ INLINE_INDEX_BITS = 4
 
 
 _fail = corrupt("Nemesis")
-
-
-class _BitReader:
-    """MSB-first bit reader over a stream whose end is not byte-aligned.
-
-    Two things follow from that and neither is optional. **Zero bytes are read
-    past the end on demand**: matching a symbol has to look ahead up to
-    :data:`MAX_CODE_BITS` bits, so the last few real bits of a stream can only be
-    decoded with something behind them — and a buffer cut to the structure's own
-    length (a slice) has nothing there. Feeding zeros costs nothing, because the
-    row count ends the decode before the padding can be mistaken for data.
-
-    **``consumed`` counts only the real bytes a decode actually needed**, which is
-    the byte count a slice must cover and how streams packed end-to-end in a ROM
-    chain: counting the look-ahead fetch instead would push the next structure's
-    start a byte or two late.
-    """
-
-    def __init__(self, data: bytes, pos: int) -> None:
-        self._data = data
-        self._pos = pos
-        self._pad_bits = 0  # synthetic bits, always at the tail of the accumulator
-        self._acc = 0
-        self._bits = 0
-
-    @property
-    def _unread(self) -> int:
-        """Real (non-padding) bits still sitting in the accumulator."""
-        return self._bits - self._pad_bits
-
-    @property
-    def consumed(self) -> int:
-        return self._pos - max(self._unread, 0) // 8
-
-    @property
-    def exhausted(self) -> bool:
-        """True once no real bit is left to read, in the accumulator or behind it."""
-        return self._unread <= 0 and self._pos >= len(self._data)
-
-    def _fill(self, count: int) -> None:
-        while self._bits < count:
-            if self._pos < len(self._data):
-                self._acc = (self._acc << 8) | self._data[self._pos]
-                self._pos += 1
-            else:
-                self._acc <<= 8
-                self._pad_bits += 8
-            self._bits += 8
-
-    def peek(self, count: int) -> int:
-        self._fill(count)
-        return (self._acc >> (self._bits - count)) & ((1 << count) - 1)
-
-    def take(self, count: int) -> int:
-        value = self.peek(count)
-        self._bits -= count
-        # Bits leave from the front, so padding is only eaten once everything
-        # real ahead of it has gone.
-        self._pad_bits = min(self._pad_bits, self._bits)
-        self._acc &= (1 << self._bits) - 1
-        return value
 
 
 def _read_table(
@@ -222,7 +161,7 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
     # symbol to code. What keeps a scan honest is the table's own structure and
     # the body decoding to the declared tile count, not a minimum entry count.
 
-    reader = _BitReader(data, pos)
+    reader = PaddedBits(data, pos)
     target_rows = tiles * ROWS_PER_TILE
     out = bytearray()
     row = 0
@@ -232,22 +171,34 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
     while len(out) < target_rows * ROW_BYTES:
         if reader.exhausted:
             break
-        if reader.peek(INLINE_BITS) == INLINE_PREFIX:
-            reader.take(INLINE_BITS)
-            run = reader.take(INLINE_RUN_BITS) + 1
-            index = reader.take(INLINE_INDEX_BITS)
-        else:
-            for bits in range(1, MAX_CODE_BITS + 1):
-                key = (bits, reader.peek(bits))
-                if key in table:
-                    reader.take(bits)
-                    index, run = table[key]
-                    break
+        # A symbol the buffer holds only part of ends the decode before it: its
+        # code would otherwise finish in the reader's zero look-ahead and decode
+        # as some other symbol entirely, so nothing of it may reach the rows.
+        try:
+            if reader.peek(INLINE_BITS) == INLINE_PREFIX:
+                reader.take(INLINE_BITS)
+                run = reader.take(INLINE_RUN_BITS) + 1
+                index = reader.take(INLINE_INDEX_BITS)
             else:
-                raise _fail(
-                    f"no code table entry matches the next {MAX_CODE_BITS} bits "
-                    f"at output tile {len(out) // (ROWS_PER_TILE * ROW_BYTES)}"
-                )
+                for bits in range(1, MAX_CODE_BITS + 1):
+                    key = (bits, reader.peek(bits))
+                    if key in table:
+                        reader.take(bits)
+                        index, run = table[key]
+                        break
+                else:
+                    if reader.remaining < MAX_CODE_BITS:
+                        # The bits the buffer holds start no code, but a longer
+                        # code the cut fell inside may; that is a truncation,
+                        # not a corrupt stream.
+                        raise Truncated
+                    raise _fail(
+                        f"no code table entry matches the next {MAX_CODE_BITS} "
+                        f"bits at output tile "
+                        f"{len(out) // (ROWS_PER_TILE * ROW_BYTES)}"
+                    )
+        except Truncated:
+            break
 
         for _ in range(run):
             row = ((row << 4) | index) & 0xFFFFFFFF

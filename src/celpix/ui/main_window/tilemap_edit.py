@@ -66,6 +66,45 @@ _FIELD_LABELS = {
 }
 _BOOL_FIELDS = frozenset({"flip_h", "flip_v", "visible", "ends_line"})
 
+# The attributes a cell brings from whatever map it was lifted off, fitted to
+# the destination's format on the way in (:func:`fit_cell`). Not ``index``,
+# which is refused by name rather than fitted (``_unnameable_reference``); not
+# ``ends_line``, which a name table's record fit sets without the format
+# declaring it; and not ``flags``, where a codec carries bits it declares no
+# field for (a stamp layout's stored byte).
+_CARRIED_FIELDS = ("palette_row", "priority", "flip_h", "flip_v", "visible")
+
+
+def fit_cell(cell: Cell, fields: dict[str, int], under: Cell) -> Cell:
+    """``cell`` holding only what a format storing ``fields`` can store.
+
+    A declared field is clamped to its limit. An undeclared one takes
+    ``under``'s value — the cell already at that position, which is what the file
+    reads back there after a save, whether the format has no such field or keeps
+    it in a side array an edit cannot write. Left as copied, a flip lifted off an
+    SNES map would draw on a Game Boy one until the save dropped it.
+
+    ``flags`` is masked to its limit where declared and left alone where not
+    (:data:`_CARRIED_FIELDS`).
+    """
+    changes: dict[str, Any] = {}
+    for name in _CARRIED_FIELDS:
+        value = getattr(cell, name)
+        limit = fields.get(name)
+        if limit is None:
+            want = getattr(under, name)
+        elif name in _BOOL_FIELDS:
+            want = value
+        else:
+            want = max(0, min(value, limit))
+        if want != value:
+            changes[name] = want
+    limit = fields.get("flags")
+    if limit is not None and cell.flags & ~limit:
+        changes["flags"] = cell.flags & limit
+    return replace(cell, **changes) if changes else cell
+
+
 # Sentinels for :meth:`TilemapEditMixin._probe_cell_codec`: "``failed`` was not
 # given", and "the codec has no such method" where None is a real answer.
 _AS_DEFAULT = object()
@@ -878,7 +917,7 @@ class TilemapEditMixin:
         Stepped in **placed units** (:meth:`_lay_positions`, the stamp brush's
         lay too): the buffer holds one record per unit (:meth:`_copy_cells`),
         so on a stamped chain each record lands on exactly one stamp rather
-        than pasting a wider block than was copied.
+        than pasting a wider area than was copied.
         """
         doc = self._doc
         copied = self._cell_clipboard
@@ -951,7 +990,11 @@ class TilemapEditMixin:
 
         For the same reason it is where an edit landing a **reference the format
         cannot store** is refused, with the reason on the status bar
-        (:meth:`_unnameable_reference`).
+        (:meth:`_unnameable_reference`), and where every changed cell's
+        attributes are **fitted to this format** (:func:`fit_cell`): the cell
+        clipboard, an eyedropped record and a canvas brush all outlive an entry
+        switch, so what they lay may come from a format with fields this one
+        has not got.
         """
         doc = self._doc
         entry = self._workspace.current
@@ -959,6 +1002,9 @@ class TilemapEditMixin:
             return False
         if doc is None or doc.cells is None or entry is None:
             return False
+        fields = self._cell_fields()
+        if fields:
+            cells = self._fit_cells(cells, doc.cells, fields)
         said = notices(doc.tilemap_ctx)
         cells = doc.settle_cells(cells)
         self._show_new_notices(entry, said)
@@ -974,6 +1020,30 @@ class TilemapEditMixin:
             )
         )
         return True
+
+    @staticmethod
+    def _fit_cells(
+        cells: list[Cell], before: list[Cell], fields: dict[str, int]
+    ) -> list[Cell]:
+        """``cells`` with each changed one fitted to ``fields`` (:func:`fit_cell`).
+
+        Only the cells that differ from ``before``, by identity first — every
+        gesture copies the live list and replaces what it writes — so an edit
+        never rewrites a cell it did not touch. The same list comes back where
+        nothing needed fitting, which the no-change guard keys off.
+        """
+        out: list[Cell] | None = None
+        blank = Cell()
+        for at, cell in enumerate(cells):
+            under = before[at] if at < len(before) else blank
+            if cell is under:
+                continue
+            fitted = fit_cell(cell, fields, under)
+            if fitted is not cell:
+                if out is None:
+                    out = list(cells)
+                out[at] = fitted
+        return cells if out is None else out
 
     def _refuse_view_only(self) -> bool:
         """True — with the reason on the status bar — when cells cannot be edited.
@@ -1082,8 +1152,8 @@ class TilemapEditMixin:
         **Spliced, not replaced.** A decode drops a trailing partial cell — a file
         need not hold a whole number of them — so the re-encode can be shorter
         than the buffer it came from, and anything past the last cell stays as it
-        was read. The save path preserves it the same way, one level up, through
-        the container's own write.
+        was read. The save splices the same tail back before it packs
+        (``pipeline._tilemap_region``).
 
         A format that cannot encode what is now in the cells leaves the buffer
         alone rather than emptying it; the save is where that has to be reported,

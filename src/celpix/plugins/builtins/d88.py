@@ -43,6 +43,13 @@ offset a project quotes is one the game's own load tables can be checked against
   longer than the first disk's size field. They are read one after another into
   a single flat image.
 
+**What the read believes is bounded.** Counting every sector at ``128 << N``
+whatever it stores lets a 16-byte ID field stand for 16 KiB, so a small damaged
+or crafted file could otherwise describe gigabytes. A track is walked for at most
+:data:`MAX_SECTORS` sectors, a track several table entries share is walked once,
+and an image whose flat payload outgrows what its own size field and track table
+could hold (:func:`payload_limit`) is refused and read as plain bytes.
+
 **Write puts every byte back into its own sector**, re-parsing the destination by
 the same rule the read used (:func:`parse_image`), so ID fields, headers, the
 stored bytes past a sector's ``128 << N`` and anything the read did not reach stay
@@ -82,6 +89,14 @@ SECTOR_HEADER = 0x10
 # N is a shift, and past 7 (16 KiB) it describes no floppy sector; such an ID
 # field is damage, so the stored length is all there is to go on.
 MAX_SIZE_CODE = 7
+# A 2HD track is about 10,400 raw bytes, and every sector spends at least an ID
+# mark, its gaps and a 128-byte data field on it - some fifty at most. Twice
+# that leaves room for the copy-protected tracks that pack in short sectors,
+# while bounding how far a sector count of up to 65535 can make a walk run.
+MAX_SECTORS = 128
+# The flat size one track can honestly take: a single N=7 sector. Real tracks
+# are smaller (a 2HD track holds 8 KiB of data), so this is slack, not a target.
+MAX_TRACK_BYTES = 128 << MAX_SIZE_CODE
 STATUS_OK = 0x00
 DELETED_FLAG = 0x10
 
@@ -242,12 +257,19 @@ def _parse_disk(raw: bytes, start: int, header: int) -> Disk:
     }
     starts = sorted(set(usable.values()))
     tracks: dict[int, list[Span]] = {}
+    # Several table entries may name one track; it is walked once, and each entry
+    # still contributes its spans, which is what a loader counting entries sees.
+    walked: dict[int, list[Span]] = {}
     for index, pos in usable.items():
+        if pos in walked:
+            tracks[index] = walked[pos]
+            continue
+        start_pos = pos
         at = starts.index(pos)
         bound = starts[at + 1] if at + 1 < len(starts) else end
         count = _word(raw, pos + 4)
         found: list[tuple[int, Span]] = []
-        for i in range(count):
+        for i in range(min(count, MAX_SECTORS)):
             if pos + SECTOR_HEADER > bound:
                 break
             code, stored = raw[pos + 3], _word(raw, pos + 0x0E)
@@ -267,7 +289,7 @@ def _parse_disk(raw: bytes, start: int, header: int) -> Disk:
         if [r for r, _ in found] != sorted(r for r, _ in found):
             disk.reordered_tracks += 1
         found.sort(key=lambda pair: pair[0])
-        tracks[index] = [span for _, span in found]
+        tracks[index] = walked[start_pos] = [span for _, span in found]
         disk.sectors += len(found)
     disk.formatted_tracks = len(tracks)
     disk.track_sizes = {sum(s.size for s in spans) for spans in tracks.values()}
@@ -288,11 +310,26 @@ def _parse_disk(raw: bytes, start: int, header: int) -> Disk:
     return disk
 
 
+def payload_limit(disk: Disk) -> int:
+    """The largest flat payload ``disk`` is believed to have.
+
+    A real image's payload is its sector data without the ID fields, so it is
+    smaller than the size field; padding for unformatted tracks can take it past
+    that on a sparse disk, but never past every table entry holding a full-size
+    track. Either bound would do for a genuine disk; the larger is the limit.
+    """
+    tracks = (disk.header - TRACK_TABLE) // 4
+    return max(4 * disk.declared, tracks * MAX_TRACK_BYTES)
+
+
 def parse_image(raw: bytes) -> Image:
     """Every disk in ``raw``, one after another; no disks if it is not a D88.
 
     Shared by both directions so they cannot disagree about which file bytes a
     payload byte came from — a drift there writes tiles over sector headers.
+
+    Raises :class:`ValueError` for a disk whose flat payload passes
+    :func:`payload_limit`, before anything that size is built.
     """
     image = Image()
     at = 0
@@ -301,7 +338,14 @@ def parse_image(raw: bytes) -> Image:
         declared = _dword(raw, at + SIZE_FIELD) if header else 0
         if declared < header or not header:
             break
-        image.disks.append(_parse_disk(raw, at, header))
+        disk = _parse_disk(raw, at, header)
+        if disk.payload_size > (limit := payload_limit(disk)):
+            raise ValueError(
+                f"D88 disk at {at:#x} unwraps to {format_size(disk.payload_size)}, "
+                f"more than its size field and track table allow "
+                f"({format_size(limit)}): its sector lengths are not believable"
+            )
+        image.disks.append(disk)
         at += declared
     if image.disks:
         image.trailing = max(0, len(raw) - at)
@@ -334,7 +378,18 @@ class D88Container:
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
         raw = source.data
-        image = parse_image(raw)
+        try:
+            image = parse_image(raw)
+        except ValueError:
+            warn(
+                ctx,
+                "D88 image refused: read as plain bytes",
+                "Its sectors claim far more data than the file and its\n"
+                "track table can hold, so it is damaged or not a D88.\n"
+                "Nothing was unwrapped; the whole file is shown as-is.",
+                self.info.id,
+            )
+            return plain_read(source, ctx)
         if not image.disks:
             warn(
                 ctx,
@@ -356,7 +411,10 @@ class D88Container:
         return payload[start:end]
 
     def write(self, data: bytes, dest: WriteTarget, ctx: PipelineContext) -> bytes:
-        image = parse_image(dest.existing)
+        try:
+            image = parse_image(dest.existing)
+        except ValueError:
+            image = Image()  # refused by the read too, which read it plainly
         if not image.disks:
             return splice(dest.existing, dest.offset, data)
         out = bytearray(dest.existing)
@@ -432,7 +490,18 @@ class D88Container:
     def describe(
         self, source: ReadSource, ctx: PipelineContext
     ) -> tuple[ContainerField, ...]:
-        image = parse_image(source.data)
+        try:
+            image = parse_image(source.data)
+        except ValueError:
+            return (
+                ContainerField(
+                    "Disk header",
+                    "refused: sector data not believable",
+                    "Its sectors claim far more data than the size\n"
+                    "field and track table allow\n"
+                    "The whole file is passed on as a plain binary",
+                ),
+            )
         if not image.disks:
             return (
                 ContainerField(

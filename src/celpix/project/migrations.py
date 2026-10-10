@@ -148,6 +148,25 @@ def _migrate_6_to_7(data: dict[str, object]) -> dict[str, object]:
     return data
 
 
+def _migrate_7_to_8(data: dict[str, object]) -> dict[str, object]:
+    """v7 → v8: a **file** entry may carry a ``compression_id`` of its own — the
+    whole file is one compressed stream, unpacked on load and re-packed on save
+    — and a **palette** entry a ``reshape_id``; a palette entry's ``font`` and
+    ``palette_row_base`` are read back as well.
+
+    Purely additive, so there is nothing to rewrite: every v7 file means the
+    same at v8. The bump exists for the other direction, as 5 → 6's did. A v7
+    build ignores a file's own compression, so it shows the packed bytes as the
+    picture and lets a pixel edit write unpacked tiles over the stream; it reads
+    every child of such a file — slice, bookmark, Offset palette, whose offsets
+    count in the decoded buffer — against the packed bytes instead; it reads a
+    reshaped palette's colours un-reshaped and writes an edit back in that
+    order; and it **drops all of these on its next save**. The number is what
+    makes it warn before it does (``docs/design/project-format.md`` §2).
+    """
+    return data
+
+
 _MIGRATIONS: dict[int, Callable[[dict[str, object]], dict[str, object]]] = {
     1: _migrate_1_to_2,
     2: _migrate_2_to_3,
@@ -155,6 +174,7 @@ _MIGRATIONS: dict[int, Callable[[dict[str, object]], dict[str, object]]] = {
     4: _migrate_4_to_5,
     5: _migrate_5_to_6,
     6: _migrate_6_to_7,
+    7: _migrate_7_to_8,
 }
 
 

@@ -20,9 +20,9 @@ buffer a different address space from the file, and then the buffer is the only
 place the offset means anything: the read window is cut from it and the palette
 pathway comes back write-off, because a length-bounded ``FileRef`` cannot say
 where a permuted splice belongs. Colour edits still persist - through the buffer
-owner's **pixel** pathway (:meth:`~PaletteOffsetMixin.
+owner's **own** data pathway (:meth:`~PaletteOffsetMixin.
 _offset_palette_pixel_owner`), whose Write carries the whole region back through
-``unshape`` and the container.
+``unshape`` and the container: a graphic's pixel bytes, or a map's cells.
 
 **How far it may run.** Every window is floored to whole entries, because the
 colour codecs reject a partial trailing one, and capped at a full palette. The
@@ -257,18 +257,25 @@ class PaletteOffsetMixin:
         )
 
     def _offset_palette_pixel_owner(self) -> Entry | None:
-        """The FILE entry whose pixel buffer holds the on-screen Offset palette,
+        """The FILE entry whose view buffer holds the on-screen Offset palette,
         when a color edit should land there — ``None`` for every other palette.
 
         A buffer-backed Offset palette (its source carries ``data``: the owner
         reorders bytes, so the window was cut from the owner's view buffer) has
-        no file span of its own to write, but the *owner's* pixel pathway writes
+        no file span of its own to write, but the *owner's* data pathway writes
         the whole region through ``unshape`` and the container already. So the
         edit is persisted by splicing into that buffer and dirtying the owner's
-        pixel pathway — this answers *which entry that is*, loading its document
+        data pathway — this answers *which entry that is*, loading its document
         if it isn't yet (a slice's parent may be closed), and ``None`` when the
         owner's own write path can't carry the edit anyway (no ``unshape``, no
         container write half), which keeps those palettes honestly view-only.
+
+        A **tilemap** owner's buffer is its cells (:func:`~celpix.project.
+        configs.entry_view_bytes`), never the art its ``pixel_config`` borrows
+        from the bound bank, so it is the map's own pathway that has to be able
+        to write — and its cells that have to be editable: a sprite object's
+        frames are built from its records at load and a re-decoded record list
+        would leave them behind.
         """
         if self._palette_mode is not PaletteMode.OFFSET or self._doc is None:
             return None
@@ -279,38 +286,81 @@ class PaletteOffsetMixin:
             return None
         if owner.doc is None and not self._load_entry(owner, quiet=True):
             return None
-        assert owner.doc is not None
-        if not owner.doc.pixel_config.write_enabled:
-            return None
-        return owner
+        doc = owner.doc
+        assert doc is not None
+        if doc.is_tilemap:
+            cfg = doc.tilemap_config
+            writable = cfg is not None and cfg.write_enabled and doc.cells_editable
+        else:
+            writable = doc.pixel_config.write_enabled
+        return owner if writable else None
 
     def _sync_offset_palette_bytes(self, doc: Document, pixel_owner: Entry) -> None:
         """Splice ``doc``'s current palette bytes into ``pixel_owner``'s buffer.
 
         The persistence half of a buffer-backed Offset palette edit: re-encode
         the edited entries over the splice base (``pipeline.spliced_palette_bytes``)
-        and land the window in the owner's ``pixel_data`` at the offset it was
-        read from — the exact bytes the owner's next pixel Write will carry
-        through ``unshape`` and the container. Runs on undo as well as redo (the
-        splice is recomputed from the palette's state, not diffed), so the buffer
+        and land the window in the owner's view buffer at the offset it was read
+        from — the exact bytes the owner's next Write will carry through
+        ``unshape`` and the container. Runs on undo as well as redo (the splice
+        is recomputed from the palette's state, not diffed), so the buffer
         always mirrors the palette on screen.
         """
         target = pixel_owner.doc
         if target is None:
             return
+        # The buffer and anchor the window was read from, recomputed live rather
+        # than trusted from the ref's data_base (the owner's document may have
+        # been rebuilt since) and through the very function the read went
+        # through: a map's cells under their own anchor, a graphic's bytes under
+        # its — 0-based under a reshape or a decompressor, the recorded start
+        # under a permuting container.
+        own, base = entry_view_bytes(
+            pixel_owner, self._registry, self._pixel_preset_id(), self._workspace
+        )
+        start = doc.palette_config.source.offset - base
+        # Spliced into the window as the owner holds it now: tiles folded or
+        # painted into it since the palette was read must not go back.
+        now = own[start : start + len(doc.palette_base_bytes)] if start >= 0 else None
         try:
-            window = pipeline.spliced_palette_bytes(doc, self._registry)
+            window = pipeline.spliced_palette_bytes(doc, self._registry, now)
         except PipelineError as exc:
             self._report(exc)
             return
-        # The same addressing rule as _offset_palette_space, recomputed live
-        # rather than trusted from the ref's data_base (the owner's document may
-        # have been rebuilt since): the owner's own anchor — 0-based under a
-        # reshape or a decompressor, the recorded start under a permuting
-        # container.
-        target.replace_bytes(
-            doc.palette_config.source.offset - target.anchor_base, window
-        )
+        if target.is_tilemap:
+            self._land_in_cells(pixel_owner, start, window)
+        else:
+            target.replace_bytes(start, window)
+
+    def _land_in_cells(self, owner: Entry, start: int, window: bytes) -> None:
+        """Splice ``window`` into ``owner``'s map bytes at ``start``, and bring
+        its cells after them.
+
+        A map's Write encodes its **cells**, not the buffer they were read from
+        (``pipeline._save_tilemap``), so bytes landed in the buffer alone would
+        show in the hex dump and never reach the file. The spliced buffer is
+        decoded back to cells — exact, as the codec's round trip is — and handed
+        to the funnel every cell edit lands through, which re-chains anything
+        drawing through the map. The revision stays where it is: the colour
+        edit stamps the owner's data pathway itself, as it does a graphic's.
+        """
+        doc = owner.doc
+        cfg = doc.tilemap_config if doc is not None else None
+        if cfg is None:
+            return
+        data = doc.tilemap_data
+        spliced = data[:start] + window + data[start + len(window) :]
+        try:
+            cells = pipeline.decode_cells(
+                spliced, cfg.interpret_preset_id, self._registry, doc.tilemap_ctx
+            )
+        except PipelineError as exc:
+            self._report(exc)
+            return
+        # Set first, so the re-encode splices its cells over these bytes and a
+        # window reaching past the last cell keeps its tail.
+        doc.tilemap_data = spliced
+        self._set_cells(owner, cells, owner.pixel_revision)
 
     def _offset_palette_source(
         self,
@@ -412,12 +462,13 @@ class PaletteOffsetMixin:
                 title="celPix - palette",
             )
             return False
-        # No compression on this pathway, and none is reachable: an offset
-        # resolves against a *file* entry's buffer, and a file entry's pathway
-        # never carries a scheme - only a slice's does. Which agrees with the
-        # intent anyway: a palette sitting next to compressed graphics is not
-        # itself compressed, and round-tripping it through a compressor would
-        # relocate and corrupt it.
+        # No compression on this pathway: an offset resolves against a *file*
+        # entry's coordinates, and where that file decompresses whole (or
+        # reorders its bytes) the window is cut from its decoded buffer
+        # (``offset_palette_space``), so the bytes arrive already unpacked. The
+        # palette itself is never run through a compressor: one sitting next to
+        # compressed graphics is not itself compressed, and round-tripping it
+        # through one would relocate and corrupt it.
         # Offset mode keeps pixel reloads from restoring the default palette.
         where = self._format_offset(byte_off)
         return self._load_and_commit_palette(

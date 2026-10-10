@@ -646,6 +646,31 @@ def test_arrangement_merges_per_control_and_custom_costs_no_step(
     assert window._block_rows.isEnabled()
 
 
+def test_a_width_run_that_only_moved_the_view_takes_it_back(qtbot, tmp_path) -> None:
+    """Widening the bitmap clamps an origin near the end of the file, and
+    narrowing it again does not un-clamp: a run that walks the width home has
+    still moved the view, and its undo has to put the view back."""
+    window, _ = _open(qtbot, tmp_path)
+    stack = window._undo_stack
+    window._entire_file.setChecked(False)
+    window._rows.setValue(16)
+    window._two_d.setChecked(True)
+    window._bitmap_width.setValue(64)
+    window._nav_rows(10_000)  # the last page
+    start = window._recorded_byte_position()
+    base = stack.count()
+
+    window._bitmap_width.setValue(128)  # twice the page: the origin clamps back
+    window._bitmap_width.setValue(64)
+    moved = window._recorded_byte_position()
+    assert moved < start and stack.count() == base + 1
+
+    stack.undo()
+    assert window._recorded_byte_position() == start
+    stack.redo()
+    assert window._recorded_byte_position() == moved
+
+
 def test_the_preview_picker_is_one_step_per_scheme(qtbot, tmp_path) -> None:
     """The main view stays raw whatever the picker says, so nothing here moves a
     byte — but which scheme a region is *believed* to be in is written to the

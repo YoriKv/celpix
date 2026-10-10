@@ -520,11 +520,13 @@ class PluginInfo:
 
     ``extensions`` and ``magic`` are **Container-only** and together form its
     *signature*, what makes opening a file pick its container instead of asking.
-    ``extensions`` are lowercase suffixes including the dot (``(".nes",)``);
-    ``magic`` is a tuple of ``(offset, bytes)`` probes, any one matching being a
-    hit (a format with two byte orders declares both). Both are inert data because
-    detection runs over every registered container — including untrusted ones —
-    before a file is open, so it must not execute plugin code.
+    ``extensions`` are suffixes including the dot (``(".nes",)``), matched
+    without regard to case; ``magic`` is a tuple of ``(offset, bytes)`` probes,
+    any one matching being a hit (a format with two byte orders declares both).
+    Both are inert data because detection runs over every registered container —
+    user plugins included — before a file is open, so it must not execute plugin
+    code. A dropped-in container's signature is checked for shape when it
+    registers (:func:`check_container_signature`).
 
     A container declaring ``magic`` is matched **only** by it: the bytes assert
     what the format is, so a ``.nes`` file without ``NES\\x1a`` is not an iNES
@@ -645,6 +647,71 @@ SAVE_METHOD: dict[Stage, str] = {
 def missing_methods(plugin: object, stage: Stage) -> list[str]:
     """Which of ``stage``'s required methods ``plugin`` does not have."""
     return [m for m in STAGE_METHODS[stage] if not callable(getattr(plugin, m, None))]
+
+
+def _is_count(value: object, low: int = 0) -> bool:
+    """An int of at least ``low``, and not a bool (``True`` is a typo, not a 1)."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= low
+
+
+def check_container_signature(info: PluginInfo) -> None:
+    """Raise ``ValueError`` naming the field if ``info``'s signature is malformed.
+
+    Detection scores every registered container's signature on every file
+    opened (:func:`~celpix.plugins.detect.detect_container`), so one malformed
+    signature is not that plugin's problem alone: ``magic=(0, b"ABCD")``
+    missing its outer tuple raises on every open, ``size_modulo=(0, 0)``
+    divides by zero, and ``extensions=(".nes")`` - the missing comma makes a
+    string - claims every file ending in any of its letters. An empty magic
+    string matches every file at its offset. Checked once at registration
+    instead, where the fault can be reported against the plugin's file.
+    """
+    sequence = (tuple, list)
+    exts = info.extensions
+    if not isinstance(exts, sequence) or not all(
+        isinstance(ext, str) and ext.startswith(".") and len(ext) > 1 for ext in exts
+    ):
+        raise ValueError(
+            f"extensions must be a tuple of suffixes with their dot, such as "
+            f'(".nes",), got {exts!r}'
+        )
+    magic = info.magic
+    if not isinstance(magic, sequence) or not all(
+        isinstance(probe, sequence)
+        and len(probe) == 2
+        and _is_count(probe[0])
+        and isinstance(probe[1], bytes)
+        and probe[1]
+        for probe in magic
+    ):
+        raise ValueError(
+            f"magic must be a tuple of (offset, bytes) probes with non-empty bytes, "
+            f'such as ((0, b"NES\\x1a"),), got {magic!r}'
+        )
+    modulo = info.size_modulo
+    if modulo is not None and not (
+        isinstance(modulo, sequence)
+        and len(modulo) == 2
+        and _is_count(modulo[0], 1)
+        and _is_count(modulo[1])
+        and modulo[1] < modulo[0]
+    ):
+        raise ValueError(
+            "size_modulo must be None or (modulus, remainder) with "
+            f"0 <= remainder < modulus, got {modulo!r}"
+        )
+    for name in ("min_size", "exact_size"):
+        value = getattr(info, name)
+        if not _is_count(value):
+            raise ValueError(f"{name} must be an integer of 0 or more, got {value!r}")
+    kinds = info.content_kinds
+    if not isinstance(kinds, sequence) or not all(
+        isinstance(kind, str) and kind in {k.value for k in ContentKind}
+        for kind in kinds
+    ):
+        raise ValueError(
+            f"content_kinds must be a tuple of ContentKind members, got {kinds!r}"
+        )
 
 
 def check_declared_stage(spec: dict, stage: Stage) -> None:

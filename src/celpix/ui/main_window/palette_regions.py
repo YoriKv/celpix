@@ -153,7 +153,10 @@ class PaletteRegionsMixin:
             return row
         if space is None:
             space = self._index_space()
-        return drawn_palette_row(row, doc.palette_row_base, doc.palette_row_wrap(space))
+        # Capped like the render's, so the pen's shift is the one the picture took.
+        return drawn_palette_row(
+            row, doc.palette_row_base, doc.palette_row_wrap(space), 256 // space
+        )
 
     def _active_palette_regions(self) -> PaletteRegions:
         """The regions in force for rendering — empty while the toggle is off.

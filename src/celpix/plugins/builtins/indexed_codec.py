@@ -8,6 +8,13 @@ distance**, the table having no inverse since several slots can share a color.
 The table is the preset's data (``colors``, a list of ``0xRRGGBB``), so a new
 fixed palette is a data file.
 
+**Ties.** A fixed palette can hold one colour at several indices, and they are not
+interchangeable: the NES table is black at ``$0D`` and nine more, and ``$0D`` is
+the "blacker than black" entry that upsets the video sync on some TVs; the MSX
+table is black at both 0 and 1, and 0 is transparent. ``prefer`` lists the
+indices a tie resolves to, first listed first; with none listed, or none of them
+tied, the lowest tied index wins.
+
 **Shared entries.** ``shared_every = N`` says the hardware draws entry 0 in
 place of every *N*-th entry — the NES draws colour 0 of every background row
 from its one backdrop slot, and its first sprite slot *is* that slot
@@ -24,7 +31,7 @@ from typing import Any
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.palette import MISSING_COLOR, Palette
-from celpix.plugins._params import integer
+from celpix.plugins._params import int_list, integer
 from celpix.plugins.base import PluginInfo
 
 _MAX_COLORS = 256  # every index one entry byte can hold (bytes_per_entry)
@@ -70,7 +77,8 @@ class IndexedColorCodec:
         self, palette: Palette, params: dict[str, Any], ctx: PipelineContext
     ) -> bytes:
         table = self._table(params)
-        return bytes(self._nearest(table, argb) for argb in palette.colors)
+        prefer = self._prefer(params, len(table))
+        return bytes(self._nearest(table, argb, prefer) for argb in palette.colors)
 
     def shared_entries(
         self, index: int, params: dict[str, Any], count: int
@@ -101,15 +109,26 @@ class IndexedColorCodec:
         return 1
 
     @staticmethod
-    def _nearest(table: list[int], argb: int) -> int:
+    def _prefer(params: dict[str, Any], count: int) -> tuple[int, ...]:
+        prefer = int_list(params, "prefer")
+        for index in prefer:
+            if not 0 <= index < count:
+                raise ValueError(
+                    f"prefer names entry {index}, outside the {count}-entry table"
+                )
+        return prefer
+
+    @staticmethod
+    def _nearest(table: list[int], argb: int, prefer: tuple[int, ...] = ()) -> int:
         r, g, b = (argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF
-        best_i, best_d = 0, None
-        for i, c in enumerate(table):
-            d = (
-                abs(r - ((c >> 16) & 0xFF))
-                + abs(g - ((c >> 8) & 0xFF))
-                + abs(b - (c & 0xFF))
-            )
-            if best_d is None or d < best_d:
-                best_i, best_d = i, d
-        return best_i
+        dist = [
+            abs(r - ((c >> 16) & 0xFF))
+            + abs(g - ((c >> 8) & 0xFF))
+            + abs(b - (c & 0xFF))
+            for c in table
+        ]
+        best = min(dist)
+        for index in prefer:
+            if dist[index] == best:
+                return index
+        return dist.index(best)

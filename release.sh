@@ -20,7 +20,9 @@
 #      WSL this drives the Windows build through interop (the checkout's dist/
 #      holds the Windows app); skip it with --no-build.
 #
-# Run it from anywhere in the repo — it relocates to the repo root itself.
+# Run it from anywhere in the repo — it relocates to the repo root itself. From
+# WSL every git command goes through git.exe: the author identity and the SSH
+# key live on the Windows side, so the Linux git can neither commit nor push.
 
 set -euo pipefail
 
@@ -88,23 +90,39 @@ while [ $# -gt 0 ]; do
 done
 
 # ── Preconditions ───────────────────────────────────────────────────────────
-command -v git >/dev/null 2>&1 || die "git not found in PATH"
+IS_WSL=0
+grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null && IS_WSL=1
 
-# Relocate to the repo root so every path below is unambiguous.
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || die "not inside a git repository"
+# Chosen once, used for every git call below, the rollback included.
+GIT=git
+if [ "$IS_WSL" -eq 1 ] && command -v git.exe >/dev/null 2>&1; then
+  GIT=git.exe
+fi
+command -v "$GIT" >/dev/null 2>&1 || die "$GIT not found in PATH"
+
+# git's output for capture. git.exe may end its lines with CRLF, and a stray \r
+# would end up inside a branch name or a URL.
+git_out() { "$GIT" "$@" | tr -d '\r'; }
+
+# Relocate to the repo root so every path below is unambiguous. git.exe names it
+# as a Windows path, which bash cannot cd into until wslpath translates it.
+REPO_ROOT="$(git_out rev-parse --show-toplevel 2>/dev/null)" || die "not inside a git repository"
+if [ "$GIT" = git.exe ]; then
+  REPO_ROOT="$(wslpath -u "$REPO_ROOT")"
+fi
 cd "$REPO_ROOT"
 [ -f "$VERSION_FILE" ] || die "$VERSION_FILE not found at repo root ($REPO_ROOT)"
 
 # Must be on a branch (we push it alongside the tag).
-BRANCH="$(git symbolic-ref --short -q HEAD || true)"
+BRANCH="$(git_out symbolic-ref --short -q HEAD || true)"
 [ -n "$BRANCH" ] || die "HEAD is detached; check out a branch before releasing"
 
-git remote get-url "$REMOTE" >/dev/null 2>&1 || die "remote '$REMOTE' is not configured"
+"$GIT" remote get-url "$REMOTE" >/dev/null 2>&1 || die "remote '$REMOTE' is not configured"
 
 # Uncommitted-changes check. Only tracked-file modifications count (untracked
 # files — editor/tool dirs, build output — never end up in the release, so they
 # don't block it). --force bypasses the check but still commits ONLY the bump.
-if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+if [ -n "$(git_out status --porcelain --untracked-files=no)" ]; then
   if [ "$FORCE" -eq 1 ]; then
     warn "working tree has uncommitted changes; --force given, continuing."
     warn "only the version bump + CHANGELOG.md stamp will be committed — other changes stay uncommitted."
@@ -133,11 +151,16 @@ NEW_VERSION="$MAJ.$MIN.$PAT"
 TAG="v$NEW_VERSION"
 
 # Tag must not already exist — locally or on the remote.
-if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+if "$GIT" rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
   die "tag $TAG already exists locally"
 fi
-if remote_tag="$(git ls-remote --tags "$REMOTE" "refs/tags/$TAG" 2>/dev/null)"; then
+# An unreachable remote is no reason to stop, but it does mean the check did not
+# happen: if the tag is there after all, the push below refuses it — after the
+# branch has already gone up.
+if remote_tag="$(git_out ls-remote --tags "$REMOTE" "refs/tags/$TAG" 2>/dev/null)"; then
   [ -z "$remote_tag" ] || die "tag $TAG already exists on '$REMOTE'"
+else
+  warn "could not reach '$REMOTE' to check that $TAG is not already there."
 fi
 
 # ── Changelog section ───────────────────────────────────────────────────────
@@ -160,7 +183,7 @@ BUILD_ARGS="--clean --archive"
 BUILD_DESC=""
 BUILD_CMD=()
 if [ "$LOCAL_BUILD" -eq 1 ]; then
-  if grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null \
+  if [ "$IS_WSL" -eq 1 ] \
       && command -v cmd.exe >/dev/null 2>&1 && [ -x .venv/Scripts/python.exe ]; then
     BUILD_DESC="Windows (via cmd.exe interop)"
     BUILD_CMD=(cmd.exe /c ".venv\Scripts\python.exe packaging\build.py $BUILD_ARGS")
@@ -178,6 +201,7 @@ fi
 info "Release plan:"
 info "  repo:      $REPO_ROOT"
 info "  remote:    $REMOTE — branch $BRANCH"
+info "  git:       $GIT"
 info "  bump:      $BUMP"
 info "  version:   $CURRENT_VERSION -> $NEW_VERSION"
 info "  tag:       $TAG  (triggers the release build on push)"
@@ -193,9 +217,9 @@ if [ "$DRY_RUN" -eq 1 ]; then
   info "(dry run) nothing changed. Would:"
   info "  1. set __version__ in $VERSION_FILE to $NEW_VERSION, stamp CHANGELOG.md's"
   info "     \"## $TAG - unreleased\" heading to \"## $TAG - $TODAY\", and commit both on '$BRANCH'"
-  info "  2. git tag -a $TAG -m \"Release $TAG\""
-  info "  3. git push $REMOTE $BRANCH"
-  info "  4. git push $REMOTE $TAG   # triggers the build"
+  info "  2. $GIT tag -a $TAG -m \"Release $TAG\""
+  info "  3. $GIT push $REMOTE $BRANCH"
+  info "  4. $GIT push $REMOTE $TAG   # triggers the build"
   if [ "$LOCAL_BUILD" -eq 1 ]; then
     info "  5. ${BUILD_CMD[*]}   # rebuild local dist/"
   fi
@@ -215,7 +239,7 @@ fi
 
 # ── Execute ─────────────────────────────────────────────────────────────────
 # Restore the touched files to HEAD (undo a partial bump/stamp).
-rollback() { git checkout -q HEAD -- "$VERSION_FILE" CHANGELOG.md 2>/dev/null || true; }
+rollback() { "$GIT" checkout -q HEAD -- "$VERSION_FILE" CHANGELOG.md 2>/dev/null || true; }
 
 info "Bumping $VERSION_FILE to $NEW_VERSION ..."
 if ! sed -i -E "s/^(__version__[[:space:]]*=[[:space:]]*\")[^\"]+(\".*)/\1$NEW_VERSION\2/" "$VERSION_FILE"; then
@@ -232,33 +256,33 @@ if ! sed -i -E "s/^## $TAG[[:space:]]*-[[:space:]]*[Uu]nreleased[[:space:]]*\$/#
 fi
 
 info "Committing version bump + changelog ..."
-if ! git commit -q -m "Release $TAG" -- "$VERSION_FILE" CHANGELOG.md; then
+if ! "$GIT" commit -q -m "Release $TAG" -- "$VERSION_FILE" CHANGELOG.md; then
   rollback
   die "git commit failed; reverted $VERSION_FILE and CHANGELOG.md."
 fi
 
 info "Tagging $TAG ..."
-if ! git tag -a "$TAG" -m "Release $TAG"; then
-  warn "git tag failed; the release commit is in place but untagged. Undo with: git reset --soft HEAD^"
+if ! "$GIT" tag -a "$TAG" -m "Release $TAG"; then
+  warn "$GIT tag failed; the release commit is in place but untagged. Undo with: $GIT reset --soft HEAD^"
   die "could not create tag $TAG."
 fi
 
 info "Pushing branch $BRANCH to $REMOTE ..."
-if ! git push "$REMOTE" "$BRANCH"; then
+if ! "$GIT" push "$REMOTE" "$BRANCH"; then
   warn "branch push failed. Nothing has triggered a build yet. Retry with:"
-  warn "  git push $REMOTE $BRANCH && git push $REMOTE $TAG"
+  warn "  $GIT push $REMOTE $BRANCH && $GIT push $REMOTE $TAG"
   die "push of branch '$BRANCH' to '$REMOTE' failed."
 fi
 
 info "Pushing tag $TAG to $REMOTE (triggers the release build) ..."
-if ! git push "$REMOTE" "$TAG"; then
+if ! "$GIT" push "$REMOTE" "$TAG"; then
   warn "the branch is pushed, but pushing tag $TAG failed — the build did NOT trigger. Retry with:"
-  warn "  git push $REMOTE $TAG"
+  warn "  $GIT push $REMOTE $TAG"
   die "tag push to '$REMOTE' failed."
 fi
 
 # Build the Actions/Releases URLs from the remote URL (supports ssh + https).
-slug="$(git remote get-url "$REMOTE" | sed -E 's#^git@[^:]+:##; s#^https?://[^/]+/##; s#\.git$##')"
+slug="$(git_out remote get-url "$REMOTE" | sed -E 's#^git@[^:]+:##; s#^https?://[^/]+/##; s#\.git$##')"
 
 info ""
 info "Released $TAG. GitHub Actions is building the apps and will publish the release."

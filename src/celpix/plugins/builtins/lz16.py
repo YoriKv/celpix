@@ -69,7 +69,8 @@ BYTES_PER_TILE_ROW = TILES_PER_ROW * BYTES_PER_TILE  # 512
 _PLANE_OFFSET = (0, 1, 16, 17)
 
 # Probe ceiling: 64 tile rows = 32 KB of 4bpp tiles, comfortably past any
-# structure the format is used for.
+# structure the format is used for. It is also the encoder's: the stream has no
+# row count, so a stream longer than the probe reaches could never be read back.
 _PROBE_MAX_ROWS = 64
 
 
@@ -505,6 +506,14 @@ def _compress(tiles: bytes, *, improved: bool) -> bytes:
             f"bytes (16 4bpp tiles per tile row); got {len(tiles)}"
         )
     tile_rows = len(tiles) // BYTES_PER_TILE_ROW
+    if tile_rows > _PROBE_MAX_ROWS:
+        # The stream carries no row count, so a load finds it by probing — and a
+        # stream with more rows than the probe tries is one no load can open.
+        raise ValueError(
+            f"LZ16 streams are read back by probing at most {_PROBE_MAX_ROWS} "
+            f"tile rows ({_PROBE_MAX_ROWS * BYTES_PER_TILE_ROW:,} bytes); this "
+            f"payload is {tile_rows} rows ({len(tiles):,} bytes)"
+        )
     pixels = _tiles_to_pixels(tiles)
     pixel_rows = tile_rows * 8
 

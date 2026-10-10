@@ -108,6 +108,28 @@ def only_keys(params: Mapping[str, Any], known: Collection[str]) -> None:
         )
 
 
+def required_text(spec: Mapping[str, Any], key: str) -> str:
+    """The required, non-empty string ``spec[key]``."""
+    value = spec.get(key)
+    if value is None:
+        raise ValueError(f"{key} is required")
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{key} must be a non-empty string, got {value!r}")
+    return value
+
+
+def params_table(spec: Mapping[str, Any]) -> dict[str, Any]:
+    """A preset's ``params`` table, empty when absent.
+
+    A list or a scalar there would otherwise register and fail only at decode,
+    inside the engine, on every entry that picks the preset.
+    """
+    params = spec.get("params", {})
+    if not isinstance(params, dict):
+        raise ValueError(f"params must be a table, got {params!r}")
+    return params
+
+
 def preset_identity(spec: Mapping[str, Any]) -> tuple[str, str, str]:
     """A preset's ``id``, ``name`` and ``category``, each checked as text.
 
@@ -116,18 +138,10 @@ def preset_identity(spec: Mapping[str, Any]) -> tuple[str, str, str]:
     project file can spell back. ``category`` is optional; any heading is allowed
     (an unlisted one sorts after the known ones), but it has to be a string.
     """
-    values = []
-    for key in ("id", "name"):
-        value = spec.get(key)
-        if value is None:
-            raise ValueError(f"{key} is required")
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"{key} must be a non-empty string, got {value!r}")
-        values.append(value)
     category = spec.get("category", "")
     if not isinstance(category, str):
         raise ValueError(f"category must be a string, got {category!r}")
-    return values[0], values[1], category
+    return required_text(spec, "id"), required_text(spec, "name"), category
 
 
 def adapter_spec(
@@ -151,8 +165,6 @@ def adapter_spec(
         )
     check_declared_stage(spec, stage)
     plugin_id, name, category = preset_identity(spec)
-    params = spec.get("params", {})
-    if not isinstance(params, dict):
-        raise ValueError("params must be a table")
+    params = params_table(spec)
     only_keys(params, known)
     return plugin_id, name, category, params

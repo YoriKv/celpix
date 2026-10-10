@@ -116,7 +116,10 @@ def _compile(lut: list[int], unit: int) -> tuple[tuple[bytes, ...], ...]:
     )
 
 
-@lru_cache(maxsize=32)
+# Keyed by selector and period alone, so an entry is one preset's full set of
+# masks - up to 2^MAX_SELECTOR_BITS x 2 MiB - and a handful covers every data-LUT
+# preset a project uses at once.
+@lru_cache(maxsize=4)
 def _selector_masks(bits: tuple[int, ...], length: int) -> tuple[int, ...]:
     """A byte mask per selector value: 0xFF where that table applies, else 0.
 
@@ -124,6 +127,11 @@ def _selector_masks(bits: tuple[int, ...], length: int) -> tuple[int, ...]:
     ``bytes * n`` builds in C, and a multi-bit selector is the AND of one wave per
     bit. Building these per byte instead would cost seconds rather than
     milliseconds, so the shape of the construction is the point.
+
+    Called with the selector's whole period only (:meth:`DataLutReshape._apply`
+    cuts a shorter chunk's from these): caching by every length a region
+    happened to have would keep a full set of masks per region size alive for
+    the life of the process.
     """
     masks = []
     everything = (1 << (length * 8)) - 1
@@ -191,9 +199,13 @@ class DataLutReshape:
         if not self._bits:
             return self._map(body, luts[0]) + tail
         out = bytearray(len(body))
+        period_masks = _selector_masks(self._bits, self._period)
         for base in range(0, len(body), self._period):
             chunk = body[base : base + self._period]
-            masks = _selector_masks(self._bits, len(chunk))
+            # A short chunk starts on a period boundary too, so its masks are
+            # the leading bytes of the full ones - the high end, big-endian.
+            short = (self._period - len(chunk)) * 8
+            masks = [mask >> short for mask in period_masks] if short else period_masks
             merged = 0
             for value, lut in enumerate(luts):
                 merged |= int.from_bytes(self._map(chunk, lut), "big") & masks[value]
@@ -235,6 +247,10 @@ def _resolve_luts(params: dict, unit: int, wanted: int) -> list[list[int]]:
             raise ValueError("params.bitswaps must be a non-empty list of tables")
         luts = []
         for table in bitswaps:
+            # Through the strict reader first: a TOML `true` sorts as a 1.
+            table = int_list(
+                {"params.bitswaps tables": table}, "params.bitswaps tables"
+            )
             if sorted(table) != list(range(width)):
                 raise ValueError(
                     f"each params.bitswaps table must be a permutation of "
@@ -251,6 +267,7 @@ def _resolve_luts(params: dict, unit: int, wanted: int) -> list[list[int]]:
             raise ValueError("params.luts must be a non-empty list of tables")
         luts = []
         for table in raw:
+            table = int_list({"params.luts tables": table}, "params.luts tables")
             if sorted(table) != list(range(256)):
                 raise ValueError(
                     "each params.luts table must be a permutation of 0..255 - a "
@@ -279,8 +296,8 @@ def data_lut_from_spec(spec: dict) -> DataLutReshape:
         # one that differs between them.
         raise ValueError("params.selector_bits cannot use bit 0 when unit = 2")
     luts = _resolve_luts(params, unit, 1 if not bits else 1 << len(bits))
-    remap = params.get("selector_remap")
-    if remap is not None:
+    if "selector_remap" in params:
+        remap = int_list(params, "selector_remap")
         # Some boards put a lookup between the extracted address bits and the
         # table index (NMK's 215 MCU programs one into the 214). Folding it into
         # the table order keeps the hot loop a plain index.

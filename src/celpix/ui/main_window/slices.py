@@ -33,7 +33,6 @@ from pathlib import Path
 
 from celpix.core.address import format_hex
 from celpix.core.capabilities import Capability, ContentKind
-from celpix.core.context import KEY_SOURCE_OFFSET
 from celpix.core.document import Document, ViewOptions
 from celpix.core.errors import PipelineError, Stage
 from celpix.pipeline import pipeline
@@ -551,11 +550,14 @@ class SlicesMixin:
                 "celPix - edit slice", f"Editing {entry.name}", "it", whose=whose
             ):
                 return
-        # A nested slice is bounded by its parent slice's decoded bytes rather
-        # than by the files.
+        # Bounded as New Slice bounds it (:meth:`_create_slice_via_dialog`): by
+        # the parent's decoded bytes rather than the files' size where the
+        # parent is a slice, or a file that decompresses whole.
         parent = self._workspace.parent_of(entry)
         extent = None
-        if entry.parent_kind is EntryKind.SLICE and parent is not None:
+        if parent is not None and (
+            parent.kind is EntryKind.SLICE or parent.compression_id != NO_COMPRESSION
+        ):
             extent = self._slice_buffer_length(parent)
             if extent is None:
                 return
@@ -719,13 +721,10 @@ class SlicesMixin:
                 title="celPix - resize",
             )
             return False
-        # A slice parent's buffer counts from 0; a file's from wherever its
-        # container started reading.
-        base = (
-            0
-            if parent.kind is EntryKind.SLICE
-            else int(parent.doc.pixel_ctx.get(KEY_SOURCE_OFFSET, 0) or 0)
-        )
+        # A slice parent's buffer counts from 0; a file's from its anchor base —
+        # where its container started reading, or 0 where a reshape or a
+        # decompressor makes slice offsets positions in the reordered buffer.
+        base = 0 if parent.kind is EntryKind.SLICE else int(parent.doc.anchor_base)
         start = entry.slice_offset - base
         if start < 0 or start + len(slot) > len(parent.doc.pixel_data):
             self._alert(
@@ -816,7 +815,11 @@ class SlicesMixin:
         # Nothing is unsaved once the edits themselves are gone. The slices
         # nested in this one go with it: they are windows into the bytes that
         # just moved.
-        self._reread_entries([entry, *self._workspace.descendants_of(entry)])
+        moved = [entry, *self._workspace.descendants_of(entry)]
+        self._reread_entries(moved)
+        # And whatever reads its inputs out of them — a stream whose table is
+        # this slice would go on decoding, and re-packing, with the old table.
+        self._reread_input_dependents(moved)
 
     # -- the slice dialog ----------------------------------------------------
     def _create_slice_via_dialog(
@@ -864,7 +867,7 @@ class SlicesMixin:
             and anchor_kind(parent) is EntryKind.FILE
             and parent.content_kind in (ContentKind.PIXELS, ContentKind.TILEMAP),
             extent=extent,
-            source=parent.name if parent.kind is EntryKind.SLICE else "",
+            source=parent.name if extent is not None else "",
             inputs_hint=lambda codec: self._inputs_hint(parent, codec),
             # A new slice has nothing to bind *on* yet, so the badge edits the
             # parent file's bindings for the codec — which ``slice_of`` hands

@@ -3,6 +3,7 @@ same file (``docs/design/palette-editing.md`` §2)."""
 
 from __future__ import annotations
 
+from celpix.plugins.base import NO_COMPRESSION
 from celpix.project.workspace import EntryKind, PaletteMode, slice_of
 from celpix.ui.main_window import MainWindow
 from celpix.ui.undo_commands import AddEntryCommand
@@ -353,3 +354,178 @@ def test_a_nested_slices_own_stages_run_over_its_parents_output(
     head, tail = unpacked[: len(filtered)], unpacked[len(filtered) :]
     assert gba_diff.decompress(head)[0] == painted["filtered"]
     assert sum_units(tail, 1) == painted["summed"]
+
+
+def test_a_slice_edit_folds_at_its_offset_under_a_header_and_a_reshape(
+    qtbot, tmp_path
+) -> None:
+    """Under a reshape a file's slice offsets are positions in its reordered
+    buffer, which starts at 0 even though the copier-header container started
+    reading 0x200 bytes in — so the fold, and the write after it, land at the
+    slice's own offset rather than one header early."""
+    rom = tmp_path / "game.smc"
+    body = bytes((i * 7) & 0xFF for i in range(0x8000))
+    rom.write_bytes(bytes(0x200) + body)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(rom))
+    parent = window._workspace.current
+    parent.container_id = "container.copier-header"
+    parent.reshape_id = "reshape.swap-bytes-2"
+    window._reread_entries([parent])
+    before = bytes(parent.doc.pixel_data)
+    cut = window._workspace.add_slice(parent.path, "cut", 0x400, 0x40, NO_COMPRESSION)
+    window._activate_entry(cut)
+    assert cut.doc.pixel_data == before[0x400:0x440]
+
+    rev = window._workspace.next_revision()
+    window._apply_pixel_bytes([(0, b"\xaa\xbb")], rev, entry=cut)
+    assert window._write_entry(cut)
+    window._activate_entry(parent)
+    assert parent.doc.pixel_data[0x400:0x402] == b"\xaa\xbb"
+    assert parent.doc.pixel_data[:0x400] == before[:0x400]
+    on_disk = rom.read_bytes()
+    assert on_disk[0x600:0x602] == b"\xbb\xaa"  # past the header, swapped back
+    assert on_disk[0x400:0x600] == (bytes(0x200) + body)[0x400:0x600]
+
+
+# -- what a write reports and marks (docs/design/palette-editing.md §2) -------
+
+
+def test_a_palette_write_reaches_the_dirty_file_it_was_written_into(
+    qtbot, tmp_path
+) -> None:
+    """A slice's Offset palette is written into its file, whose document is kept
+    because it holds unsaved edits of its own. Its buffer has to take the colour
+    in, or that file's next Write — the whole buffer — puts the old one back."""
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(bytes(range(256)))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(rom))
+    file = window._workspace.current
+    window._apply_pixel_bytes(
+        [(0, b"\xaa")],
+        window._workspace.next_revision(),
+        entry=window._workspace.current,
+    )
+    assert file.pixel_dirty
+    cut = window._workspace.add_slice(file.path, "cut", 0x40, 0x40, NO_COMPRESSION)
+    window._activate_entry(cut)
+    assert window._load_palette_at_offset(0x80)
+    window._palette_panel.select_index(1)
+    window._on_color_changed(0xFF0000FF)
+    window._write_current()
+    colour = rom.read_bytes()[0x82:0x84]
+    assert colour != bytes([0x82, 0x83])
+    assert "(palette)" in window.statusBar().currentMessage()
+
+    assert window._write_entry(file)
+    assert rom.read_bytes()[0x82:0x84] == colour
+    assert rom.read_bytes()[0] == 0xAA
+
+
+def test_a_palette_written_over_the_tiles_on_screen_repaints_them(
+    qtbot, tmp_path
+) -> None:
+    """An Offset palette inside the graphic's own tiles is written into them, and
+    the buffer takes the new bytes in — so the tiles on screen are redrawn with
+    the new indices at once, not at whatever refresh comes next."""
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(bytes(256))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(rom))
+    assert window._load_palette_at_offset(0)
+    window._palette_panel.select_index(1)
+    window._on_color_changed(0xFF123456)
+    shown = window._canvas._image.copy()
+
+    window._write_current()
+
+    assert window._doc.pixel_data[2:4] != bytes(2)
+    assert window._canvas._image != shown
+
+
+def test_write_all_leaves_a_view_only_entry_dirty_and_says_why(
+    qtbot, tmp_path, captured_alerts
+) -> None:
+    """Edits are not gated on writability, so a view-only entry can hold unsaved
+    pixels; Write All (and the quit gate behind it) must not mark them saved."""
+    from dataclasses import replace
+
+    rom = tmp_path / "a.4bpp.sfc"
+    rom.write_bytes(bytes(32 * 8))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(rom))
+    entry = window._workspace.current
+    # What a stage with no write half, or a missing plugin, makes of the config.
+    entry.doc.pixel_config = replace(entry.doc.pixel_config, write_enabled=False)
+    window._apply_pixel_bytes(
+        [(0, b"\xaa")],
+        window._workspace.next_revision(),
+        entry=window._workspace.current,
+    )
+    assert entry.pixel_dirty
+
+    window._write_all()
+
+    assert entry.pixel_dirty
+    assert rom.read_bytes() == bytes(32 * 8)
+    assert len(captured_alerts) == 1 and "view-only" in captured_alerts[0][1]
+
+
+def test_a_parent_edit_keeps_the_unsaved_colours_of_its_slices(qtbot, tmp_path) -> None:
+    """An edit to a file drops its slices' documents to re-read them from the
+    new bytes, and an Offset palette's unsaved colours live only in the slice's
+    document: they come across — on the slice on screen and on one that is not —
+    and Write All puts both on disk."""
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(bytes(1024))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(rom))
+    file = window._workspace.current
+    for name, offset in (("away", 0x200), ("shown", 0x240)):
+        cut = window._workspace.add_slice(file.path, name, 0x40, 0x100)
+        window._activate_entry(cut)
+        assert window._load_palette_at_offset(offset)
+        window._palette_panel.select_index(1)
+        window._on_color_changed(0xFF123456)
+
+    window._apply_pixel_bytes(
+        [(0, b"\xaa")], window._workspace.next_revision(), entry=file
+    )
+    assert window._doc.palette.colors[1] == 0xFF123456
+    window._write_all()
+
+    data = rom.read_bytes()
+    assert data[0x202:0x204] == data[0x242:0x244] != bytes(2)
+
+
+def test_a_parent_write_leaves_a_view_only_slice_out(
+    qtbot, tmp_path, captured_alerts
+) -> None:
+    """A slice read through a compression nothing can write back is refused by
+    its own Write, so its parent's Write must not fold it in and mark it saved
+    — it stays dirty, its bytes stay off the disk, and the write says why."""
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(bytes(256))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(rom))
+    file = window._workspace.current
+    cut = window._workspace.add_slice(file.path, "cut", 0x40, 0x40, "compression.gone")
+    window._activate_entry(cut)
+    assert not cut.doc.pixel_config.write_enabled
+    window._apply_pixel_bytes(
+        [(0, b"\xaa")], window._workspace.next_revision(), entry=cut
+    )
+    window._activate_entry(file)
+
+    assert window._write_entry(file)
+
+    assert cut.pixel_dirty
+    assert rom.read_bytes()[0x40] == 0
+    assert "cut" in captured_alerts[-1][1] and "view-only" in captured_alerts[-1][1]

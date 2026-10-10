@@ -92,6 +92,25 @@ def test_key_belonging_to_another_kind_is_never_read(project, entry):
     assert "W211" in codes
 
 
+def test_a_files_own_compression_and_a_palettes_reshape_are_read(project, entry):
+    # A file may be one compressed stream and a palette may be reshaped; a
+    # palette has no compression of its own, so that one still does nothing.
+    palette = {
+        "kind": "palette",
+        "path": "p.pal",
+        "palette_preset_id": "preset.palette.bgr555",
+        "reshape_id": "reshape.split-planes-2",
+    }
+    doc = {
+        "version": 1,
+        "entries": [entry(compression_id="compression.lz2"), palette],
+    }
+    files = {**ROM, "p.pal": 512}
+    assert "W211" not in project(doc, files=files)
+    palette["compression_id"] = "compression.lz2"
+    assert "W211" in project(doc, files=files)
+
+
 def test_tilemap_keys_on_a_pixels_entry_do_nothing(project, entry):
     codes = project(
         {"version": 1, "entries": [entry(tilemap_preset_id="preset.tilemap.snes-bg")]},

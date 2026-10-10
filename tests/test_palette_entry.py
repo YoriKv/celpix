@@ -704,3 +704,53 @@ def test_the_swatch_format_pick_on_a_palette_file_is_its_colour_format(
     assert entry.palette_preset_id == BGR555
     assert entry.doc.palette.colors == colours
     assert graphic.doc.palette.colors == colours
+
+
+def test_a_palette_file_read_past_the_error_palette_keeps_its_own_bytes(
+    qtbot, tmp_path
+) -> None:
+    """A palette file registered in a format it will not read lands on the
+    error palette and can still be applied to a graphic. Its sentinel colours
+    are ours, so none of them may reach the swatch bytes: picking the right
+    format reads the file's own colours, and a colour edit then writes back
+    exactly the file, one word changed."""
+    from celpix.project.workspace import EntryKind
+
+    pal = _palette_file(tmp_path, count=16)  # 32 bytes: no whole RGB888 colours
+    original = pal.read_bytes()
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(bytes(range(256)) * 4)
+    window = _window(qtbot)
+    window._load_pixel(str(rom))
+    window._add_palette_file(str(pal), preset_id=RGB888)
+    entry = next(e for e in window._workspace.entries if e.kind is EntryKind.PALETTE)
+    window._use_palette_entry(entry)
+    assert window._palette_error(entry.doc) is not None
+    assert entry.doc.pixel_data == original
+
+    window._palette_preset.setCurrentIndex(window._palette_preset.findData(BGR555))
+    assert window._palette_error(entry.doc) is None
+    assert entry.doc.palette.colors == _decoded(window, original)
+    assert entry.doc.pixel_data == original
+
+    window._palette_panel.select_index(1)
+    window._on_color_changed(0xFF102030)
+    assert window._write_entry(entry)
+    written = pal.read_bytes()
+    assert len(written) == len(original)
+    assert written[:COLOR] == original[:COLOR]
+    assert written[2 * COLOR :] == original[2 * COLOR :]
+    assert written[COLOR : 2 * COLOR] != original[COLOR : 2 * COLOR]
+
+
+def _decoded(window, data: bytes) -> list[int]:
+    """``data`` read as BGR555 colours, the way a fresh load would."""
+    from celpix.pipeline import pipeline
+    from celpix.pipeline.pathway import PathwayConfig
+    from celpix.plugins.base import FileRef
+
+    cfg = PathwayConfig(
+        source=FileRef(["x.pal"], data=data, data_base=0),
+        interpret_preset_id=BGR555,
+    )
+    return list(pipeline.load_palette(cfg, window._registry).palette.colors)

@@ -243,6 +243,7 @@ class CompressionMixin:
                 layout,
                 view.two_dimensional,
                 max_rows=None,
+                plugin=preset.id,
             )
         except Exception:  # noqa: BLE001 - any failure means "not a structure"
             self._overlay.hide_overlay()

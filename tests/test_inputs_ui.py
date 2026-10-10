@@ -421,3 +421,109 @@ def test_a_choice_row_stores_keys_and_keeps_a_key_it_does_not_list(
     assert row.status_widget().text() == "!"
     row._combo.setCurrentIndex(0)
     assert row.status_widget().text() != "!"
+
+
+def test_a_file_that_decompresses_whole_rereads_when_its_inputs_change(
+    qtbot, tmp_path
+) -> None:
+    """A file on its own scheme reads through that scheme's bindings exactly as
+    a slice does, so an apply re-reads it and its undo reads it back."""
+    window, rom = _open(qtbot, tmp_path)
+    rom.compression_id = XOR_ID
+    rom.inputs = {XOR_ID: {"table": RegionBinding(offset=0x100, length=4)}}
+    window._reread_entries([rom])
+    body = (tmp_path / "rom.bin").read_bytes()
+    decoded = xor_bytes(body, TABLE)
+    assert rom.doc.pixel_data == decoded
+
+    window._show_inputs(rom)
+    form = window._inputs_window
+    form._rows[(XOR_ID, "invert")]._box.setChecked(True)
+    form._on_apply()
+    assert rom.doc.pixel_data == bytes(b ^ 0xFF for b in decoded)
+    window._undo_stack.undo()
+    assert rom.doc.pixel_data == decoded
+
+
+def test_go_to_refuses_a_this_file_binding_of_a_file_that_decompresses_whole(
+    qtbot, tmp_path
+) -> None:
+    """The binding's offset is into the packed bytes, which no view shows."""
+    window, rom = _open(qtbot, tmp_path)
+    rom.compression_id = XOR_ID
+    binding = RegionBinding(offset=0x100, length=4)
+    rom.inputs = {XOR_ID: {"table": binding}}
+    window._reread_entries([rom])
+    window._show_inputs(rom)
+    landed: list[int] = []
+    window._land_on_byte = landed.append
+    window._go_to_binding(binding)
+    assert "packed bytes" in window.statusBar().currentMessage()
+    assert landed == []
+
+
+def test_re_pointing_a_table_slice_re_reads_the_stream_bound_to_it(
+    qtbot, tmp_path
+) -> None:
+    """A stream reading its table out of another slice decodes with wherever
+    that slice now points — after the re-point and after its undo."""
+    from dataclasses import replace
+
+    from celpix.project.workspace import SliceParams
+    from celpix.ui.undo_commands import SliceEditCommand
+
+    other = bytes([0xA0, 0xB0, 0xC0, 0xD0])
+    window, rom = _open(qtbot, tmp_path)
+    path = tmp_path / "rom.bin"
+    body = bytearray(path.read_bytes())
+    body[0x180:0x184] = other
+    path.write_bytes(bytes(body))
+    keys = window._workspace.add_slice(rom.path, "keys", 0x100, 0x20)
+    stream = window._workspace.add_slice(rom.path, "stream", 0x200, 64, XOR_ID)
+    stream.inputs = {XOR_ID: {"table": RegionBinding(entry=keys, offset=0, length=4)}}
+    window._activate_entry(keys)
+    window._activate_entry(stream)
+    assert stream.doc.pixel_data == xor_bytes(STREAM, TABLE)
+
+    before = SliceParams(
+        keys.name,
+        keys.slice_offset,
+        keys.slice_length,
+        keys.compression_id,
+        keys.reshape_id,
+        keys.content_kind,
+        keys.slot_fill,
+        match_parent=keys.match_parent,
+    )
+    after = replace(before, offset=0x180)
+    window._push_command(SliceEditCommand(window, keys, before=before, after=after))
+    window._activate_entry(stream)
+    assert stream.doc.pixel_data == xor_bytes(STREAM, other)
+    window._undo_stack.undo()
+    window._activate_entry(stream)
+    assert stream.doc.pixel_data == xor_bytes(STREAM, TABLE)
+
+
+def test_edit_slice_bounds_a_slice_of_a_file_that_decompresses_whole_as_new_slice_does(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """Both dialogs bound the offsets by the unpacked stream (shorter here)
+    rather than the packed file, and name the file they are counted in."""
+    from celpix.ui.slice_dialog import SliceDialog
+
+    window, rom = _open(qtbot, tmp_path)
+    rom.compression_id = XOR_ID
+    rom.inputs = {
+        XOR_ID: {"table": RegionBinding(offset=0x100, length=4), "output_size": 0x300}
+    }
+    window._reread_entries([rom])
+    asked: list[tuple] = []
+    monkeypatch.setattr(
+        SliceDialog,
+        "get_slice",
+        staticmethod(lambda *_a, **kw: asked.append((kw["extent"], kw["source"]))),
+    )
+    window._create_slice_via_dialog(rom)
+    cut = window._workspace.add_slice(rom.path, "cut", 0x10, 0x10)
+    window._edit_slice(cut)
+    assert asked == [(0x300, rom.name), (0x300, rom.name)]

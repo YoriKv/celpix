@@ -937,6 +937,7 @@ class _TextEdit(QPlainTextEdit):
         ):
             make_action(menu, caption, slot, menu=menu, enabled=enabled)
         menu.exec(event.globalPos())
+        menu.deleteLater()  # parented to the edit, it would pile up per right-click
 
     def mousePressEvent(self, event) -> None:  # noqa: ANN001 — QMouseEvent
         super().mousePressEvent(event)

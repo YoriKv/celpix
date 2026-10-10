@@ -14,7 +14,8 @@ Most of them also interleave groups of bits with their bytes, which is
 :class:`BitGroup` — and :class:`FlagGroup` over it, for the schemes that spend one
 bit per op — and several share one greedy parse, :func:`parse_greedy`. The read
 side of that interleave is :class:`ByteSource` and :class:`GroupReader`, which
-raise :class:`Truncated` where a buffer runs out mid-op.
+raise :class:`Truncated` where a buffer runs out mid-op; :class:`PaddedBits` is
+the same promise for the Huffman-style streams that end mid-byte.
 
 **Overlap is the part worth stating.** A match may legally reach past the position
 being encoded, into bytes the decoder has not produced yet, because every one of
@@ -114,6 +115,76 @@ class ByteSource:
             raise Truncated
         self.pos = start + count
         return self._data[start : start + count]
+
+
+class PaddedBits:
+    """MSB-first bits over a stream that ends mid-byte, looking ahead in zeros.
+
+    For the Huffman-style schemes that match a code by peeking further than the
+    code turns out to be: the last code of a stream sits in its last few bits,
+    and a buffer cut to the structure's own length has nothing behind them to
+    peek at. So :meth:`peek` reads **zero bits past the end** — but :meth:`take`
+    never does. A code that needs a padding bit to finish is a code the buffer
+    does not hold, and decoding it anyway turns a stream cut one byte short into
+    a ``complete`` decode with a wrong last symbol. It raises :class:`Truncated`
+    instead, consuming nothing — which an encoder that flushes whole bytes never
+    trips on an intact stream.
+
+    :attr:`consumed` counts only the real bytes the takes reached: the byte a
+    slice must cover, and where the next structure in a ROM chain starts.
+    Counting the look-ahead fetch instead would put that start a byte or two
+    late.
+    """
+
+    __slots__ = ("_acc", "_bits", "_data", "_pad_bits", "_pos")
+
+    def __init__(self, data: bytes, pos: int = 0) -> None:
+        self._data = data
+        self._pos = pos
+        self._pad_bits = 0  # synthetic bits, always at the tail of the accumulator
+        self._acc = 0
+        self._bits = 0
+
+    @property
+    def consumed(self) -> int:
+        """The end of the last byte a take read from."""
+        return self._pos - (self._bits - self._pad_bits) // 8
+
+    @property
+    def remaining(self) -> int:
+        """Real bits still unread, in the accumulator and behind it."""
+        return self._bits - self._pad_bits + 8 * (len(self._data) - self._pos)
+
+    @property
+    def exhausted(self) -> bool:
+        """True once no real bit is left, in the accumulator or behind it."""
+        return self._bits == self._pad_bits and self._pos >= len(self._data)
+
+    def _fill(self, count: int) -> None:
+        while self._bits < count:
+            if self._pos < len(self._data):
+                self._acc = (self._acc << 8) | self._data[self._pos]
+                self._pos += 1
+            else:
+                self._acc <<= 8
+                self._pad_bits += 8
+            self._bits += 8
+
+    def peek(self, count: int) -> int:
+        """The next ``count`` bits, zeros past the end, without moving."""
+        self._fill(count)
+        return (self._acc >> (self._bits - count)) & ((1 << count) - 1)
+
+    def take(self, count: int) -> int:
+        """The next ``count`` bits, all of them real or :class:`Truncated`."""
+        value = self.peek(count)
+        if count > self._bits - self._pad_bits:
+            raise Truncated
+        # Padding only ever sits behind every real bit, so a take that fits in
+        # the real ones leaves it whole.
+        self._bits -= count
+        self._acc &= (1 << self._bits) - 1
+        return value
 
 
 class GroupReader:
@@ -331,9 +402,14 @@ class MatchFinder:
         chain needs no walk at all — which is exactly the input that makes a chain
         long and every candidate on it a tie (a long fill, a repeating block).
 
-        The answer is exactly the one a plain walk of the chain :meth:`candidates`
-        gives would find — the longest match, on a tie the newest, among the
-        newest ``max_candidates`` in the window. What it costs is not that walk's,
+        The *length* is exactly the one a plain walk of the chain
+        :meth:`candidates` gives would find — the longest match among the newest
+        ``max_candidates`` in the window. The *offset* is one that reaches it, but
+        on a tie not necessarily the newest: the seed stands until something
+        strictly longer replaces it, and a run is stepped over by one
+        representative. Every offset is a real match, so this costs nothing but
+        bits, and only to a scheme whose distance cost grows with distance — a
+        handful on some ties. What it costs is not that walk's,
         which a scheme lifting the cap to see its whole window cannot afford: the
         chain is mostly candidates that cannot win, and three things step over
         them without looking.

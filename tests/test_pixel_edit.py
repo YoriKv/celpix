@@ -71,6 +71,27 @@ def test_switching_mode_clears_the_selection_and_what_the_status_says(
     assert window.statusBar().currentMessage() == ""
 
 
+def test_a_marquee_stays_with_its_entry(qtbot, tmp_path) -> None:
+    """A marquee is drawn in its own entry's window coordinates. Carried onto
+    the next entry it masks every tool there, so a pencil outside it paints
+    nothing."""
+    window = _window(qtbot, tmp_path)
+    first = window._workspace.current
+    other = tmp_path / "t.4bpp.sfc"
+    other.write_bytes(bytes(32 * 8))
+    window._load_pixel(str(other))
+    second = window._workspace.current
+    window._activate_entry(first)
+    window._marquee = QRect(0, 0, 2, 2)
+
+    window._activate_entry(second)
+    assert window._marquee is None
+    window._on_tool_selected(Tool.PENCIL)
+    window._on_pixel_pressed(5, 5, Qt.MouseButton.LeftButton)
+    window._on_pixel_released(5, 5)
+    assert _pixel(window, 5, 5) == 5
+
+
 def test_tile_mode_swaps_to_the_select_tool_still_checked(qtbot, tmp_path) -> None:
     """Tile mode selects rather than paints, so it swaps to Select — and the rail
     keeps that button checked even though the whole rail is disabled."""
@@ -457,24 +478,21 @@ def test_zoom_request_steps_and_clamps(qtbot, tmp_path) -> None:
     assert window._zoom.value() == window._zoom.maximum()
 
 
-def test_right_click_menu_is_suppressed_in_pixel_mode(qtbot, tmp_path, monkeypatch):
+def test_right_click_menu_is_suppressed_in_pixel_mode(
+    qtbot, tmp_path, opened_menus
+) -> None:
     """The canvas context menu would swallow the right-click eyedropper, so the
-    handler returns in pixel mode before it builds (and modally execs) a menu.
-
-    Asserted at the Python level — reaching ``menu.exec()`` under the offscreen
-    platform would block and hang the run, which is exactly what we're avoiding.
-    """
+    handler returns in pixel mode before it opens one. Tile mode is the control:
+    the same call there does open it, so the empty list is the guard's doing."""
     from PySide6.QtCore import QPoint
 
     window = _window(qtbot, tmp_path)
+    window._show_canvas_menu(QPoint(0, 0))
+    assert opened_menus == []
 
-    def _boom():
-        raise AssertionError("built the context menu in pixel mode")
-
-    # Menu construction pulls the clipboard actions first; the guard must return
-    # before that, so patching it to explode proves nothing downstream ran.
-    monkeypatch.setattr(window, "_clipboard_actions", _boom)
-    window._show_canvas_menu(QPoint(0, 0))  # returns early: no menu, no raise
+    window._set_edit_mode(EditMode.TILE)
+    window._show_canvas_menu(QPoint(0, 0))
+    assert len(opened_menus) == 1
 
 
 # -- floating selection & pixel clipboard ----------------------------------

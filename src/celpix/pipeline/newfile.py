@@ -27,10 +27,13 @@ stages import them where they run, which keeps either module importable first.
 from __future__ import annotations
 
 from dataclasses import replace
-from pathlib import Path
 
 from celpix.core.capabilities import ContentKind
-from celpix.core.context import KEY_PALETTE_PRESET, KEY_PIXEL_PRESET, PipelineContext
+from celpix.core.context import (
+    KEY_PALETTE_PRESET,
+    KEY_PIXEL_PRESET,
+    PipelineContext,
+)
 from celpix.core.errors import Pathway, Stage
 from celpix.pipeline._stage import run_stage
 from celpix.pipeline.metrics import (
@@ -121,7 +124,7 @@ def blank_file_bytes(
     size = blank_size(kind, codec_id, units, reg)
     ctx = PipelineContext()
     _seed_codec(ctx, kind, codec_id)
-    shaped = _repack(cfg, b"", size, ctx, reg, pathway)
+    shaped = _repack(_from_nothing(cfg), b"", size, ctx, reg, pathway)
     container = reg.plugin(Stage.CONTAINER, cfg.container_id, ContainerPlugin)
 
     def build() -> bytes:
@@ -131,6 +134,18 @@ def blank_file_bytes(
         return data
 
     return run_stage(Stage.CONTAINER, pathway, build, "write", plugin=cfg.container_id)
+
+
+def _from_nothing(cfg: PathwayConfig) -> PathwayConfig:
+    """``cfg`` reading an empty buffer: a new file as the write half sees it.
+
+    The save's write half reads around the region it packs — the bytes before a
+    stream a scheme packs against — from the buffer the read was cut from, and
+    for a new file that is nothing: the file at the path, if there is one, is
+    the one being replaced, and reading it would be both wrong and, for a ROM
+    picked by mistake, megabytes per dialog refresh.
+    """
+    return replace(cfg, source=replace(cfg.source, data=b"", data_base=0))
 
 
 def _payload_held(
@@ -243,7 +258,9 @@ def frames_new_file(
     compressed file is not mistaken for a framed one.
     """
     size = blank_size(kind, codec_id, units, reg)
-    packed = _repack(cfg, b"", size, PipelineContext(), reg, _new_file_pathway(kind))
+    packed = _repack(
+        _from_nothing(cfg), b"", size, PipelineContext(), reg, _new_file_pathway(kind)
+    )
     return len(
         blank_file_bytes(cfg, kind=kind, codec_id=codec_id, units=units, reg=reg)
     ) != len(packed)
@@ -266,13 +283,18 @@ def create_file(
     prompt already asked about. The same two refusals as :func:`resize_file`,
     for the same reasons: one file, and a pathway with a write half.
     """
+    from celpix.pipeline.pipeline import (  # noqa: PLC0415 — circular by nature
+        replace_file,
+    )
+
     _check_resizable(cfg)
     data = blank_file_bytes(cfg, kind=kind, codec_id=codec_id, units=units, reg=reg)
     # Outside :func:`~celpix.pipeline._stage.run_stage`, unlike the framing
     # above: a path that cannot be written is the operating system's answer
     # about a filename, not a stage failing, and the caller has a better message
-    # for it than a pipeline report.
-    Path(cfg.write_target().path).write_bytes(data)
+    # for it than a pipeline report. Replaced whole, so a failure part way
+    # leaves the file the overwrite prompt was about rather than half of one.
+    replace_file(cfg.write_target().path, data)
     return blank_size(kind, codec_id, units, reg)
 
 
@@ -352,6 +374,12 @@ def resize_file(
     the reason :func:`blank_file_bytes` gives: zero is what an empty region reads
     as for every codec celPix carries, and the end of the region is the only
     place a caller can add or remove units without moving the ones already there.
+    That is the *payload's* tail. A whole file whose scheme marks its own end is
+    read as a stream at the front of a longer region, and the region keeps its
+    length: the re-packed stream is filled back out with the bytes that followed
+    it (:func:`~celpix.pipeline.pipeline._fill_region`), so a trailer — padding,
+    or data carved in with the blob — stays where it was. Only a stream that
+    outgrows the region makes the file longer.
 
     Two refusals before anything is read (:func:`_check_resizable`): a region of
     several files, and a view-only pathway.
@@ -493,4 +521,8 @@ def _repack(
     resized = (
         current[:size] if size < len(current) else current + bytes(size - len(current))
     )
+    # The payload is what changes size, not the region: the read recorded the
+    # region's length on ``ctx``, and the re-pack fills back up to it exactly as
+    # a save does, so a whole compressed file keeps whatever followed its stream
+    # where it was. A bounded slot is still the slot, which this does not touch.
     return _compress_unshape(cfg, resized, ctx, reg, pathway)

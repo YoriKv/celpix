@@ -34,9 +34,11 @@ conversion a million times over and goes through :func:`decode_tables` /
 :func:`encode_tables` — the identical kernel precomputed as one 256-entry byte
 table per (source byte, component) pair.
 
-That factorisation is exact. Both scaling functions are built from shifts and a
-mask, and shifting distributes over OR, so a component assembled from several
-source bytes is the OR of what each contributes on its own and the tables apply
+That factorisation is exact. Decoding scales with shifts and a mask, and shifting
+distributes over OR, so a component assembled from several source bytes is the OR
+of what each contributes on its own. Encoding scales a whole component byte first
+and only then scatters it, and scattering is linear too, so a source byte built
+from several components is the OR of theirs. Either way the tables apply
 byte-plane at a time over a whole buffer.
 """
 
@@ -126,8 +128,8 @@ def _scale_up(raw: int, width: int) -> int:
     are 3 bits a channel and the handheld greys are 2 and 3, so the difference is
     the whole top of their range.
 
-    The first copy lands in the top ``width`` bits, which is what keeps
-    :func:`_scale_down` an exact inverse however many follow it.
+    The result is always within half a step of ``raw * 255 / (2**width - 1)``,
+    which is what keeps :func:`_scale_down`'s rounding an exact inverse.
     """
     if width >= 8:
         return (raw >> (width - 8)) & 0xFF
@@ -139,10 +141,18 @@ def _scale_up(raw: int, width: int) -> int:
 
 
 def _scale_down(comp8: int, width: int) -> int:
-    """Inverse of :func:`_scale_up`: 8-bit component down to a ``width``-bit field."""
+    """Inverse of :func:`_scale_up`: 8-bit component down to the nearest field value.
+
+    Rounded rather than truncated. Every colour that enters a format comes through
+    here - a palette edit, a painted pixel, an import - and at the low depths a
+    floor is a whole step off: a 3-bit channel would take a dark grey ``0x1F`` to
+    black when ``0x24`` is nearer. Replication puts each decoded level within half
+    a step of ``raw * 255 / (2**width - 1)``, so rounding that same scale still
+    returns ``raw`` exactly for every value the format can hold.
+    """
     if width >= 8:
         return comp8 << (width - 8)
-    return comp8 >> (8 - width)
+    return (comp8 * ((1 << width) - 1) + 127) // 255
 
 
 def color_masks(params: dict[str, Any], width: int) -> dict[str, tuple[int, ...]]:
@@ -192,18 +202,47 @@ def _flip(raw: int, width: int, invert: bool) -> int:
     return raw ^ ((1 << width) - 1) if invert else raw
 
 
+def _alpha_up(raw: int, full: int) -> int:
+    """An alpha field whose opaque value is ``full`` rather than all ones, to 8 bits.
+
+    The PS2's GS reads CLUT alpha as ``0x00-0x80`` with ``0x80`` opaque, so the
+    field is eight bits wide but its scale ends at 128. A value past ``full``
+    means more than opaque to the blender; drawn here it saturates.
+    """
+    return min(0xFF, (raw * 0xFF + full // 2) // full)
+
+
+def _alpha_down(comp8: int, full: int) -> int:
+    """Inverse of :func:`_alpha_up`, rounded to the nearest field value.
+
+    Exact for every ``0..full``: decoding spreads those values at least one 8-bit
+    step apart, so rounding the scale back lands on the value it came from.
+    """
+    return (comp8 * full + 0x7F) // 0xFF
+
+
 def value_to_argb(
     value: int,
     masks: dict[str, tuple[int, ...]],
     sw: dict[str, tuple[tuple[int, int], ...]],
     invert: bool = False,
+    alpha_max: int | None = None,
 ) -> int:
+    """One native value to ``0xAARRGGBB``.
+
+    ``alpha_max`` is the alpha field's opaque value where the format's scale stops
+    short of the field's all-ones (:func:`_alpha_up`); None scales it like any
+    other component.
+    """
     argb = 0
     for comp in COMPONENTS:
         if comp in masks:
             width = _width(sw[comp])
             raw = _flip(gather(value, masks[comp], sw[comp]), width, invert)
-            comp8 = _scale_up(raw, width)
+            if comp == "a" and alpha_max is not None:
+                comp8 = _alpha_up(raw, alpha_max)
+            else:
+                comp8 = _scale_up(raw, width)
         elif comp == "a":
             comp8 = 0xFF  # no alpha field → opaque
         else:
@@ -217,12 +256,18 @@ def argb_to_value(
     masks: dict[str, tuple[int, ...]],
     sw: dict[str, tuple[tuple[int, int], ...]],
     invert: bool = False,
+    alpha_max: int | None = None,
 ) -> int:
+    """``0xAARRGGBB`` to the nearest native value; inverse of :func:`value_to_argb`."""
     value = 0
     for comp, chunks in masks.items():
         comp8 = (argb >> _ARGB_SHIFT[comp]) & 0xFF
         width = _width(sw[comp])
-        raw = _flip(_scale_down(comp8, width), width, invert)
+        if comp == "a" and alpha_max is not None:
+            scaled = _alpha_down(comp8, alpha_max)
+        else:
+            scaled = _scale_down(comp8, width)
+        raw = _flip(scaled, width, invert)
         value |= scatter(raw, chunks, sw[comp])
     return value
 

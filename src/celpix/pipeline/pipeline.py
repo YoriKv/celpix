@@ -31,6 +31,10 @@ geometry — is :mod:`celpix.pipeline._stage`.
 
 from __future__ import annotations
 
+import contextlib
+import os
+import shutil
+import tempfile
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -39,6 +43,7 @@ from typing import NamedTuple
 from celpix.core.address import format_hex
 from celpix.core.context import (
     KEY_INPUTS,
+    KEY_REGION_LENGTH,
     KEY_SOURCE_FILES,
     KEY_SOURCE_OFFSET,
     KEY_SOURCE_PATH,
@@ -46,6 +51,7 @@ from celpix.core.context import (
     KEY_SURROUND_START,
     KEY_TILEMAP_PALETTE_ROW_BASE,
     KEY_TILEMAP_SUBSPRITE_TILES,
+    KEY_WRITE_PRESET,
     PipelineContext,
 )
 from celpix.core.document import Document
@@ -148,19 +154,23 @@ from celpix.plugins.base import (
     FileRef,
     ReadSource,
     ReshapePlugin,
+    SourceFile,
     TilemapCodecPlugin,
     WriteTarget,
+    self_delimiting,
 )
 from celpix.plugins.registry import Registry
 
-# The pipeline's whole public surface, in one list because most of it is a
-# re-export: a caller imports this module and reaches the render, inspect and
-# metrics entry points through it without having to know which one owns what.
+# Mostly re-exports, in one list so the imports above read as deliberate: a
+# caller imports this module and reaches the render, inspect and metrics entry
+# points through it without having to know which one owns what. Not exhaustive
+# — a public name defined in this module is reachable whether or not it is here.
 __all__ = [
     "SPRITE_SHEET_PIXELS",
     "ContainerReport",
     "PaletteData",
     "PixelData",
+    "SaveRecord",
     "ScanResult",
     "SpriteHit",
     "SpriteSheet",
@@ -169,6 +179,8 @@ __all__ = [
     "TileSheet",
     "TilemapData",
     "TilemapImage",
+    "WrittenBytes",
+    "absorb_written",
     "bitmap_params",
     "blank_file_bytes",
     "blank_size",
@@ -176,6 +188,7 @@ __all__ = [
     "compose_tiles",
     "create_file",
     "decode_and_compose",
+    "decode_cells",
     "decode_tiles",
     "decode_window",
     "drawn_palette_row",
@@ -184,6 +197,7 @@ __all__ = [
     "encoded_pixel_bytes",
     "expand_cells",
     "export_palette",
+    "file_anchor",
     "find_next_structure",
     "frames_new_file",
     "glyph_sheet",
@@ -209,6 +223,7 @@ __all__ = [
     "shared_palette_entries",
     "quantize_palette",
     "read_region",
+    "replace_file",
     "reinterpret_pixel_data",
     "resize_file",
     "resized_slot_bytes",
@@ -809,6 +824,31 @@ def encode_cells(
     )
 
 
+def decode_cells(
+    data: bytes,
+    preset_id: str,
+    reg: Registry,
+    ctx: PipelineContext,
+) -> list[Cell]:
+    """``data`` as cells under ``preset_id`` — :func:`encode_cells`' inverse.
+
+    For a caller that has changed a map's **bytes** rather than its cells and
+    has to bring the cells after them, since a save encodes the cells and not
+    the buffer (:func:`_save_tilemap`): an Offset palette whose colours sit in
+    the map's own buffer is the one. The round trip is exact, so what comes back
+    encodes to ``data`` again. ``ctx`` is the document's own, for the reason
+    :func:`encode_cells` takes it. The cells alone: a format whose cells are
+    subsprites builds its frames from them at load, which this does not redo.
+    """
+    engine, preset = reg.engine_for(preset_id, TilemapCodecPlugin)
+    return run_stage(
+        Stage.INTERPRET_TILEMAP,
+        Pathway.TILEMAP,
+        lambda: engine.decode(data, preset.params, ctx),
+        plugin=preset.id,
+    )
+
+
 def read_region(cfg: PathwayConfig, reg: Registry) -> tuple[bytes, PipelineContext]:
     """A pathway's Read alone: container -> reshape -> decompress, no decoding.
 
@@ -845,13 +885,42 @@ def load(pixel: PathwayConfig, palette: PathwayConfig, reg: Registry) -> Documen
     )
 
 
+class WrittenBytes(NamedTuple):
+    """Bytes a save laid down at a plain position in ``paths`` — the joined
+    files' coordinates, as :class:`~celpix.plugins.base.FileRef` counts them."""
+
+    paths: tuple[str, ...]
+    offset: int
+    data: bytes
+
+
+class SaveRecord(NamedTuple):
+    """What :func:`save` actually put on disk, pathway by pathway.
+
+    The caller's answer to "what is saved now", which it cannot work out from
+    the request: a view-only pathway is skipped, and a palette with no edited
+    entry writes nothing (:func:`_save_palette`). Marking an entry clean, or
+    reporting a write, from anything but this claims bytes that never landed.
+
+    ``palette_window`` is the palette's window as the file now holds it, when
+    the palette was written at a plain file position — what a pixel buffer over
+    the same bytes takes on (:func:`absorb_written`).
+    """
+
+    pixel: bool = False
+    palette: bool = False
+    palette_window: WrittenBytes | None = None
+
+
 def save(
     doc: Document, reg: Registry, *, pixel: bool = True, palette: bool = True
-) -> None:
-    """Encode + compress + write the requested pathways.
+) -> SaveRecord:
+    """Encode + compress + write the requested pathways; say which were written.
 
     ``write_enabled=False`` on the pixel pathway marks a view-only document — e.g.
     a decompressed slice whose scheme has no compressor — and skips its write.
+    The returned :class:`SaveRecord` says so, so a caller marks saved only what
+    reached the disk.
 
     ``pixel``/``palette`` let a caller write one pathway alone. The two go to
     different files, so a palette-only edit has no business rewriting the graphic
@@ -862,6 +931,12 @@ def save(
     its target names a file position its bytes do not occupy, so writing it here
     would scatter them. Routing it is the host's job (it is the one that knows
     the parent) — see :func:`encoded_pixel_bytes`.
+
+    **A palette written inside the document's own pixel buffer** — an Offset
+    window into the graphic's file, routinely overlapping its tiles — is taken
+    into that buffer and its baseline as it lands (:func:`absorb_written`).
+    Otherwise the buffer keeps the colour bytes from before, and the next pixel
+    write, which lays down the whole buffer, puts them back over the edit.
     """
     own = doc.data_config
     if pixel and own.write_enabled and own.writes_through_parent:
@@ -877,11 +952,98 @@ def save(
         # is its cells. Its pixel pathway points at whatever tile source it is
         # bound to — a *different* entry's file — which must never be written as
         # a side effect of saving the map (``docs/design/tilemap-entry.md`` §3).
-        _save_tilemap(doc, reg)
+        wrote_pixel = _save_tilemap(doc, reg)
     elif pixel and doc.pixel_config.write_enabled:
         _save_pixel(doc, reg)
-    if palette and doc.palette_config.write_enabled:
+        wrote_pixel = True
+    else:
+        wrote_pixel = False
+    written = (
         _save_palette(doc, reg)
+        if palette and doc.palette_config.write_enabled
+        else None
+    )
+    window = _plain_window(doc.palette_config, written)
+    anchor = file_anchor(doc, reg)
+    if window is not None and anchor is not None:
+        absorb_written(doc, window, anchor)
+    return SaveRecord(wrote_pixel, written is not None, window)
+
+
+def _plain_window(cfg: PathwayConfig, data: bytes | None) -> WrittenBytes | None:
+    """Where ``data`` — what ``cfg``'s write just laid down — sits in its files,
+    when that is a plain position: the raw container, nothing reordered or
+    packed, and a target on disk rather than in a buffer."""
+    if data is None or not cfg.reads_raw_bytes or cfg.container_id != RAW_CONTAINER:
+        return None
+    target = cfg.write_target()
+    if target.data is not None:
+        return None
+    return WrittenBytes(target.paths, target.offset, data)
+
+
+def file_anchor(doc: Document, reg: Registry) -> int | None:
+    """The file offset ``doc.pixel_data[0]`` holds, when the buffer is its
+    file's bytes in place — or None.
+
+    In place means read straight off disk (no unsaved parent's buffer, which may
+    be a reordered one), through a container that keeps positions, with nothing
+    reshaped or decompressed. A slice read out of a dirty parent's buffer can
+    still be in place, but only the host knows whether that parent reorders, so
+    it answers for that case itself. Never for a tilemap, whose ``pixel_data``
+    is another entry's art.
+    """
+    cfg = doc.pixel_config
+    if doc.is_tilemap or not cfg.reads_raw_bytes or cfg.source.data is not None:
+        return None
+    if cfg.write_target().data is not None:
+        return None
+    container = reg.plugin(Stage.CONTAINER, cfg.container_id, ContainerPlugin)
+    if not container.info.preserves_offsets:
+        return None
+    return doc.anchor_base
+
+
+def absorb_written(doc: Document, written: WrittenBytes, anchor: int) -> bool:
+    """Take bytes just written to ``doc``'s files into its pixel buffer.
+
+    ``anchor`` is the file offset of ``doc.pixel_data[0]`` (:func:`file_anchor`),
+    and ``written.paths`` must be the files the buffer reads; the caller checks
+    both. The baseline takes every written byte — it is what the file holds —
+    and the buffer every one the user has not edited since that baseline, so an
+    unsaved pixel edit in the overlap stays pending rather than being lost. The
+    part of ``written`` outside the buffer is ignored. True when the buffer
+    changed.
+    """
+    if tuple(doc.pixel_config.write_target().paths) != tuple(written.paths):
+        return False
+    start = written.offset - anchor
+    data = written.data
+    if start < 0:
+        data = data[-start:]
+        start = 0
+    ours = doc.pixel_data
+    end = min(len(ours), start + len(data))
+    if end <= start:
+        return False
+    data = data[: end - start]
+    landed = ours[:start] + data + ours[end:]
+    base = doc.pixel_base_bytes
+    if len(base) != len(ours):
+        # No record of what was read, so nothing is known to be unsaved.
+        doc.pixel_data = landed
+        return ours[start:end] != data
+    if ours is base:
+        # Nothing unsaved: kept one object, as a load leaves them.
+        doc.pixel_data = doc.pixel_base_bytes = landed
+        return ours[start:end] != data
+    merged = bytearray(ours[start:end])
+    for i, read in enumerate(base[start:end]):
+        if merged[i] == read:
+            merged[i] = data[i]
+    doc.pixel_base_bytes = base[:start] + data + base[end:]
+    doc.pixel_data = ours[:start] + bytes(merged) + ours[end:]
+    return ours[start:end] != merged
 
 
 def export_palette(
@@ -953,7 +1115,7 @@ def _deposit(ref: FileRef, produce: Callable[[WriteTarget], bytes]) -> None:
     if len(ref.paths) == 1:
         existing = _existing(ref.path)
         result = produce(WriteTarget(existing, ref.path, ref.offset, ref.length))
-        Path(ref.path).write_bytes(result)
+        replace_file(ref.path, result)
         return
     blobs = [_existing(path) for path in ref.paths]
     existing = b"".join(blobs)
@@ -969,7 +1131,57 @@ def _deposit(ref: FileRef, produce: Callable[[WriteTarget], bytes]) -> None:
         chunk = result[at : at + len(blob)]
         at += len(blob)
         if chunk != blob:
-            Path(path).write_bytes(chunk)
+            replace_file(path, chunk)
+
+
+def replace_file(path: str, data: bytes) -> None:
+    """Make ``path`` hold exactly ``data``, all at once or not at all.
+
+    Written beside it under a temporary name and moved over it, so a crash, a
+    full disk or a locked file part way through leaves the original whole
+    rather than a truncated ROM with no copy anywhere. A symbolic link is
+    followed, so the file it names is replaced rather than the link itself. An
+    existing file keeps its permission bits; a new one gets the ones the umask
+    allows, as any other file the user creates would.
+
+    Windows refuses the move while another program holds the file open without
+    delete sharing — an emulator running the ROM, a scanner, the indexer — and
+    most do. The file is then overwritten in place instead: not atomic, but the
+    write every program holding it open already allows, and the only one left.
+    """
+    target = Path(os.path.realpath(path))
+    fd, temp = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+    try:
+        with os.fdopen(fd, "wb") as out:
+            out.write(data)
+        if target.exists():
+            shutil.copymode(target, temp)
+        else:
+            # mkstemp creates the file owner-only, which a ROM or palette the
+            # user exports has no reason to be.
+            os.chmod(temp, 0o666 & ~_umask())
+        try:
+            os.replace(temp, target)
+        except PermissionError:
+            if not target.exists():
+                raise
+            with contextlib.suppress(OSError):
+                os.unlink(temp)
+            with target.open("r+b") as out:
+                out.write(data)
+                out.truncate()
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temp)
+        raise
+
+
+def _umask() -> int:
+    """The process umask. Reading it means setting it, so it is set straight
+    back; there is no other portable way to ask."""
+    mask = os.umask(0)
+    os.umask(mask)
+    return mask
 
 
 def _offsets_survived(source: ReadSource, payload: bytes, recorded: int) -> bool:
@@ -1124,6 +1336,8 @@ def _read_reshape_decompress(
         return payload
 
     raw = run_stage(Stage.CONTAINER, pathway, read, "read", plugin=cfg.container_id)
+    # What a save of a whole file fills back up to (:func:`_fill_region`).
+    ctx.set(KEY_REGION_LENGTH, len(raw))
     # The reshape sits between the container and the decompressor so that a
     # compressed structure inside an interleaved region is contiguous by the
     # time compression sees it. It is handed the container's whole payload —
@@ -1162,6 +1376,7 @@ def _save_pixel(doc: Document, reg: Registry) -> None:
     # encoding choices than the original stream, so writing a *compressed* pathway
     # can rewrite equivalent-but-different bytes inside the slot even where nothing
     # was edited — harmless, and rare: dirty tracking gates Write All.
+    doc.pixel_ctx.set(KEY_WRITE_PRESET, doc.pixel_config.interpret_preset_id)
     _compress_unshape_write(
         doc.pixel_config, doc.pixel_data, doc.pixel_ctx, reg, Pathway.PIXEL
     )
@@ -1170,8 +1385,9 @@ def _save_pixel(doc: Document, reg: Registry) -> None:
     doc.pixel_base_bytes = doc.pixel_data
 
 
-def _save_tilemap(doc: Document, reg: Registry) -> None:
-    """Encode a tilemap's cells and write them back through its own container.
+def _save_tilemap(doc: Document, reg: Registry) -> bool:
+    """Encode a tilemap's cells and write them back through its own container;
+    False when the map is view-only and nothing was written.
 
     Re-encoded from the cells rather than written from the buffer they were read
     into, unlike :func:`_save_pixel`. A tilemap edit changes a *cell*, which is a
@@ -1193,15 +1409,29 @@ def _save_tilemap(doc: Document, reg: Registry) -> None:
     """
     cfg = doc.tilemap_config
     if cfg is None or not cfg.write_enabled:
-        return
+        return False
+    data = _tilemap_region(doc, cfg, reg)
+    _compress_unshape_write(cfg, data, doc.tilemap_ctx, reg, Pathway.TILEMAP)
+    # As :func:`_save_pixel`: the bytes just written are the file's.
+    doc.tilemap_data = doc.tilemap_base_bytes = data
+    return True
+
+
+def _tilemap_region(doc: Document, cfg: PathwayConfig, reg: Registry) -> bytes:
+    """The map's region as a save writes it: the cells encoded, over the tail
+    of the buffer they were read from that no cell covers.
+
+    The tail is what a decode dropped — a trailing partial cell, whatever a
+    prefix-decoding codec never reached — and the read handed it over as part of
+    the region, so the write hands it back. Cut, a whole-file map loses its last
+    bytes, a compressed one packs a shorter stream than it unpacked, and under a
+    reshape the region is permuted at a different length, which moves every
+    byte. The same splice an edit makes (``TilemapEditMixin._reencode_cells``).
+    """
     data = encode_cells(
         doc.settled_cells, cfg.interpret_preset_id, reg, doc.tilemap_ctx
     )
-    _compress_unshape_write(cfg, data, doc.tilemap_ctx, reg, Pathway.TILEMAP)
-    # As :func:`_save_pixel`: the cells just written are the file's, spliced
-    # over the tail the encode does not cover the way an edit is.
-    doc.tilemap_data = data + doc.tilemap_data[len(data) :]
-    doc.tilemap_base_bytes = doc.tilemap_data
+    return data + doc.tilemap_data[len(data) :]
 
 
 def encoded_tilemap_bytes(doc: Document, reg: Registry) -> bytes:
@@ -1224,9 +1454,7 @@ def encoded_tilemap_bytes(doc: Document, reg: Registry) -> bytes:
             "this map is view-only, so it has no bytes to write back",
             "encode",
         )
-    data = encode_cells(
-        doc.settled_cells, cfg.interpret_preset_id, reg, doc.tilemap_ctx
-    )
+    data = _tilemap_region(doc, cfg, reg)
     return _compress_unshape(cfg, data, doc.tilemap_ctx, reg, Pathway.TILEMAP)
 
 
@@ -1251,8 +1479,9 @@ def encoded_pixel_bytes(doc: Document, reg: Registry) -> bytes:
     )
 
 
-def _save_palette(doc: Document, reg: Registry) -> None:
-    """Encode + write the palette, **splicing** only the entries that changed.
+def _save_palette(doc: Document, reg: Registry) -> bytes | None:
+    """Encode + write the palette, **splicing** only the entries that changed;
+    returns the window as written, or None when nothing was.
 
     A color codec round-trips ARGB faithfully but not *bytes*: anything outside
     its masks is dropped, and an indexed codec has no inverse at all. So writing
@@ -1276,7 +1505,7 @@ def _save_palette(doc: Document, reg: Registry) -> None:
     base = doc.palette_base_bytes
     if base and len(base) == len(encoded):
         if not doc.palette_edits:
-            return
+            return None
         base = _palette_window_now(doc, reg, base)
     data = _splice_palette(doc, encoded, engine, preset, base)
     _compress_unshape_write(
@@ -1287,19 +1516,31 @@ def _save_palette(doc: Document, reg: Registry) -> None:
     # splice against pre-save bytes and undo the first one's edits.
     doc.palette_base_bytes = data
     doc.palette_edits = set()
+    return data
 
 
-def spliced_palette_bytes(doc: Document, reg: Registry) -> bytes:
+def spliced_palette_bytes(
+    doc: Document, reg: Registry, base: bytes | None = None
+) -> bytes:
     """The palette's byte image as a save would write it: the freshly encoded
-    bytes of the *edited* entries spliced into the buffer it was read from.
+    bytes of the *edited* entries spliced into ``base`` — by default the buffer
+    it was read from.
 
     The encode half of :func:`_save_palette`, usable without a write target —
     an Offset palette living inside a reordered region persists an edit by
     splicing this into the owning entry's pixel buffer rather than through its
-    own (write-disabled) pathway (``docs/design/palette-editing.md`` §2).
+    own (write-disabled) pathway (``docs/design/palette-editing.md`` §2). That
+    caller passes the window as the owner's buffer holds it **now**, for the
+    reason :func:`_save_palette` re-reads its target: the window runs on into
+    tiles, and splicing into the copy taken at load would put back the ones
+    edited since. A ``base`` of the wrong length is not the window and is
+    ignored.
     """
     encoded, engine, preset = _encoded_palette(doc, reg)
-    return _splice_palette(doc, encoded, engine, preset, doc.palette_base_bytes)
+    original = doc.palette_base_bytes
+    if base is not None and len(base) == len(original):
+        original = base
+    return _splice_palette(doc, encoded, engine, preset, original)
 
 
 def _encoded_palette(doc: Document, reg: Registry):  # noqa: ANN202 - (bytes, codec, preset)
@@ -1377,6 +1618,10 @@ def _compress_unshape_write(
         _deposit(target, lambda dest: container.write(shaped, dest, ctx))
 
     run_stage(Stage.CONTAINER, pathway, write, "write", plugin=cfg.container_id)
+    if target.length is None and ctx.get(KEY_REGION_LENGTH) is not None:
+        # The file's region is now what was just written — longer, where a whole
+        # file's stream outgrew it — and the next save fills back up to that.
+        ctx.set(KEY_REGION_LENGTH, len(shaped))
 
 
 def _compress_unshape(
@@ -1393,36 +1638,35 @@ def _compress_unshape(
     a file, or spliced into a parent's buffer
     (:func:`encoded_pixel_bytes`).
 
-    A bounded target (``length`` set — a slice of a larger file) is a hard slot:
-    a result that would overflow it raises before anything touches the file. A
-    result *smaller* than the slot leaves room at the end, and what goes there is
-    the pathway's :class:`~celpix.pipeline.pathway.SlotFill`: padded out to the
-    slot with ``$FF`` or ``$00``, or written short so the previous stream's tail
-    stands. Every supported scheme is self-delimiting, so no reader reaches those
-    bytes either way — the choice is about what someone reading the file finds.
+    **The write is the read run backwards, in reshaped space.** The read handed
+    the decompressor a whole region and it unpacked a prefix of it; the write
+    packs a stream and fills it back up to that region *before* the unshape, so
+    the permutation runs over the length the read's did and every byte goes back
+    to the part it came from (:func:`_fill_region`). Which region:
 
-    Only a **compressed** pathway is padded. Everywhere else the result is the
+    - A bounded target (``length`` set — a slice of a larger file) is a hard
+      slot: a result that would overflow it raises before anything touches the
+      file.
+    - A whole file under a **self-delimiting** scheme has the length its read
+      recorded (``KEY_REGION_LENGTH``) as its region, and keeps its tail. It may
+      grow, reshaped or not: the region *is* the file, so a longer file is still
+      one region, split by the same fractions on its next read.
+    - Everything else unbounded is no region at all — the stream is the region:
+      a scheme with **no end marker**, whose read decodes the whole region and
+      would read a kept tail back as data; a slice with no stated length, which
+      writes through its parent and is spliced in short, leaving the parent's
+      bytes after it to the parent; and a new file packed from nothing, or a
+      resize, which sets the region's size itself
+      (:func:`~celpix.pipeline.newfile.resize_file`).
+
+    Only a **compressed** pathway is filled. Everywhere else the result is the
     length of the buffer it was read from, so a short one means something the
-    pathway didn't expect, and inventing bytes to cover it would bury that.
-
-    **Under an active reshape the slot must be filled exactly.** A reshape's
-    part boundaries are fractions of the region's length, so a short result is
-    a *different region* whose unshape scatters every byte to the wrong chip —
-    there is no such thing as writing the front of one.
+    pathway didn't expect, and inventing bytes to cover it would bury that —
+    under a reshape it is refused, since a shorter region is a different
+    permutation.
     """
 
-    def destination() -> ReadSource | None:
-        # The bytes around the slot as they stand now, for a scheme asked to
-        # pack against what precedes its stream: read here, before the deposit
-        # reads the destination again, because the compressor runs first. One
-        # extra read of the file per save of a compressed entry, and none for a
-        # destination that does not exist yet.
-        try:
-            return acquire_source(cfg.write_target())[0]
-        except OSError:
-            return None
-
-    surround, start = _surround_of(cfg, reg, destination)
+    surround, start = _surround_of(cfg, reg, lambda: _read_side_source(cfg))
     with (
         _seeded_inputs(ctx, cfg, Stage.COMPRESSION),
         _stage_surround(ctx, surround, start),
@@ -1436,7 +1680,8 @@ def _compress_unshape(
             "compress",
             plugin=cfg.compression_id,
         )
-    shaped = run_stage(
+    packed = _fill_region(cfg, packed, ctx, reg, pathway)
+    return run_stage(
         Stage.RESHAPE,
         pathway,
         lambda: reg.plugin(Stage.RESHAPE, cfg.reshape_id, ReshapePlugin).unshape(
@@ -1445,37 +1690,139 @@ def _compress_unshape(
         "unshape",
         plugin=cfg.reshape_id,
     )
+
+
+def _read_side_source(cfg: PathwayConfig) -> ReadSource | None:
+    """The buffer ``cfg``'s read was cut from, as it stands now.
+
+    What a save consults for the bytes around its region — a scheme packing
+    against what precedes its stream, a kept tail — and it has to be the buffer
+    the *read* used, or the two directions disagree about what surrounds the
+    stream: a parent's live or reordered bytes when the config carries them, the
+    destination on disk otherwise. ``None`` for a destination that does not
+    exist yet.
+    """
+    side = _read_side(cfg)
+    return side[0] if side else None
+
+
+def _read_side(cfg: PathwayConfig) -> tuple[ReadSource, tuple[SourceFile, ...]] | None:
+    """:func:`_read_side_source` with the files it was joined from, for a
+    container run that publishes them as the read does."""
+    ref = cfg.source if cfg.source.data is not None else cfg.write_target()
+    try:
+        return acquire_source(ref)
+    except OSError:
+        return None
+
+
+def _fill_region(
+    cfg: PathwayConfig,
+    packed: bytes,
+    ctx: PipelineContext,
+    reg: Registry,
+    pathway: Pathway,
+) -> bytes:
+    """``packed`` — a stream in reshaped space — brought to its region's length,
+    or refused where it cannot be (:func:`_compress_unshape` says which region).
+
+    A short compressed stream leaves room at the end, and what goes there is the
+    pathway's :class:`~celpix.pipeline.pathway.SlotFill`: ``$FF`` or ``$00``, or
+    the tail the region already holds. A self-delimiting stream's reader stops
+    before those bytes, so there the choice is only about what someone reading
+    the file finds. A **whole file** always keeps its tail: the fill is a slice
+    setting, chosen by someone who measured the slot, and the bytes past a
+    file's stream — padding, or data carved in with it — are no one's to
+    overwrite. It has a tail only under a self-delimiting scheme, though:
+    without an end marker the read decodes the whole file, so the stream alone
+    is the file.
+    """
     target = cfg.write_target()
-    if target.length is not None and len(shaped) > target.length:
-        raise PipelineError(
-            Stage.CONTAINER,
-            pathway,
-            f"result ({len(shaped)} bytes) exceeds the {target.length}-byte slot "
-            f"at {format_hex(target.offset)} in {target.path}",
-            "write",
+    bounded = target.length is not None
+    compressed = cfg.compression_id != NO_COMPRESSION
+    reshaped = cfg.reshape_id != NO_RESHAPE
+    if bounded:
+        region = target.length
+    elif (
+        compressed
+        and not cfg.writes_through_parent
+        and self_delimiting(
+            reg.plugin(Stage.COMPRESSION, cfg.compression_id),
+            cfg.inputs.get(Stage.COMPRESSION),
         )
-    if (
-        cfg.reshape_id != NO_RESHAPE
-        and target.length is not None
-        and len(shaped) != target.length
     ):
-        raise PipelineError(
-            Stage.RESHAPE,
-            pathway,
-            f"result ({len(shaped)} bytes) must fill the {target.length}-byte "
-            f"slot at {format_hex(target.offset)} in {target.path} exactly: "
-            "a reshape's boundaries are fractions of the region, so a shorter "
-            "region is a different reshape",
-            "unshape",
-        )
-    if (
-        cfg.compression_id != NO_COMPRESSION
-        and target.length is not None
-        and len(shaped) < target.length
-    ):
-        # A reshape can't reach here — the check above already demanded an exact
-        # fill — so padding never lands inside a permutation it would scatter.
-        filler = cfg.slot_fill.filler
-        if filler:
-            shaped += filler * (target.length - len(shaped))
-    return shaped
+        region = ctx.get(KEY_REGION_LENGTH)
+    else:
+        region = None
+    if region is None or len(packed) == region:
+        return packed
+    where = (
+        f"{target.length}-byte slot at {format_hex(target.offset)} in {target.path}"
+        if bounded
+        else f"{region}-byte region of {target.path}"
+    )
+    if len(packed) > region:
+        if bounded:
+            raise PipelineError(
+                Stage.CONTAINER,
+                pathway,
+                f"result ({len(packed)} bytes) exceeds the {where}",
+                "write",
+            )
+        # A whole file grows, reshaped or not: its next read reshapes whatever
+        # length the file has, so the region grows with it.
+        return packed
+    if not compressed:
+        if reshaped:
+            raise PipelineError(
+                Stage.RESHAPE,
+                pathway,
+                f"result ({len(packed)} bytes) must fill the {where} exactly: a "
+                "reshape's boundaries are fractions of the region, so a shorter "
+                "region is a different reshape",
+                "unshape",
+            )
+        return packed
+    filler = cfg.slot_fill.filler if bounded else b""
+    if filler:
+        return packed + filler * (region - len(packed))
+    if bounded and not reshaped:
+        # Written short, the container's splice leaves the old tail standing.
+        return packed
+    tail = _region_now(cfg, reg, pathway)[len(packed) : region]
+    return packed + tail + bytes(region - len(packed) - len(tail))
+
+
+def _region_now(cfg: PathwayConfig, reg: Registry, pathway: Pathway) -> bytes:
+    """``cfg``'s region as its read would see it now, in reshaped space: where a
+    kept tail comes from. Empty when there is nothing there yet. A read that
+    fails raises: the tail is bytes the user never asked to lose, so a save that
+    cannot find them stops rather than zeroing them."""
+    side = _read_side(cfg)
+    if side is None:
+        return b""
+    source, files = side
+    # The provenance the read publishes before its container runs, so a
+    # container that assembles its region by KEY_SOURCE_FILES hands back the
+    # same region here (:func:`_read_reshape_decompress`).
+    ctx = PipelineContext()
+    ctx.set(KEY_SOURCE_PATH, source.path)
+    ctx.set(KEY_SOURCE_FILES, files)
+    raw = run_stage(
+        Stage.CONTAINER,
+        pathway,
+        lambda: reg.plugin(Stage.CONTAINER, cfg.container_id, ContainerPlugin).read(
+            source, ctx
+        ),
+        "read",
+        plugin=cfg.container_id,
+    )
+    return run_stage(
+        Stage.RESHAPE,
+        pathway,
+        lambda: reg.plugin(Stage.RESHAPE, cfg.reshape_id, ReshapePlugin).reshape(
+            raw, ctx
+        ),
+        "reshape",
+        plugin=cfg.reshape_id,
+    )

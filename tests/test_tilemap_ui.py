@@ -513,6 +513,67 @@ def test_the_subsprite_sheet_opens_where_the_player_will_not_and_follows_the_pic
     assert not window._subsprites_action.isEnabled()
 
 
+def _bound_object(window, tmp_path, records, name):
+    """Load a sprite object bound to the bank at entry 0, and show it."""
+    from celpix.project.workspace import TileMode, TileSource
+
+    window._load_pixel(str(_obj_file(tmp_path, records, name=name)))
+    entry = window._workspace.current
+    entry.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
+    entry.doc = None  # re-read through the new binding
+    window._activate_entry(window._workspace.entries[0])
+    window._activate_entry(entry)
+    return entry
+
+
+def test_a_closed_subsprite_sheet_does_not_ring_another_objects_pick(
+    qtbot, tmp_path
+) -> None:
+    """The sheet's records were composed for the object it last showed. Read
+    against a smaller object they index records it has not got, which raised on
+    the click and on every render after it."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    first = _bound_object(window, tmp_path, [(0, 0, 1), (8, 0, 1), (16, 0, 2)], "a.OBJ")
+    second = _bound_object(window, tmp_path, [(0, 0, 5), (8, 0, 6)], "b.OBJ")
+    window._activate_entry(first)
+    window._show_subsprites()
+    window._subsprites._frames.setChecked(False)  # records (0, 0) and (0, 2)
+    window._subsprites.close()
+
+    window._activate_entry(second)
+    window._on_pixel_picked(10, 2)
+    window._refresh_view()
+
+    assert window._picked_subsprite == (0, 1)
+
+
+def test_a_subsprite_pick_does_not_carry_over_to_another_object(
+    qtbot, tmp_path
+) -> None:
+    """A (frame, subsprite) pair names a record of the object it was picked on;
+    another object with as many records has one at the same pair, and ringing
+    it would point at a piece the user never clicked."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    first = _bound_object(window, tmp_path, [(0, 0, 1), (24, 5, 2), (8, 0, 3)], "a.OBJ")
+    second = _bound_object(
+        window, tmp_path, [(0, 0, 4), (8, 0, 5), (16, 0, 6)], "b.OBJ"
+    )
+    window._activate_entry(first)
+    window._on_pixel_picked(10, 2)
+    assert window._picked_subsprite == (0, 2)
+
+    window._activate_entry(second)
+
+    assert window._picked_subsprite is None
+    assert window._pick_tile is None  # the next press takes the front piece
+
+
 def test_the_subsprite_sheet_takes_the_cols_keys_and_zooms_over_its_backing(
     qtbot, monkeypatch
 ) -> None:
@@ -2807,6 +2868,34 @@ def _select_entry(window, index: int) -> None:
     doc = window._doc
     at = next(i for i in range(len(doc.drawn_cells)) if doc.cell_at(i) == index)
     window._on_slots_selected(at, at)
+
+
+def test_index_unit_brings_a_held_brush_down_to_its_first_pick(qtbot, tmp_path) -> None:
+    """A swept brush holds IDs in the unit it was swept in. Its top-left one
+    keeps its number at origin 0, and the rest would go on stamping in the new
+    unit what they named in the old: tile 2 becoming metatile 2, tile 4."""
+    from celpix.core.capabilities import ContentKind
+    from celpix.core.tilemap import IndexAddressing
+    from celpix.project.workspace import TileMode, TileSource
+    from uihelpers import _make_big_snes_file
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_big_snes_file(tmp_path, 64)))
+    bank = window._workspace.entries[0]
+    raw = tmp_path / "m.bin"
+    raw.write_bytes(bytes(32))
+    window._load_pixel(str(raw), content_kind=ContentKind.TILEMAP)
+    entry = window._workspace.current
+    entry.tilemap_preset_id = "preset.tilemap.snes-bg-16x16"
+    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry=bank)
+    window._reload_tilemap(entry)
+    window._on_tile_source_area_picked([[0, 2]])
+
+    _count_indices_as(window, 2)
+
+    assert window._doc.index_addressing is IndexAddressing.ORDINAL
+    assert window._source_tile_id == 0 and window._stamp_brush is None
 
 
 def test_index_unit_recounts_the_base_and_renames_both_numbers_in_one_step(

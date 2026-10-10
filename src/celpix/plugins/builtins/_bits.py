@@ -136,20 +136,23 @@ def field_packing(
     bpp: int,
     msb_first: bool,
     source_shift: int = 0,
-    source_mask: int = 0xFF,
+    source_mask: int | None = None,
 ) -> bytes:
     """The inverse of :func:`field_expansion` for one pixel of a packed byte.
 
     A 256-byte ``bytes.translate`` table placing an index in the field pixel
     ``pos`` occupies, so a packed byte is the OR of ``pixels_per_byte`` of these.
-    An index wider than the field overflows into the neighbouring one, which is
-    what the format does rather than something to guard against.
+    An index wider than the field loses its excess bits, as the planar kernel's
+    does: left in, they would land in the *neighbouring* pixel's field and change
+    a pixel nobody edited.
 
-    ``source_shift`` and ``source_mask`` take *part* of the index instead of all of
-    it — the inverse of :func:`field_expansion`'s ``dest_shift``, for an index
-    split across two bytes. Masking is opt-in so the overflow above stays default.
+    ``source_shift`` takes *part* of the index instead of all of it — the inverse
+    of :func:`field_expansion`'s ``dest_shift``, for an index split across two
+    bytes. ``source_mask`` defaults to the field's own width.
     """
     shift = _field_shift(pos, pixels_per_byte, bpp, msb_first)
+    if source_mask is None:
+        source_mask = (1 << bpp) - 1
     return bytes(
         (((value >> source_shift) & source_mask) << shift) & 0xFF
         for value in range(256)

@@ -8,7 +8,6 @@ from celpix.ui.main_window import MainWindow
 from uihelpers import (
     _combo_ids,
     _drag_payload,
-    _fresh_settings,
     _make_snes_file,
     _open_big,
 )
@@ -184,16 +183,10 @@ def test_paste_into_a_narrower_format_refits_by_color(qtbot, tmp_path) -> None:
     assert max(pasted.data) <= 3
 
 
-def _rect_shape(window, tmp_path) -> None:
-    """Switch the Shape picker to Rectangle.
-
-    QSettings is redirected to a throwaway INI first: the switch persists the
-    choice app-wide, so neither the developer's real config nor a later test in
-    this process may inherit it.
-    """
+def _rect_shape(window) -> None:
+    """Switch the Shape picker to Rectangle."""
     from celpix.ui.main_window.selection import SelectionShape
 
-    _fresh_settings(tmp_path)
     combo = window._selection_shape
     combo.setCurrentIndex(combo.findData(SelectionShape.RECT))
 
@@ -213,7 +206,7 @@ def test_rectangle_drag_selects_a_block_and_shape_switch_collapses(
     # must keep outlining row by row.
     window._on_slots_selected(0, 15)
     assert not window._canvas._selection_as_rect
-    _rect_shape(window, tmp_path)
+    _rect_shape(window)
     assert (window._selected_tile, window._selected_last) == (0, 0)
 
     # Slots 0..9 now read as the corners of a 2x2 rectangle of slots, so the
@@ -234,7 +227,7 @@ def test_select_all_makes_a_rectangle_in_rectangle_shape(
     window = _open_big(qtbot, tmp_path, monkeypatch, tiles=64)
     window._columns.setValue(8)
     window._rows.setValue(4)
-    _rect_shape(window, tmp_path)
+    _rect_shape(window)
 
     window._select_all()
     assert window._rect_size == (8, 4)  # the whole window, as one block
@@ -266,7 +259,7 @@ def test_rectangle_collapses_when_the_view_reshuffles_its_tiles(
     window = _open_big(qtbot, tmp_path, monkeypatch, tiles=64)
     window._columns.setValue(8)
     window._rows.setValue(8)
-    _rect_shape(window, tmp_path)
+    _rect_shape(window)
     window._on_slots_selected(0, 9)  # tiles 0, 1, 8, 9
 
     # Half the columns: those same four cells now sit over tiles 0, 1, 4, 5, so
@@ -285,7 +278,7 @@ def test_new_slice_from_selection_refuses_a_disjoint_rectangle(
     window = _open_big(qtbot, tmp_path, monkeypatch, tiles=64)
     window._columns.setValue(8)
     window._rows.setValue(8)
-    _rect_shape(window, tmp_path)
+    _rect_shape(window)
     captured: dict = {}
     monkeypatch.setattr(
         SliceDialog,
@@ -312,7 +305,7 @@ def test_rectangle_copy_paste_and_clear_touch_only_their_cells(
     window = _open_big(qtbot, tmp_path, monkeypatch, tiles=64)
     window._columns.setValue(8)
     window._rows.setValue(8)
-    _rect_shape(window, tmp_path)
+    _rect_shape(window)
     original = window._doc.pixel_data
     tb = window._doc.bytes_per_tile
 
@@ -399,9 +392,6 @@ def test_image_paste_into_a_block_view_lands_as_the_picture_it_shows(
     from celpix.pipeline import pipeline
     from celpix.ui.main_window.selection import SelectionShape
 
-    # A fresh window reads the persisted shape preference; isolate it so "the
-    # default is Linear" is true of the run and not of the developer's config.
-    _fresh_settings(tmp_path)
     window = _open_big(qtbot, tmp_path, monkeypatch, tiles=64)
     window._columns.setValue(8)
     window._rows.setValue(8)

@@ -1,6 +1,6 @@
 # Project File Format
 
-Specification of the `.celpix` project file. Schema version **7**.
+Specification of the `.celpix` project file. Schema version **8**.
 
 ## 1. Encoding
 
@@ -95,9 +95,9 @@ Keys that name another entry: `current`, `parent_index`,
 | Rule | |
 |---|---|
 | `version` | Top-level int. Missing reads as `1` |
-| Writer | Always writes the current version (`7`) |
+| Writer | Always writes the current version (`8`) |
 | Older file | Migrated forward one version at a time before any key is read |
-| Newer file | Opened with the tolerance rules of §2.2; the UI warns that saving rewrites it at version 7 and drops unknown keys |
+| Newer file | Opened with the tolerance rules of §2.2; the UI warns that saving rewrites it at version 8 and drops unknown keys |
 | Plugin id renames | Independent of `version` (§2.5) |
 
 | Migration | Change |
@@ -108,6 +108,7 @@ Keys that name another entry: `current`, `parent_index`,
 | 4 → 5 | None. Adds `session`/`view` on `palette` entries, `parent` on slices and bookmarks, `current` naming a `palette` entry |
 | 5 → 6 | None. Adds the choice binding shape (§5.10); nested slices: `parent: "slice"` with `parent_index` (§5.5) |
 | 6 → 7 | No key rewritten. Adds `tile_source.addressing` (§5.14); `inputs` on `palette` entries (§5.10); `match_parent` on slices (§5.5). `base_index` changes unit (§5.14): once the project's plugins are registered, a map whose format's engine counts records and states their shape by its record keys has its base re-counted from cells to records — exact where it is whole records that shift every index alike; otherwise the record its old start falls in, with a warning. Done once, by whatever opens the project, not by the migration itself |
+| 7 → 8 | None. Adds `compression_id` on `file` entries (§5.4) and `reshape_id` on `palette` entries (§5.7); `palette_row_base` and `font` are read on `palette` entries. Offsets of a child of a file with its own `compression_id` count in its decompressed stream (§5.5) |
 
 ## 4. Top level
 
@@ -167,8 +168,8 @@ Unknown or missing `kind` reads as `file`.
 | `tilemap_preset_id` | ○ | ○ | – | – | – |
 | `tile_source` | ○ | ○ | – | – | – |
 | `sprite_size_pair` | ○ | ○ | – | – | – |
-| `palette_row_base` | ○ | ○ | – | – | ○ |
-| `font` | ○ | ○ | – | – | ○ |
+| `palette_row_base` | ○ | ○ | – | ○ | ○ |
+| `font` | ○ | ○ | – | ○ | ○ |
 | `inputs` | ○ | ○ | – | ○ | – |
 | `session` | ● | ● | ● | ○ | ● |
 | `view` | ○ | ○ | ○ | ○ | ○ |
@@ -212,12 +213,21 @@ Required keys: an entry without them is skipped (`path`) or opens on defaults.
 
 | Key | Type | Default | Written | Meaning |
 |---|---|---|---|---|
-| `slice_offset` | int | `0` | always | Start, in bytes, absolute from byte 0 of the parent region. Not relative to any container header. Nested slice: from byte 0 of the parent slice's decoded bytes (after its reshape and decompression) |
+| `slice_offset` | int | `0` | always | Start, in bytes, in the parent's coordinate space (below) |
 | `slice_length` | int \| `null` | `null` | always | Length in bytes. `null` = determined by decompression on first load. Always an int when `reshape_id` is set |
 | `match_parent` | bool | `false` | omitted when `false` | `true`: the length is the parent's end less `slice_offset`, re-measured on every read; `slice_length` holds the last measurement. Parent's end: the file size (joined), the parent's buffer under a reordering container, or the parent slice's decoded length when nested. Only a literal `true` counts |
 | `slot_fill` | string | `"ff"` | omitted at default | Padding after a recompressed stream shorter than its slot: `"ff"` (pad `$FF`), `"zero"` (pad `$00`), `"keep"` (leave old bytes). Unknown reads as `"ff"` |
 | `parent` | string | `"file"` | omitted when `"file"` | Kind of row the slice is cut from: `"file"` \| `"palette"` \| `"slice"` (nested). Other values read as `"file"` |
 | `parent_index` | entry ref | — | when `parent` is `"slice"` | Position in `entries` of the parent slice. Read only when `parent` is `"slice"`. Written `-1` when the parent is not in the list |
+
+- Parent coordinate space — what an offset into a parent counts, here and wherever §5.6, §5.10 and §5.13 refer to it:
+
+  | Parent | Offsets are |
+  |---|---|
+  | `file` or `palette` read straight: a container that keeps positions, `reshape_id` and `compression_id` at the pass-through | Absolute from byte 0 of the joined region. Not relative to any container header |
+  | `file` or `palette` with a `reshape_id` or `compression_id` other than the pass-through | Positions in its decoded buffer (after container, reshape and decompression), from 0 |
+  | `file` or `palette` whose container permutes bytes | Positions in its buffer, counted from where the container recorded its start |
+  | `slice` (nested) | From byte 0 of the parent slice's decoded bytes (after its reshape and decompression) |
 
 - Nested slice: `path`/`extra_paths` are the root file's; bytes are read from the parent slice, never from the file.
 - `parent_index` out of range, not a `slice`, the entry itself, or on a loop: the chain is broken. The entry stays nested with no parent and opens inert (no bytes, not writable).
@@ -226,7 +236,7 @@ Required keys: an entry without them is skipped (`path`) or opens on defaults.
 
 | Key | Type | Default | Written | Meaning |
 |---|---|---|---|---|
-| `offset` | int | `0` | always | Position, in bytes, absolute from byte 0 of the parent region |
+| `offset` | int | `0` | always | Position, in bytes, in the parent's coordinate space (§5.5) |
 | `parent` | string | `"file"` | omitted when `"file"` | `"file"` \| `"palette"`. Other values, `"slice"` included, read as `"file"` |
 
 - `session`, `view`, `palette`: snapshot of the parent's settings, applied to the parent when the bookmark is opened.
@@ -265,6 +275,7 @@ Piece shapes:
 |---|---|
 | `length`, no `entry_index` | Pad: `length` blank bytes |
 | `entry_index` (+ `measured`) | Whole source entry |
+| `entry_index`, `offset`, no `length` (+ `measured`) | From `offset` to the end of the source, rounded up to a whole tile |
 | `entry_index`, `length` (+ `offset`, `measured`) | Byte range of the source |
 
 - Resolved data = the source's decompressed stream when compressed, its own bytes otherwise.
@@ -317,7 +328,7 @@ Values bound to inputs a plugin declares (data outside the entry's bytes).
 
 - Both levels sorted by key when written.
 - Plugin ids go through the alias table (§2.5).
-- On a `file` or `palette`: bindings for each compression preview codec. On a `slice` or tilemap: bindings for the plugins it reads through.
+- On a `file` or `palette`: bindings for each compression preview codec; a `file`'s own `compression_id` reads its bindings from the same set. On a `slice` or tilemap: bindings for the plugins it reads through.
 - On save, bindings for plugins the entry no longer uses and keys the plugin no longer declares are removed. A plugin not installed keeps every key.
 
 Binding shapes (determined by type and keys present):
@@ -330,7 +341,7 @@ Binding shapes (determined by type and keys present):
 | Region | `{"offset": int, "length": int}` | `offset` ≥ 0, `length` ≥ 0 |
 | Integer from bytes | `{"offset": int, "width": int, "endian": "big" \| "little"}` | `offset` ≥ 0, `width` ≥ 1. A `width` over 8 loads, but the input fails to resolve and the entry opens degraded. `endian` other than `"little"` reads as big. Presence of `width` selects this shape |
 
-- Region and integer-from-bytes: `offset` is absolute from byte 0 of the entry's own file (a nested slice: the root file).
+- Region and integer-from-bytes: `offset` is in the coordinate space (§5.5) of the entry's own file — a slice's parent file; a nested slice's root file. Exception: where that file has its own `compression_id`, offsets are into its bytes before decompression (after its container and reshape) — from 0 under a reshape, absolute from byte 0 of the region otherwise.
 - Optional `entry_index` (entry ref) on either: offset is into that entry's resolved data instead.
 - `entry_index` naming nothing: the binding is removed on load.
 - Malformed bindings are skipped.
@@ -342,7 +353,7 @@ Binding shapes (determined by type and keys present):
 | `pixel_preset_id` | id | `preset.pixel.snes-4bpp` | always | Pixel format preset |
 | `palette_preset_id` | id | `preset.palette.bgr555` | always | Palette color format preset |
 | `palette_mode` | string | `"default"` | always | `"default"` \| `"file"` \| `"offset"` \| `"entry"` \| `"emulator"` \| `"custom"`. Unknown reads as `"default"`. Selects the `palette` shape (§5.13) |
-| `compression_id` | id | `compression.none` | always | Compression preview selection. On a slice this is not the slice's codec |
+| `compression_id` | id | `compression.none` | always | Compression preview selection. On a slice, or a file with its own `compression_id`, this is not the entry's codec |
 | `palette_view_preset_id` | id | `preset.palette.bgr555` | omitted at default | Color format used when the pixel preset is the palette-swatch view |
 
 Written on every entry except a `palette` entry never opened as a sheet.
@@ -383,8 +394,8 @@ Shape selected by `session.palette_mode`:
 |---|---|---|
 | `default` | absent | Built-in fallback palette |
 | `custom` | `{"colors": [string, ...]}` | Colors stored in the project. Each `"#AARRGGBB"`: 32-bit hex, uppercase when written. `#` optional on read; fewer than 8 digits zero-fill from the top (alpha `00`) |
-| `file` | `{"path": path, "offset": int}` | External palette file; `offset` in bytes |
-| `offset` | `{"offset": int}` | The entry's own bytes at `offset`. Slice: into its parent file; nested slice: into the root file. Composite: into the file of its first piece that names an entry |
+| `file` | `{"path": path, "offset": int}` | External palette file, read whole through its `palette` entry's `container_id` and `reshape_id`. `offset` is ignored on load; a run of a palette file is an `entry` palette on a slice of its `palette` entry |
+| `offset` | `{"offset": int}` | The entry's own bytes at `offset`, in the owning file's coordinate space (§5.5). Slice: its parent file; nested slice: the root file. Composite: the file of its first piece that names an entry. Under an owner that reorders or decompresses, the colors are read from its buffer; an edit is written through the owner's own write (view-only where the owner cannot write) |
 | `entry` | `{"entry": entry ref, "offset": int}` | Another entry's resolved data at `offset` |
 | `emulator` | `{"path": path, "offset": int}` | Emulator save state. `offset` is written but ignored: the palette location and console codec are re-detected on load |
 

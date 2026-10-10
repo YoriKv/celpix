@@ -162,6 +162,10 @@ def compress(
     :mod:`~celpix.plugins.builtins.namco_lz`.
     """
     n = len(data)
+    if not n:
+        # The decoder refuses a zero size so a scan cannot match zero words, so
+        # writing one would save a stream nothing can reopen.
+        raise ValueError("an empty payload has no encoding: a zero size is rejected")
     if n >= 1 << (size_bytes * 8):
         raise ValueError(
             f"input is {n:,} bytes; the {size_bytes * 8}-bit LZSS size prefix "

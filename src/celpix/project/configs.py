@@ -464,7 +464,13 @@ def tilemap_config_for(
             inputs={**inputs, **own.inputs},
             input_problems=own.problems + problems,
         )
-    half = _slice_half(entry, preset_id, registry, workspace, entry.compression_id)
+    # Resolved as the pixel side resolves them: a reshape or scheme this build
+    # lacks reads as its pass-through, view-only and named in the notice,
+    # rather than failing the read outright.
+    resolved = entry.file_stages.resolve(registry)
+    half = _slice_half(
+        entry, preset_id, registry, workspace, resolved.stages.compression_id
+    )
     return PathwayConfig(
         source=half.source,
         # The slice's own bounds bound the splice, and the parent performs the
@@ -472,11 +478,12 @@ def tilemap_config_for(
         # where the cells were read from rather than at a raw file position.
         dest=half.dest,
         interpret_preset_id=preset_id,
-        reshape_id=entry.reshape_id,
+        reshape_id=resolved.stages.reshape_id,
         compression_id=half.compression_id,
         slot_fill=entry.slot_fill,
-        write_enabled=writable and half.writable,
+        write_enabled=writable and resolved.writable and half.writable,
         writes_through_parent=half.through,
+        missing_plugins=resolved.missing,
         inputs={**inputs, **half.inputs},
         input_problems=half.problems + problems,
     )
@@ -547,16 +554,20 @@ def entry_view_bytes(
 ) -> tuple[bytes, int]:
     """``entry``'s view buffer and the file offset its first byte sits at.
 
-    The single definition of "what this entry shows": its live document's bytes
-    when one is loaded, else the region read fresh through its own container,
-    reshape and decompressor (``pipeline.read_region`` — the preset is inert,
-    the read stops before any codec runs). The base follows the document's
-    :attr:`~celpix.core.document.Document.anchor_base` rule whether or not one
-    exists: what Read **recorded** where the buffer is the file's bytes — only
-    the container knows where it actually began (past a copier header, past the
-    iNES header and PRG banks) — and 0 under a reshape or a decompressor, whose
-    buffer is a different address space from the file, so that an offset
-    written down against it is the same number the view shows.
+    The single definition of "what this entry shows": its live document's
+    **own** bytes when one is loaded (:func:`own_bytes` — a tilemap's cells,
+    never the art it borrows from its bound bank), else the region read fresh
+    through its own container, reshape and decompressor (``pipeline.read_region``
+    — the preset is inert, the read stops before any codec runs, so the pixel
+    config reads a tilemap's region exactly as its own pathway would). The base
+    follows the document's :attr:`~celpix.core.document.Document.anchor_base`
+    rule whether or not one exists — :attr:`~celpix.core.document.Document.
+    tilemap_anchor_base` for a tilemap's cells: what Read **recorded** where the
+    buffer is the file's bytes — only the container knows where it actually
+    began (past a copier header, past the iNES header and PRG banks) — and 0
+    under a reshape or a decompressor, whose buffer is a different address space
+    from the file, so that an offset written down against it is the same number
+    the view shows.
 
     Everything that resolves an offset in this entry's coordinates reads through
     this — a slice of a reordering parent, an Offset palette — so they can never
@@ -568,8 +579,11 @@ def entry_view_bytes(
     because they need the read's context and its tile geometry as well as its
     bytes, and this returns neither. The two must move together.
     """
-    if entry.doc is not None:
-        return entry.doc.pixel_data, entry.doc.anchor_base
+    doc = entry.doc
+    if doc is not None:
+        if doc.is_tilemap:
+            return doc.tilemap_data, doc.tilemap_anchor_base
+        return doc.pixel_data, doc.anchor_base
     cfg = pixel_config_for(entry, preset_id, registry, workspace)
     data, ctx = pipeline.read_region(cfg, registry)
     return data, ctx.get(KEY_SOURCE_OFFSET, 0) if cfg.reads_raw_bytes else 0

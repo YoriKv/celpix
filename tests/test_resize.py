@@ -90,6 +90,41 @@ def test_resize_shrinks_off_the_tail(tmp_path) -> None:
     assert path.read_bytes() == head  # the front is untouched, the tail is gone
 
 
+def test_resizing_a_whole_compressed_file_keeps_what_follows_its_stream(
+    tmp_path,
+) -> None:
+    # The stream sits at the front of a longer region and a self-delimiting
+    # reader stops where it ends, so the trailer after it is the file's, not the
+    # payload's: a shrink of the payload leaves it where it was, and so does a
+    # growth the region still has room for.
+    from celpix.core.context import PipelineContext
+    from celpix.core.errors import Stage
+
+    reg = default_registry()
+    scheme = reg.plugin(Stage.COMPRESSION, "compression.gba-lz77")
+    payload = bytes(range(32)) * 8  # eight 4bpp tiles
+    stream = scheme.compress(payload, PipelineContext())
+    trailer = b"TRAILER!" * 13
+    path = tmp_path / "blob.bin"
+    path.write_bytes(stream + trailer)
+    cfg = PathwayConfig(
+        source=FileRef(str(path)),
+        interpret_preset_id=_4BPP,
+        compression_id="compression.gba-lz77",
+    )
+    expected = payload
+    for units in (3, 6):
+        size = pipeline.resize_file(
+            cfg, kind=ContentKind.PIXELS, codec_id=_4BPP, units=units, reg=reg
+        )
+        assert size == units * 32
+        on_disk = path.read_bytes()
+        assert len(on_disk) == len(stream) + len(trailer)
+        assert on_disk.endswith(trailer)
+        expected = (expected + bytes(size))[:size]  # cut, then grown with zeroes
+        assert pipeline.read_region(cfg, reg)[0] == expected
+
+
 def test_resize_rebuilds_the_container_framing(tmp_path) -> None:
     """The payload is what is resized, so a container that builds a header gets
     to restate it — which is what keeps the file readable as that format."""

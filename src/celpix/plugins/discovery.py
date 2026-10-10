@@ -3,12 +3,13 @@
 Users extend celPix by putting files into a plugin directory — no reinstall, no
 editing package internals. The folder a file sits in *determines* its type:
 
-- ``pixel/`` and ``palette/`` take both kinds of file. A **``*.toml`` preset** is
-  the zero-code tier: a parameter set for a built-in engine, on the same schema
-  as the shipped presets. TOML suits hand-editing — comments, hex integers
-  (``0x7C00``), trailing commas. A **``*.py`` code format**
-  (:mod:`celpix.plugins.formats`) is a self-contained decode/encode registered
-  via ``registry.register_format(...)`` and listed in the picker like any preset.
+- ``pixel/``, ``palette/`` and ``tilemap/`` take both kinds of file. A
+  **``*.toml`` preset** is the zero-code tier: a parameter set for a built-in
+  engine, on the same schema as the shipped presets. TOML suits hand-editing —
+  comments, hex integers (``0x7C00``), trailing commas. A **``*.py`` code
+  format** (:mod:`celpix.plugins.formats`) is a self-contained decode/encode
+  registered via ``registry.register_format(...)`` and listed in the picker like
+  any preset.
 - ``containers/`` takes ``*.py`` plugins.
 - ``reshape/`` takes ``*.py`` plugins plus ``*.toml`` presets for the bitswap,
   data-LUT and split-parts engines, adapted into ordinary reshape plugins at load
@@ -44,6 +45,8 @@ put in it.
 from __future__ import annotations
 
 import os
+import sys
+import types
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -56,12 +59,13 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only on 3.9/3.10
 
 from celpix import resources
 from celpix.core.errors import Stage, fault_origin
-from celpix.plugins._params import preset_identity
+from celpix.plugins._params import params_table, preset_identity, required_text
 from celpix.plugins.aliases import current_params
 from celpix.plugins.base import (
     INPUT_STAGES,
     Plugin,
     Preset,
+    check_container_signature,
     check_declared_stage,
     missing_methods,
 )
@@ -154,8 +158,8 @@ def preset_from_spec(spec: dict, stage: Stage) -> Preset:
         id=plugin_id,
         name=name,
         stage=stage,
-        engine_id=spec["engine_id"],
-        params=spec.get("params", {}),
+        engine_id=required_text(spec, "engine_id"),
+        params=params_table(spec),
         category=category,
     )
 
@@ -259,30 +263,87 @@ class ScopedRegistry:
             )
         )
 
-    def _allows(self, stage: Stage | None) -> bool:
+    def _allows(self, stage: Stage | str | None) -> bool:
         """Whether ``stage`` may be registered here. ``None`` means "the folder's".
 
         Omitting it is the normal case, the folder being authoritative; a stated
         one is honoured as an assertion, and disagreeing with the folder is a load
-        issue.
+        issue. The TOML spelling (``"container"``) counts as the stage it names:
+        ``Stage`` is a string enum, so the registry already accepts it, and it is
+        how a preset file writes a stage.
         """
         allowed = FOLDER_STAGE[self._folder]
-        if stage is None or stage is allowed:
+        if stage is None:
             return True
+        try:
+            if Stage(stage) is allowed:
+                return True
+            stated = Stage(stage).value
+        except ValueError:
+            stated = stage
         self._issues.append(
             PluginLoadIssue(
                 str(self._path),
-                f"stage '{stage.value}' not allowed in folder "
+                f"stage {stated!r} not allowed in folder "
                 f"'{self._folder}/' (allowed: {allowed.value}); registration skipped",
             )
         )
         return False
+
+    def _refuse(self, what: object, reason: str) -> None:
+        """Report one registration skipped for ``reason``."""
+        self._issues.append(
+            PluginLoadIssue(
+                str(self._path), f"{what!r}: {reason}; registration skipped"
+            )
+        )
+
+    def _identity_fails(self, info) -> str | None:  # noqa: ANN001 — any info
+        """Why ``info``'s id, name or category cannot be registered, if they can't.
+
+        The rule a TOML preset is held to (:func:`preset_identity`): the id is
+        what a project stores, so a number or a blank there registers under a key
+        no project file can spell back. A code plugin is held to it as well.
+        """
+        try:
+            preset_identity(
+                {
+                    "id": getattr(info, "id", None),
+                    "name": getattr(info, "name", None),
+                    "category": getattr(info, "category", ""),
+                }
+            )
+        except ValueError as exc:
+            return str(exc)
+        return None
+
+    def _id_taken(self, stage: Stage, plugin_id: str) -> str | None:
+        """What already holds ``plugin_id`` as a preset or a ``stage`` plugin.
+
+        Exact ids only: the lookups forward a retired id to its current one, and
+        a user's plugin is entitled to take a retired name.
+        """
+        try:
+            if self._reg.preset(plugin_id).id == plugin_id:
+                return "a preset"
+        except KeyError:
+            pass
+        try:
+            if self._reg.plugin(stage, plugin_id).info.id == plugin_id:
+                return f"a {stage.value} plugin"
+        except KeyError:
+            pass
+        return None
 
     # -- writes (scope-checked) --------------------------------------------
     def register(self, plugin: Plugin) -> None:
         if not self._allows(plugin.info.stage):
             return
         stage = FOLDER_STAGE[self._folder]
+        bad_identity = self._identity_fails(plugin.info)
+        if bad_identity:
+            self._refuse(plugin.info.id, bad_identity)
+            return
         # The folder supplies the stage, so a plugin in the wrong one would
         # otherwise register as something it cannot do
         # (:data:`~celpix.plugins.base.STAGE_METHODS`).
@@ -296,12 +357,37 @@ class ScopedRegistry:
                 )
             )
             return
+        if stage is Stage.CONTAINER:
+            try:
+                check_container_signature(plugin.info)
+            except ValueError as exc:
+                self._refuse(plugin.info.id, str(exc))
+                return
         self._check_inputs(plugin.info, stage)
         self._reg.register(plugin, stage)
 
     def register_preset(self, preset: Preset) -> None:
-        if self._allows(preset.stage):
-            self._reg.register_preset(preset)
+        if not self._allows(preset.stage):
+            return
+        stage = INTERPRET_FOLDER_STAGE.get(self._folder)
+        if stage is None:
+            self._refuse(preset.id, "presets are pixel/, palette/ or tilemap/ only")
+            return
+        # The checks a preset read from TOML passes (:func:`preset_from_spec`,
+        # :func:`check_engine_takes_params`), so one built in code is no less
+        # able to be spelt back by a project file or run by its engine.
+        try:
+            preset_identity(
+                {"id": preset.id, "name": preset.name, "category": preset.category}
+            )
+            required_text({"engine_id": preset.engine_id}, "engine_id")
+            params_table({"params": preset.params})
+            preset = replace(preset, stage=stage)
+            check_engine_takes_params(self._reg, preset)
+        except ValueError as exc:
+            self._refuse(preset.id, str(exc))
+            return
+        self._reg.register_preset(preset)
 
     def register_format(self, fmt) -> None:  # noqa: ANN001 — duck-typed on purpose
         stage = INTERPRET_FOLDER_STAGE.get(self._folder)
@@ -328,6 +414,17 @@ class ScopedRegistry:
                     "registration skipped",
                 )
             )
+            return
+        bad_identity = self._identity_fails(fmt.info)
+        if bad_identity:
+            self._refuse(fmt.info.id, bad_identity)
+            return
+        # A format is two registrations under one id, so both halves are checked
+        # before either is made: an engine left behind by a preset id that turned
+        # out to be taken would sit in the bucket with no preset to reach it.
+        taken = self._id_taken(stage, fmt.info.id)
+        if taken:
+            self._refuse(fmt.info.id, f"the id is already {taken}")
             return
         self._check_inputs(fmt.info, stage)
         engine, preset = adapt_format(fmt, stage)
@@ -523,15 +620,26 @@ def load_directory(
     if not root.is_dir():
         return issues
     target: RegistryLike = SourceRegistry(reg, category) if category else reg
+    # The edit-and-refresh shortcut is for a user's own folder, where they are
+    # the author. A project's folder changes when it is pulled, synced or
+    # extracted over, so code that changed there is somebody else's new code.
+    session_reload = category != PROJECT_CATEGORY
     # Presets built *out of other plugins*, held back until the rest of the root
     # is in: `compression/` sorts ahead of `reshape/`, and a .toml ahead of the
     # .py beside it, so a pair loaded in scan order could not name either.
     deferred: list[Path] = []
-    for entry in sorted(root.iterdir()):
-        if entry.is_dir() and entry.name in FOLDER_STAGE:
-            _load_typed_dir(target, entry, entry.name, issues, trust, confirm, deferred)
+    for entry, is_dir, is_file in _list_folder(root, issues):
+        if is_dir and entry.name in FOLDER_STAGE:
+            _load_typed_dir(
+                target,
+                entry,
+                entry.name,
+                issues,
+                _Gate(trust, confirm, session_reload),
+                deferred,
+            )
         elif (
-            entry.is_file()
+            is_file
             and entry.suffix in (".toml", ".py")
             and not entry.name.startswith("_")
         ):
@@ -548,13 +656,34 @@ def load_directory(
     return issues
 
 
+def _list_folder(
+    folder: Path, issues: list[PluginLoadIssue]
+) -> list[tuple[Path, bool, bool]]:
+    """``folder``'s entries in name order, each with whether it is a folder and
+    whether a file; none, and an issue, when it cannot be read.
+
+    Permissions, a network share or a project extracted with odd ACLs can all
+    leave a folder unlistable, and a plugin root is scanned at startup and on
+    every project open, so this is reported like any other file that did not
+    load rather than raised. The two tests are taken here too, under the same
+    guard: a folder that lists but cannot be searched fails on them instead.
+    """
+    try:
+        return [
+            (entry, entry.is_dir(), entry.is_file())
+            for entry in sorted(folder.iterdir())
+        ]
+    except OSError as exc:
+        issues.append(PluginLoadIssue(str(folder), f"could not list folder: {exc}"))
+        return []
+
+
 def _load_typed_dir(
     reg: RegistryLike,
     root: Path,
     folder: str,
     issues: list[PluginLoadIssue],
-    trust: TrustStore | None,
-    confirm: ConfirmCallback | None,
+    gate: _Gate,
     deferred: list[Path],
 ) -> None:
     """Load every plugin file directly inside one typed subfolder (non-recursive).
@@ -564,8 +693,8 @@ def _load_typed_dir(
     preset is appended to ``deferred`` rather than loaded, for the caller to build
     once everything it may name is registered.
     """
-    for entry in sorted(root.iterdir()):
-        if not entry.is_file() or entry.name.startswith("_"):
+    for entry, _is_dir, is_file in _list_folder(root, issues):
+        if not is_file or entry.name.startswith("_"):
             continue
         if entry.suffix == ".toml":
             stage = PRESET_FOLDER_STAGE.get(folder)
@@ -584,7 +713,7 @@ def _load_typed_dir(
                     )
                 )
         elif entry.suffix == ".py":
-            _load_module(reg, entry, folder, issues, trust, confirm)
+            _load_module(reg, entry, folder, issues, gate)
 
 
 def check_engine_takes_params(reg: RegistryLike, preset: Preset) -> None:
@@ -721,20 +850,27 @@ def _load_compression_preset(
         )
 
 
-def _is_approved(
-    path: Path,
-    digest: str,
-    trust: TrustStore | None,
-    confirm: ConfirmCallback | None,
-) -> bool:
+@dataclass(frozen=True)
+class _Gate:
+    """How one plugin root's code is let through: the trust store, the prompt,
+    and whether the developer loop applies there (:func:`_is_approved`)."""
+
+    trust: TrustStore | None
+    confirm: ConfirmCallback | None
+    session_reload: bool
+
+
+def _is_approved(path: Path, digest: str, gate: _Gate) -> bool:
     """Trusted already, or approved now (and then remembered). Default deny."""
+    trust, confirm = gate.trust, gate.confirm
     if trust is not None and trust.is_trusted(digest):
         return True
     # Developer loop: a path approved earlier this run reloads without a prompt
-    # when its code changes. Across runs a changed hash still prompts, the
-    # session set being empty at launch (TrustStore.is_session_path).
-    if trust is not None and trust.is_session_path(str(path)):
-        trust.trust(digest, str(path))
+    # when its code changes. Trusted for this run only, so a fresh run still
+    # prompts for the changed hash - the user approved the code they saw, not
+    # this edit of it.
+    if gate.session_reload and trust is not None and trust.is_session_path(str(path)):
+        trust.trust_for_session(digest)
         return True
     if confirm is not None and confirm(PendingCodePlugin(str(path), digest)):
         if trust is not None:
@@ -748,8 +884,7 @@ def _load_module(
     path: Path,
     folder: str,
     issues: list[PluginLoadIssue],
-    trust: TrustStore | None,
-    confirm: ConfirmCallback | None,
+    gate: _Gate,
 ) -> None:
     try:
         source = path.read_bytes()
@@ -757,7 +892,8 @@ def _load_module(
         issues.append(PluginLoadIssue(str(path), f"could not read: {exc}"))
         return
 
-    if not _is_approved(path, digest_bytes(source), trust, confirm):
+    digest = digest_bytes(source)
+    if not _is_approved(path, digest, gate):
         issues.append(
             PluginLoadIssue(
                 str(path),
@@ -768,24 +904,40 @@ def _load_module(
         )
         return
 
+    # A real module, registered in sys.modules under its name: the stdlib looks a
+    # class's module up there - @dataclass resolving string annotations under
+    # `from __future__ import annotations`, typing.get_type_hints, pickle and
+    # copy all do - and a bare namespace dict fails every one of them. The name
+    # is unique per file and per version of it, so two plugins sharing a stem
+    # in different folders or roots, or an edit reloaded beside its earlier
+    # self, never answer for each other.
+    tag = digest_bytes(f"{path}|{digest}".encode())[:12]
+    name = f"celpix_plugin_{folder}_{path.stem}_{tag}"
+    module = types.ModuleType(name)
+    module.__file__ = str(path)
+    sys.modules[name] = module
+    registering = False
     try:
         # Execute exactly the bytes we hashed (not a re-read), so approval can't be
         # bypassed by swapping the file after the check.
-        namespace: dict = {
-            "__name__": f"celpix_plugin_{path.stem}",
-            "__file__": str(path),
-        }
-        exec(compile(source, str(path), "exec"), namespace)  # noqa: S102 — gated above
-        register = namespace.get("register")
+        code = compile(source, str(path), "exec")
+        exec(code, module.__dict__)  # noqa: S102 — gated above
+        register = module.__dict__.get("register")
         if not callable(register):
+            sys.modules.pop(name, None)
             issues.append(
                 PluginLoadIssue(str(path), "no register(registry) function found")
             )
             return
+        registering = True
         # Through a folder-scoped surface, so the layout's type guarantee holds
         # for code as well as data.
         register(ScopedRegistry(reg, folder, path, issues))
     except Exception as exc:  # noqa: BLE001 — a broken plugin must not crash the app
+        # Kept once register() has started: whatever it registered before the
+        # raise is live in the registry and still needs its module.
+        if not registering:
+            sys.modules.pop(name, None)
         origin = fault_origin(exc)
         where = f" (raised at {origin})" if origin else ""
         issues.append(

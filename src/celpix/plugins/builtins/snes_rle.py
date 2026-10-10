@@ -70,6 +70,7 @@ original packer rather than about this one, and both differences leave our outpu
 
 from __future__ import annotations
 
+from celpix.core.address import format_hex
 from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
 from celpix.plugins.builtins._rle import pack_runs
@@ -85,9 +86,11 @@ _TERMINATOR = b"\xff\xff"
 _MAX_RUN_OF_TERMINATOR_BYTE = 127
 # Memory guard for a read with no length behind it, and one SNES bank — the
 # conventional cap on an uncompressed structure and past any tilemap buffer a
-# cartridge fills. Hitting it stops the decode at the last packet boundary, which
-# for RLE1 then reads as "no terminator": a stream that expands this far without
-# ending is not one.
+# cartridge fills. The terminator is looked for *before* the cap is tested, so an
+# RLE1 stream that fills the bank exactly still ends; one that keeps going past it
+# stops at the packet boundary and reads as "no terminator", because a stream that
+# expands this far without ending is not one. The encoder refuses more than this,
+# so it never writes a stream the decoder would cut short.
 _MAX_OUT = 0x10000
 
 
@@ -116,11 +119,13 @@ def decompress(
     i, n = 0, len(data)
     consumed = 0
     complete = False
-    while i < n and len(out) < _MAX_OUT:
+    while i < n:
         if terminated and data[i : i + 2] == _TERMINATOR:
             i += 2
             consumed = i
             complete = True
+            break
+        if len(out) >= _MAX_OUT:
             break
         header = data[i]
         if header & 0x80:  # run: the next byte, (L + 1) times
@@ -154,6 +159,11 @@ def _run_limit(value: int) -> int:
 
 def compress(data: bytes, *, terminated: bool) -> bytes:
     """Encode raw bytes as an RLE1 (``terminated``) or RLE2 stream."""
+    if len(data) > _MAX_OUT:
+        raise ValueError(
+            f"data is {format_hex(len(data), None)} bytes; RLE structures cap at "
+            f"{format_hex(_MAX_OUT, None)} (one 64 KB bank)"
+        )
     out = bytearray()
     pack_runs(
         data,

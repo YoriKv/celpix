@@ -280,11 +280,11 @@ class BindingsMixin:
         is, and it is the only thing about a composite that is
         (``docs/design/palette-editing.md`` §2,
         :func:`~celpix.project.documents.palette_offset_owner`). A piece that is a
-        *slice* of a file nobody opened left that question with no answer at all:
-        the mode was refused for having "no piece from a file" while the file sat
-        right there on disk. So reading a composite brings those files into the
-        list, once, rather than every consumer learning to look behind a slice for
-        one.
+        *slice* of a file nobody opened would leave that question with no answer
+        at all: the mode would be refused for having "no piece from a file" while
+        the file sat right there on disk. So reading a composite brings those
+        files into the list, once, rather than every consumer learning to look
+        behind a slice for one.
 
         The row is added the way a jump to a closed parent adds one
         (:meth:`~...jumps.JumpsMixin._jump_into_parent`) — a plain FILE on the
@@ -494,7 +494,7 @@ class BindingsMixin:
         Each owner is taken **with its region** (:meth:`_region_of`): a slice's
         bytes are its parent's, so an edit to either is an edit to the other, and
         a composite built on the other is exactly as stale as one built on the
-        entry the stroke named. Without that, a composite over a file went on
+        entry the stroke named. Without that, a composite over a file would go on
         showing the old bytes after a stroke on a slice of it, and one over the
         slice after a stroke on the file — until something else happened to drop
         it. The reassembly reads each piece through the settle that pays the
@@ -537,10 +537,10 @@ class BindingsMixin:
         changing under the composite (:meth:`_reassemble_composites`), and the
         composite's own list being re-written
         (:meth:`~...slices.SlicesMixin._apply_composite_params`). The second
-        used to ask the first, which looks for composites *using* the entry and
-        so never found the entry itself — a composite is never a piece — and an
-        edit to the list changed the name in the Files pane and nothing on
-        screen.
+        cannot go through the first, which looks for composites *using* the
+        entry and so never finds the entry itself — a composite is never a piece
+        — and an edit to the list would change the name in the Files pane and
+        nothing on screen.
 
         Off screen the drop is the whole of it: the next activation reads the
         entry fresh. On screen it is reloaded here, quietly, because nothing
@@ -583,11 +583,11 @@ class BindingsMixin:
 
         A map holds a decoded *copy* of its bank, so closing that bank — or an
         undo putting it back — changes nothing about the map until it is read
-        again: it went on drawing art out of a file no longer in the list, and
-        the "no tiles bound" state a map with an unresolved source is supposed to
-        show never arrived (``docs/design/tilemap-entry.md`` §1). That is the
-        arriving-and-leaving twin of :meth:`_resync_tile_bindings`, which patches
-        the same copies when the bytes change underneath them.
+        again: without this it would go on drawing art out of a file no longer in
+        the list, and never show the "no tiles bound" state a map with an
+        unresolved source is supposed to (``docs/design/tilemap-entry.md`` §1).
+        That is the arriving-and-leaving twin of :meth:`_resync_tile_bindings`,
+        which patches the same copies when the bytes change underneath them.
 
         An ordinary re-read, so an unsaved cell edit rides across it and a map
         bound through a chain resolves its hop exactly as a fresh load would.

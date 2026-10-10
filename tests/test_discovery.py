@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import struct
 
 import pytest
@@ -243,17 +244,56 @@ def test_changed_code_is_reprompted_in_a_new_run(tmp_path) -> None:
     discovery.load_directory(
         default_registry(), str(plugdir), trust=trust, confirm=_ALLOW
     )
+    deny = lambda pending: False  # noqa: E731
 
-    # Editing the file changes its hash. A *fresh* run (new TrustStore reading the
-    # persisted file — empty session set) does not trust the new hash, so it prompts.
+    # Editing the file changes its hash. Reloaded in the same run it passes on the
+    # developer loop, but only for this run: a *fresh* run (a new TrustStore
+    # reading the persisted file) was never told the new hash, so it prompts.
     _drop(plugdir, "containers", "hello.py", _CODE_PLUGIN + "\n# edited\n")
+    assert (
+        discovery.load_directory(
+            default_registry(), str(plugdir), trust=trust, confirm=deny
+        )
+        == []
+    )
     fresh_trust = TrustStore(str(tmp_path / "trust.json"))
     reg = default_registry()
-    deny = lambda pending: False  # noqa: E731
     issues = discovery.load_directory(
         reg, str(plugdir), trust=fresh_trust, confirm=deny
     )
     assert len(issues) == 1
+    with pytest.raises(KeyError):
+        reg.plugin(Stage.CONTAINER, "container.hello")
+
+
+def test_changed_project_code_is_reprompted_within_the_run(tmp_path) -> None:
+    """A project's folder changes by being pulled or extracted over, so the
+    developer loop's no-prompt reload is the user's own folder's alone."""
+    plugdir, trust = _plugin_dir(tmp_path)
+    project = discovery.PROJECT_CATEGORY
+    load = discovery.load_directory
+    assert (
+        load(
+            default_registry(),
+            str(plugdir),
+            category=project,
+            trust=trust,
+            confirm=_ALLOW,
+        )
+        == []
+    )
+
+    _drop(plugdir, "containers", "hello.py", _CODE_PLUGIN + "\n# pulled\n")
+    asked = []
+    reg = default_registry()
+    issues = load(
+        reg,
+        str(plugdir),
+        category=project,
+        trust=trust,
+        confirm=lambda pending: asked.append(pending) or False,
+    )
+    assert len(asked) == 1 and issues[0].declined
     with pytest.raises(KeyError):
         reg.plugin(Stage.CONTAINER, "container.hello")
 
@@ -275,13 +315,30 @@ def test_session_edit_reloads_without_prompt(tmp_path) -> None:
     assert reg.plugin(Stage.CONTAINER, "container.hello")
 
 
-def test_broken_preset_is_reported_not_raised(tmp_path) -> None:
-    _drop(tmp_path, "pixel", "bad.toml", "this is not valid toml")
+@pytest.mark.parametrize(
+    ("text", "names"),
+    [
+        ("this is not valid toml", None),
+        # Read at load, naming the key, rather than a bare KeyError or a list
+        # reaching the engine at decode time.
+        ('id = "preset.pixel.x"\nname = "X"\n', "engine_id"),
+        (
+            'id = "preset.pixel.x"\nname = "X"\nengine_id = "codec.pixel.planar"\n'
+            'params = ["bpp"]\n',
+            "params",
+        ),
+    ],
+    ids=["not-toml", "no-engine", "list-params"],
+)
+def test_broken_preset_is_reported_not_raised(tmp_path, text, names) -> None:
+    _drop(tmp_path, "pixel", "bad.toml", text)
     reg = default_registry()
 
     issues = discovery.load_directory(reg, str(tmp_path))
     assert len(issues) == 1
     assert "bad.toml" in issues[0].path
+    if names:
+        assert names in issues[0].message
 
 
 def test_module_without_register_is_reported(tmp_path) -> None:
@@ -292,6 +349,74 @@ def test_module_without_register_is_reported(tmp_path) -> None:
     issues = discovery.load_directory(reg, str(tmp_path), confirm=_ALLOW)
     assert len(issues) == 1
     assert "register" in issues[0].message
+
+
+def test_a_plugin_runs_as_a_module_the_stdlib_can_find(tmp_path) -> None:
+    """``@dataclass`` resolves string annotations through ``sys.modules``, so a
+    plugin in the house style - ``from __future__ import annotations`` - needs a
+    real module registered there to define one at all."""
+    header = """from __future__ import annotations
+from dataclasses import dataclass
+
+
+@dataclass
+class Header:
+    size: int
+"""
+    _drop(tmp_path, "containers", "dc.py", header + _CODE_PLUGIN)
+    reg = default_registry()
+
+    assert discovery.load_directory(reg, str(tmp_path), confirm=_ALLOW) == []
+    assert reg.plugin(Stage.CONTAINER, "container.hello")
+
+
+@pytest.mark.parametrize(
+    "signature",
+    [
+        'magic=(0, b"ABCD")',  # one probe, missing its outer tuple
+        'extensions=(".x",), size_modulo=(0, 0)',  # a zero modulus
+        'extensions=(".nes")',  # no trailing comma: a string, letter by letter
+        'magic=((0, b""),)',  # an empty probe matches every file
+        "min_size=True",
+    ],
+)
+def test_a_malformed_container_signature_is_refused(tmp_path, signature) -> None:
+    """Detection scores every container on every open, so one bad signature
+    would raise, or claim files, for all of them."""
+    from celpix.plugins.detect import detect_container
+
+    _drop(
+        tmp_path,
+        "containers",
+        "x.py",
+        _CODE_PLUGIN.replace('name="Hello container"', f'name="X", {signature}'),
+    )
+    reg = default_registry()
+
+    issues = discovery.load_directory(reg, str(tmp_path), confirm=_ALLOW)
+    assert len(issues) == 1 and "registration skipped" in issues[0].message
+    for name in ("any.x", "level.bin"):
+        found = detect_container(reg, name, head=b"ABCD" + bytes(12), size=16)
+        assert found == "container.raw-file"
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "geteuid") or os.geteuid() == 0,
+    reason="needs POSIX permissions that bind the current user",
+)
+def test_an_unlistable_folder_is_reported_and_the_rest_still_loads(tmp_path) -> None:
+    _drop(tmp_path, "palette", "custom.toml", _PRESET)
+    locked = tmp_path / "pixel"
+    locked.mkdir()
+    locked.chmod(0)
+    try:
+        reg = default_registry()
+        issues = discovery.load_directory(reg, str(tmp_path), category="")
+    finally:
+        locked.chmod(0o755)
+    assert [issue.path for issue in issues] == [str(locked)]
+    assert "could not list folder" in issues[0].message
+    assert reg.preset("preset.pixel.custom-1bpp")
 
 
 def test_env_path_is_searched(tmp_path, monkeypatch) -> None:
@@ -337,6 +462,15 @@ def test_a_misplaced_plugin_is_reported_and_the_rest_still_loads(tmp_path) -> No
     # Registers one in-scope plugin plus one that *declares* a foreign stage; the
     # scope check is per registration, so the first still loads.
     _drop(tmp_path, "compression", "scheme.py", _SCHEME_PLUGIN)
+    # A stage stated the way a TOML spells it is the stage it names.
+    _drop(
+        tmp_path,
+        "containers",
+        "spelt.py",
+        _CODE_PLUGIN.replace(
+            '"container.hello"', '"container.spelt", stage="container"'
+        ),
+    )
     reg = default_registry()
 
     issues = discovery.load_directory(reg, str(tmp_path), confirm=_ALLOW)
@@ -350,6 +484,7 @@ def test_a_misplaced_plugin_is_reported_and_the_rest_still_loads(tmp_path) -> No
     with pytest.raises(KeyError):
         reg.plugin(Stage.INTERPRET_PIXEL, "container.hello")
     assert reg.plugin(Stage.COMPRESSION, "compression.double")
+    assert reg.plugin(Stage.CONTAINER, "container.spelt")
 
 
 def test_loose_root_file_reported_and_unknown_folder_ignored(tmp_path) -> None:
@@ -1043,6 +1178,29 @@ def register(registry):
         reg.preset("format.pixel.nogeo")
 
 
+@pytest.mark.parametrize(
+    ("format_id", "reason"),
+    [("", "non-empty string"), ("preset.pixel.snes-4bpp", "already a preset")],
+)
+def test_a_format_whose_id_cannot_register_leaves_neither_half(
+    tmp_path, format_id, reason
+) -> None:
+    """A format registers an engine and a preset under one id; refusing the
+    preset after the engine went in would leave an engine nothing reaches."""
+    _drop(
+        tmp_path,
+        "pixel",
+        "dup.py",
+        _FORMAT_PLUGIN.replace('"format.pixel.twobit"', repr(format_id)),
+    )
+    reg = default_registry()
+
+    issues = discovery.load_directory(reg, str(tmp_path), confirm=_ALLOW)
+    assert len(issues) == 1 and reason in issues[0].message
+    with pytest.raises(KeyError):
+        reg.plugin(Stage.INTERPRET_PIXEL, format_id)
+
+
 def test_palette_format_without_entry_size_is_reported(tmp_path) -> None:
     # The host sizes palette reads via bytes_per_entry; a palette format without
     # it must be a load issue, not a failure when the feature is first used.
@@ -1117,7 +1275,7 @@ def test_a_dropped_in_codec_is_reported_by_its_own_line_and_unused_inputs(
     the check that caught it.
     """
     from celpix.core.errors import Pathway, PipelineError
-    from celpix.pipeline._stage import _run
+    from celpix.pipeline._stage import run_stage
 
     _drop(tmp_path, "pixel", "raw_slice.py", _CRASHING_PIXEL_FORMAT)
     reg = default_registry()
@@ -1127,7 +1285,7 @@ def test_a_dropped_in_codec_is_reported_by_its_own_line_and_unused_inputs(
     engine = reg.plugin(Stage.INTERPRET_PIXEL, "format.pixel.raw-slice")
 
     with pytest.raises(PipelineError) as caught:
-        _run(
+        run_stage(
             Stage.INTERPRET_PIXEL,
             Pathway.PIXEL,
             lambda: engine.decode(bytes(16), {}, PipelineContext()),

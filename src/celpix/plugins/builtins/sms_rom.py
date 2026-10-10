@@ -70,9 +70,17 @@ def summed_length(rom: bytes, header: int) -> int:
 
 
 def checksum(rom: bytes, header: int) -> int:
-    """The BIOS's sum: every byte outside the 16-byte header, modulo 65536."""
+    """The BIOS's sum: every byte of the named range but a 16-byte gap, mod 65536.
+
+    The gap is the header's own sixteen bytes wherever the range reaches past
+    them. A range that ends first - the 8 and 16 KiB size codes, on a cartridge
+    whose header sits at ``$7FF0`` - is summed up to 16 bytes short of its end,
+    ``$0000-$1FEF`` and ``$0000-$3FEF``, which is where the header of a ROM that
+    size sits; summing on to ``$7FF0`` would count bytes the BIOS never reads.
+    """
     end = summed_length(rom, header)
-    return (sum(rom[:header]) + sum(rom[header + HEADER_LEN : end])) & 0xFFFF
+    gap = min(header, end - HEADER_LEN)
+    return (sum(rom[:gap]) + sum(rom[gap + HEADER_LEN : end])) & 0xFFFF
 
 
 def repair_checksum(rom: bytes) -> bytes:

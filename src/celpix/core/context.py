@@ -44,6 +44,13 @@ KEY_SOURCE_FILES = "source.files"
 # a scheme that needs it answers with its own input or a refusal.
 KEY_SURROUND = "source.surround"
 KEY_SURROUND_START = "source.surround-start"
+# int: length of the region Read produced — the container's payload, which is
+# also the reshape's region — recorded by the host at load. A whole file has no
+# stated slot, so this is the one a save of a compressed stream fills back up to:
+# the read unpacked a prefix of the region, and the write hands back all of it,
+# padded in reshaped space before the unshape, so the permutation is the one the
+# read ran (``docs/design/reshape-stage.md`` §3).
+KEY_REGION_LENGTH = "source.region-length"
 # int: size of the compressed structure in the source, recorded by Decompress.
 # A container usually over-reads (offset to end-of-file), so this — not the
 # input length — is the slot a save-back has to fit into.
@@ -279,6 +286,12 @@ KEY_TILEMAP_ANIMATIONS_INFERRED = "tilemap.animations-inferred"
 # plugin. Advisory: it seeds the format picker and the user owns it after. Set
 # by the host on a write into nothing, as ``KEY_PALETTE_PRESET`` is.
 KEY_PIXEL_PRESET = "pixel.preset"
+# str: the pixel preset the bytes a write lays down were encoded under, set by
+# the pipeline just before the container's write. A container that carries a
+# bit the format it seeds leaves undeclared (a TIM's STP flag under the 555
+# preset) restores that bit from the file only while the bytes still come from
+# that format: under one that declares the bit, an edit to it is the point.
+KEY_WRITE_PRESET = "pixel.write-preset"
 # bytes: one palette row per tile, when the format carries a side table of them.
 # A tile bank that records which row each tile is meant to be read under is
 # saying what pinned palette regions otherwise have to be told by hand, so it

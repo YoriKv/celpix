@@ -276,6 +276,8 @@ def decode_and_compose(
     two_dimensional: bool,
     max_rows: int | None,
     biases: list[int] | None = None,
+    *,
+    plugin: str = "",
 ):
     """Decode a pixel-byte buffer and lay the tiles out through an arrangement.
 
@@ -289,10 +291,19 @@ def decode_and_compose(
     Returns ``(grid, filled)`` — an index or direct-color grid, and the count of
     real tiles (excluding any 2D-reflow / partial-tile padding) so a caller can
     background the rest.
+
+    Every call into the codec runs as the pixel-interpret stage, so a codec that
+    raises arrives as a :class:`PipelineError` naming ``plugin`` (the preset id
+    the engine resolved from) — the one failure a caller has to handle, rather
+    than whatever a plugin happened to throw.
     """
     cols = layout.columns
-    tile_bytes = engine.bytes_per_tile(params)
-    _tw, tile_h = engine.tile_size(params)
+    tile_bytes, tile_h = run_stage(
+        Stage.INTERPRET_PIXEL,
+        Pathway.PIXEL,
+        lambda: (engine.bytes_per_tile(params), engine.tile_size(params)[1]),
+        plugin=plugin,
+    )
     filled = ceil_div(len(pixel_bytes), tile_bytes) if tile_bytes else 0
     buffer = (
         reflow_2d(pixel_bytes, tile_bytes, tile_h, cols)
@@ -302,7 +313,16 @@ def decode_and_compose(
     # Zero-pad the trailing partial tile so a short buffer still decodes.
     if tile_bytes and len(buffer) % tile_bytes:
         buffer = buffer + bytes(-len(buffer) % tile_bytes)
-    tiles = engine.decode(buffer, params, PipelineContext()) if buffer else []
+    tiles = (
+        run_stage(
+            Stage.INTERPRET_PIXEL,
+            Pathway.PIXEL,
+            lambda: engine.decode(buffer, params, PipelineContext()),
+            plugin=plugin,
+        )
+        if buffer
+        else []
+    )
     return compose_tiles(tiles, layout, max_rows, biases), filled
 
 
@@ -453,7 +473,7 @@ def patch_tile_bank(
     doc.tile_bank_cache = ((doc.pixel_data, *shape), bank)
 
 
-def drawn_palette_row(row: int, base: int, rows: int = 0) -> int:
+def drawn_palette_row(row: int, base: int, rows: int = 0, cap: int = 0) -> int:
     """The palette row a stored ``row`` draws through, under a row base.
 
     The one arithmetic every named row goes through — a cell's, a subsprite's, a
@@ -469,9 +489,17 @@ def drawn_palette_row(row: int, base: int, rows: int = 0) -> int:
     eight, taken 8 rows up a palette eight rows tall, is row 0 again. Which of
     those reads better is the file's business rather than a rule
     (``docs/design/palette-editing.md`` §3), so it is a toggle.
+
+    ``cap`` is how many rows the 256-entry index space holds — ``256 // space``
+    for a row of ``space`` colours — and 0 leaves the top open. Every caller that
+    folds the row into the indices passes it, because a row past the space has
+    nowhere to go: the shift saturates and the whole tile collapses to index 255.
+    An 8bpp tile's cap is 1, so its row is ignored, which is what the hardware
+    does with a cell's palette bits in a 256-colour mode.
     """
     total = row + base
-    return total % rows if rows > 0 else max(0, total)
+    drawn = total % rows if rows > 0 else max(0, total)
+    return min(drawn, cap - 1) if cap > 0 else drawn
 
 
 def tilemap_tiles(
@@ -517,6 +545,23 @@ def _shifted(tile: Grid, shift: int) -> Grid:
     if shift and isinstance(tile, IndexGrid):
         return tile.shifted(shift)
     return tile
+
+
+def _blank_tile(doc: Document, source: Sequence[PixelGrid]) -> PixelGrid:
+    """The tile drawn where a cell names one the bank does not have.
+
+    The bank's own grid type, never an assumed :class:`IndexGrid`: the composer
+    sizes its canvas off one tile and copies every other one in at that stride, so
+    an index blank among direct-colour tiles mis-strides every row after it.
+    """
+    kind = type(source[0]) if source else IndexGrid
+    return kind(doc.tile_width, doc.tile_height)
+
+
+def _sheet_canvas(source: Sequence[PixelGrid], width: int, height: int) -> PixelGrid:
+    """A blank sprite sheet of the bank's own grid type, for :func:`_blit` to
+    draw into — an index canvas cannot hold a direct-colour bank's pixels."""
+    return (type(source[0]) if source else IndexGrid)(width, height)
 
 
 def expand_cells(
@@ -573,12 +618,13 @@ def expand_cells(
     """
     unit = block or doc.cell_tiles
     across, down = max(1, unit[0]), max(1, unit[1])
-    blank = IndexGrid(doc.tile_width, doc.tile_height)
     space = palette_row_size(doc.pixel_config.interpret_preset_id, reg)
     source = tile_bank(doc, reg)
+    blank = _blank_tile(doc, source)
     count = len(source)
     base = doc.palette_row_base
     rows = doc.palette_row_wrap(space)
+    cap = 256 // space
     runs: dict[tuple[int, int, bool, bool], list] = {}
     drawn: dict[tuple[int, bool, bool, int], object] = {}
     tiles: list = []
@@ -586,7 +632,7 @@ def expand_cells(
         flip_h, flip_v = cell.flip_h, cell.flip_v
         run = runs.get((cell.index, cell.palette_row, flip_h, flip_v))
         if run is None:
-            shift = drawn_palette_row(cell.palette_row, base, rows) * space
+            shift = drawn_palette_row(cell.palette_row, base, rows, cap) * space
             run = []
             for index in doc.cell_tile_indices(cell):
                 key = (index, flip_h, flip_v, shift)
@@ -625,7 +671,7 @@ class TilemapImage(NamedTuple):
     sparsely-drawn layout is.
     """
 
-    grid: IndexGrid
+    grid: PixelGrid
     drawn: int
     palette_rows: int
     hidden: tuple[tuple[int, int, int, int], ...] = ()
@@ -683,12 +729,13 @@ def tilemap_image(doc: Document, reg: Registry, columns: int) -> TilemapImage:
     space = palette_row_size(doc.pixel_config.interpret_preset_id, reg)
     base = doc.palette_row_base
     rows = doc.palette_row_wrap(space)
+    cap = 256 // space
     hidden: tuple[tuple[int, int, int, int], ...] = ()
     if doc.is_sprite:
         frames = doc.shown_frames
         top = max(
             (
-                drawn_palette_row(s.palette_row, base, rows)
+                drawn_palette_row(s.palette_row, base, rows, cap)
                 for frame in frames
                 for s in frame
             ),
@@ -703,7 +750,7 @@ def tilemap_image(doc: Document, reg: Registry, columns: int) -> TilemapImage:
     else:
         top = max(
             (
-                drawn_palette_row(cell.palette_row, base, rows)
+                drawn_palette_row(cell.palette_row, base, rows, cap)
                 for cell in doc.drawn_cells
             ),
             default=0,
@@ -712,7 +759,7 @@ def tilemap_image(doc: Document, reg: Registry, columns: int) -> TilemapImage:
         # No bias list: the rows are already in the indices (see tilemap_tiles).
         grid, drawn = compose_tiles(tiles, layout, None), len(tiles)
         hidden = hidden_rects(doc, columns)
-    return TilemapImage(grid, drawn, min(max(1, 256 // max(1, space)), top + 1), hidden)
+    return TilemapImage(grid, drawn, top + 1, hidden)
 
 
 def tile_source_span(
@@ -907,7 +954,7 @@ class TileSheet(NamedTuple):
     the previous document's numbers.
     """
 
-    grid: IndexGrid
+    grid: PixelGrid
     ids: Sequence[int]
 
 
@@ -1008,7 +1055,7 @@ def glyph_sheet(
     """
     tiles = tile_bank(doc, reg)
     ids = list(range(layout.blocks(len(tiles))))
-    blank = IndexGrid(doc.tile_width, doc.tile_height)
+    blank = _blank_tile(doc, tiles)
     shift = palette_row * palette_row_size(doc.pixel_config.interpret_preset_id, reg)
     across = max(1, layout.block_columns)
     down = max(1, layout.block_rows)
@@ -1119,7 +1166,7 @@ def sprite_sheet(doc: Document, columns: int) -> SpriteSheet:
 
 def sprite_image(
     doc: Document, reg: Registry, columns: int
-) -> tuple[IndexGrid, SpriteSheet]:
+) -> tuple[PixelGrid, SpriteSheet]:
     """A sprite object's frames drawn side by side — one image, and its layout.
 
     The one render path that cannot go through :func:`compose_tiles`, because a
@@ -1158,8 +1205,8 @@ def sprite_image(
         across * width * sheet.down * height,
         f"a {across * width}x{sheet.down * height} pixel sprite sheet",
     )
-    image = IndexGrid(across * width, sheet.down * height)
     source = tile_bank(doc, reg)
+    image = _sheet_canvas(source, across * width, sheet.down * height)
     space = palette_row_size(doc.pixel_config.interpret_preset_id, reg)
     rows = doc.palette_row_wrap(space)
     for at, frame in enumerate(frames):
@@ -1173,8 +1220,8 @@ def sprite_image(
 
 
 def _draw_subsprite(
-    image: IndexGrid,
-    source: list[IndexGrid],
+    image: PixelGrid,
+    source: list[PixelGrid],
     sub: Subsprite,
     x: int,
     y: int,
@@ -1201,7 +1248,10 @@ def _draw_subsprite(
     """
     wide, _tall = sub.size()
     step_x, step_y = max(1, doc.tile_width), max(1, doc.tile_height)
-    bias = drawn_palette_row(sub.palette_row, doc.palette_row_base, rows) * space
+    bias = (
+        drawn_palette_row(sub.palette_row, doc.palette_row_base, rows, 256 // space)
+        * space
+    )
     for slot, index in enumerate(sub.tile_indices()):
         index += doc.tile_base_index
         if not 0 <= index < len(source):
@@ -1268,7 +1318,7 @@ class SubspriteSheet(NamedTuple):
     outline and the blit cannot disagree about where a piece is.
     """
 
-    grid: IndexGrid
+    grid: PixelGrid
     records: list[tuple[int, int]]
     cell: tuple[int, int]
     boxes: list[tuple[int, int, int, int]]
@@ -1354,8 +1404,8 @@ def subsprite_sheet(
         columns * cell_w * rows_of_cells * cell_h,
         f"a {columns * cell_w}x{rows_of_cells * cell_h} pixel subsprite sheet",
     )
-    image = IndexGrid(columns * cell_w, rows_of_cells * cell_h)
     source = tile_bank(doc, reg)
+    image = _sheet_canvas(source, columns * cell_w, rows_of_cells * cell_h)
     space = palette_row_size(doc.pixel_config.interpret_preset_id, reg)
     rows = doc.palette_row_wrap(space)
     boxes: list[tuple[int, int, int, int]] = []
@@ -1445,8 +1495,16 @@ def _sprite_walk(
         inside = 0 <= tile_index < len(source)
         yield (
             SpriteHit(at, index, sub, tile_index if inside else None, tx, ty),
-            inside and bool(source[tile_index].get(tx, ty)),
+            inside and _opaque(source[tile_index], tx, ty),
         )
+
+
+def _opaque(tile: PixelGrid, x: int, y: int) -> bool:
+    """Whether a subsprite's pixel draws — the test :func:`_blit` makes, so a
+    pick and the picture agree on what is see-through: index 0, or alpha 0 on a
+    direct-colour tile."""
+    value = tile.get(x, y)
+    return bool(value >> 24 if tile.bytes_per_pixel == 4 else value)
 
 
 def sprite_hit(
@@ -1561,8 +1619,9 @@ def _transparent_shift(bias: int) -> bytes:
     is the whole reason it is a second table: that one moves index 0 along with
     the rest, which is right for a background and turns every transparent pixel
     of a subsprite into an opaque colour of its row. Saturating at 255 for the
-    reason the other one does — a row clamped to the palette cannot reach it, so
-    this only keeps a hand-edited project from raising instead of rendering.
+    reason the other one does — a row capped to the index space
+    (:func:`drawn_palette_row`'s ``cap``) cannot reach it, so this only keeps a
+    caller that skipped the cap from raising instead of rendering.
 
     Cached because an object holds a handful of distinct palette rows and a frame
     blits a few dozen subsprites through them.
@@ -1570,7 +1629,7 @@ def _transparent_shift(bias: int) -> bytes:
     return bytes([0]) + bytes(min(255, i + bias) for i in range(1, 256))
 
 
-def _blit(target: IndexGrid, tile: IndexGrid, x: int, y: int, bias: int) -> None:
+def _blit(target: PixelGrid, tile: PixelGrid, x: int, y: int, bias: int) -> None:
     """Draw ``tile`` at ``(x, y)``, leaving index 0 and anything off-canvas alone.
 
     Index 0 is transparent here — subsprites overlap, and one drawn as a solid
@@ -1594,14 +1653,21 @@ def _blit(target: IndexGrid, tile: IndexGrid, x: int, y: int, bias: int) -> None
       where most of the saving is.
 
     The per-pixel fallback stays for rows that do have holes, which is what the
-    format actually holds; what changed is that it now runs over a clipped,
-    already-biased line and so has a single test in it.
+    format actually holds; it runs over a clipped, already-biased line and so has
+    a single test in it.
+
+    A direct-colour tile (:func:`_blit_direct`) takes its own path: its pixels are
+    four bytes wide and index no palette, so neither the translate nor the
+    one-byte transparency test applies to it.
     """
     width, height = target.width, target.height
     tile_w = tile.width
     first = max(0, -x)
     last = min(tile_w, width - x)
     if last <= first:
+        return
+    if tile.bytes_per_pixel != 1:
+        _blit_direct(target, tile, x, y, first, last)
         return
     run = last - first
     dst = target.data
@@ -1622,3 +1688,28 @@ def _blit(target: IndexGrid, tile: IndexGrid, x: int, y: int, bias: int) -> None
         for col, value in enumerate(line):
             if value:
                 dst[at + col] = value
+
+
+def _blit_direct(
+    target: PixelGrid, tile: PixelGrid, x: int, y: int, first: int, last: int
+) -> None:
+    """:func:`_blit` for a direct-colour tile, over the columns it clipped to.
+
+    Transparent is **alpha 0** — the direct-colour spelling of a subsprite's
+    index 0 — and there is no row to fold in, since the pixel carries its colour.
+    Stores go a whole pixel at a time, at the tile's own width in bytes.
+    """
+    bpp = tile.bytes_per_pixel
+    width, height = target.width, target.height
+    tile_w = tile.width
+    dst = target.data
+    src = tile.data
+    for row in range(tile.height):
+        ty = y + row
+        if not 0 <= ty < height:
+            continue
+        line = src[(row * tile_w + first) * bpp : (row * tile_w + last) * bpp]
+        at = (ty * width + x + first) * bpp
+        for off in range(0, len(line), bpp):
+            if line[off + bpp - 1]:  # the alpha byte of a little-endian ARGB pixel
+                dst[at + off : at + off + bpp] = line[off : off + bpp]

@@ -62,9 +62,15 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Applied by tests/conftest.py from each module's own source, not written on the
-# tests by hand — so `-m "not qt"` cannot fall behind a suite being added or split.
-markers = ["qt: needs a QApplication (run the model layer alone with -m 'not qt')"]
-# Qt tests must never try to open a real window in CI. `offscreen` is forced
-# via tests/conftest.py before Qt is imported; this is a belt-and-suspenders.
+# `qt` is applied by tests/conftest.py from each module's own source, not written
+# on the tests by hand — so `-m "not qt"` cannot fall behind a suite being added
+# or split. `samples` is written by hand on the one module that opens the
+# git-ignored sample-projects/, about half the model half's time, so the inner
+# loop (`-m "not qt and not samples"`) can leave it to the full run.
+markers = [
+    "qt: needs a QApplication (run the model layer alone with -m 'not qt')",
+    "samples: opens a real sample project (skip in the inner loop with -m 'not samples')",
+]
+# A summary line for every test that did not simply pass, skips included: a
+# sample-project test skips wherever its cartridge is absent.
 addopts = "-ra"

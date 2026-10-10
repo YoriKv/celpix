@@ -69,6 +69,7 @@ from celpix.ui.widgets import (
     counted,
     dialog_buttons,
     run_modal,
+    select_only,
 )
 
 __all__ = ["CompositeDialog", "CompositeParams"]
@@ -316,7 +317,7 @@ class CompositeDialog(QDialog):
                 last = piece.offset + piece.extent
                 name += f"  [{format_hex(piece.offset)}\u2013{format_hex(last)}]"
             item.setText(2, name)
-        self._list.setCurrentItem(item)
+        select_only(self._list, item)
         self._refresh()
 
     def _items(self) -> list[QTreeWidgetItem]:
@@ -417,7 +418,7 @@ class CompositeDialog(QDialog):
         under it moves. Rebuilding makes the rows a plain function of the list,
         which is one behaviour to get right instead of one per gesture.
 
-        **The scroll position is held still across it.** Every ``setCurrentItem``
+        **The scroll position is held still across it.** Every ``select_only``
         below asks the view to scroll that row into sight, and a rebuild makes one
         per row — so nudging a row one place with Move up threw the list to the
         end and back. What the gesture is for is comparing a row against its
@@ -429,7 +430,7 @@ class CompositeDialog(QDialog):
             self._append(piece)
         rows = self._items()
         if rows:
-            self._list.setCurrentItem(rows[min(max(select, 0), len(rows) - 1)])
+            select_only(self._list, rows[min(max(select, 0), len(rows) - 1)])
         self._refresh()
         self._list.verticalScrollBar().setValue(scrolled)
 

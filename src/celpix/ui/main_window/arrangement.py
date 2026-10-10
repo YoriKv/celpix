@@ -194,12 +194,14 @@ class ArrangementMixin:
         pattern): five controls settling one at a time would re-render five times
         and push four more commands.
 
-        ``recut`` says the **bitmap width in force** moved, which alone among
-        these changes the codec's *geometry* - bytes per tile, and therefore what
-        a tile index means. That takes the same re-interpretation path a format
-        switch does, landing on the byte position the state carries rather than
-        on a tile index that now points somewhere else. Everything else is a
-        repaint.
+        ``recut`` says the **bitmap width in force** moved, or the **byte
+        position** did. The width alone among these changes the codec's
+        *geometry* - bytes per tile, and therefore what a tile index means - and
+        the re-interpretation path a format switch takes is also the one that
+        lands a byte position: it lands on the position the state carries rather
+        than on a tile index that now points somewhere else, where a repaint
+        would leave the view wherever a clamp put it. Either way the footer then
+        says what the width in force is. Everything else is a repaint.
         """
         blocked = (
             self._block_cols,

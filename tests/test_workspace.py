@@ -1011,6 +1011,14 @@ def test_a_missing_plugin_opens_view_only_and_names_itself(tmp_path) -> None:
     assert slice_cfg.missing_plugins == (
         (Stage.COMPRESSION, "compression.not-installed"),
     )
+    # A map cut the same way degrades the same way on the tilemap pathway,
+    # rather than failing its read on the plugin lookup.
+    sliced.content_kind = ContentKind.TILEMAP
+    map_cfg = tilemap_config_for(sliced, "preset.tilemap.snes-bg", reg, ws)
+    assert map_cfg.compression_id == NO_COMPRESSION
+    assert map_cfg.write_enabled is False
+    assert map_cfg.missing_plugins == slice_cfg.missing_plugins
+    pipeline.read_region(map_cfg, reg)
 
     # Pointing either at a plugin that exists makes the entry whole again.
     entry.container_id = RAW_CONTAINER

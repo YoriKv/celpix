@@ -247,6 +247,12 @@ class BlockLayout:
             rem = block_x * (bc * br) + inner_y * bc + inner_x
         return blockrow * (bpr * bc * br) + rem
 
+    @property
+    def tiles_per_block(self) -> int:
+        """How many tiles one block covers — the length of every
+        :meth:`block_slots` run."""
+        return self._bc * self._br
+
     def blocks(self, slots: int) -> int:
         """How many whole blocks ``slots`` tiles make up at this layout.
 
@@ -254,9 +260,21 @@ class BlockLayout:
         blocks rather than tiles needs — a 256-tile sheet read as 1x2 blocks is
         128 of them. Whole ones only: a trailing partial block is half a picture
         of something, and nothing that numbers blocks has a number for it.
+
+        A trailing partial block **row** still holds whole blocks — under every
+        order the first blocks of a row fill before the last — so they count. The
+        ones it holds are always a prefix of that row, which is what lets a caller
+        number them ``0 .. blocks - 1`` with no gap.
         """
-        per_row = self._blocks_per_row
-        return max(0, slots // (per_row * self._bc * self._br)) * per_row
+        if slots <= 0:
+            return 0
+        full, rem = divmod(slots, self.slots_per_block_row)
+        complete = sum(
+            1
+            for block in range(self._blocks_per_row if rem else 0)
+            if max(self.block_slots(block)) < rem
+        )
+        return full * self._blocks_per_row + complete
 
     def block_slots(self, block: int) -> list[int]:
         """The linear slots block number ``block`` covers, in reading order.
@@ -275,8 +293,12 @@ class BlockLayout:
         whole one — are dropped rather than clamped, so a run that comes back
         short is short rather than wrong.
         """
+        if block < 0:
+            # No block precedes the first: clamping to block 0 would hand back
+            # real tiles for a number that names none.
+            return []
         bc, br = self._bc, self._br
-        brow, bx = divmod(max(0, block), self._blocks_per_row)
+        brow, bx = divmod(block, self._blocks_per_row)
         found = (
             self.pos_to_slot(bx * bc + dx, brow * br + dy)
             for dy in range(br)

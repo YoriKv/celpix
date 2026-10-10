@@ -57,7 +57,8 @@ into the open project.
 
 Code, for what no engine expresses. A code plugin runs with the app's
 privileges, so celPix asks before loading one and remembers the answer by the
-file's contents: a changed file is asked about again at the next launch.
+file's contents. Editing one you approved and pressing <kbd>F5</kbd> reloads it
+without asking; the changed file is asked about again at the next launch.
 
 A file defines one class and a `register(registry)` function. There are two
 shapes:
@@ -109,4 +110,5 @@ a project's folder under **Project plugins**, ahead of the shipped headings. A
 A `plugins/` folder next to a `.celpix` file, with the same subfolders, is loaded
 while that project is open. The project's formats then travel with its folder.
 celPix asks before running a project's `.py` plugins and states that they came
-with the project.
+with the project. A project's plugin that changes is asked about again straight
+away, refresh included.

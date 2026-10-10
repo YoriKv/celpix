@@ -46,6 +46,10 @@ from celpix.project.workspace import (
     tilemap_config_for,
 )
 
+# Whole real projects with their code plugins, so seconds each: out of the inner
+# loop (``-m "not qt and not samples"``), never out of the full run.
+pytestmark = pytest.mark.samples
+
 ROOT = Path(__file__).resolve().parents[1] / "sample-projects"
 
 

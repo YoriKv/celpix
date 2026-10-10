@@ -349,6 +349,32 @@ def test_pasting_cells_overwrites_from_the_selection(qtbot, tmp_path) -> None:
     assert window._doc.cells[2] == Cell(index=9)
 
 
+def test_cells_pasted_from_another_format_keep_only_what_it_stores(
+    qtbot, tmp_path
+) -> None:
+    """The cell clipboard outlives an entry switch. A flipped, prioritised SNES
+    cell pasted onto a Game Boy map, which stores the index alone, would draw
+    mirrored until a save dropped the bits it has no field for."""
+    from celpix.core.capabilities import ContentKind
+    from celpix.core.tilemap import Cell
+
+    window, snes = _bound_tilemap(qtbot, tmp_path, [Cell(index=5, flip_h=True)])
+    snes.doc.cells[0] = Cell(index=5, flip_h=True, flip_v=True, priority=1)
+    window._set_linear_selection(0, 0)
+    window._copy_selection()
+    plain = tmp_path / "gb.bin"
+    plain.write_bytes(bytes(32))
+    window._load_pixel(str(plain), content_kind=ContentKind.TILEMAP)
+    gb = window._workspace.current
+    gb.tilemap_preset_id = "preset.tilemap.gb-bg"
+    window._reload_tilemap(gb)
+    window._set_linear_selection(0, 0)
+
+    window._paste()
+
+    assert window._doc.cells[0] == Cell(index=5)
+
+
 def test_cutting_cells_copies_then_blanks_them(qtbot, tmp_path) -> None:
     from celpix.core.tilemap import Cell
 
@@ -1479,6 +1505,29 @@ def test_set_base_tile_makes_the_picked_tile_the_one_cell_zero_draws(
     assert entry.tile_source.base_index == 3
 
 
+def test_set_base_tile_waits_for_a_pick_this_map_can_reach(qtbot, tmp_path) -> None:
+    """The held pick survives an entry switch by design. On a map whose base puts
+    it out of reach the readout says nothing is selected, so the button must not
+    act on it - a base set from it would empty the sheet."""
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    bank = window._workspace.entries[0]
+    window._load_pixel(str(_pnl_file(tmp_path, [Cell(index=1)])))
+    entry = window._workspace.current
+    window._set_source_tile(6)  # held from another map, where it was in reach
+    entry.tile_source = TileSource(mode=TileMode.ENTRY, entry=bank, base_index=4)
+    window._reload_tilemap(entry)
+
+    window._sync_set_base_tile()  # this base offers IDs 0-3
+
+    assert window._source_tile_id == 6
+    assert not window._set_base_tile_button.isEnabled()
+
+
 def test_set_base_tile_is_offered_on_a_sprite_object_too(qtbot, tmp_path) -> None:
     """A subsprite is not a cell, but it holds a tile number in the same space
     and the base shifts it the same way — which is why the binding bar shows an
@@ -2134,25 +2183,28 @@ def test_a_stamp_lays_down_the_whole_cell_the_eyedropper_took(qtbot, tmp_path) -
     assert window._doc.cells[1] == replace(before, index=3)
 
 
-def test_edit_tiles_suppresses_the_canvas_menu(qtbot, tmp_path, monkeypatch) -> None:
+def test_edit_tiles_suppresses_the_canvas_menu(qtbot, tmp_path, opened_menus) -> None:
     """The right button is the tool's eyedropper, so the popup that button
     normally opens has to stay down — otherwise it lands on top of the pick.
-
-    Asserted at the Python level: reaching ``menu.exec()`` under the offscreen
-    platform would block the run, which is what the guard avoids.
-    """
+    Disarmed is the control: the same call then opens it, so the empty list is
+    the guard's doing."""
     from PySide6.QtCore import QPoint
 
     from celpix.core.tilemap import Cell
 
-    window, _ = _stamping(qtbot, tmp_path, [Cell(index=1)])
+    # A map of its own, unbound: neither the art nor the dock _stamping shows
+    # has anything to do with the menu.
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_pnl_file(tmp_path, [Cell(index=1)])))
+    window._stamp_action.setChecked(True)
+    assert window._stamping
+    window._show_canvas_menu(QPoint(0, 0))
+    assert opened_menus == []
 
-    def _boom():
-        raise AssertionError("built the context menu with Edit Tiles armed")
-
-    # The guard must return before the menu pulls its first actions.
-    monkeypatch.setattr(window, "_clipboard_actions", _boom)
-    window._show_canvas_menu(QPoint(0, 0))  # returns early: no menu, no raise
+    window._stamp_action.setChecked(False)
+    window._show_canvas_menu(QPoint(0, 0))
+    assert len(opened_menus) == 1
 
 
 def test_stamping_with_nothing_held_says_so(qtbot, tmp_path) -> None:
@@ -4296,7 +4348,7 @@ def test_a_settle_that_crashes_mid_edit_marks_the_row_at_once(qtbot, tmp_path) -
     from dataclasses import replace
 
     from celpix.core.tilemap import Cell
-    from celpix.pipeline._stage import _cell_settler
+    from celpix.pipeline._stage import cell_settler
 
     class Crashing:
         def settle_cells(self, cells, params):
@@ -4311,7 +4363,7 @@ def test_a_settle_that_crashes_mid_edit_marks_the_row_at_once(qtbot, tmp_path) -
     window._apply_cells(cells, "set cell reference")
     assert screen.pixel_dirty  # the dirty repaint is spent
 
-    screen.doc.cell_settler = _cell_settler(
+    screen.doc.cell_settler = cell_settler(
         Crashing(), {}, ctx=screen.doc.tilemap_ctx, plugin="test.crashing"
     )
     cells[1] = replace(cells[1], index=3)

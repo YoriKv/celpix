@@ -1,6 +1,7 @@
 # Game Boy Color BG map cell, read as the interleaved 16-bit pair a converter
 # emits: tile byte then attribute byte. Palette 8-10, tile bit 8 at 11, H flip
-# 13, V flip 14, BG-to-OBJ priority 15.
+# 13, V flip 14, BG-to-OBJ priority 15. Bit 12 (attribute bit 4) is unused by
+# the hardware but not reliably zero in a dump, so it is carried as `f`.
 #
 # The tile number is **split**: its low eight bits are the whole first byte and
 # its ninth bit is stranded up in the attribute byte, because the number outgrew
@@ -19,4 +20,4 @@ category = "Nintendo"
 [params]
 bytes = 2
 endian = "little"
-fields = "ovh. ippp iiii iiii"
+fields = "ovhf ippp iiii iiii"

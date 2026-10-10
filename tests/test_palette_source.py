@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from celpix.project.workspace import FileStages, PaletteMode
 from celpix.ui.main_window import MainWindow
 from uihelpers import (
@@ -13,7 +15,6 @@ from uihelpers import (
     _cgx_file,
     _combo_ids,
     _drag_payload,
-    _fresh_settings,
     _make_snes_file,
     _map_file,
     _open_big,
@@ -440,8 +441,10 @@ def test_load_palette_from_selection(qtbot, tmp_path, monkeypatch) -> None:
     assert len(window._doc.palette) == 112
     # ...and Write covers the palette too, since an Offset palette is edited in
     # place and saved back into the bytes it was read from.
+    window._palette_panel.select_index(1)
+    window._on_color_changed(0xFF0000FF)
     window._write_current()
-    assert "pixel + palette" in window.statusBar().currentMessage()
+    assert "(palette)" in window.statusBar().currentMessage()
 
 
 def test_palette_preset_switch_refloors_from_selection_window(
@@ -1403,6 +1406,56 @@ def test_offset_palette_edit_in_reshaped_region_saves_through_the_owner(
     assert not entry.pixel_dirty
 
 
+@pytest.mark.parametrize("on", ["map", "slice"])
+def test_offset_palette_edit_in_a_reshaped_map_lands_in_its_cells(qtbot, tmp_path, on):
+    """Under a tilemap owner the window is cut from the map's own cells, so the
+    edit lands there and its Write carries it: not in the bound art, where it
+    would repaint tiles and never reach the map's file. The same whether the
+    palette is the map's own or a slice's of it."""
+    from celpix.core.capabilities import ContentKind
+    from celpix.project.workspace import TileMode, TileSource
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    # split-planes-2: joined 32..33 come from file bytes 16 and 80.
+    data = bytearray(128)
+    data[16], data[80] = 0xFF, 0x7F  # BGR555 white at joined offset 32
+    path = tmp_path / "map.bin"
+    path.write_bytes(bytes(data))
+    window._load_pixel(str(path))
+    entry = window._workspace.current
+    entry.content_kind = ContentKind.TILEMAP
+    entry.tilemap_preset_id = "preset.tilemap.snes-bg"
+    entry.reshape_id = "reshape.split-planes-2"
+    entry.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
+    window._reload_tilemap(entry)
+    if on == "slice":
+        window._activate_entry(window._workspace.add_slice(str(path), "cut", 0, 64))
+    doc = entry.doc
+    assert doc.is_tilemap and doc.pixel_data
+
+    assert window._load_palette_at_offset(32)
+    assert window._doc.palette.color(0) == 0xFFFFFFFF
+    art = bytes(doc.pixel_data)
+    window._palette_panel._select(0)
+    window._on_color_changed(0xFFFF0000)  # pure red -> BGR555 0x001F
+
+    assert entry.doc.tilemap_data[32:34] == b"\x1f\x00"
+    assert entry.doc.cells[16].index == 0x1F  # the cells, which a Write encodes
+    assert entry.doc.pixel_data == art  # the bound tiles are not the owner
+    assert entry.pixel_dirty
+    window._undo_stack.undo()
+    assert entry.doc.tilemap_data[32:34] == b"\xff\x7f"
+    window._undo_stack.redo()
+    assert window._write_entry(entry)
+    expect = bytearray(data)
+    expect[16], expect[80] = 0x1F, 0x00
+    assert path.read_bytes() == bytes(expect)
+
+
 def test_offset_palette_edit_on_slice_loads_and_dirties_the_parent(qtbot, tmp_path):
     """From a slice, a buffer-backed Offset palette edit lands on the *parent*:
     its buffer holds the bytes, so it is loaded if closed and its pixel pathway
@@ -1529,6 +1582,12 @@ def test_editing_the_default_palette_forks_a_custom_one(
     assert window._palette_mode == "default"
     before_len = len(window._doc.palette)
     assert before_len == 256  # the generated default is always full length
+
+    # The colour it already holds is no edit, so it forks nothing.
+    steps = window._undo_stack.count()
+    window._on_color_changed(window._doc.palette.color(3))
+    assert window._palette_mode == "default"
+    assert window._undo_stack.count() == steps
 
     window._on_color_changed(0xFF123456)
 
@@ -2343,7 +2402,6 @@ def test_the_pinned_palette_toggles_persist_as_local_preferences(
 ) -> None:
     """Both are about how *you* read a sheet, not about any one entry or project,
     so a fresh window comes up the way the last one was left — the grid's rule."""
-    _fresh_settings(tmp_path)
     window = MainWindow()
     qtbot.addWidget(window)
     # The defaults, off a store nothing has written yet.
@@ -2370,7 +2428,6 @@ def test_wrapping_the_palette_row_base_is_off_until_asked_for(qtbot, tmp_path) -
     same preference rule as the two beside it: app-wide, and read off the document
     rather than the window, so the export cannot disagree with the canvas.
     """
-    _fresh_settings(tmp_path)
     window = MainWindow()
     qtbot.addWidget(window)
     assert window._wrap_palette_rows_action.text() == "&Wrap Palette Rows"
@@ -2913,3 +2970,37 @@ def test_a_toolbar_format_the_bytes_refuse_lands_the_error_palette(
     assert window._palette_error(entry.doc) is None
     assert list(entry.doc.palette.colors) == colors
     assert entry.doc.palette_config.write_enabled
+
+
+def test_a_file_mode_palette_at_an_offset_reads_the_palette_entry_whole(
+    tmp_path,
+) -> None:
+    """The headless restore reads a File-mode palette as the app does: the
+    graphic mirrors the palette entry's own colours, read whole. Read from a
+    stored offset instead, a length-dependent reshape on the palette runs over a
+    different region and hands back colours the entry never shows."""
+    from celpix.plugins.registry import default_registry
+    from celpix.project.documents import load_document, restored_palette
+    from celpix.project.workspace import (
+        Entry,
+        EntryKind,
+        EntrySession,
+        PaletteSource,
+        Workspace,
+    )
+
+    registry = default_registry()
+    pal = tmp_path / "c.pal"
+    pal.write_bytes(bytes(range(128)))
+    ws = Workspace()
+    owner = ws.add_palette(str(pal), "preset.palette.bgr555")
+    owner.reshape_id = "reshape.split-words-2"
+    load_document(owner, registry, ws)
+    graphic = Entry(name="g", kind=EntryKind.FILE, path=str(pal))
+    graphic.session = EntrySession("preset.pixel.snes-4bpp", "preset.palette.bgr555")
+    graphic.session.palette_mode = PaletteMode.FILE
+    ws.entries.append(graphic)
+    restored = restored_palette(
+        graphic, PaletteSource(path=str(pal), offset=0x20), registry, ws
+    )
+    assert restored.palette.colors == owner.doc.palette.colors

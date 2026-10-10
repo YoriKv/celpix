@@ -70,9 +70,16 @@ from typing import Any
 from PySide6.QtWidgets import QComboBox, QDialog, QFormLayout, QLabel, QWidget
 
 from celpix.core.capabilities import ContentKind
+from celpix.core.document import ViewOptions
 from celpix.plugins.detect import detect_container
 from celpix.plugins.registry import Registry
-from celpix.project.entry import FileStages
+from celpix.project.entry import (
+    Entry,
+    EntrySession,
+    FileStages,
+    PaletteSource,
+    TileSource,
+)
 from celpix.ui.file_stages import FileStageRows
 from celpix.ui.path_list_editor import PathListEditor
 from celpix.ui.size_row import GROWTH_TIPS, UnitCountRow
@@ -132,6 +139,15 @@ class ContainerEdit:
     # cannot convert an entry by leaving a field at its default.
     content_kind: ContentKind | None = None
     units: int | None = None
+    # Carried by a Content conversion's undo step, never set by the dialog: how
+    # the entry was read as this kind, and the bindings of the maps drawing from
+    # it, so applying the state puts back the entry's own format, arrangement
+    # and palette source and each map's base rather than what the other kind
+    # left behind (``ContainersMixin._kind_states``).
+    session: EntrySession | None = None
+    view: ViewOptions | None = None
+    palette: PaletteSource | None = None
+    bindings: tuple[tuple[Entry, TileSource], ...] = ()
 
 
 class ContainerDialog(QDialog):

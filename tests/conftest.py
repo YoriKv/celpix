@@ -21,8 +21,8 @@ _QT_MARKERS = ("PySide6", "qtbot", "MainWindow")
 def pytest_collection_modifyitems(items):
     """Mark every test whose module needs Qt, so the model layer can run alone.
 
-    ``-m "not qt"`` is then the whole of the fast loop — a few seconds over the
-    Qt-free suites against a minute and a half for everything — and the two halves
+    ``-m "not qt"`` is then the whole of the fast loop — half a minute over the
+    Qt-free suites against four for everything — and the two halves
     cannot drift apart, because neither is a list anyone maintains.
 
     **Detected rather than declared**, and that is the point: a list of Qt suites
@@ -50,8 +50,8 @@ def captured_alerts(monkeypatch):
     ``MainWindow._alert`` is the single modal surface for failures; a real
     ``exec()`` would block the offscreen event loop and hang the suite. Here it
     appends ``(title, message)`` to a list a test can request by name to assert
-    what the user was told. Guarded on the UI module already being imported, so
-    the headless model-layer suites never pull Qt in through this fixture.
+    what the user was told. Skipped until ``celpix.ui.main_window`` is imported:
+    before then there is no window to patch.
     """
     module = sys.modules.get("celpix.ui.main_window")
     if module is None:
@@ -169,8 +169,10 @@ def _isolate_settings(tmp_path_factory):
     so without this a run would litter a developer's own celPix settings with
     temp paths — and read their real preferences back into the tests. The
     redirect is done once per session (the format and path are process-wide Qt
-    state) and guarded like :func:`captured_alerts`, so the headless model-layer
-    suites stay Qt-free.
+    state). Keyed on QtCore rather than on the UI's settings module, because a
+    widget may import that module only when it first writes: pytest-qt has
+    QtCore loaded before any test, so this runs for every test, the model
+    layer's included, and costs one empty ``clear()`` there.
 
     **Emptied before every test**, because a preference is written the moment its
     menu entry is toggled: a test that leaves Show Pinned Palette Colors off would
@@ -199,6 +201,19 @@ def _isolate_settings(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def _no_plugin_path_from_the_shell(monkeypatch):
+    """Ignore the developer's own ``CELPIX_PLUGIN_PATH`` for every test.
+
+    Plugin discovery always searches it first, so a developer who exports it for
+    daily use would load their own plugins into every registry a test builds —
+    an id clash, or a picker with more in it than the test expects, and results
+    that depend on whose machine ran them. A test about the variable sets it
+    itself.
+    """
+    monkeypatch.delenv("CELPIX_PLUGIN_PATH", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _destroy_widgets_between_tests():
     """Actually destroy the windows pytest-qt closed, before the next test.
 
@@ -217,6 +232,24 @@ def _destroy_widgets_between_tests():
     app = sys.modules["PySide6.QtWidgets"].QApplication.instance()
     if app is not None:
         app.sendPostedEvents(None, qtcore.QEvent.Type.DeferredDelete)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _leave_the_clipboard_empty():
+    """Clear the clipboard when the session ends, before Qt tears down.
+
+    Under the offscreen platform a process that exits with a ``QMimeData`` still
+    on the clipboard segfaults in Qt's shutdown (PySide 6.11) — after every
+    test has passed and the summary is printed, so the only trace is the exit
+    code. Which test last copied something decides whether a run crashes, so a
+    copy test added anywhere could turn a green suite red. Cleared here, the
+    teardown finds nothing to free.
+    """
+    yield
+    qtgui = sys.modules.get("PySide6.QtGui")
+    if qtgui is None or qtgui.QGuiApplication.instance() is None:
+        return
+    qtgui.QGuiApplication.clipboard().clear()
 
 
 @pytest.fixture(autouse=True)
@@ -262,14 +295,91 @@ def _drop_held_modifiers():
 
 
 @pytest.fixture(autouse=True)
-def _help_dialogs_never_block(monkeypatch):
-    """Make the Help dialogs' ``exec()`` return instead of blocking forever.
+def unexpected_modals(monkeypatch):
+    """Fail a test that opens a modal nobody answers, instead of hanging the run.
 
-    They are the only modals a test can reach by triggering a menu action, and
-    an ``exec()`` under the offscreen platform never returns — the run would
-    wedge with nothing to blame. Construction still happens, so a test can
-    assert on what the dialog was built from. Guarded like
-    :func:`captured_alerts` so headless suites stay Qt-free.
+    Under the offscreen platform nobody clicks, so any dialog's ``exec()`` — and
+    every ``QMessageBox`` / ``QFileDialog`` static, which runs one inside Qt —
+    blocks forever, and a four-minute run never ends and names no test. Patched
+    here on the **base classes**, which covers every dialog, the ones written
+    after this fixture included: the modal returns its cancel answer at once, so
+    the code under test takes the path that changes nothing, its name is
+    recorded, and the test fails at teardown naming it.
+
+    Anything more specific wins, because it is looked up first: a test that
+    means to reach a modal patches it itself (``monkeypatch.setattr(QMessageBox,
+    "question", …)``, or the dialog class's ``exec``), and the hatches below and
+    above answer the dialogs a menu action reaches in passing — on the subclass,
+    or on ``MainWindow``. A test that lands here on purpose requests this fixture
+    by name and empties the list it gets.
+    """
+    widgets = sys.modules.get("PySide6.QtWidgets")
+    if widgets is None:
+        yield []
+        return
+    opened: list[str] = []
+
+    roles = widgets.QMessageBox.ButtonRole
+    cancel_roles = (roles.RejectRole, roles.NoRole)  # Cancel / Not now, then No
+
+    def exec_(self):
+        opened.append(f"{type(self).__name__}.exec {self.windowTitle()!r}")
+        if isinstance(self, widgets.QMessageBox):
+            # A box is read through clickedButton(), and none clicked is not a
+            # cancel to every caller (confirm_destructive reads it as Discard), so
+            # click the box's own way out, as Escape would.
+            way_out = sorted(
+                (b for b in self.buttons() if self.buttonRole(b) in cancel_roles),
+                key=lambda b: cancel_roles.index(self.buttonRole(b)),
+            )
+            if way_out:
+                way_out[0].click()
+                # What a real exec answers on a box of standard buttons: the
+                # clicked one's, so a caller testing ``exec() == No`` reads the
+                # way out it took (NoButton, 0, for a button added by role).
+                return self.standardButton(way_out[0])
+        return 0  # QDialog.Rejected
+
+    for dialog in (widgets.QDialog, widgets.QMessageBox):
+        monkeypatch.setattr(dialog, "exec", exec_, raising=False)
+
+    def static(owner, name, answer):
+        def opened_static(*_args, **_kwargs):
+            opened.append(f"{owner.__name__}.{name}")
+            return answer
+
+        monkeypatch.setattr(owner, name, staticmethod(opened_static))
+
+    cancel = widgets.QMessageBox.StandardButton.Cancel
+    for name in ("question", "information", "warning", "critical"):
+        static(widgets.QMessageBox, name, cancel)
+    for name, answer in (
+        ("getOpenFileName", ("", "")),
+        ("getOpenFileNames", ([], "")),
+        ("getSaveFileName", ("", "")),
+        ("getExistingDirectory", ""),
+    ):
+        static(widgets.QFileDialog, name, answer)
+
+    yield opened
+    if opened:
+        pytest.fail(
+            f"opened a modal nothing answers: {', '.join(opened)}. Offscreen it "
+            "would hang the run; patch it in the test, or give it a hatch in "
+            "tests/conftest.py",
+            pytrace=False,
+        )
+
+
+@pytest.fixture(autouse=True)
+def _help_dialogs_never_block(monkeypatch):
+    """Make the Help dialogs' ``exec()`` return instead of failing the test.
+
+    Help ▸ Keyboard Shortcuts and Help ▸ About are reached by triggering a menu
+    action, which a test does without wanting to answer anything, so they return
+    at once rather than landing in :func:`unexpected_modals`. Construction still
+    happens, so a test can assert on what the dialog was built from. Skipped
+    until the module is imported, since there is nothing to patch before then.
     """
     module = sys.modules.get("celpix.ui.help_dialogs")
     if module is None:
@@ -283,11 +393,11 @@ def _container_dialog_never_blocks(monkeypatch):
     """Make the container dialog's ``exec()`` return Rejected instead of blocking.
 
     Reachable by triggering File ▸ Edit File Container…, and an ``exec()`` under the
-    offscreen platform never returns. Rejected is the safe default: the caller
-    reads it as a cancel and changes nothing, so a test that lands here by
-    accident does not silently re-read a file through some other container.
-    Tests exercising the flow patch ``edit_container`` instead. Guarded like
-    :func:`captured_alerts` so headless suites stay Qt-free.
+    offscreen platform never returns. Rejected is the safe default: the caller reads
+    it as a cancel and changes nothing, so a test that lands here by accident does
+    not silently re-read a file through some other container. Tests exercising the
+    flow patch ``edit_container`` instead. Skipped until the module is imported:
+    before then there is nothing to patch.
     """
     module = sys.modules.get("celpix.ui.container_dialog")
     if module is None:
@@ -300,10 +410,10 @@ def _container_info_never_blocks(monkeypatch):
     """Make the container-info popup's ``exec()`` return instead of blocking.
 
     Reachable by triggering File ▸ Container Info…, and the same rule as
-    :func:`_container_dialog_never_blocks`: offscreen, ``exec()`` never returns.
-    It is a read-only report, so there is no answer to fake — construction still
-    happens, and a test can assert on what the dialog was built from. Guarded
-    like :func:`captured_alerts` so headless suites stay Qt-free.
+    :func:`_container_dialog_never_blocks`: offscreen, ``exec()`` never returns. It
+    is a read-only report, so there is no answer to fake — construction still
+    happens, and a test can assert on what the dialog was built from. Skipped until
+    the module is imported: before then there is nothing to patch.
     """
     module = sys.modules.get("celpix.ui.container_info_dialog")
     if module is None:
@@ -321,8 +431,8 @@ def _new_file_dialog_never_blocks(monkeypatch):
     :func:`_container_dialog_never_blocks`: offscreen, ``exec()`` never returns.
     Rejected is the safe default — the caller reads it as a cancel and writes no
     file — while construction still happens, so a test can build the dialog and
-    assert on the sizes and formats it offered. Guarded like
-    :func:`captured_alerts` so headless suites stay Qt-free.
+    assert on the sizes and formats it offered. Skipped until the module is
+    imported: before then there is nothing to patch.
     """
     module = sys.modules.get("celpix.ui.new_file_dialog")
     if module is None:
@@ -334,12 +444,12 @@ def _new_file_dialog_never_blocks(monkeypatch):
 def _composite_dialog_never_blocks(monkeypatch):
     """Make the composite dialog's ``exec()`` return Rejected instead of blocking.
 
-    Reachable by triggering File ▸ New Composite View… or a composite's Edit…,
-    and the same rule as :func:`_container_dialog_never_blocks`: offscreen,
-    ``exec()`` never returns. Rejected is the safe default — the caller reads it
-    as a cancel and adds nothing — while construction still happens, so a test
-    can build the dialog and assert on the list it laid out. Guarded like
-    :func:`captured_alerts` so headless suites stay Qt-free.
+    Reachable by triggering File ▸ New Composite View… or a composite's Edit…, and
+    the same rule as :func:`_container_dialog_never_blocks`: offscreen, ``exec()``
+    never returns. Rejected is the safe default — the caller reads it as a cancel
+    and adds nothing — while construction still happens, so a test can build the
+    dialog and assert on the list it laid out. Skipped until the module is imported:
+    before then there is nothing to patch.
     """
     module = sys.modules.get("celpix.ui.composite_dialog")
     if module is None:
@@ -351,11 +461,11 @@ def _composite_dialog_never_blocks(monkeypatch):
 def _search_popup_never_blocks(monkeypatch):
     """Make a searchable picker's ``exec_popup()`` return a dismissal.
 
-    Reachable by choosing Entry as the palette mode, which asks for a source
-    through :func:`~celpix.ui.searchable_combo.pick_from_list`; its local event
-    loop never ends offscreen, where nobody clicks. -1 reads as a cancel, as a
-    recorded menu's no-pick did. Guarded like :func:`captured_alerts` so
-    headless suites stay Qt-free.
+    Reachable by choosing Entry as the palette mode, which asks for a source through
+    :func:`~celpix.ui.searchable_combo.pick_from_list`; its local event loop never
+    ends offscreen, where nobody clicks. -1 reads as a cancel, as a recorded menu's
+    no-pick did. Skipped until the module is imported: before then there is nothing
+    to patch.
     """
     module = sys.modules.get("celpix.ui.searchable_combo")
     if module is None:
@@ -375,7 +485,7 @@ def opened_menus(monkeypatch):
     ``exec`` past the Python attribute), so each ``celpix.ui`` module's imported
     ``QMenu`` name is swapped for a subclass that records the popup and returns.
     A test can request this fixture by name to inspect the menu that was built.
-    Guarded like :func:`captured_alerts` so headless suites stay Qt-free.
+    Skipped until PySide6 is imported: before then there is no ``QMenu``.
     """
     widgets = sys.modules.get("PySide6.QtWidgets")
     if widgets is None:
@@ -404,7 +514,8 @@ def _close_discards_edits(monkeypatch):
     leaves an entry dirty would wedge the whole run there, after its own body
     had already passed. Closing therefore always discards here; no test asserts
     on the quit prompt, and a test that wanted to would re-patch it itself.
-    Guarded like :func:`captured_alerts` so headless suites stay Qt-free.
+    Skipped until ``celpix.ui.main_window`` is imported: before then there is
+    no window to close.
     """
     module = sys.modules.get("celpix.ui.main_window")
     if module is None:
@@ -428,8 +539,8 @@ def _pixel_aspect_dialog_never_blocks(monkeypatch):
     Rejected is the safe default — the caller reads it as a cancel and leaves the
     project's ratio alone, so a test that lands here by accident does not silently
     redraw everything at another shape. Construction still happens, so a test can
-    build the popup and assert on the rows it laid out. Guarded like
-    :func:`captured_alerts` so headless suites stay Qt-free.
+    build the popup and assert on the rows it laid out. Skipped until the module is
+    imported: before then there is nothing to patch.
     """
     module = sys.modules.get("celpix.ui.pixel_aspect_dialog")
     if module is None:
@@ -441,12 +552,12 @@ def _pixel_aspect_dialog_never_blocks(monkeypatch):
 def _compress_reshape_dialog_never_blocks(monkeypatch):
     """Make the Compress & Reshape dialog's ``exec()`` return Rejected, not block.
 
-    Reachable by triggering File ▸ New Compress & Reshape Plugin…, and the same
-    rule as :func:`_container_dialog_never_blocks`: offscreen, ``exec()`` never
-    returns. Rejected is the safe default — the caller reads it as a cancel and
-    writes no file, so a test that lands here by accident leaves no plugin in its
-    project folder. Guarded like :func:`captured_alerts` so headless suites stay
-    Qt-free.
+    Reachable by triggering File ▸ New Compress & Reshape Plugin…, and the same rule
+    as :func:`_container_dialog_never_blocks`: offscreen, ``exec()`` never returns.
+    Rejected is the safe default — the caller reads it as a cancel and writes no
+    file, so a test that lands here by accident leaves no plugin in its project
+    folder. Skipped until the module is imported: before then there is nothing to
+    patch.
     """
     module = sys.modules.get("celpix.ui.compress_reshape_dialog")
     if module is None:

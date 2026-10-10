@@ -6,6 +6,7 @@ import pytest
 
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
+from celpix.core.index_grid import IndexGrid
 from celpix.core.palette import MISSING_COLOR, Palette
 from celpix.plugins.registry import default_registry
 
@@ -196,6 +197,30 @@ def test_mask_palette_round_trips(preset_id: str) -> None:
     assert again == pal
 
 
+def test_mask_encode_lands_on_the_nearest_level() -> None:
+    """A colour between two levels encodes to the nearer, not the one below.
+
+    At three bits a channel a floor is a whole step off: a dark grey ``0x1F``
+    would save as black on a Mega Drive palette when ``0x24`` is nearer.
+    """
+    engine, params = _color_engine("preset.palette.genesis-9bpp")
+    ctx = PipelineContext()
+    encoded = engine.encode(Palette([0xFF1F1F1F]), params, ctx)
+    assert engine.decode(encoded, params, ctx).colors == [0xFF242424]
+
+
+def test_ps2_clut_alpha_scales_against_0x80() -> None:
+    """GS alpha runs 0x00-0x80 with 0x80 opaque: every value in that range reads
+    as its share of opaque and saves back as itself."""
+    engine, params = _color_engine("preset.palette.rgba8888-ps2")
+    ctx = PipelineContext()
+    data = b"".join(bytes([0x10, 0x20, 0x30, a]) for a in range(0x81))
+    pal = engine.decode(data, params, ctx)
+    assert pal.colors[0x40] >> 24 == 0x80
+    assert pal.colors[0x80] >> 24 == 0xFF
+    assert engine.encode(pal, params, ctx) == data
+
+
 @pytest.mark.parametrize("preset_id", _palette_ids(engine="codec.palette.indexed"))
 def test_indexed_palette_round_trips_in_range(preset_id: str) -> None:
     """Indexed decode→encode recovers the same colors for every table index.
@@ -221,6 +246,23 @@ def test_indexed_palette_nearest_encode() -> None:
     from celpix.core.palette import Palette
 
     assert engine.encode(Palette([0xFF000001]), params, PipelineContext()) == b"\x00"
+
+
+@pytest.mark.parametrize(
+    ("preset_id", "index"),
+    [
+        # $0D is "blacker than black" and upsets sync on some TVs.
+        ("preset.palette.nes-indexed", 0x0F),
+        ("preset.palette.nes-screen", 0x0F),
+        ("preset.palette.msx-indexed", 1),  # 0 is transparent
+    ],
+)
+def test_indexed_black_resolves_to_the_entry_games_use(
+    preset_id: str, index: int
+) -> None:
+    engine, params = _color_engine(preset_id)
+    black = Palette([0xFF000000])
+    assert engine.encode(black, params, PipelineContext()) == bytes([index])
 
 
 @pytest.mark.parametrize("preset_id", _pixel_ids(engine="codec.pixel.planar"))
@@ -312,6 +354,15 @@ def test_packed_nibble_and_bit_order() -> None:
     assert px("preset.pixel.ngp-2bpp", [0xE4]) == [3, 2, 1, 0]  # high 2 bits = pixel 0
     # YY-CHR byte-swap: the odd (second) row byte drives the left pixels.
     assert px("preset.pixel.ngp-2bpp-swapped", [0x00, 0xE4]) == [3, 2, 1, 0]
+
+    # An index too wide for its field loses the excess, as the planar engines'
+    # does, rather than spilling it into the neighbouring pixel's field.
+    engine, params = _pixel_engine("preset.pixel.gba-4bpp")
+    grid = IndexGrid(8, 8, bytes([0x13, 0x02] + [0] * 62))
+    tile = engine.decode(
+        engine.encode([grid], params, PipelineContext()), params, PipelineContext()
+    )[0]
+    assert (tile.get(0, 0), tile.get(1, 0)) == (3, 2)
 
 
 @pytest.mark.parametrize("stride", [1, 4, 32])

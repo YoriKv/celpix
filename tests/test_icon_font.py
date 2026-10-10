@@ -54,6 +54,16 @@ def test_the_icon_font_loads_and_every_glyph_draws(qapp) -> None:
             assert _ink(mask) > 0, f"{glyph.name} drew nothing at {box.width()}px"
 
 
+def test_a_codepoint_missing_from_the_subset_draws_nothing(qapp) -> None:
+    # The ink test above is only a test if a missing glyph is blank. Left to
+    # merge, Qt draws it from any installed font that maps it — here a letter
+    # from the system's text face, on Windows a private-use mark from its own
+    # icon fonts — and the wrong icon passes as drawn.
+    from celpix.ui.icon_font import _render
+
+    assert _render(icon_font_family(), "A", 16) is None
+
+
 def test_every_glyph_is_centred_in_its_box(qapp) -> None:
     # The bug this exists for: glyphs were positioned from
     # QFontMetricsF.tightBoundingRect, which a *variable* face at a non-default

@@ -37,14 +37,22 @@ def test_gif_frames_round_trip_through_a_real_decoder(qtbot) -> None:
     assert sum(gif.delays_cs([5] * 6, 60)) == 50
 
 
-def test_repeating_a_frame_is_the_same_bytes_as_rebuilding_it() -> None:
+def test_a_held_frame_is_compressed_once_and_writes_what_rebuilding_it_does(
+    monkeypatch,
+) -> None:
     """A step naming a frame already seen is keyed and compressed once, shared by
-    the identity of the pixels it was handed - so holding a frame has to write
+    the identity of the pixels it was handed - a flap held for a hundred steps
+    is two frames of work, not a hundred. And holding a frame has to write
     exactly what rebuilding it writes."""
+    calls = []
+    real = gif._lzw
+    monkeypatch.setattr(gif, "_lzw", lambda *a: calls.append(1) or real(*a))
     pixels = [0xFF204060] * 64 + [0] * 64
-    shared = gif.encode(8, 16, [(pixels, 4), (None, 2), (pixels, 4), (None, 2)])
-    apart = gif.encode(8, 16, [(pixels, 4), (None, 2), (list(pixels), 4), (None, 2)])
-    assert shared == apart
+    held = gif.encode(8, 16, [(pixels, 4), (None, 2)] * 3)
+    assert len(calls) == 2  # the frame and the blank, once each
+
+    fresh = [step for _ in range(3) for step in ((list(pixels), 4), (None, 2))]
+    assert gif.encode(8, 16, fresh) == held
 
 
 def test_a_sequence_exports_the_pixels_the_strip_holds(qtbot, tmp_path) -> None:

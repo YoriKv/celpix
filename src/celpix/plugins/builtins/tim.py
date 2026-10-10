@@ -42,7 +42,8 @@ new colour codec is needed. celPix's palette model is plain ARGB and has nowhere
 to keep STP, so re-encoding a palette would zero all 256 of those bits. The CLUT
 container's write therefore **carries each entry's STP bit over from the file it
 is saving into** — the same "preserve what you did not decode" rule the rest of
-the container layer keeps.
+the container layer keeps. A 16bpp image's pixels are the same word, and the
+pixel container's write carries their STP bits over the same way.
 
 **What the pixels need after unwrapping** is a matching pixel preset, which the
 read publishes as ``KEY_PIXEL_PRESET`` to seed the picker. The four depths are
@@ -65,7 +66,12 @@ from dataclasses import dataclass
 
 from celpix.core.address import format_hex
 from celpix.core.capabilities import ContentKind
-from celpix.core.context import KEY_PIXEL_PRESET, KEY_SOURCE_OFFSET, PipelineContext
+from celpix.core.context import (
+    KEY_PIXEL_PRESET,
+    KEY_SOURCE_OFFSET,
+    KEY_WRITE_PRESET,
+    PipelineContext,
+)
 from celpix.core.errors import Stage
 from celpix.core.notices import warn
 from celpix.plugins.base import (
@@ -283,7 +289,17 @@ class TimContainer:
     def write(self, data: bytes, dest: WriteTarget, ctx: PipelineContext) -> bytes:
         existing = _destination(dest, ctx)
         layout = parse(existing)
-        return splice(existing, layout.image_start, data[: layout.image_bytes])
+        pixels = data[: layout.image_bytes]
+        encoded_with = ctx.get(KEY_WRITE_PRESET, layout.pixel_preset)
+        if layout.bpp == 16 and encoded_with == layout.pixel_preset:
+            # A 16bpp pixel is a CLUT entry's word, STP and all, and the seeded
+            # 555 preset leaves bit 15 undeclared, so the direct-colour codec
+            # drops it just as the colour codec does. Cleared, it turns opaque
+            # black (0x8000) into the GPU's transparent 0x0000 across every pixel
+            # of an edited tile, so it is carried over the same way. Under a
+            # 1555 preset the bit is the alpha the user is editing, and stays.
+            pixels = _restore_stp(pixels, existing[layout.image_start :])
+        return splice(existing, layout.image_start, pixels)
 
     def describe(
         self, source: ReadSource, ctx: PipelineContext

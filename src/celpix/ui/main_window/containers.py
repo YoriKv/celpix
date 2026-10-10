@@ -55,7 +55,11 @@ from celpix.plugins.detect import tilemap_preset_for
 from celpix.project.workspace import (
     Entry,
     EntryKind,
+    TileMode,
+    TileSource,
     file_kind,
+    is_swatch_preset,
+    palette_source_for,
     pixel_config_for,
     retarget_files,
     tilemap_config_for,
@@ -271,10 +275,11 @@ class ContainersMixin:
         # A container decides which bytes the file even has, and so does the file
         # list — so applying either is a re-read, and pixel edits describe
         # positions the new bytes may not have. They cannot come across, so the
-        # user gets the choice first. A re-pointed file re-reads its slices with
-        # it, so their edits are on the table too. A resize is the same story
-        # told about the file rather than the reading of it, so it joins the gate.
-        family = [entry, *self._workspace.descendants_of(entry)] if moved else [entry]
+        # user gets the choice first. A re-pointed or re-staged file re-reads its
+        # slices with it, so their edits are on the table too. A resize is the
+        # same story told about the file rather than the reading of it, so it
+        # joins the gate.
+        family = self._container_family(entry, edit)
         # A slice matching the file's size is re-measured by whatever changed
         # it — a resize, or a container that frames the bytes differently —
         # so it is re-read with the file, and its edits are on the table too.
@@ -300,6 +305,8 @@ class ContainersMixin:
         # The size is dropped on the way in: it is already on disk, and a command
         # holding it would offer a redo of a write that has no undo.
         after = replace(edit, units=None)
+        if converting:
+            before, after = self._kind_states(entry, before, after)
         if after == before:
             # A resize and nothing else: the file changed under the entry, so it
             # has to be re-read, but a step whose two halves are the same would
@@ -321,6 +328,89 @@ class ContainersMixin:
             self._push_command(command)
         finally:
             self._undo_stack.endMacro()
+
+    def _container_family(self, entry: Entry, edit: ContainerEdit) -> list[Entry]:
+        """``entry`` and the slices under it that applying ``edit`` re-reads.
+
+        The descendants come along whenever the file list *or* the stages move.
+        A slice's offset addresses the parent's joined buffer, so a new file
+        list moves what it reads; and under a reshape, a decompressor or a
+        permuting container the offset is a position in the buffer those stages
+        produce, so changing any of them redefines the bytes every slice under
+        the file names — a slice left on its old document would show, and
+        write, bytes read through stages the file no longer has.
+        """
+        if edit.paths != entry.paths or edit.stages != entry.file_stages:
+            return [entry, *self._workspace.descendants_of(entry)]
+        return [entry]
+
+    def _kind_states(
+        self, entry: Entry, before: ContainerEdit, after: ContainerEdit
+    ) -> tuple[ContainerEdit, ContainerEdit]:
+        """``before`` and ``after`` carrying what a Content conversion changes
+        beyond the stages, so applying either end lands all of it.
+
+        **The entry's reading** belongs to the kind it was read as — a swatch
+        session names a colour codec as its pixel format, and a graphic's
+        format and arrangement mean nothing to swatches. ``before`` keeps the
+        one it has, live from the widgets where it is on screen, for an undo to
+        put back; ``after`` carries none, so the entry opens fresh as its new
+        kind (:meth:`_convert_entry_kind`).
+
+        **Its palette source** goes with that reading. Landing a state drops
+        the document of the kind being left, and a drop stashes the palette
+        source it finds there (:meth:`~celpix.project.workspace.Workspace.
+        drop_document`) — read off a swatch document, a graphic's Offset
+        palette would come back at offset 0, writable over the first tile, and
+        its Custom colours as the palette file's. So the source is taken here,
+        off the document it belongs to, and each end names the one to reload
+        on: ``before`` the entry's own; ``after`` the same where the entry is a
+        graphic on both sides (pixels ↔ tilemap), and none where it crosses the
+        palette line, since a palette has no palette source and a palette turned
+        graphic opens fresh.
+
+        **The maps bound to it** count their base and Index unit in tiles over
+        art and in cells over a map. Where the conversion crosses that line,
+        each starts over — base 0 on the format's addressing, what a rebind
+        across it lands (:meth:`~...index_addressing.IndexAddressingMixin.
+        _rebound_source`) — since carrying 3 from a bank onto a tilemap would
+        silently start the map three stamps in. ``before`` keeps the bindings as
+        they were, in the same step.
+        """
+        if entry is self._workspace.current:
+            self._capture_session()
+        view = entry.doc.view if entry.doc is not None else entry.pending_view
+        palette = palette_source_for(entry)
+        stays_graphic = (
+            entry.kind is EntryKind.FILE
+            and after.content_kind is not ContentKind.PALETTE
+        )
+        counted_cells = entry.content_kind is ContentKind.TILEMAP
+        if (after.content_kind is ContentKind.TILEMAP) != counted_cells:
+            maps = [
+                other
+                for other in self._workspace.entries
+                if other.tile_source is not None
+                and other.tile_source.mode is TileMode.ENTRY
+                and other.tile_source.entry is entry
+            ]
+        else:
+            maps = []
+        before = replace(
+            before,
+            session=replace(entry.session) if entry.session is not None else None,
+            view=replace(view) if view is not None else None,
+            palette=palette,
+            bindings=tuple((m, m.tile_source) for m in maps),
+        )
+        after = replace(
+            after,
+            palette=palette if stays_graphic else None,
+            bindings=tuple(
+                (m, TileSource(mode=TileMode.ENTRY, entry=entry)) for m in maps
+            ),
+        )
+        return before, after
 
     @staticmethod
     def _container_state(entry: Entry) -> ContainerEdit:
@@ -402,8 +492,10 @@ class ContainersMixin:
         cut from it say which kind of row they hang off
         (:attr:`Entry.parent_kind`). A swatch session names a colour codec as
         its pixel format, which a graphic must not open on, so a palette turned
-        file opens fresh; a file turned palette has its session put right by
-        the loader every palette opens through.
+        file opens fresh — seeded as a new file is, on a pixel format rather
+        than the swatch codec the toolbar may still be showing; a file turned
+        palette has its session put right by the loader every palette opens
+        through.
 
         The rows follow: a row is filed by what it holds, and the panel refiles
         a top-level row but not the rows under it, so the whole group is
@@ -422,7 +514,10 @@ class ContainersMixin:
                 ) or self._palette_import_preset_id()
         else:
             if entry.kind is EntryKind.PALETTE:
-                entry.session = None
+                seed = self._seed_session(entry)
+                if is_swatch_preset(seed.pixel_preset_id, self._registry):
+                    seed.pixel_preset_id = STAGE_DEFAULT_PRESET[Stage.INTERPRET_PIXEL]
+                entry.session = seed
                 entry.pending_view = None
             entry.kind = EntryKind.FILE
             entry.content_kind = kind
@@ -539,10 +634,12 @@ class ContainersMixin:
         except OSError as exc:
             self._alert(f"Cannot read {entry.path}: {exc}", title="celPix - resize")
             return False
-        # Where the region starts in the file, which is the container's answer and
-        # nobody else's — a slice's offset is file-absolute, so the region's new
-        # end has to be put back into those coordinates before the two compare.
-        base = int(ctx.get(KEY_SOURCE_OFFSET, 0) or 0)
+        # Where the region starts in its children's coordinates. Over raw bytes
+        # that is the container's answer and nobody else's — a slice's offset is
+        # file-absolute, so the region's new end has to be put back into those
+        # coordinates before the two compare. Under a reshape or a decompressor
+        # a slice offset is a position in the reordered buffer, which starts at 0.
+        base = int(ctx.get(KEY_SOURCE_OFFSET, 0) or 0) if cfg.reads_raw_bytes else 0
         if after < before and not self._confirm_shrink(
             entry, before - after, base + after
         ):
@@ -598,31 +695,54 @@ class ContainersMixin:
         ``entry`` and re-read - the application path for container edits and
         their undos.
 
-        The children come along whenever the file list moved, and the slices
-        nested under them: a slice's offset addresses the parent's *joined*
-        buffer, so it has to be joined the same way to mean anything, and it
-        finds its parent by the path that is about to change
-        (:func:`~celpix.project.workspace.retarget_files`). They are collected
-        before the move, while that path is still the old one.
+        The children come along whenever the file list or the stages moved,
+        and the slices nested under them (:meth:`_container_family`). They are
+        collected before the move, while the path a slice finds its parent by
+        (:func:`~celpix.project.workspace.retarget_files`) is still the old one.
+        A Content conversion lands what its state carries for the new kind
+        (:meth:`_land_kind_state`).
         """
         moved = edit.paths != entry.paths
-        family = [entry, *self._workspace.descendants_of(entry)] if moved else [entry]
+        family = self._container_family(entry, edit)
         family += self._size_followers(entry, family)
-        entry.set_file_stages(edit.stages)
-        if edit.content_kind is not None and edit.content_kind is not file_kind(entry):
-            self._convert_entry_kind(entry, edit.content_kind)
         # Format, arrangement and view survive the re-read for the same reason
         # they survive a slice re-point (see
         # :meth:`~...slices.SlicesMixin._apply_slice_params`): what
         # changes is which bytes arrive, not how they are read once they do.
+        # Captured before anything moves, while the widgets still show the
+        # entry as the kind it is read as.
         if entry is self._workspace.current:
             self._capture_session()
+        entry.set_file_stages(edit.stages)
+        if edit.content_kind is not None and edit.content_kind is not file_kind(entry):
+            self._convert_entry_kind(entry, edit.content_kind)
+            self._land_kind_state(entry, edit)
         if moved:
             retarget_files(self._workspace, entry, edit.paths)
             # Moved in place, which no addition or removal announces.
             self._sync_disk_watch()
         self._sync_locate_action()  # the new list may name a file that isn't there
         self._reread_entries(family)
+
+    def _land_kind_state(self, entry: Entry, edit: ContainerEdit) -> None:
+        """Put what ``edit`` carries for a converted ``entry`` back on it
+        (:meth:`_kind_states`): its reading as the kind it now is, where the
+        state kept one, and the bindings of the maps drawing from it.
+
+        The kind's reading is the whole of it, view and palette source
+        included, so the document is dropped here and both are set after the
+        drop — which, like the re-read, would otherwise stash the old kind's
+        view and palette as the ones to reopen on.
+        """
+        if edit.session is not None:
+            entry.session = replace(edit.session)
+        self._workspace.drop_document(entry)
+        entry.pending_view = replace(edit.view) if edit.view is not None else None
+        entry.pending_palette = (
+            replace(edit.palette) if edit.palette is not None else None
+        )
+        for bound, source in edit.bindings:
+            bound.tile_source = source
 
     def _size_followers(self, entry: Entry, family: list[Entry]) -> list[Entry]:
         """The slices whose length follows ``entry``'s size, with everything cut

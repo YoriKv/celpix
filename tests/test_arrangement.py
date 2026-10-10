@@ -246,7 +246,10 @@ def test_block_slots_reads_an_8x16_font_sheet_the_way_its_game_does() -> None:
         assert layout.block_slots(code) == [top, top + 16]
     # And the sheet holds 128 of them, not 256: half a glyph is not a glyph.
     assert layout.blocks(256) == 128
-    assert layout.blocks(255) == 112  # the last whole block *row*, not block
+    # A short last block row still holds whole glyphs - all but the one whose
+    # bottom tile is missing - and they count.
+    assert layout.blocks(255) == 127
+    assert BlockLayout(16, 1, 2, "row").blocks(34) == 17
 
 
 def test_block_slots_follows_the_order_a_block_is_filled_in() -> None:
@@ -264,3 +267,33 @@ def test_block_slots_follows_the_order_a_block_is_filled_in() -> None:
     assert BlockLayout(4, 2, 2, "column").block_slots(0) == [0, 2, 1, 3]
     # Plain 1x1 is one tile per block and the block number is the slot.
     assert BlockLayout(4).block_slots(3) == [3]
+
+
+def test_a_code_below_a_glyph_fonts_base_names_no_tile() -> None:
+    """A font holding ASCII from ``$20`` has a base of ``-$20``, so a control code
+    in the stream lands before the first glyph. It has to draw blank and refuse a
+    pen like any missing tile - not draw glyph 0, whose tiles an edit there
+    would then overwrite - and keep a whole glyph's length, since the render
+    lays each cell's run end to end."""
+    from celpix.core.document import Document
+    from celpix.core.tilemap import Cell
+    from celpix.pipeline.pathway import PathwayConfig
+    from celpix.plugins.base import FileRef
+
+    cfg = PathwayConfig(source=FileRef(""), interpret_preset_id="", write_enabled=False)
+    doc = Document(
+        pixel_data=bytes(32 * 64),
+        bytes_per_tile=32,
+        tile_width=8,
+        tile_height=8,
+        palette=None,
+        pixel_config=cfg,
+        palette_config=cfg,
+        cells=[Cell(index=0x0A)],
+        glyph_layout=BlockLayout(16, 1, 2),
+        tile_base_index=-0x20,
+    )
+    run = doc.cell_tile_indices(Cell(index=0x0A))
+    assert len(run) == 2
+    assert not any(0 <= index < doc.tile_count for index in run)
+    assert doc.cell_tile_indices(Cell(index=0x20)) == [0, 1]  # the first glyph

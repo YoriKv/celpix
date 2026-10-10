@@ -107,7 +107,7 @@ that are there. One run of typing is one undo step.
 
 - Backspace and Delete make a cell blank. They do not close the gap.
 - **Insert** moves the text to the right. Text that goes past the end is lost
-  (`'U' pushed off the end`).
+  (`'U' dropped: the region holds only 2854 cells`).
 - Enter sets the end-of-line bit on the character before it.
 - A character that is not in the font becomes a blank (`'@' has no code in this
   font`).

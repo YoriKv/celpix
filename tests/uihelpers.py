@@ -67,26 +67,6 @@ def _select_address_format(window: MainWindow, entry_id: str) -> None:
     )
 
 
-def _fresh_settings(tmp_path) -> None:
-    """An empty QSettings store for this one test, cleared before it starts.
-
-    Distinct from ``conftest._isolate_settings``, which redirects the format and
-    path once per session so the suite never touches the developer's real config.
-    This narrows that to *this test's* ``tmp_path`` and **clears** what is there,
-    which is what a test asserting on a setting's default needs — the session-wide
-    redirect keeps whatever an earlier test wrote.
-    """
-    from PySide6.QtCore import QSettings
-
-    from celpix.ui.widgets import settings
-
-    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
-    QSettings.setPath(
-        QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path)
-    )
-    settings().clear()
-
-
 def _pattern_name(preset_id: str) -> str:
     from celpix.core.arrangement import ARRANGEMENT_PRESETS
 

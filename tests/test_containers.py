@@ -16,6 +16,7 @@ from celpix.core.context import (
     KEY_SOURCE_FILES,
     KEY_SOURCE_OFFSET,
     KEY_SOURCE_PATH,
+    KEY_WRITE_PRESET,
     PipelineContext,
 )
 from celpix.core.errors import Stage
@@ -42,7 +43,7 @@ from celpix.plugins.builtins.containers import (
     SmdContainer,
     SnesInterleavedContainer,
 )
-from celpix.plugins.builtins.d88 import D88Container
+from celpix.plugins.builtins.d88 import D88Container, parse_image
 from celpix.plugins.builtins.gb_rom import GbRomContainer, repair_checksums
 from celpix.plugins.builtins.md_rom import MdRomContainer
 from celpix.plugins.builtins.md_rom import repair_checksum as repair_md_checksum
@@ -51,9 +52,16 @@ from celpix.plugins.builtins.n64_rom import (
     N64RomContainer,
     swap_groups,
 )
+from celpix.plugins.builtins.scgcad import (
+    OBJ_PAYLOADS,
+    OBJ_SIZE,
+    SIGNATURE,
+    ObjContainer,
+)
 from celpix.plugins.builtins.sms_rom import SmsRomContainer, repair_checksum
 from celpix.plugins.builtins.snes_rom import SnesRomContainer
 from celpix.plugins.builtins.snes_rom import repair_checksum as repair_snes_checksum
+from celpix.plugins.builtins.ys_spr import SprContainer
 from celpix.plugins.detect import (
     container_write_enabled,
     detect_container,
@@ -442,6 +450,29 @@ def test_d88_reads_an_irregular_disk_at_the_offsets_a_loader_counts() -> None:
     assert [n.is_warning for n in notices(ctx)] == [True]
 
 
+def test_d88_refuses_sectors_that_claim_more_than_the_file_can_hold() -> None:
+    """An N=7 sector counts as 16 KiB whatever it stores, so ID fields with no
+    data behind them - here one track of them, named by every table entry -
+    would unwrap a 1 KiB file into a payload of hundreds of megabytes. The parse
+    refuses it before building anything, and the read falls back to plain bytes.
+    """
+    count = 60
+    track = b"".join(
+        struct.pack("<4BH3B5xH", 0, 0, r + 1, 7, count, 0, 0, 0, 0)
+        for r in range(count)
+    )
+    head = bytearray(0x2B0)
+    struct.pack_into("<I", head, 0x1C, len(head) + len(track))
+    struct.pack_into("<164I", head, 0x20, *([len(head)] * 164))
+    raw = bytes(head) + track
+
+    with pytest.raises(ValueError, match="not believable"):
+        parse_image(raw)
+    ctx = PipelineContext()
+    assert D88Container().read(ReadSource(raw), ctx) == raw
+    assert [n.is_warning for n in notices(ctx)] == [True]
+
+
 def test_container_id_degrades_when_the_plugin_is_gone() -> None:
     # A project names the container its files were opened with, and the plugin
     # behind it can be uninstalled or left untrusted before the next launch —
@@ -555,6 +586,16 @@ def test_sms_write_honours_the_size_nibble_and_the_small_header_slots() -> None:
     assert out[0x3FFA:0x3FFC] == ((sum(rom[:0x3FF0])) & 0xFFFF).to_bytes(2, "little")
 
 
+def test_sms_small_size_code_sums_only_its_own_range() -> None:
+    # A 32 KiB file with its header at $7FF0 but size code $B: the BIOS sums
+    # $0000-$3FEF and nothing of the 16 KiB above it.
+    rom = bytearray(random.Random(11).randbytes(0x8000))
+    rom[0x7FF0:0x7FF8] = b"TMR SEGA"
+    rom[0x7FFF] = 0x4B
+    out = SmsRomContainer().write(bytes(rom), WriteTarget(b""), PipelineContext())
+    assert out[0x7FFA:0x7FFC] == (sum(rom[:0x3FF0]) & 0xFFFF).to_bytes(2, "little")
+
+
 def test_sms_write_leaves_a_headerless_file_alone() -> None:
     out = SmsRomContainer().write(b"\xaa" * 64, WriteTarget(b""), PipelineContext())
     assert out == b"\xaa" * 64
@@ -620,9 +661,13 @@ def test_smd_write_repairs_the_checksum_before_interleaving() -> None:
 
 
 def test_gb_write_leaves_a_headerless_file_alone() -> None:
-    # Too short to hold a header: inventing one would corrupt whatever it is.
-    out = GbRomContainer().write(b"\xaa" * 64, WriteTarget(b""), PipelineContext())
-    assert out == b"\xaa" * 64
+    # Too short to hold a header, or long enough without the boot logo that says
+    # one is there: checksumming either would overwrite three of its bytes.
+    for size in (64, 0x200):
+        out = GbRomContainer().write(
+            b"\xaa" * size, WriteTarget(b""), PipelineContext()
+        )
+        assert out == b"\xaa" * size
 
 
 def _snes_pair(image: bytes, at: int) -> tuple[int, int]:
@@ -743,6 +788,16 @@ def test_n64_swap_leaves_a_trailing_partial_group(tmp_path) -> None:
     assert swap_groups(b"\x01\x02\x03\x04\x05", 4) == b"\x04\x03\x02\x01\x05"
     assert swap_groups(b"\x01\x02\x03", 2) == b"\x02\x01\x03"
     assert swap_groups(b"\x01\x02\x03", 0) == b"\x01\x02\x03"
+
+
+def test_n64_write_warns_that_the_boot_crc_goes_stale() -> None:
+    # The CIC checks a CRC over $1000-$101000 that this container does not
+    # recompute, so an edit there has to say so; one outside it has no reason to.
+    native = b"\x80\x37\x12\x40" + bytes(0x2000 - 4)
+    for at, warned in ((0x1800, True), (0x800, False)):
+        ctx = PipelineContext()
+        N64RomContainer().write(b"\x01", WriteTarget(native, offset=at, length=1), ctx)
+        assert [n.is_warning for n in notices(ctx)] == ([True] if warned else [])
 
 
 # -- notices ---------------------------------------------------------------
@@ -1020,6 +1075,26 @@ def test_tim_clut_write_keeps_each_entry_semi_transparency_bit() -> None:
     assert out == original
 
 
+def test_tim_16bpp_pixel_write_keeps_each_pixel_semi_transparency_bit() -> None:
+    # A 16bpp pixel is a CLUT entry's word, and the direct-colour codec clears
+    # bit 15 the same way: 0x8000 (opaque black) would save as 0x0000, which the
+    # GPU draws transparent, on every pixel of an edited tile.
+    raw = bytearray(_tim(2, 4, 2))
+    layout = tim.parse(bytes(raw))
+    raw[layout.image_start : layout.image_start + 2] = b"\x00\x80"
+    original = bytes(raw)
+
+    ctx = PipelineContext()
+    pixels = tim.TimContainer().read(ReadSource(original), ctx)
+    stripped = bytes(b & 0x7F if i % 2 else b for i, b in enumerate(pixels))
+    out = tim.TimContainer().write(stripped, WriteTarget(original), ctx)
+    assert out == original
+    # Under a preset that declares bit 15 as alpha, clearing it is the edit.
+    ctx.set(KEY_WRITE_PRESET, "preset.pixel.dc-abgr1555")
+    out = tim.TimContainer().write(stripped, WriteTarget(original), ctx)
+    assert out[layout.image_start : layout.image_start + 2] == b"\x00\x00"
+
+
 def test_tim_signature_needs_a_valid_pixel_mode_too(tmp_path) -> None:
     reg = default_registry()
     good = tmp_path / "tex.tim"
@@ -1194,3 +1269,35 @@ def test_a_container_that_moves_bytes_while_claiming_not_to_is_caught(
             return source.data + bytes(64)
 
     assert read_notices(_Padding(), "container.test-padding") == ()
+
+
+# -- sprite maps -------------------------------------------------------------
+
+
+def test_an_object_saved_to_a_missing_file_keeps_its_build_and_tail() -> None:
+    # An `F`-build object's attribute words are little-endian, which only its
+    # marker says. A blank written in its place would reopen big-endian, every
+    # tile number swapped, and lose the animation table behind the header.
+    raw = bytearray(OBJ_SIZE)
+    raw[:6] = b"\x80\x00\x10\x20\xff\x01"
+    payload = OBJ_PAYLOADS[0]
+    raw[payload : payload + len(SIGNATURE)] = SIGNATURE
+    raw[payload + 0x10 : payload + 0x20] = b"Ver1.11 930511 F"
+    raw[payload + 0x100 : payload + 0x104] = b"\x05\x01\x05\x02"
+    ctx = PipelineContext()
+    records = ObjContainer().read(ReadSource(bytes(raw)), ctx)
+    assert ObjContainer().write(records, WriteTarget(b""), ctx) == bytes(raw)
+
+
+def test_a_truncated_sprite_pattern_is_refused_on_write() -> None:
+    # A count running past the end: saving would invent the missing counts and
+    # the 81-byte trailer, growing a file that may not be a pattern at all.
+    truncated = b"\x02" + bytes(8)
+    ctx = PipelineContext()
+    records = SprContainer().read(ReadSource(truncated), ctx)
+    with pytest.raises(ValueError, match="ends before"):
+        SprContainer().write(records, WriteTarget(truncated), ctx)
+    # And a frame needing more records than its count byte holds is refused
+    # rather than capped, which would drop the rest.
+    with pytest.raises(ValueError, match="at most 255"):
+        SprContainer().write(bytes(8 * 256), WriteTarget(b""), PipelineContext())

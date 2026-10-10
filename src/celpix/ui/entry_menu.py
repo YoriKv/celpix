@@ -684,3 +684,7 @@ class EntryMenuMixin:
         if multi:
             self._only_these_live(menu, live)
         menu.exec(self._tree.viewport().mapToGlobal(pos))
+        # Parented to the panel, the menu would outlive this call — and every
+        # action's handler closes over the right-clicked entry, so a removed
+        # entry (and the document it holds) would stay alive per right-click.
+        menu.deleteLater()

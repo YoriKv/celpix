@@ -24,9 +24,11 @@ over those bindings. Three surfaces, and one apply:
   share one table.
 
 The apply is one :class:`~celpix.ui.undo_commands.InputsEditCommand` however
-many entries it lands on. A slice or map is **re-read** — its inputs decide what
-its bytes decode to — after the same unsaved-edits warning Edit Slice gives; a
-file's bindings feed only its preview, so that one re-runs the overlay.
+many entries it lands on. An entry whose **own** pathway's bindings changed — a
+slice's scheme, a map's cell engine, a file's scheme where it decompresses
+whole — is **re-read**, since those inputs decide what its bytes decode to,
+after the same unsaved-edits warning Edit Slice gives. Bindings for the preview
+codec feed only the overlay, so a change to those re-runs it instead.
 """
 
 from __future__ import annotations
@@ -39,6 +41,7 @@ from celpix.core.errors import Stage
 from celpix.plugins.base import NO_COMPRESSION
 from celpix.project import projectfile
 from celpix.project.inputs import (
+    INPUT_STAGES,
     Bindings,
     InputBinding,
     IntegerFromBytes,
@@ -50,6 +53,7 @@ from celpix.project.inputs import (
     input_specs,
     iter_bindings,
     names_entry,
+    plugin_id_at,
     resolve_inputs,
     with_bindings,
 )
@@ -386,6 +390,16 @@ class InputsMixin:
             position = binding.offset
             if source is None:
                 return
+        if binding.entry is None and source.compression_id != NO_COMPRESSION:
+            # The offset is into the file's packed bytes, which is where the
+            # table its scheme needs lives (``project.inputs._source_bytes``);
+            # the view shows only the unpacked stream, so no position on screen
+            # is that byte.
+            self.statusBar().showMessage(
+                f"{source.name} decompresses as a whole, so its packed bytes "
+                "have no view to go to."
+            )
+            return
         self._activate_entry(source)
         if self._workspace.current is source and self._doc is not None:
             # A named entry's offset is into its buffer from 0; a file's is
@@ -444,7 +458,9 @@ class InputsMixin:
         if not changed:
             return
         dirty = [
-            e for e, _ in changed if e.kind is not EntryKind.FILE and (e.pixel_dirty)
+            e
+            for e, inputs in changed
+            if e.pixel_dirty and self._inputs_reread(e, inputs)
         ]
         if dirty:
             if not self._confirm_reread_discard(
@@ -468,17 +484,17 @@ class InputsMixin:
     def _apply_inputs(self, state: tuple[tuple[Entry, dict], ...]) -> None:
         """Land one direction of :class:`InputsEditCommand`.
 
-        A slice or map is re-read, because its inputs decide what its bytes
-        decode to; a file's bindings feed the preview alone, so the overlay is
-        re-run instead. Entries reading *through* a changed one — a region
-        bound to it — are re-read on the same rule as a composite over it.
+        An entry whose own pathway's bindings changed is re-read, because they
+        decide what its bytes decode to (:meth:`_inputs_reread`); a change to
+        the preview codec's alone re-runs the overlay. Entries reading
+        *through* a changed one — a region bound to it — are re-read on the
+        same rule as a composite over it.
         """
         reread: list[Entry] = []
         for entry, inputs in state:
+            if self._inputs_reread(entry, inputs):
+                reread.append(entry)
             entry.inputs = inputs
-            if entry.kind is EntryKind.FILE:
-                continue
-            reread.append(entry)
         if reread:
             self._reread_entries(reread)
         self._reread_input_dependents([entry for entry, _ in state])
@@ -494,6 +510,20 @@ class InputsMixin:
         if window.isVisible() and window.entry is not None:
             codec, blocking = self._inputs_context
             self._show_inputs(window.entry, codec=codec, blocking=blocking)
+
+    def _inputs_reread(self, entry: Entry, inputs: dict[str, Bindings]) -> bool:
+        """Whether giving ``entry`` ``inputs`` changes what its bytes decode to.
+
+        Decided by the plugins its own pathway runs (:func:`plugin_id_at`), not
+        by its kind: a file that decompresses whole reads through its scheme's
+        bindings exactly as a slice does, while a file's bindings for the
+        preview codec reach only the overlay.
+        """
+        own = {plugin_id_at(entry, stage, self._registry) for stage in INPUT_STAGES}
+        return any(
+            entry.inputs.get(plugin_id) != inputs.get(plugin_id)
+            for plugin_id in own - {""}
+        )
 
     def _sync_inputs_window(self) -> None:
         """Close the window when the entry it was pinned to is gone."""

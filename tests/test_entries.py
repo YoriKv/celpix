@@ -534,6 +534,32 @@ def test_extending_the_files_selection_leaves_the_open_document_alone(
     assert window._new_slice_action.isEnabled()
 
 
+def test_pointing_the_files_pane_ignores_a_held_ctrl(qtbot) -> None:
+    # The pane is re-pointed from inside key presses that hold Ctrl — an undo's
+    # Ctrl+Z switching back to the entry it edited — and a bare setCurrentItem
+    # reads the held Ctrl as Toggle: the row went on beside the old one (two rows
+    # picked, every single-entry menu row dead), or the row already picked off.
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    from celpix.project.workspace import Entry, EntryKind
+    from celpix.ui.file_list_panel import FileListPanel
+
+    panel = FileListPanel()
+    qtbot.addWidget(panel)
+    a = Entry(name="a.bin", kind=EntryKind.FILE, path="/x/a.bin")
+    b = Entry(name="b.bin", kind=EntryKind.FILE, path="/x/b.bin")
+    panel.add_entry(a)
+    panel.add_entry(b)
+    panel.set_current(a)
+
+    QTest.keyPress(panel._tree, Qt.Key.Key_Control, Qt.KeyboardModifier.ControlModifier)
+    panel.set_current(b)
+    assert panel.selected_entries() == [b]
+    panel.set_current(b)
+    assert panel.selected_entries() == [b]
+
+
 def test_alt_arrows_move_a_whole_selection_within_each_group(qtbot, tmp_path) -> None:
     # A block of picked rows travels together and keeps its own order; a block
     # that has reached the end of its group pins the rows behind it rather than
@@ -1024,11 +1050,14 @@ def test_a_slice_edit_reaches_its_parent_and_the_parents_container(
     repair those on write, which makes it the honest witness for "did the
     parent's container run?".
     """
-    from celpix.plugins.builtins.gb_rom import repair_checksums
+    from celpix.plugins.builtins.gb_rom import _LOGO_AT, _LOGO_HEAD, repair_checksums
     from celpix.ui.container_dialog import ContainerEdit
 
     rom = tmp_path / "game.gb"
-    rom.write_bytes(repair_checksums(bytes((i * 7) & 0xFF for i in range(0x8000))))
+    # With the logo in place: the container repairs only a file that has one.
+    image = bytearray((i * 7) & 0xFF for i in range(0x8000))
+    image[_LOGO_AT : _LOGO_AT + len(_LOGO_HEAD)] = _LOGO_HEAD
+    rom.write_bytes(repair_checksums(bytes(image)))
     window = MainWindow()
     qtbot.addWidget(window)
     window._load_pixel(str(rom))
@@ -3250,6 +3279,117 @@ def test_edit_container_converts_between_a_graphics_file_and_a_palette(
     window._undo_stack.undo()  # the macro: conversion, then the re-homing
     assert entry.kind is EntryKind.PALETTE
     assert graphic.session.palette_mode is PaletteMode.FILE
+
+
+def test_a_conversion_opens_each_kind_on_its_own_format(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """A palette on screen turned into pixels opens on a pixel format, not the
+    swatch codec the toolbar was showing; and a graphic turned into a palette
+    comes back from the undo on its own format, arrangement and palette source
+    — not an Offset palette at 0, which would write colours over the first
+    tile."""
+    from celpix.core.capabilities import ContentKind
+    from celpix.project.workspace import EntryKind, FileStages, is_swatch_preset
+    from celpix.ui.container_dialog import ContainerEdit
+
+    pal = tmp_path / "colors.pal"
+    pal.write_bytes(bytes(range(256)) * 2)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._add_palette_file(str(pal), preset_id="preset.palette.bgr555")
+    palette = next(e for e in window._workspace.entries if e.kind is EntryKind.PALETTE)
+    window._activate_entry(palette)
+    _answer_container_dialog(
+        monkeypatch,
+        ContainerEdit(FileStages(RAW_CONTAINER), (str(pal),), ContentKind.PIXELS),
+    )
+    window._change_container_for(palette)
+    assert palette.kind is EntryKind.FILE
+    assert not is_swatch_preset(window._pixel_preset_id(), window._registry)
+
+    px = _make_snes_file(tmp_path)
+    window._load_pixel(str(px))
+    graphic = window._workspace.current
+    window._pixel_preset.setCurrentIndex(
+        window._pixel_preset.findData("preset.pixel.snes-4bpp")
+    )
+    window._columns.setValue(4)
+    assert window._load_palette_at_offset(0x40)
+    _answer_container_dialog(
+        monkeypatch,
+        ContainerEdit(FileStages(RAW_CONTAINER), (str(px),), ContentKind.PALETTE),
+    )
+    window._change_container_for(graphic)
+    assert graphic.kind is EntryKind.PALETTE
+    window._undo_stack.undo()
+    assert graphic.kind is EntryKind.FILE and window._workspace.current is graphic
+    assert graphic.session.pixel_preset_id == "preset.pixel.snes-4bpp"
+    assert window._pixel_preset_id() == "preset.pixel.snes-4bpp"
+    assert window._columns.value() == 4
+    assert graphic.session.palette_mode is PaletteMode.OFFSET
+    assert graphic.doc.palette_config.source.offset == 0x40
+
+
+def test_new_stages_re_read_the_slices_under_a_file(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """A reshape moves what every slice offset under the file names, so a slice
+    already open is read again rather than left on the old bytes."""
+    from celpix.ui.container_dialog import ContainerEdit
+
+    f = tmp_path / "f.bin"
+    f.write_bytes(bytes(range(256)) * 4)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(f))
+    parent = window._workspace.current
+    cut = window._workspace.add_slice(str(f), "cut", 0, 64)
+    window._activate_entry(cut)
+    assert cut.doc.pixel_data[:4] == bytes([0, 1, 2, 3])
+    window._activate_entry(parent)
+    _answer_container_dialog(
+        monkeypatch,
+        ContainerEdit(FileStages(RAW_CONTAINER, "reshape.swap-bytes-2"), (str(f),)),
+    )
+    window._change_container_for(parent)
+    assert cut.doc is None
+    window._activate_entry(cut)
+    assert cut.doc.pixel_data[:4] == bytes([1, 0, 3, 2])
+
+
+def test_converting_a_bound_bank_to_a_tilemap_starts_its_maps_over(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """A map's base counts tiles over art and cells over a map, so a bank that
+    becomes a tilemap leaves each map bound to it at base 0, as a rebind would;
+    the undo puts the base back with the kind."""
+    from celpix.core.capabilities import ContentKind
+    from celpix.core.tilemap import Cell
+    from celpix.project.workspace import TileMode, TileSource
+    from celpix.ui.container_dialog import ContainerEdit
+    from uihelpers import _scr_file
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    bank = window._workspace.entries[0]
+    window._load_pixel(str(_scr_file(tmp_path, [Cell(index=1), Cell(index=2)])))
+    layout = window._workspace.current
+    layout.tile_source = TileSource(mode=TileMode.ENTRY, entry=bank, base_index=3)
+    window._reload_tilemap(layout)
+    _answer_container_dialog(
+        monkeypatch,
+        ContainerEdit(bank.file_stages, bank.paths, ContentKind.TILEMAP),
+    )
+    window._change_container_for(bank)
+    assert bank.content_kind is ContentKind.TILEMAP
+    assert layout.tile_source.entry is bank
+    assert layout.tile_source.base_index == 0
+    assert layout.doc.chain is not None and layout.doc.chain.base == 0
+    window._undo_stack.undo()
+    assert bank.content_kind is ContentKind.PIXELS
+    assert layout.tile_source.base_index == 3
 
 
 def test_container_dialog_marks_detection_for_the_first_file(qtbot, tmp_path) -> None:

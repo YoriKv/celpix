@@ -125,7 +125,7 @@ __all__ = [
 # detail: an id names what an entry was opened *with*, so a rename with no
 # forwarding address resets that entry to pass-through, which reads as data
 # loss. That mapping lives in `plugins/aliases.py`.
-PROJECT_VERSION = 7
+PROJECT_VERSION = 8
 PROJECT_EXTENSION = ".celpix"
 
 # The two alphabet presets celPix used to ship, by the id an older project names
@@ -586,7 +586,9 @@ def load_project(path: str) -> LoadedProject:
     # presets this build may not have) and a non-list degrades to no filter.
     raw_hidden = data.get("hidden_pixel_presets")
     hidden = (
-        {item for item in raw_hidden if isinstance(item, str)}
+        # Through the alias table, so a preset hidden before a rename stays
+        # hidden after it and is re-saved under the id it now has.
+        {current_id(item) for item in raw_hidden if isinstance(item, str)}
         if isinstance(raw_hidden, list)
         else set()
     )
@@ -653,6 +655,12 @@ def _entry_from_dict(raw: dict[str, object], base_dir: str) -> Entry:
             # re-save would write back onto every registered palette.
             session=(_session_from(session) if isinstance(session, dict) else None),
             pending_view=_view_from(raw.get("view")),
+            # Read as on every other kind, because the writer writes them on every
+            # kind: the swatch sheet is a pixel document, so a font tick or a
+            # pinned row base set on it — or kept through a change of content
+            # from a font file — is the entry's to keep.
+            palette_row_base=_int(raw.get("palette_row_base"), None),
+            **_font_from(raw),
         )
         # Sliced and previewed like a file, so it holds preview bindings like
         # one (:func:`~celpix.project.inputs.prune_bindings`).
@@ -1034,6 +1042,11 @@ def _inputs_from(raw: dict) -> tuple[dict[str, Bindings], list[tuple[str, str, i
     for plugin_id, items in data.items():
         if not isinstance(plugin_id, str) or not isinstance(items, dict):
             continue
+        # Through the alias table, like every other plugin id in the file: a
+        # renamed codec must find its bindings under its new name. The pending
+        # entry references carry the same id, or the binder looks under the old
+        # one, misses, and leaves an entry-shaped binding reading "this file".
+        canonical = current_id(plugin_id)
         parsed: Bindings = {}
         for key, item in items.items():
             if not isinstance(key, str):
@@ -1043,11 +1056,11 @@ def _inputs_from(raw: dict) -> tuple[dict[str, Bindings], list[tuple[str, str, i
                 continue
             parsed[key] = binding
             if isinstance(item, dict) and "entry_index" in item:
-                named.append((plugin_id, key, _int(item.get("entry_index"), -1)))
+                named.append((canonical, key, _int(item.get("entry_index"), -1)))
         if parsed:
-            # Through the alias table, like every other plugin id in the file:
-            # a renamed codec must find its bindings under its new name.
-            bindings[current_id(plugin_id)] = parsed
+            # Merged, not replaced: an old id and its successor both present
+            # (a hand-merged file) land on one plugin.
+            bindings.setdefault(canonical, {}).update(parsed)
     return bindings, named
 
 
@@ -1123,6 +1136,9 @@ def _pieces_list(entry: Entry, positions: dict[int, int]) -> list[dict[str, obje
       well, because those are the user's request rather than an observation, and
       a request has to survive a load that cannot read the source
       (``docs/design/composite-entry.md``).
+    - A source with an ``offset`` and **no** ``length`` runs from that offset to
+      the end of the source, rounded up to a whole tile like a whole-entry run —
+      ranged by its start alone, so it is not a whole-entry piece.
 
     ``-1`` for a source that is no longer in the list, which round-trips to a pad
     of the right length rather than to whatever now sits at a stale index.

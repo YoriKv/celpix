@@ -427,8 +427,10 @@ class ArrangementCommand(_MergingStateCommand):
 
     A change to :attr:`ArrangementState.effective_width` re-cuts the codec's
     tile geometry, so that pair applies down the re-interpretation path a format
-    switch takes rather than by repainting. Which pair it is cannot be read off
-    one half, so the command answers it and the apply is told.
+    switch takes rather than by repainting — as does a pair whose byte positions
+    differ, since that path is the one that lands a position. Which pair it is
+    cannot be read off one half, so the command answers it and the apply is
+    told.
     """
 
     def __init__(
@@ -460,7 +462,13 @@ class ArrangementCommand(_MergingStateCommand):
         )
 
     def _recuts(self) -> bool:
-        return self._before.effective_width != self._after.effective_width
+        # The anchor too: a run kept alive by it alone (:meth:`_is_empty`) has
+        # nothing else to move, and only the re-cut path lands a byte position
+        # — a repaint would leave the view where the clamp put it.
+        return (
+            self._before.effective_width != self._after.effective_width
+            or self._before.byte_position != self._after.byte_position
+        )
 
     def _apply(self, state: ArrangementState) -> None:
         self._window._apply_arrangement(state, recut=self._recuts())

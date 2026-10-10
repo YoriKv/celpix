@@ -17,7 +17,7 @@
 #
 #   Round trip: a channel of 8 bits or fewer is exact. Bits no field names are
 #   written as zero. A channel wider than 8 bits loses its low bits. An edited
-#   color is quantized to the channel width.
+#   color is quantized to the nearest level the channel width holds.
 #
 # SHIPPED PRESETS ON THIS ENGINE
 #   bgr555           2 bytes little-endian, `.bbb bbgg gggr rrrr`. SNES, GBC, GBA.
@@ -27,6 +27,7 @@
 #   gb-bgp           `vv`, bits_per_entry 2, invert: four shades per byte.
 #   ws-gray          `.vvv`, bits_per_entry 4, invert.
 #   ngp-gray         `.... .vvv`, one byte per entry, invert.
+#   rgba8888-ps2     8-bit alpha with alpha_max = 128: 0x80 is opaque.
 
 id = "preset.palette.example-color-mask"  # unique and stable; never shown
 name = "Example RGB555"  # shown in the palette format picker
@@ -68,3 +69,8 @@ byte_order = "little"
 # Complement every field, alpha included, before scaling. Default false. For
 # greyscales that count darkness (0 = white), as the handheld shade registers do.
 invert = false
+
+# The alpha value that means opaque, where it is not the field's all-ones.
+# Default: all ones. Alpha scales against it both ways, exactly for every value
+# up to it; a stored value above it draws opaque. Needs an `a` field.
+# alpha_max = 128

@@ -1,6 +1,10 @@
 # Neo Geo Pocket Color scroll map entry — 16-bit little-endian: index 0-8,
 # palette 9-12, V flip 14, H flip 15. Vertical flip sits *below* horizontal, as
 # on the mono machine (`ngp-bg`).
+#
+# Bit 13 is the mono machine's palette select (`ngp-bg`'s `p`). A game that also
+# runs on the mono machine sets it beside the colour palette, so it is carried
+# as `f` rather than written back as zero.
 id = "preset.tilemap.ngpc-bg"
 name = "Neo Geo Pocket Color map (16-bit)"
 engine_id = "codec.tilemap.packed"
@@ -9,4 +13,4 @@ category = "SNK"
 [params]
 bytes = 2
 endian = "little"
-fields = "hv.p pppi iiii iiii"
+fields = "hvfp pppi iiii iiii"

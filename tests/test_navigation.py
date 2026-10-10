@@ -6,7 +6,6 @@ from __future__ import annotations
 from celpix.core.arrangement import ARRANGEMENT_PRESETS
 from celpix.ui.main_window import MainWindow
 from uihelpers import (
-    _fresh_settings,
     _make_snes_file,
     _open_big,
     _pattern_name,
@@ -533,14 +532,13 @@ def test_a_bare_letter_key_is_dead_while_its_control_is(
         control.setEnabled(enabled)
 
 
-def test_grid_menu_applies_and_persists_as_a_local_preference(qtbot, tmp_path) -> None:
+def test_grid_menu_applies_and_persists_as_a_local_preference(qtbot) -> None:
     # Every part of the grid is a local preference, not project state: a fresh
     # window comes up with the grid the last one was left on, whatever project it
     # opens.
     from celpix.core.document import GridMode
     from celpix.ui.canvas import GridStyle
 
-    _fresh_settings(tmp_path)
     window = MainWindow()
     qtbot.addWidget(window)
 
@@ -568,7 +566,7 @@ def test_grid_menu_applies_and_persists_as_a_local_preference(qtbot, tmp_path) -
     assert reopened._canvas._grid_levels(4, 4)[0][0] == (1, 1)  # drawing at that scale
 
 
-def test_theme_menu_repaints_the_app_and_persists(qtbot, tmp_path) -> None:
+def test_theme_menu_repaints_the_app_and_persists(qtbot) -> None:
     # The theme is one palette on the QApplication, so what proves it took is the
     # *application's* palette going dark - not the window's own. Like the grid, it
     # is a local preference: a fresh window comes up on the last theme chosen.
@@ -580,7 +578,6 @@ def test_theme_menu_repaints_the_app_and_persists(qtbot, tmp_path) -> None:
     def surface_lightness() -> int:
         return app.palette().color(QPalette.ColorRole.Window).lightness()
 
-    _fresh_settings(tmp_path)
     app = QApplication.instance()
     try:
         window = MainWindow()
@@ -1069,7 +1066,7 @@ def test_entire_file_still_locks_rows_on_a_pixel_entry(qtbot, tmp_path) -> None:
     window._load_pixel(str(_make_snes_file(tmp_path)))
     window._entire_file.setChecked(True)
     # The toggle persists to QSettings; the settings store is emptied between
-    # tests (``conftest._fresh_settings``), so it goes no further than this one.
+    # tests (``conftest._isolate_settings``), so it goes no further than this one.
     assert not window._rows.isEnabled()
     assert "Entire File" in window._rows.toolTip()
 

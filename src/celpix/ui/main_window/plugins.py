@@ -35,8 +35,9 @@ class PluginsMixin:
         Rebuilds the registry from both plugin roots - the user's folder and the
         open project's own (:meth:`_load_project_plugins`) - picking up
         added/changed/removed presets and code plugins (a changed code plugin
-        passes the trust gate; one you approved this run reloads without a
-        prompt), refreshes the preset menus, and re-decodes the currently open
+        passes the trust gate; one in your own folder that you approved this
+        run reloads without a prompt, one of the project's asks again),
+        refreshes the preset menus, and re-decodes the currently open
         pixel/palette through the reloaded plugins.
 
         The pixel re-run goes back to disk so a reloaded Read/Decompress plugin
@@ -59,7 +60,7 @@ class PluginsMixin:
         # With the open project's path, so the scan covers its own plugins/
         # folder too - F5 is the way to pick up an edit there, exactly as it is
         # for the user's folder.
-        self._registry, self._plugin_issues = self._reload_plugins(self._project_path)
+        self._swap_registry(self._project_path)
         # Reloaded code is new code: a crash it still has is news again.
         self._codec_faults_seen.clear()
         # A refresh can *remove* a format as easily as add one — a deleted preset
@@ -129,15 +130,24 @@ class PluginsMixin:
         """
         if self._reload_plugins is None:
             return
-        self._registry, self._plugin_issues = self._reload_plugins(project_path)
-        # The one widget that keeps a reference of its own rather than reading
-        # the window's live: its rows name each entry's container and which of
-        # the three tilemap layouts it holds, both off the registry, and this is
-        # a *different object* from the one it was built with. Left behind, every
-        # row whose format the project itself provides reads as having none.
-        self._files_panel.set_registry(self._registry)
+        self._swap_registry(project_path)
         self._repopulate_presets()
         self._alert_plugin_issues()
+
+    def _swap_registry(self, project_path: str | None) -> None:
+        """Rebuild the registry from disk and hand it to whatever holds its own.
+
+        The one place both reloads replace it, so neither can leave a holder on
+        the old one. The Files panel is that holder - the one widget keeping a
+        reference rather than reading the window's live: its rows name each
+        entry's container and which of the three tilemap layouts it holds, both
+        off the registry, and this is a *different object* from the one it was
+        built with. Left behind, a row reads a format that was removed or
+        renamed as it was, and one a reload added as missing, while keeping the
+        old plugins' code alive.
+        """
+        self._registry, self._plugin_issues = self._reload_plugins(project_path)
+        self._files_panel.set_registry(self._registry)
 
     def _repopulate_presets(self) -> None:
         """Rebuild the preset combos from the (reloaded) registry, keeping the

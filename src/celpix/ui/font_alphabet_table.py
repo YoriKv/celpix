@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from celpix.ui.font_alphabet_draft import ROLE_LABELS
+from celpix.ui.widgets import select_only
 
 __all__ = [
     "CODE_COLUMN_PADDING",
@@ -86,7 +87,9 @@ class AlphabetTable(QTableWidget):
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             item = self.item(self.currentRow(), COL_TEXT)
             if item is not None:
-                self.setCurrentItem(item)
+                # Explicit, not setCurrentItem: Shift+Enter would otherwise
+                # extend the row selection from the anchor (``select_only``).
+                select_only(self, item)
                 self.editItem(item)
                 event.accept()
                 return

@@ -25,7 +25,7 @@
 #   snes-bg-swapped  the same word, big-endian.
 #   snes-bg-16x16    the same word, cell_tiles [2, 2].
 #   gba-bg           `pppp vhii iiii iiii`, 32x32 pages.
-#   gbc-bg           `ovh. ippp iiii iiii`: a split index.
+#   gbc-bg           `ovhf ippp iiii iiii`: a split index.
 #   index-8bit       `iiii iiii`: a bare tile number. gb-bg is the same cell.
 #   text-8bit        `iiii iiii` with layout = "text". text-16bit: two bytes.
 #   text-8bit-flag   `eiii iiii`: line break as a flag bit.

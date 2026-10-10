@@ -6,6 +6,8 @@ engine_id = "codec.palette.indexed"
 category = "Indexed"
 
 [params]
+# Entries 0 and 1 are both black; a black edit writes 1, since 0 is transparent.
+prefer = [1]
 colors = [
   0x000000, 0x000000, 0x3EB849, 0x74D07D,
   0x5955E0, 0x8076F1, 0xB95E51, 0x65DBEF,

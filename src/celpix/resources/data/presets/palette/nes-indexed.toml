@@ -6,6 +6,9 @@ engine_id = "codec.palette.indexed"
 category = "Nintendo"
 
 [params]
+# Black is at $0D, $0E, $0F and seven more; a tie resolves to $0F, the black
+# games use, never to $0D, which upsets the video sync on some TVs.
+prefer = [0x0F]
 colors = [
   0x5D5D5D, 0x00218E, 0x120BAF, 0x3900A6,
   0x5B0078, 0x6C0033, 0x670500, 0x4E1C00,

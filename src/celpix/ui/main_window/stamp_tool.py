@@ -441,7 +441,7 @@ class StampToolMixin:
         a tile there would otherwise write the entry and show nothing — no
         feedback, and on a layout that is largely undrawn (`-CLR-.MAP` is
         entirely so) every click a silent no-op. It is also what the authoring
-        tool does: `scr_map_cnv` sets the drawn byte on every block it registers
+        tool does: `scr_map_cnv` sets the drawn byte on every stamp it registers
         (``scgcad-formats.md`` §4). The one thing that outweighs the force is
         the property row's own Drawn box: unchecked, ``visible=False`` lands
         over it and the stamp is the **eraser** — every press lays undrawn

@@ -1252,6 +1252,10 @@ class SelectionMixin:
             return
         self._sync_edit_actions()
         menu = QMenu(self)
+        # Parented to the window, a closed menu would otherwise live as long as
+        # it does - one more per right-click. The actions are the window's own,
+        # so deleting the menu leaves them where they are.
+        menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         menu.setToolTipsVisible(True)  # the shared actions carry tips; show them
         # Carving the file up comes first: all three ways to cut a slice, then a
         # bookmark. A bookmark records the *view position* rather than the

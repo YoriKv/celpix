@@ -182,6 +182,23 @@ def test_hex_panel_go_to_and_find_move_the_dump_but_not_the_canvas(
     assert panel._status.text() == "Not found"
 
 
+def test_hex_panel_find_previous_visits_every_overlapping_match(qtbot) -> None:
+    # Backwards, find_bytes already means "strictly before start", so the panel
+    # starts from the match's own offset: every overlapping "A" of "AAAA" in turn.
+    from celpix.ui.hex_view_panel import HexViewPanel
+
+    panel = HexViewPanel()
+    qtbot.addWidget(panel)
+    panel.show_bytes(b"AAAA", 0, _hex4, lambda _text: None)
+    panel._find.setText('"A"')
+    panel._view.select(3, 1)
+    walk = []
+    for _ in range(4):
+        panel._do_find(backwards=True)
+        walk.append(panel._view.selection()[0])
+    assert walk == [2, 1, 0, 3]
+
+
 def test_hex_dump_scrolls_the_whole_file_and_holds_its_place(qtbot, tmp_path) -> None:
     """The dump is virtualized over the whole file, so the scrollbar spans it and
     a repaint that does not move the offset leaves the reader where they were -

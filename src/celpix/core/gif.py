@@ -105,6 +105,7 @@ def encode(
                 colours.append(key)
             indices.append(index)
         keyed.append(indices)
+        seen[id(pixels)] = indices
 
     bits = max(1, (len(colours) - 1).bit_length())
     table = bytearray()

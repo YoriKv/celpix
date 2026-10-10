@@ -10,7 +10,7 @@ from celpix.core.context import (
     KEY_TILEMAP_COLUMNS,
     PipelineContext,
 )
-from celpix.core.errors import PipelineError, Stage
+from celpix.core.errors import Stage
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins import discovery
@@ -276,15 +276,16 @@ def _save_reshaped_slice_with_stub(tmp_path, packed: bytes):
     return px, pixel_bytes, lambda: pipeline.save(doc, reg)
 
 
-def test_reshaped_bounded_write_requires_exact_fill(tmp_path) -> None:
-    # Short-of-the-slot is fine for a self-delimiting compressed stream, but a
-    # reshape's part boundaries are len/N of the region: writing the front of a
-    # slot is writing a *different region*, so it must refuse.
-    px, pixel_bytes, save = _save_reshaped_slice_with_stub(tmp_path, bytes(10))
-    with pytest.raises(PipelineError) as excinfo:
-        save()
-    assert (excinfo.value.stage, excinfo.value.action) == (Stage.RESHAPE, "unshape")
-    assert px.read_bytes() == pixel_bytes  # nothing partial written
+def test_reshaped_bounded_write_fills_the_slot_before_the_unshape(tmp_path) -> None:
+    # A reshape's part boundaries are len/N of the region, so a short stream is
+    # filled out to the slot in *reshaped* space and only then unshaped: the
+    # permutation is the read's, and the stream lands where the read found it.
+    px, pixel_bytes, save = _save_reshaped_slice_with_stub(tmp_path, b"\xab" * 10)
+    save()
+    out = px.read_bytes()
+    region = b"\xab" * 10 + b"\xff" * 54
+    assert out[32:96] == SplitPartsReshape(2).unshape(region, PipelineContext())
+    assert out[:32] == pixel_bytes[:32] and out[96:] == pixel_bytes[96:]
 
 
 def test_reshaped_bounded_write_accepts_exact_fill(tmp_path) -> None:
@@ -447,6 +448,9 @@ def test_data_lut_selects_its_table_from_address_bits() -> None:
         pick = ((i & 4) >> 2) | ((i & 0x800) >> 10) | ((i & 0x40000) >> 16)
         assert out[i] == _ref_swap(data[i], tables[pick])
     assert plugin.unshape(out, ctx) == data
+    # A region short of the selector's period takes its masks cut from the
+    # full period's, and a substitution moves nothing, so it is out's prefix.
+    assert plugin.reshape(data[:0x40805], ctx) == out[:0x40805]
 
 
 def test_data_lut_word_unit_permutes_across_both_bytes() -> None:
@@ -520,6 +524,11 @@ def test_data_lut_rejects_bad_specs() -> None:
     # unit; the value has to be the integer itself.
     with pytest.raises(ValueError, match="unit must be"):
         _data_lut(unit=True, bitswaps=[[7, 6, 5, 4, 3, 2, 1, 0]])
+    # The same trap inside a table, and a remap that is not a list at all.
+    with pytest.raises(ValueError, match="bitswaps"):
+        _data_lut(bitswaps=[[7, 6, 5, 4, 3, 2, True, False]])
+    with pytest.raises(ValueError, match="selector_remap"):
+        _data_lut(selector_bits=[0], bitswaps=[list(range(8))] * 2, selector_remap=5)
 
 
 # -- slice-length discovery is off under a reshape ---------------------------

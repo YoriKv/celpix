@@ -26,6 +26,7 @@ from the tail of the same cycle rather than each watching for its own trigger.
 
 from __future__ import annotations
 
+import weakref
 from collections.abc import Callable
 from dataclasses import replace
 from typing import TypeVar
@@ -33,6 +34,7 @@ from typing import TypeVar
 from celpix.core import ceil_div
 from celpix.core.arrangement import BlockLayout, tile_first_pixel
 from celpix.core.document import ViewOptions
+from celpix.core.errors import PipelineError
 from celpix.core.palette import Palette
 from celpix.core.tilemap import Cell
 from celpix.pipeline import pipeline
@@ -76,6 +78,16 @@ class RenderingMixin:
     # where the user left it, held here while the lifted window renders from
     # ``_offset``. None whenever the two agree - see :meth:`_refresh_view`.
     _held_offset: int | None = None
+    # The render failures already raised as dialogs: the entry they happened on
+    # (weakly, so a closed entry's document is not kept alive by it), the reading
+    # it was rendered under (:meth:`_render_reading`) and their summaries. A
+    # failing codec fails on every repaint - each scroll step, each stroke, and
+    # once more in each tool window drawing the same tiles - and one dialog per
+    # repaint is a window the user cannot get out of. So each message is shown
+    # once per entry and reading, and forgotten when a render succeeds on another
+    # entry or another reading, which makes coming back to the failing one news
+    # again. See :meth:`_quiet_render`.
+    _render_failure: tuple[weakref.ref | None, tuple, set[str]] | None = None
 
     def _on_view_change(self, *_args) -> None:
         if self._doc is not None:
@@ -323,6 +335,8 @@ class RenderingMixin:
         two_dimensional: bool,
         max_rows: int | None,
         biases: list[int] | None = None,
+        *,
+        plugin: str = "",
     ):
         """Decode a pixel-byte buffer through the arrangement into a rendered image.
 
@@ -341,10 +355,20 @@ class RenderingMixin:
         decompressed scratch buffer, whose positions are not offsets into the
         entry at all. Passing it also selects the render path - with biases the
         row is already in the indices, so the colour table must not offset again.
+
+        ``plugin`` is the preset id the engine came from, which a codec failure
+        names (:func:`~celpix.pipeline.render.decode_and_compose`).
         """
         assert self._doc is not None
         grid, filled = pipeline.decode_and_compose(
-            pixel_bytes, engine, params, layout, two_dimensional, max_rows, biases
+            pixel_bytes,
+            engine,
+            params,
+            layout,
+            two_dimensional,
+            max_rows,
+            biases,
+            plugin=plugin,
         )
         return self._paint_grid(grid, pinned=biases is not None), filled
 
@@ -945,10 +969,123 @@ class RenderingMixin:
         """
         assert self._doc is not None
         window_tiles = layout.columns * rows
-        tiles = self._decode_run(self._offset, window_tiles) or []
+        tiles = self._decode_run(self._offset, window_tiles, report=False) or []
         biases = self._window_biases(layout.columns, rows)
         grid = pipeline.compose_tiles(tiles, layout, rows, biases)
         return self._paint_grid(grid, pinned=biases is not None), len(tiles)
+
+    def _render_window(self, layout: BlockLayout, cols: int, rows: int):
+        """The window's picture by whichever route the document takes.
+
+        Returns ``(image, filled, composed)`` - ``composed`` is the tilemap
+        route's grid, None on the other two.
+
+        **The refresh's failure boundary**, by way of :meth:`_quiet_render`: a
+        codec that raises here draws the window blank and lets the rest of
+        :meth:`_refresh_view` run, because its callers swap state around it (an
+        entry switch, an applied edit) and a refresh that aborts half-way leaves
+        ``_doc`` and the canvas showing different documents.
+        """
+        assert self._doc is not None
+        view = self._doc.view
+
+        def render():  # noqa: ANN202 — the same tuple as the method's
+            if self._doc.is_tilemap:
+                # A third route beside the two byte/tile ones: the cells are the
+                # document, and the tiles come from wherever it is bound.
+                # Placement is still the shared composer — see _render_tilemap.
+                return self._render_tilemap()
+            if self._active_tile_rearrangement().is_identity():
+                engine, preset = self._registry.engine_for(
+                    self._doc.pixel_config.interpret_preset_id
+                )
+                # From the render origin, which Entire File can hold apart from
+                # the one ``view`` records (see the clamps in _refresh_view).
+                window = self._doc.window_bytes(
+                    self._offset, cols * rows, view.byte_nudge
+                )
+                image, filled = self._render_arrangement(
+                    window,
+                    engine,
+                    pipeline.tile_params(self._doc, engine, preset.params),
+                    layout,
+                    view.two_dimensional,
+                    max_rows=rows,
+                    biases=self._window_biases(cols, rows),
+                    plugin=preset.id,
+                )
+                return image, filled, None
+            return (*self._render_rearranged(layout, rows), None)
+
+        result = self._quiet_render(render)
+        if result is None:
+            blank = pipeline.compose_tiles([], layout, rows)
+            return self._paint_grid(blank, pinned=False), 0, None
+        return result
+
+    def _quiet_render(self, render: Callable[[], _T]) -> _T | None:
+        """``render()``, or None when its codec raised — reported at most once.
+
+        The failure boundary every picture of the current document is drawn
+        inside: the canvas (:meth:`_render_window`), and the tool windows the
+        refresh tail redraws from the same tiles — the tile source dock, the
+        font alphabet's sheet, the subsprite sheet. A codec that raises - a
+        plugin bug, a geometry it rejects - arrives as a :class:`PipelineError`
+        and stops here; the caller draws its picture blank on None and carries
+        on, so the refresh it is part of completes.
+
+        The dialog follows :attr:`_render_failure`: a message already told for
+        this entry under this reading stays quiet, so a failure that persists
+        across repaints is reported once, and the second picture of the same
+        tiles failing the same way adds nothing. A render that succeeds on
+        another entry, or under another reading of this one - the user picked
+        a different format, which worked - forgets what was told, so picking the
+        failing one again is news.
+        """
+        current = self._workspace.current
+        reading = self._render_reading()
+        seen = self._render_failure
+        seen_entry = seen[0]() if seen is not None and seen[0] is not None else None
+        same = seen is not None and seen_entry is current and seen[1] == reading
+        try:
+            result = render()
+        except PipelineError as exc:
+            summary = exc.summary()
+            if same and summary in seen[2]:
+                return None
+            # Marked before the dialog opens: its event loop can repaint, and
+            # that repaint has to find the failure already told.
+            if same:
+                seen[2].add(summary)
+            else:
+                ref = weakref.ref(current) if current is not None else None
+                self._render_failure = (ref, reading, {summary})
+            self._report(exc)
+            return None
+        if seen is not None and not same:
+            self._render_failure = None
+        return result
+
+    def _render_reading(self) -> tuple:
+        """What the current document's tiles are decoded under - the formats and
+        the tile geometry - as one comparable value.
+
+        What a render failure is remembered against beside the entry
+        (:meth:`_quiet_render`): the same entry read another way is a different
+        render, and a failure under it is the user's new question, not a repeat.
+        Scrolling, zooming and painting leave it alone.
+        """
+        doc = self._doc
+        if doc is None:
+            return ()
+        tilemap = doc.tilemap_config
+        return (
+            doc.pixel_config.interpret_preset_id,
+            dict(doc.pixel_config.interpret_params),
+            doc.tile_width,
+            doc.tile_height,
+            tilemap.interpret_preset_id if tilemap is not None else None,
+        )
 
     def _refresh_view(self) -> None:
         assert self._doc is not None
@@ -1046,30 +1183,7 @@ class RenderingMixin:
         layout = BlockLayout(
             cols, view.block_columns, view.block_rows, view.block_order
         )
-        composed = None
-        if self._doc.is_tilemap:
-            # A third route beside the two byte/tile ones: the cells are the
-            # document, and the tiles come from wherever it is bound. Placement
-            # is still the shared composer — see _render_tilemap.
-            image, filled, composed = self._render_tilemap()
-        elif self._active_tile_rearrangement().is_identity():
-            engine, preset = self._registry.engine_for(
-                self._doc.pixel_config.interpret_preset_id
-            )
-            # From the render origin, which Entire File can hold apart from the
-            # one ``view`` records (see the clamps above).
-            window = self._doc.window_bytes(self._offset, cols * rows, view.byte_nudge)
-            image, filled = self._render_arrangement(
-                window,
-                engine,
-                pipeline.tile_params(self._doc, engine, preset.params),
-                layout,
-                view.two_dimensional,
-                max_rows=rows,
-                biases=self._window_biases(cols, rows),
-            )
-        else:
-            image, filled = self._render_rearranged(layout, rows)
+        image, filled, composed = self._render_window(layout, cols, rows)
         tw, th = self._pixel_tile_size()
         self._canvas.set_tile_size(tw, th)
         self._canvas.set_zoom(view.zoom)

@@ -298,6 +298,13 @@ class ColorEditor(IconBaker, QWidget):
         argb &= 0xFFFFFFFF
         if not self._alpha:
             argb |= 0xFF000000  # no alpha input means no way to be transparent
+        if argb == self._color:
+            # Enter in the Hex box re-commits the text unchanged, and a value
+            # that moved nothing is no edit: announcing it would push an undo
+            # step (and fork a Default palette to Custom) over nothing. The
+            # inputs still re-render, so a typed spelling normalises.
+            self._refresh_inputs()
+            return
         self._color = argb
         self._refresh_inputs()
         self.color_changed.emit(self._color)

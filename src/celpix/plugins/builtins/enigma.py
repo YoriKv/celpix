@@ -58,7 +58,7 @@ from collections import Counter
 
 from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
-from celpix.plugins.builtins._lz import corrupt
+from celpix.plugins.builtins._lz import PaddedBits, Truncated, corrupt
 
 HEADER_SIZE = 6
 CELL_BYTES = 2
@@ -106,47 +106,6 @@ def _flag_bits(mask: int) -> tuple[int, ...]:
     )
 
 
-class _BitReader:
-    """MSB-first, with zero padding past the end so a bounded slice still ends.
-
-    ``consumed`` reproduces what the original unpacker leaves behind: the byte the
-    last real bit came from, rounded up to a word, which is where the next
-    structure starts. The stream is read a *word* at a time by the 68000 routine,
-    so a stream that ends mid-word still owns the rest of it.
-    """
-
-    def __init__(self, data: bytes, pos: int) -> None:
-        self._data = data
-        self._pos = pos
-        self._pad_bits = 0
-        self._acc = 0
-        self._bits = 0
-
-    @property
-    def exhausted(self) -> bool:
-        return self._bits - self._pad_bits <= 0 and self._pos >= len(self._data)
-
-    @property
-    def consumed(self) -> int:
-        real = max(self._bits - self._pad_bits, 0)
-        return (self._pos - real // 8 + 1) & ~1
-
-    def take(self, count: int) -> int:
-        while self._bits < count:
-            if self._pos < len(self._data):
-                self._acc = (self._acc << 8) | self._data[self._pos]
-                self._pos += 1
-            else:
-                self._acc <<= 8
-                self._pad_bits += 8
-            self._bits += 8
-        value = (self._acc >> (self._bits - count)) & ((1 << count) - 1)
-        self._bits -= count
-        self._pad_bits = min(self._pad_bits, self._bits)
-        self._acc &= (1 << self._bits) - 1
-        return value
-
-
 def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]:
     """Unpack a token stream into 16-bit big-endian nametable cells.
 
@@ -166,7 +125,7 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
     filler = int.from_bytes(data[4:HEADER_SIZE], "big")
 
     flag_bits = _flag_bits(mask)
-    reader = _BitReader(data, HEADER_SIZE)
+    reader = PaddedBits(data, HEADER_SIZE)
 
     def stored_cell() -> int:
         cell = 0
@@ -181,28 +140,36 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
     out = bytearray()
     complete = False
     while not reader.exhausted:
-        if not reader.take(1):
-            repeated = reader.take(1)
-            count = reader.take(COUNT_BITS) + 1
-            if repeated:
-                out += filler.to_bytes(CELL_BYTES, "big") * count
-            else:
-                for _ in range(count):
-                    out += (cursor & 0xFFFF).to_bytes(CELL_BYTES, "big")
-                    cursor += 1
-            continue
+        # A token the buffer holds only part of is dropped whole, cells it had
+        # already stored included: what the rest of it would have said is gone,
+        # and zero bits standing in for it spell a token of their own.
+        token_start = len(out)
+        try:
+            if not reader.take(1):
+                repeated = reader.take(1)
+                count = reader.take(COUNT_BITS) + 1
+                if repeated:
+                    out += filler.to_bytes(CELL_BYTES, "big") * count
+                else:
+                    for _ in range(count):
+                        out += (cursor & 0xFFFF).to_bytes(CELL_BYTES, "big")
+                        cursor += 1
+                continue
 
-        mode = reader.take(2)
-        count = reader.take(COUNT_BITS)
-        if mode == MODE_LITERALS:
-            if count == END_COUNT:
-                complete = True
-                break
-            for _ in range(count + 1):
-                out += stored_cell().to_bytes(CELL_BYTES, "big")
-            continue
+            mode = reader.take(2)
+            count = reader.take(COUNT_BITS)
+            if mode == MODE_LITERALS:
+                if count == END_COUNT:
+                    complete = True
+                    break
+                for _ in range(count + 1):
+                    out += stored_cell().to_bytes(CELL_BYTES, "big")
+                continue
 
-        cell = stored_cell()
+            cell = stored_cell()
+        except Truncated:
+            del out[token_start:]
+            break
         step = DELTA[mode]
         for _ in range(count + 1):
             out += (cell & 0xFFFF).to_bytes(CELL_BYTES, "big")
@@ -210,7 +177,11 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
 
     if not complete and not partial:
         raise _fail(f"source ended after {len(out) // CELL_BYTES:,} cells")
-    return bytes(out), reader.consumed, complete
+    # The 68000 routine reads a word at a time, so a stream that ends mid-word
+    # owns the rest of it and the next structure starts on the word after. A
+    # buffer that stops before that byte cannot report it, though: a slice
+    # backfilled from ``consumed`` would claim a byte past the end of the file.
+    return bytes(out), min((reader.consumed + 1) & ~1, len(data)), complete
 
 
 # -- compression ------------------------------------------------------------

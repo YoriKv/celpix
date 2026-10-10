@@ -73,8 +73,12 @@ _DEAD_TRAILER = 512
 FRAMES_ACROSS = 8  # how many frames the sheet opens laid out at, as for an object
 
 
-def _scan(data: bytes) -> tuple[tuple[int, ...], bytes, int]:
-    """``(frame sizes, the records joined up, where the trailer starts)``.
+def _scan(data: bytes) -> tuple[tuple[int, ...], bytes, int, bool]:
+    """``(frame sizes, the records joined up, where the trailer starts, whole)``.
+
+    ``whole`` is False when the file ended before the walk did - a count past
+    the end, or fewer than 32 counts - in which case "where the trailer starts"
+    lies past the end of the file and there is no trailer to preserve.
 
     The whole of reading this format: walk the 32 counts, taking that many records
     after each. Everything else here is preserving what the walk did not reach.
@@ -90,7 +94,7 @@ def _scan(data: bytes) -> tuple[tuple[int, ...], bytes, int]:
     at = 0
     for _ in range(FRAMES):
         if at >= len(data):
-            break
+            return tuple(sizes), bytes(records), at, False
         count = data[at]
         at += 1
         span = data[at : at + count * SPR_RECORD]
@@ -103,8 +107,8 @@ def _scan(data: bytes) -> tuple[tuple[int, ...], bytes, int]:
         sizes.append(whole // SPR_RECORD)
         at += count * SPR_RECORD
         if whole < count * SPR_RECORD:
-            break
-    return tuple(sizes), bytes(records), at
+            return tuple(sizes), bytes(records), at, False
+    return tuple(sizes), bytes(records), at, True
 
 
 def _signature(trailer: bytes) -> str:
@@ -160,7 +164,7 @@ class SprContainer:
     default_tilemap_preset = "format.tilemap.ys-spr"
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
-        sizes, records, trailer_at = _scan(source.data)
+        sizes, records, trailer_at, _whole = _scan(source.data)
         ctx.set(KEY_TILEMAP_COLUMNS, FRAMES_ACROSS)
         ctx.set(KEY_TILEMAP_FRAME_SIZES, sizes)
         # The one animation table in hand that is a *reading* rather than a spec,
@@ -198,12 +202,24 @@ class SprContainer:
         left and is what a file written from nothing would have to be.
 
         Records past what the counts describe join the last frame rather than
-        being dropped, so a save can never quietly lose one.
+        being dropped, so a save can never quietly lose one; a frame that would
+        then need more than a count byte holds is refused instead.
+
+        A destination that ends before its 32 frames do is refused too. The read
+        shows what parsed of such a file, but a write would have to invent the
+        missing counts and the trailer, growing a foreign or damaged ``.spr`` by
+        bytes that were never in it.
         """
         sizes = ctx.get(KEY_TILEMAP_FRAME_SIZES)
-        tail = b""
+        tail = bytes(TRAILER)  # a file written from nothing gets an empty table
         if dest.existing:
-            existing_sizes, _, trailer_at = _scan(dest.existing)
+            existing_sizes, _, trailer_at, whole = _scan(dest.existing)
+            if not whole:
+                raise ValueError(
+                    "this .spr ends before its 32 frame counts do, so it is "
+                    "truncated or not a sprite pattern; saving would pad it with "
+                    "bytes it never had"
+                )
             tail = dest.existing[trailer_at:]
             if not sizes:
                 sizes = existing_sizes
@@ -216,16 +232,21 @@ class SprContainer:
             # longer buffer than the counts account for still round-trips.
             if index == FRAMES - 1:
                 size = max(size, available - at)
-            size = max(0, min(size, available - at, 0xFF))
+            size = max(0, min(size, available - at))
+            if size > 0xFF:
+                raise ValueError(
+                    f"frame {index} would hold {size} subsprites; its count is "
+                    "one byte, so a frame holds at most 255"
+                )
             out.append(size)
             out += data[at * SPR_RECORD : (at + size) * SPR_RECORD]
             at += size
-        return bytes(out) + (tail or bytes(TRAILER))
+        return bytes(out) + tail
 
     def describe(
         self, source: ReadSource, ctx: PipelineContext
     ) -> tuple[ContainerField, ...]:
-        sizes, records, trailer_at = _scan(source.data)
+        sizes, records, trailer_at, _whole = _scan(source.data)
         trailer = source.data[trailer_at:]
         signature = _signature(trailer)
         drawn = sum(1 for size in sizes if size)

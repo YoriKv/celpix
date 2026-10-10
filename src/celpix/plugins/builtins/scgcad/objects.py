@@ -88,6 +88,13 @@ OBZ_TABLE = (OBZ_SEQUENCES, OBZ_SEQUENCE_STEPS)  # the pair both readers take
 # so this is a legible default rather than the file's own answer.
 OBJECT_COLUMNS = 8
 
+# bytes: the object this pathway's records were read out of. A save to a path
+# with no file at it splices into a copy of it rather than into a blank object:
+# the blank's empty build marker reads as big-endian, while the codec encodes by
+# the byte order the read published, so an `F`-build object's attribute words
+# would reopen swapped - and its header and animation table would be lost.
+KEY_OBJ_SOURCE = "scgcad-obj.source"
+
 
 class ObjContainer:
     """Sprite object: subsprite records first, then the header and animation table.
@@ -135,6 +142,7 @@ class ObjContainer:
         ctx.set(KEY_TILEMAP_SUBSPRITES_PER_FRAME, OBJ_SUBSPRITES_PER_FRAME[payload])
         swapped = _obj_swapped(_obj_marker(source.data, payload))
         ctx.set(KEY_TILEMAP_ENDIAN, "little" if swapped else "big")
+        ctx.set(KEY_OBJ_SOURCE, source.data)
         # The animation table, from the tail this container is about to cut away.
         # Read here rather than by the codec because the codec is handed the
         # payload alone and the table is past it — and read at all only because a
@@ -157,8 +165,10 @@ class ObjContainer:
         # them, and a path with no file at it has no form to offer at all. Where
         # the two agree the whole tail is preserved, animation table included —
         # and that covers the `F` build, whose extra 0x20 bytes ride along
-        # untouched because the payload is where they are measured from.
-        existing = dest.existing or _blank_obj()
+        # untouched because the payload is where they are measured from. A path
+        # with no file at it borrows the object the records were read from
+        # (:data:`KEY_OBJ_SOURCE`) before falling back to a blank.
+        existing = dest.existing or _stashed(ctx) or _blank_obj()
         payload = _obj_payload(existing)
         if payload == len(data):
             return splice(existing, 0, data)
@@ -280,6 +290,12 @@ class ObzContainer:
                 "The whole tail is preserved on save, timings included",
             ),
         )
+
+
+def _stashed(ctx: PipelineContext) -> bytes:
+    """The object the read stashed, or ``b""`` when there is none to borrow."""
+    source = ctx.get(KEY_OBJ_SOURCE)
+    return bytes(source) if isinstance(source, (bytes, bytearray)) else b""
 
 
 def _obj_payload(data: bytes) -> int:

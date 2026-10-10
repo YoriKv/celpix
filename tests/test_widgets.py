@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QPointF, Qt
 from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import QApplication, QSpinBox, QToolBar, QToolButton
+from PySide6.QtWidgets import QApplication, QSpinBox, QToolBar, QToolButton, QWidget
 
 from celpix.ui.widgets import ChecklistPopupButton, CommittingLineEdit, ToolBarOverflow
 
@@ -67,6 +67,11 @@ def test_checklist_popup_springs_back_when_owner_clamps(qtbot) -> None:
     assert not button._boxes["b"].isChecked()
     button._boxes["a"].setChecked(False)  # would empty the set -> clamped back
     assert button._boxes["a"].isChecked()
+
+    # Reopening replaces the popup rather than piling another one up.
+    button._open()
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert len([w for w in button.children() if isinstance(w, QWidget)]) == 1
 
 
 def test_zoom_steps_through_its_levels_and_reads_them_back(qtbot) -> None:
@@ -474,3 +479,163 @@ def test_toolbar_overflow_lends_the_cut_off_controls_to_a_popup(qtbot) -> None:
     QApplication.activePopupWidget().close()
     assert bar.actions() == actions  # back, in order
     assert spins[-1].parent() is bar
+
+
+def test_a_save_name_that_gains_its_suffix_asks_before_replacing(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    # The dialog confirmed the typed "game"; the helper writes "game.celpix". When
+    # that one exists, replacing it is a question of its own — and No goes back
+    # to the dialog, where this time the user cancels.
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    from celpix.ui.widgets import ask_save_path
+
+    (tmp_path / "game.celpix").write_bytes(b"{}")
+    typed = iter([str(tmp_path / "game"), ""])
+    monkeypatch.setattr(
+        QFileDialog, "getSaveFileName", staticmethod(lambda *a: (next(typed), ""))
+    )
+    answers = iter([QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes])
+    asked: list[str] = []
+
+    def question(_parent, _title, text, *_rest):
+        asked.append(text)
+        return next(answers)
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(question))
+    args = (None, "Save", "", "celPix project (*.celpix)", ".celpix")
+    assert ask_save_path(*args) is None
+    assert len(asked) == 1
+
+    typed = iter([str(tmp_path / "game")])
+    assert ask_save_path(*args) == str(tmp_path / "game.celpix")
+    typed = iter([str(tmp_path / "fresh")])  # no file there: nothing to ask
+    assert ask_save_path(*args) == str(tmp_path / "fresh.celpix")
+    assert len(asked) == 2
+
+
+def test_a_scaled_screen_draws_every_image_pixel_the_same_physical_width(
+    qtbot,
+) -> None:
+    # At 150% a zoom of 1 is 1.5 physical pixels a pixel, which a nearest-
+    # neighbour blit lands as 2, 1, 2, 1 — the art distorted under the pen. The
+    # zoom is made whole in physical pixels, so every column of a checker comes
+    # out the same width, a pixel-grid line one physical pixel wide, and the
+    # backing past the last tile starts on that tile's physical edge rather
+    # than on the nearest logical pixel, a physical column of art away.
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QImage
+
+    from celpix.core.document import GridMode
+    from celpix.ui.canvas import CANVAS_BACKGROUND, Canvas
+
+    checker = QImage(16, 1, QImage.Format.Format_ARGB32)
+    for x in range(16):
+        checker.setPixel(x, 0, 0xFF000000 if x % 2 else 0xFFFFFFFF)
+    canvas = Canvas()
+    qtbot.addWidget(canvas)
+    canvas.set_tile_size(8, 1)
+    canvas.set_image(checker)
+    canvas._device_ratio = 1.5  # what a 150% screen reports
+
+    def render(zoom: float, grid: bool) -> QImage:
+        canvas.set_zoom(zoom)
+        canvas.set_grid(grid, GridMode.PIXEL)
+        out = QImage(
+            round(canvas.width() * 1.5),
+            round(canvas.height() * 1.5),
+            QImage.Format.Format_ARGB32,
+        )
+        out.setDevicePixelRatio(1.5)
+        out.fill(0)
+        canvas.render(out, QPoint(0, 0))
+        return out
+
+    def widths(zoom: float, grid: bool) -> list[int]:
+        out = render(zoom, grid)
+        runs: list[int] = []
+        for x in range(out.width()):
+            if x and out.pixel(x, 0) == out.pixel(x - 1, 0):
+                runs[-1] += 1
+            else:
+                runs.append(1)
+        return runs[:16]  # the image's; anything after is the widget's rounding
+
+    assert widths(1, False) == [2] * 16
+    assert widths(3, False) == [5] * 16
+    assert widths(3, True) == [5] + [1, 4] * 7 + [1]  # 1-px line, then the pixel
+
+    canvas.set_filled_tiles(1)  # the second tile is past the end
+    out = render(1, False)  # the first tile ends at physical column 8 * 2
+    assert out.pixel(15, 0) != CANVAS_BACKGROUND.rgb()
+    assert out.pixel(16, 0) == CANVAS_BACKGROUND.rgb()
+
+
+def test_a_high_resolution_wheel_zooms_one_level_per_notch(qtbot) -> None:
+    # Such a wheel sends one notch as eight events of 15, and a notch is one
+    # level however many events carry it; turning back starts a fresh count.
+    from PySide6.QtCore import QPoint, Signal
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtWidgets import QWidget
+
+    from celpix.ui.panzoom import PanZoomSurface
+
+    class Surface(PanZoomSurface, QWidget):
+        zoom_requested = Signal(int, object)
+        pan_requested = Signal(int, int)
+
+    surface = Surface()
+    qtbot.addWidget(surface)
+    steps: list[int] = []
+    surface.zoom_requested.connect(lambda n, _pos: steps.append(n))
+
+    def turn(dy: int) -> None:
+        surface._report_zoom(
+            QWheelEvent(
+                QPointF(1, 1),
+                QPointF(1, 1),
+                QPoint(),
+                QPoint(0, dy),
+                Qt.MouseButton.NoButton,
+                Qt.KeyboardModifier.ControlModifier,
+                Qt.ScrollPhase.NoScrollPhase,
+                False,
+            ),
+            QPointF(1, 1),
+        )
+
+    for _ in range(8):
+        turn(15)
+    assert steps == [1]
+    turn(60)  # half a notch on, then back: the half is dropped, not paid back
+    for _ in range(8):
+        turn(-15)
+    assert steps == [1, -1]
+    turn(240)  # an ordinary wheel's double notch is still two levels
+    assert steps == [1, -1, 2]
+
+
+def test_a_click_lands_on_the_pixel_drawn_under_it(qtbot) -> None:
+    # Under a fractional scale (an 8:7 pixel, the 0.5 level) the blit rounds each
+    # pixel's edges, so plain x // z could name the pixel beside the one on
+    # screen. Every column of a row has to resolve to the pixel whose drawn
+    # rectangle holds it — the rectangle the pen preview outlines.
+    from PySide6.QtWidgets import QWidget
+
+    from celpix.ui.panzoom import PanZoomSurface
+
+    class Surface(PanZoomSurface, QWidget):
+        pass
+
+    surface = Surface()
+    qtbot.addWidget(surface)
+    surface._device_ratio = 1.0
+    for zoom, aspect in ((1, (3, 2)), (4, (8, 7)), (0.5, (8, 7)), (3, (7, 8))):
+        surface._zoom = zoom
+        surface.set_pixel_aspect(aspect)
+        for x in range(60):
+            for inside in (0.0, 0.75):  # anywhere in the screen pixel
+                hit = surface._image_pixel(QPointF(x + inside, 0))[0]
+                rect = surface._scaled_rect(hit, 0, 1, 1)
+                assert rect.left() <= x < rect.right() + 1, (zoom, aspect, x)

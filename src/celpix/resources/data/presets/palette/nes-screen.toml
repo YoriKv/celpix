@@ -15,6 +15,8 @@ engine_id = "codec.palette.indexed"
 category = "Nintendo"
 
 [params]
+# A black edit writes $0F, not $0D - see nes-indexed.
+prefer = [0x0F]
 shared_every = 4
 colors = [
   0x5D5D5D, 0x00218E, 0x120BAF, 0x3900A6,

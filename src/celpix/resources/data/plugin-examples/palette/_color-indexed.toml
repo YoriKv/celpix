@@ -10,15 +10,16 @@
 #   Decode: table lookup. A byte past the end of the table decodes to the
 #   missing-color sentinel. Every color decodes opaque.
 #   Encode: the nearest table entry by Manhattan distance in RGB; ties go to the
-#   lowest index. A color not in the table is quantized to it, and a byte
-#   naming a duplicate color is rewritten as that color's first index.
+#   first `prefer` entry among them, else the lowest index. A color not in the
+#   table is quantized to it, and a byte naming a duplicate color is rewritten
+#   as the index a tie resolves to.
 #
 #   To load the table from a file instead, see _nes-custom.py.
 #
 # SHIPPED PRESETS ON THIS ENGINE
 #   ega-indexed   16 colors.
-#   msx-indexed   16 colors.
-#   nes-indexed   the 64-entry NES master palette.
+#   msx-indexed   16 colors; prefer = [1], black that is not transparent.
+#   nes-indexed   the 64-entry NES master palette; prefer = [0x0F], not $0D.
 #   nes-screen    the same table with shared_every = 4.
 
 id = "preset.palette.example-color-indexed"
@@ -37,3 +38,7 @@ colors = [
 # Every Nth entry shows entry 0's color, and an edit to one edits entry 0.
 # Default 0 (off). The NES backdrop occupies the first slot of every 4-entry row.
 # shared_every = 4
+
+# Indices a tie resolves to, first listed first, where the table holds one
+# color more than once and the copies are not interchangeable. Default none.
+# prefer = [0x0F]

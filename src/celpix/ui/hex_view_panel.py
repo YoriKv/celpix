@@ -807,12 +807,14 @@ class HexViewPanel(QWidget):
             return
         # Search on from the current match rather than from where the dump is
         # scrolled, so repeated Enter walks the matches instead of finding the
-        # same one each time.
+        # same one each time. Backwards, ``find_bytes`` already answers the last
+        # match *strictly before* ``start``, so the match's own offset is the
+        # start — one less would skip a match beginning right before it.
         found = self._view.selection()
         if found is None:
             start = len(self._view.data) if backwards else 0
         else:
-            start = found[0] - 1 if backwards else found[0] + 1
+            start = found[0] if backwards else found[0] + 1
         hit = find_bytes(self._view.data, needle, start, backwards)
         if hit is None:
             self._status.setText("Not found")

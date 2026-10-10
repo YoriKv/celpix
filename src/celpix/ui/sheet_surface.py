@@ -13,6 +13,8 @@ which stays each panel's own.
 
 from __future__ import annotations
 
+import math
+
 from PySide6.QtCore import QRect, Qt
 from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtWidgets import QWidget
@@ -83,6 +85,14 @@ class SheetSurface(PanZoomSurface, QWidget):
             (slot % self._columns) * cw, (slot // self._columns) * ch, cw, ch
         )
 
+    def _device_cell_rect(self, slot: int) -> QRect:
+        """:meth:`_cell_rect` in physical pixels, for a ring drawn on the
+        square's edges (:meth:`~celpix.ui.panzoom.PanZoomSurface._device_rect`)."""
+        cw, ch = self._cell_px
+        return self._device_rect(
+            (slot % self._columns) * cw, (slot // self._columns) * ch, cw, ch
+        )
+
     def _exposed_slots(self, exposed: QRect) -> range:
         """The squares ``exposed`` covers — whole rows of the sheet.
 
@@ -130,6 +140,10 @@ class SheetSurface(PanZoomSurface, QWidget):
         which is what keeps the lines on the square boundaries under a
         non-square pixel: the device step is fractional there, and stepping by a
         rounded one would drift a pixel further from the art every few squares.
+
+        **Drawn in physical pixels**, as the canvas's grid is: on a screen scaled
+        to 125% or 150% the squares' edges fall between logical pixels, so a line
+        placed in logical ones runs a physical pixel off the boundary it rules.
         """
         step_x = self._cell_px[0] * step_cells
         step_y = self._cell_px[1] * step_cells
@@ -139,15 +153,21 @@ class SheetSurface(PanZoomSurface, QWidget):
         img_h = self._rows() * self._cell_px[1]
         ink = QColor(color)
         ink.setAlpha(GRID_COARSE_ALPHA)
-        painter.setPen(ink)
-        for gx in range(step_x, img_w, step_x):
-            x = round(gx * self._zoom_x)
-            if exposed.left() <= x <= exposed.right():
-                painter.drawLine(x, exposed.top(), x, exposed.bottom())
-        for gy in range(step_y, img_h, step_y):
-            y = round(gy * self._zoom_y)
-            if exposed.top() <= y <= exposed.bottom():
-                painter.drawLine(exposed.left(), y, exposed.right(), y)
+        px, py = self._physical_zoom()
+        area = self._device_area(exposed)
+        top, bottom = area.top(), area.bottom()
+        left, right = area.left(), area.right()
+        with self._device_pixels(painter):
+            painter.setPen(ink)
+            # Half up, as the blit rounds the art's own edges.
+            for gx in range(step_x, img_w, step_x):
+                x = math.floor(gx * px + 0.5)
+                if left <= x <= right:
+                    painter.drawLine(x, top, x, bottom)
+            for gy in range(step_y, img_h, step_y):
+                y = math.floor(gy * py + 0.5)
+                if top <= y <= bottom:
+                    painter.drawLine(left, y, right, y)
 
     def _caption_height(
         self, painter: QPainter, height_share: int, width_share: int

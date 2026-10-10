@@ -45,10 +45,11 @@ rectangle is being chosen.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from enum import Enum
 
-from PySide6.QtCore import QPoint, QPointF, QRect, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QRegion
 from PySide6.QtWidgets import QWidget
 
@@ -95,10 +96,10 @@ GRID_COARSE_ALPHA = 255
 # the art rather than a lattice. This is what retires a level, in place of a hard
 # zoom cutoff: a level *fades* out as its cells shrink and simply stops.
 GRID_MIN_ALPHA = 8
-# Below this many device pixels a cell has no room for a digit, and a number
+# Below this many logical pixels a cell has no room for a digit, and a number
 # spilling across its neighbours would say less than nothing.
 _ROW_LABEL_MIN = 12
-# Auto-opacity. A level whose cells are smaller than this many device pixels is
+# Auto-opacity. A level whose cells are smaller than this many logical pixels is
 # drawn proportionally fainter, so a dense lattice tints the art instead of
 # burying it and thins away smoothly as the view zooms out — no popping.
 GRID_FADE_PX = 32
@@ -115,17 +116,19 @@ GRID_COARSE_TILES = 8
 PREVIEW_OUTLINE_COLOR = QColor(0xFF, 0xFF, 0xFF, 0xC0)
 
 
-def _preview_outline(painter: QPainter, rect: QRect) -> None:
+def _preview_outline(painter: QPainter, rect: QRect, width: int = 1) -> None:
     """The thin contrasting ring round a preview of what a press would write.
 
     A preview can be indistinguishable from what is already there — the pen's
     colour on a pixel of that colour, a stamp over the same tiles — so the ring
     is what keeps the target visible either way. ``rect.adjusted``: a 1px pen
-    straddles the path, so it is inset to stay inside.
+    straddles the path, so it is inset to stay inside. ``width`` rings deep, for
+    a painter drawing in physical pixels on a scaled screen.
     """
     painter.setPen(QPen(PREVIEW_OUTLINE_COLOR, 1))
     painter.setBrush(Qt.BrushStyle.NoBrush)
-    painter.drawRect(rect.adjusted(0, 0, -1, -1))
+    for step in range(width):
+        painter.drawRect(rect.adjusted(step, step, -1 - step, -1 - step))
 
 
 # Where a rearrange drag would land. Opaque and thicker than the grid, because
@@ -145,7 +148,7 @@ DROP_TARGET_WIDTH = 2
 # the picture does.
 LINE_END_COLOR = QColor(0xFF, 0xA5, 0x28)
 LINE_END_WIDTH = 2
-# Below this many device pixels across, a cell has no room for a bar that is not
+# Below this many logical pixels across, a cell has no room for a bar that is not
 # most of it. The marker thins to a hairline rather than disappearing: the line
 # structure is still the thing being read at that size.
 LINE_END_MIN_CELL = 8
@@ -162,7 +165,7 @@ ATTR_BADGE_FRAME = QColor(0x20, 0x20, 0x20)
 # Bits of one slot's entry in the set_cell_attrs list.
 ATTR_PRIORITY_BIT = 1
 ATTR_FLAGS_BIT = 2
-# Below this many device pixels across a cell, a badge would be most of the
+# Below this many logical pixels across a cell, a badge would be most of the
 # tile it annotates; the overlay skips whole rather than shrinking to noise —
 # Show Tile IDs' fits-or-skip rule.
 ATTR_BADGE_MIN_CELL = 12
@@ -304,28 +307,31 @@ class Canvas(PanZoomSurface, QWidget):
     # ``stamp_pressed`` — which one it was is only knowable on release, so the
     # pick reports there rather than on the press.
     stamp_area_picked = Signal(int, int)  # anchor slot, far slot
-    # A space-drag pan step, in device pixels: how far to shift the view. The
+    # A space-drag pan step, in logical pixels: how far to shift the view. The
     # window feeds it to the scroll bars, which clamp it so the image can't be
     # dragged off screen. Emitted in either edit mode.
     pan_requested = Signal(int, int)  # dx, dy
-    # A wheel-zoom request: a signed zoom step and the cursor's device position on
+    # A wheel-zoom request: a signed zoom step and the cursor's position on
     # the canvas. The window steps the zoom control and re-anchors the view so the
     # pixel under the cursor stays put. Emitted in either edit mode.
-    zoom_requested = Signal(int, object)  # steps, QPointF cursor pos (device)
+    zoom_requested = Signal(int, object)  # steps, QPointF cursor pos (widget)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._image = QImage()
-        # Device pixels per image pixel. A float only because of the one
-        # reducing level (:data:`~celpix.ui.widgets.ZOOM_LEVELS`); every geometry
-        # built from it is rounded to whole device pixels at the point of use, so
-        # nothing downstream carries a fraction.
+        # The Zoom level: screen pixels per image pixel. A float only because of
+        # the one reducing level (:data:`~celpix.ui.widgets.ZOOM_LEVELS`).
         #
-        # Nothing below reads it directly: what reaches the screen is this times
-        # the pixel aspect, per axis, and :attr:`~celpix.ui.widgets.
-        # PanZoomSurface._zoom_x` is where the two meet. They are equal on a
-        # square pixel, which is what leaves an ordinary view drawing as it did.
+        # Nothing below reads it directly: what reaches the screen is this made
+        # whole in physical pixels and times the pixel aspect, per axis, and
+        # :attr:`~celpix.ui.widgets.PanZoomSurface._zoom_x` is where they meet —
+        # in logical pixels, which every geometry built from it is rounded to at
+        # the point of use. Equal to this on a square pixel and an unscaled
+        # screen, which is what leaves an ordinary view drawing as it did.
         self._zoom: float = 4.0
+        # The backing region and what it was derived from (:meth:`_background_region`).
+        # Physical pixels, like everything drawn on the art's edges.
+        self._background_memo: tuple[object, QRegion | None] | None = None
         self._show_grid = False
         self._grid_mode = GridMode.TILE
         self._block_grid = False
@@ -831,9 +837,9 @@ class Canvas(PanZoomSurface, QWidget):
         """
         if self._image.isNull():
             return None
-        # Floor division, not int(): a position just outside the top-left has to
-        # come out negative so the caller can reject it (or clamp it), where
-        # truncation would report pixel 0 and paint on the edge column.
+        # Negative just outside the top-left (``_image_pixel`` does not
+        # truncate toward 0), so the caller can reject or clamp it rather than
+        # paint on the edge column.
         px, py = self._image_pixel(pos)
         if clamp:
             px = max(0, min(px, self._image.width() - 1))
@@ -1219,17 +1225,18 @@ class Canvas(PanZoomSurface, QWidget):
         self.update()
 
     def _slot_rect(self, tile_x: int, tile_y: int) -> QRect:
-        """The device-coord rect of one canvas slot."""
+        """The widget-coord rect of one canvas slot."""
         return self._cell_rect(tile_x, tile_y, 1, 1)
 
     def _cell_rect(self, tile_x: int, tile_y: int, across: int, down: int) -> QRect:
-        """The device-coord rect of ``across`` x ``down`` slots at ``tile_x/y``.
+        """The widget-coord rect of ``across`` x ``down`` slots at ``tile_x/y``.
 
         The one place a run of slots becomes a rectangle, so a wide run is scaled
         from its own far edge rather than from a scaled single cell multiplied up
-        — under a fractional aspect the second drifts a device pixel every few
+        — under a fractional aspect the second drifts a pixel every few
         cells, and the labels, the backing and the line-end marks would each drift
-        differently.
+        differently. Logical pixels, for hit-testing and repaint rectangles;
+        what is *drawn* on a cell's edges is placed by :meth:`_device_cell_rect`.
         """
         return self._scaled_rect(
             tile_x * self._tile_w,
@@ -1238,17 +1245,69 @@ class Canvas(PanZoomSurface, QWidget):
             down * self._tile_h,
         )
 
+    def _device_cell_rect(
+        self, tile_x: int, tile_y: int, across: int, down: int
+    ) -> QRect:
+        """:meth:`_cell_rect` in physical pixels — on the art's own edges at any
+        screen scale (:meth:`~celpix.ui.panzoom.PanZoomSurface._device_rect`)."""
+        return self._device_rect(
+            tile_x * self._tile_w,
+            tile_y * self._tile_h,
+            across * self._tile_w,
+            down * self._tile_h,
+        )
+
+    def _logical_rect(self, device: QRect) -> QRectF:
+        """A physical-pixel rectangle back in the logical pixels text is laid
+        out in: a label drawn there sits on its cell's real edges, at the font
+        size it would have anywhere else."""
+        ratio = self._ratio()
+        return QRectF(
+            device.x() / ratio,
+            device.y() / ratio,
+            device.width() / ratio,
+            device.height() / ratio,
+        )
+
     def _background_region(self) -> QRegion | None:
-        """Device-coord region of cells that are backing, not data, or None.
+        """Region of cells that are backing, not data, in physical pixels — or
+        None.
 
         Cells past the filled tile count (a partial last window) — and, under a
         block layout, any block-grid gap cell that holds no tile — are painted as
         the neutral surround so nothing implies a tile is there. Plain row-major
         keeps the fast path: the padding is one contiguous tail of the last data
         row (tiles are a linear stream).
+
+        Physical pixels because the art's edges are: on a scaled screen a region
+        rounded to logical pixels starts up to a physical pixel off the last tile,
+        and either hides a column of it or shows one inside the backing.
+
+        **Kept until what it is derived from moves.** Every paint asks, and under
+        a block layout the answer walks every cell of the window — milliseconds
+        on a large map, paid again by each hover repaint of a pen preview. The
+        key is the whole of the input, so no setter has to remember to drop it.
         """
         if self._filled_tiles is None or self._image.isNull():
             return None
+        key = (
+            self._filled_tiles,
+            self._image.width(),
+            self._image.height(),
+            self._tile_w,
+            self._tile_h,
+            self._block_cols,
+            self._block_rows,
+            self._block_order,
+            self._physical_zoom(),
+        )
+        memo = self._background_memo
+        if memo is None or memo[0] != key:
+            memo = self._background_memo = (key, self._derive_background_region())
+        return memo[1]
+
+    def _derive_background_region(self) -> QRegion | None:
+        """:meth:`_background_region`, worked out from scratch."""
         layout = self._layout()
         cols, rows = self._columns(), self._rows()
         if layout.is_plain:
@@ -1256,7 +1315,7 @@ class Canvas(PanZoomSurface, QWidget):
             row = self._filled_tiles // cols
             if remainder == 0 or row >= rows:
                 return None
-            return QRegion(self._cell_rect(remainder, row, cols - remainder, 1))
+            return QRegion(self._device_cell_rect(remainder, row, cols - remainder, 1))
         # Backing cells are unioned a horizontal *run* at a time rather than one
         # by one: a region union costs the same for a wide rect as a narrow one,
         # and a window can hold thousands of cells.
@@ -1272,7 +1331,7 @@ class Canvas(PanZoomSurface, QWidget):
                         start = tile_x
                     continue
                 if start is not None:
-                    run = self._cell_rect(start, tile_y, tile_x - start, 1)
+                    run = self._device_cell_rect(start, tile_y, tile_x - start, 1)
                     region = region.united(QRegion(run))
                     start = None
         return region if not region.isEmpty() else None
@@ -1289,11 +1348,6 @@ class Canvas(PanZoomSurface, QWidget):
         # Nearest-neighbour: pixels must stay crisp when magnified.
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
         zx, zy = self._zoom_x, self._zoom_y
-        # Past-end slots in a partial last row are backing, not data: fill them
-        # with the neutral color and clip them out of the image/grid draw so
-        # nothing (not even a grid line) suggests a tile is there. Clip is set
-        # under the identity transform, so it stays in device coordinates while
-        # the scale below only affects what's drawn.
         # Laid down under everything, so a transparent pixel has something
         # defined behind it rather than whatever the widget was last painted
         # with. The image is opaque unless Transparent 0 is on, and then the
@@ -1301,14 +1355,28 @@ class Canvas(PanZoomSurface, QWidget):
         # past-end slot gets, which is already this canvas's way of saying
         # nothing is here.
         painter.fillRect(exposed, CANVAS_BACKGROUND)
+        # Past-end slots in a partial last row are backing, not data: clip them
+        # out of everything drawn below so nothing (not even a grid line)
+        # suggests a tile is there. The region is in physical pixels, so it is
+        # set with the screen's scale undone; a clip is held in device pixels
+        # once set, so it stays put under the scale the art is drawn with.
         background = self._background_region()
         if background is not None:
-            painter.setClipRegion(QRegion(self.rect()).subtracted(background))
+            ratio = self._ratio()
+            whole = QRect(
+                0,
+                0,
+                math.ceil(self.width() * ratio),
+                math.ceil(self.height() * ratio),
+            )
+            painter.scale(1 / ratio, 1 / ratio)
+            painter.setClipRegion(QRegion(whole).subtracted(background))
+            painter.resetTransform()
         painter.scale(zx, zy)
         painter.drawImage(0, 0, self._image)
 
         painter.resetTransform()
-        # The grid is a viewing aid, not part of the art: drawn in device pixels
+        # The grid is a viewing aid, not part of the art: drawn in screen pixels
         # (after resetTransform) so its lines stay 1px crisp at any zoom, and only
         # once a tile is at least 2px *each way* so it never swamps the pixels
         # themselves. The narrower axis decides, since it is the one that would be
@@ -1352,38 +1420,47 @@ class Canvas(PanZoomSurface, QWidget):
         is selected — which is as true while its pixels are being edited as while
         they are being looked at.
         """
+        with self._device_pixels(painter):
+            self._paint_device_overlays(painter, self._device_area(exposed))
+
+    def _paint_device_overlays(self, painter: QPainter, area: QRect) -> None:
+        """:meth:`_paint_overlays` in physical pixels, ``area`` the exposed band
+        — each mark on the art's own edges at any screen scale."""
+        ring = self._device_width(1)
         if self._pick_outline is not None:
             paint_selection_outline(
                 painter,
-                self._scaled_rect(*self._pick_outline.getRect()),
+                self._device_rect(*self._pick_outline.getRect()),
                 color=GRID_STRUCTURE_COLOR,
+                width=ring,
             )
         if self._stamping:
-            self._paint_stamp_pick(painter)
-            self._paint_stamp_preview(painter)
+            self._paint_stamp_pick(painter, ring)
+            self._paint_stamp_preview(painter, ring)
             return
         pixel_mode = self._edit_mode is EditMode.PIXEL
         if not (pixel_mode or self._rearranging):
             return
         if self._rearranging:
-            self._paint_drop_target(painter, exposed)
+            self._paint_drop_target(painter, area)
         if self._float_image is not None:
             fx, fy = self._float_pos
-            rect = self._scaled_rect(
+            rect = self._device_rect(
                 fx, fy, self._float_image.width(), self._float_image.height()
             )
             painter.drawImage(rect, self._float_image)
-            paint_selection_outline(painter, rect)
+            paint_selection_outline(painter, rect, width=ring)
         if not pixel_mode:
             return
         if self._marquee is not None and not self._marquee.isNull():
             paint_selection_outline(
-                painter, self._scaled_rect(*self._marquee.getRect())
+                painter, self._device_rect(*self._marquee.getRect()), width=ring
             )
-        self._paint_pen_preview(painter)
+        self._paint_pen_preview(painter, ring)
 
-    def _paint_drop_target(self, painter: QPainter, exposed: QRect) -> None:
-        """Outline the cells a rearrange drag would land on.
+    def _paint_drop_target(self, painter: QPainter, area: QRect) -> None:
+        """Outline the cells a rearrange drag would land on (physical pixels,
+        ``area`` the exposed band).
 
         Under the float, so the tile being carried stays readable over its
         destination. The invalid color is the only place the canvas says *no* to
@@ -1394,24 +1471,24 @@ class Canvas(PanZoomSurface, QWidget):
             return
         layout = self._layout()
         color = DROP_TARGET_COLOR if self._drop_valid else DROP_REFUSED_COLOR
-        pen = QPen(color)
-        pen.setWidth(DROP_TARGET_WIDTH)
-        painter.setPen(pen)
+        width = self._device_width(DROP_TARGET_WIDTH)
+        painter.setPen(QPen(color, 1))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         cols, rows = self._columns(), self._rows()
         for slot in self._drop_slots:
             tile_x, tile_y = layout.slot_to_pos(slot)
             if 0 <= tile_x < cols and 0 <= tile_y < rows:
-                # A pen straddles the path, so inset by half its width to keep
-                # the whole outline inside the cell it marks.
-                inset = DROP_TARGET_WIDTH // 2
-                rect = self._slot_rect(tile_x, tile_y).adjusted(
-                    inset, inset, -inset - 1, -inset - 1
-                )
-                if rect.intersects(exposed):
-                    painter.drawRect(rect)
+                cell = self._device_cell_rect(tile_x, tile_y, 1, 1)
+                if not cell.intersects(area):
+                    continue
+                # One-pixel rings stacked inward rather than one wide pen: a
+                # wide aliased pen straddles its path by a rounding that differs
+                # between odd and even widths, and the band has to stay inside
+                # the cell it marks.
+                for step in range(width):
+                    painter.drawRect(cell.adjusted(step, step, -1 - step, -1 - step))
 
-    def _paint_pen_preview(self, painter: QPainter) -> None:
+    def _paint_pen_preview(self, painter: QPainter, ring: int) -> None:
         """Tint the pixel the pen is aimed at, in the colour it would write.
 
         Drawn last so it sits above the art and the selection overlays, and while
@@ -1422,15 +1499,15 @@ class Canvas(PanZoomSurface, QWidget):
         if self._preview_color is None or self._hover_pixel is None or self._panning:
             return
         x, y = self._hover_pixel
-        rect = self._scaled_rect(x, y, 1, 1)
-        # At the reducing level a pixel is half a device pixel; the preview still
+        rect = self._device_rect(x, y, 1, 1)
+        # At the reducing level a pixel is half a screen pixel; the preview still
         # has to mark *something*, so neither side shrinks below one.
         rect.setWidth(max(1, rect.width()))
         rect.setHeight(max(1, rect.height()))
         painter.fillRect(rect, self._preview_color)
-        _preview_outline(painter, rect)
+        _preview_outline(painter, rect, ring)
 
-    def _paint_stamp_preview(self, painter: QPainter) -> None:
+    def _paint_stamp_preview(self, painter: QPainter, ring: int) -> None:
         """The held tiles over the cell they would land on — the pen preview at
         cell scale.
 
@@ -1454,16 +1531,16 @@ class Canvas(PanZoomSurface, QWidget):
         unit_w, unit_h = self._stamp_unit_tiles()
         cell_w = self._tile_w * unit_w
         cell_h = self._tile_h * unit_h
-        rect = self._scaled_rect(
+        rect = self._device_rect(
             x // cell_w * cell_w,
             y // cell_h * cell_h,
             self._stamp_preview.width(),
             self._stamp_preview.height(),
         )
         painter.drawImage(rect, self._stamp_preview)
-        _preview_outline(painter, rect)
+        _preview_outline(painter, rect, ring)
 
-    def _paint_stamp_pick(self, painter: QPainter) -> None:
+    def _paint_stamp_pick(self, painter: QPainter, ring: int) -> None:
         """Outline the cells a right drag has swept so far.
 
         The selection outline's own language, because that is what the gesture
@@ -1482,10 +1559,10 @@ class Canvas(PanZoomSurface, QWidget):
         x0, x1 = min(ax, bx), max(ax, bx)
         y0, y1 = min(ay, by), max(ay, by)
         across, down = self._stamp_unit_tiles()
-        rect = self._cell_rect(
+        rect = self._device_cell_rect(
             x0 * across, y0 * down, (x1 - x0 + 1) * across, (y1 - y0 + 1) * down
         )
-        paint_selection_outline(painter, rect)
+        paint_selection_outline(painter, rect, width=ring)
 
     def _grid_levels(
         self, zx: float, zy: float
@@ -1560,7 +1637,7 @@ class Canvas(PanZoomSurface, QWidget):
     def _draw_grid(
         self, painter: QPainter, zx: float, zy: float, exposed: QRect
     ) -> None:
-        """Draw the two-level grid in the current style (device coords).
+        """Draw the two-level grid in the current style.
 
         POINT dots the finest level's corners in the fine color; the line
         styles draw the fine grid (grey) with the structural one (blue) laid over
@@ -1570,11 +1647,37 @@ class Canvas(PanZoomSurface, QWidget):
         cell (:data:`GRID_PATTERN_MAX`) — falling back to stroking the lines when
         the cell is too big to be worth holding, which is also when there are few
         enough of them for it not to matter.
+
+        **Drawn in physical pixels.** The art lands each image pixel on a whole
+        number of physical pixels (:meth:`~celpix.ui.panzoom.PanZoomSurface.
+        _physical_zoom`), which on a screen scaled to 125% or 150% is not a whole
+        number of logical ones — a lattice placed in logical pixels would fall
+        between the art's edges, and a one-wide line would land one or two
+        physical pixels wide by where it fell. Undoing the screen's scale puts
+        every position and every line width below in physical pixels. ``zx`` and
+        ``zy`` stay logical: they say how big a cell *looks*, which is what the
+        levels fade on.
         """
         levels = self._grid_levels(zx, zy)
         if not levels:
             return
-        pattern = self._grid_pattern_for(zx, zy)
+        px, py = self._physical_zoom()
+        with self._device_pixels(painter):
+            self._draw_physical_grid(
+                painter, px, py, self._device_area(exposed), levels
+            )
+
+    def _draw_physical_grid(
+        self,
+        painter: QPainter,
+        zx: float,
+        zy: float,
+        exposed: QRect,
+        levels: list[tuple[tuple[int, int], QColor]],
+    ) -> None:
+        """:meth:`_draw_grid` with everything in physical pixels: ``zx``/``zy``
+        image pixels to physical, ``exposed`` the band to cover."""
+        pattern = self._grid_pattern_for(zx, zy, levels)
         if pattern is not None:
             self._tile_grid(painter, pattern, exposed)
             return
@@ -1590,11 +1693,11 @@ class Canvas(PanZoomSurface, QWidget):
             # them from — and one pixel of a faded color is nothing at all.
             painter.setPen(_tinted(GRID_FINE_COLOR, GRID_COARSE_ALPHA))
             for gx in range(step_x, img_w, step_x):
-                at_x = round(gx * zx)
+                at_x = math.floor(gx * zx + 0.5)
                 if not left <= at_x <= right:
                     continue
                 for gy in range(step_y, img_h, step_y):
-                    at_y = round(gy * zy)
+                    at_y = math.floor(gy * zy + 0.5)
                     if top <= at_y <= bottom:
                         painter.drawPoint(at_x, at_y)
             return
@@ -1604,12 +1707,13 @@ class Canvas(PanZoomSurface, QWidget):
             pen = QPen(color)
             pen.setStyle(pen_style)
             painter.setPen(pen)
+            # Half up, as the blit rounds the art's own pixel edges.
             for gx in range(step_x, img_w, step_x):
-                at_x = round(gx * zx)
+                at_x = math.floor(gx * zx + 0.5)
                 if left <= at_x <= right:
                     painter.drawLine(at_x, top, at_x, bottom)
             for gy in range(step_y, img_h, step_y):
-                at_y = round(gy * zy)
+                at_y = math.floor(gy * zy + 0.5)
                 if top <= at_y <= bottom:
                     painter.drawLine(left, at_y, right, at_y)
 
@@ -1626,8 +1730,14 @@ class Canvas(PanZoomSurface, QWidget):
         """
         cell = pattern.pixmap
         width, height = cell.width(), cell.height()
+        # The art's own extent rather than the widget's: on a scaled screen the
+        # widget is rounded up to whole logical pixels and can run a physical
+        # pixel past the last image pixel.
+        px, py = self._physical_zoom()
+        span_w = math.floor(self._image.width() * px + 0.5)
+        span_h = math.floor(self._image.height() * py + 0.5)
         target = exposed.intersected(
-            QRect(1, 1, max(0, self.width() - 1), max(0, self.height() - 1))
+            QRect(1, 1, max(0, span_w - 1), max(0, span_h - 1))
         )
         if not target.isEmpty():
             painter.drawTiledPixmap(
@@ -1642,8 +1752,13 @@ class Canvas(PanZoomSurface, QWidget):
             strip.setBottom(exposed.bottom())
             painter.drawTiledPixmap(strip, pattern.left, QPoint(0, strip.y() % height))
 
-    def _grid_pattern_for(self, zx: float, zy: float) -> _GridPattern | None:
+    def _grid_pattern_for(
+        self, zx: float, zy: float, levels: list[tuple[tuple[int, int], QColor]]
+    ) -> _GridPattern | None:
         """The cached lattice cell for the current style/scale/mode/steps.
+
+        ``zx``/``zy`` are image pixels to *physical* pixels (:meth:`_draw_grid`),
+        so the cell is built pixel for pixel at the screen's own resolution.
 
         ``None`` when one period is larger than :data:`GRID_PATTERN_MAX` a side,
         which sends :meth:`_draw_grid` down the line-stroking path instead — the
@@ -1651,12 +1766,11 @@ class Canvas(PanZoomSurface, QWidget):
 
         And ``None`` for a **fractional** scale, which only a non-square pixel
         whose sides are not multiples of each other produces (8:7 and its like).
-        A repeating cell can only express a lattice with a whole-device-pixel
-        period; there the lines land on an uneven grid, one rounded position at a
-        time, and there is no cell to repeat. The stroking path draws exactly that
-        and is what the fall-through reaches.
+        A repeating cell can only express a lattice with a whole-pixel period;
+        there the lines land on an uneven grid, one rounded position at a time,
+        and there is no cell to repeat. The stroking path draws exactly that and
+        is what the fall-through reaches.
         """
-        levels = self._grid_levels(zx, zy)
         if not levels:
             return None
         if zx != int(zx) or zy != int(zy):
@@ -1752,7 +1866,8 @@ class Canvas(PanZoomSurface, QWidget):
         *,
         keep: Callable[[object], bool] = lambda value: value is not None,
     ) -> Iterator[tuple[int, object, QRect]]:
-        """``(slot, value, rect)`` for each labelled cell ``exposed`` touches.
+        """``(slot, value, rect)`` for each labelled cell ``exposed`` touches,
+        ``rect`` in physical pixels (:meth:`_device_cell_rect`).
 
         The walk every per-cell overlay shares: ``values`` is per slot, a cell
         is ``across`` x ``down`` slots, and ``keep`` says which values are worth
@@ -1769,6 +1884,7 @@ class Canvas(PanZoomSurface, QWidget):
         band = self._exposed_slots(exposed)
         left, right = self._exposed_columns(exposed, self._tile_w)
         left, right = max(0, left - across), min(cols, right)
+        area = self._device_area(exposed)
         for slot in range(band.start, min(band.stop, len(values))):
             value = values[slot]
             if not keep(value):
@@ -1776,8 +1892,8 @@ class Canvas(PanZoomSurface, QWidget):
             tile_x, tile_y = layout.slot_to_pos(slot)
             if not (left <= tile_x < right and 0 <= tile_y < canvas_rows):
                 continue
-            rect = self._cell_rect(tile_x, tile_y, across, down)
-            if exposed.intersects(rect):
+            rect = self._device_cell_rect(tile_x, tile_y, across, down)
+            if area.intersects(rect):
                 yield slot, value, rect
 
     @staticmethod
@@ -1821,7 +1937,7 @@ class Canvas(PanZoomSurface, QWidget):
         # ``row`` 0 named is still a row; only a slot naming none is skipped.
         for _slot, row, rect in self._exposed_cells(exposed, rows, 1, 1):
             painter.drawText(
-                rect.adjusted(1, 0, 0, 0),
+                self._logical_rect(rect).adjusted(1, 0, 0, 0),
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom,
                 str(row),
             )
@@ -1860,7 +1976,7 @@ class Canvas(PanZoomSurface, QWidget):
             return
         for _slot, value, rect in self._exposed_cells(exposed, ids, across, down):
             painter.drawText(
-                rect.adjusted(1, 0, 0, 0),
+                self._logical_rect(rect).adjusted(1, 0, 0, 0),
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
                 _tile_id_text(value),
             )
@@ -1889,22 +2005,26 @@ class Canvas(PanZoomSurface, QWidget):
         if min(cell_w, cell_h) < ATTR_BADGE_MIN_CELL:
             return
         side = max(4, min(int(cell_h // 4), 10))
-        # A mask of 0 is no attribute set, so nothing to badge.
-        for _slot, mask, cell in self._exposed_cells(
-            exposed, marks, across, down, keep=bool
-        ):
-            corner_x = cell.right() - side
-            if mask & ATTR_PRIORITY_BIT:
-                badge = QRect(corner_x, cell.y() + 1, side, side)
-                painter.fillRect(badge, ATTR_PRIORITY_COLOR)
-                painter.setPen(ATTR_BADGE_FRAME)
-                painter.drawRect(badge)
-            if mask & ATTR_FLAGS_BIT:
-                badge = QRect(corner_x, cell.bottom() - side, side, side)
-                painter.setPen(ATTR_BADGE_FRAME)
-                painter.drawRect(badge)
-                painter.setPen(ATTR_FLAGS_COLOR)
-                painter.drawRect(badge.adjusted(1, 1, -1, -1))
+        cells = self._exposed_cells(exposed, marks, across, down, keep=bool)
+        with self._device_pixels(painter):
+            # Sized in physical pixels, so a badge keeps its size on a scaled
+            # screen while its corner sits on the cell's real one.
+            side = self._device_width(side)
+            inset = self._device_width(1)
+            # A mask of 0 is no attribute set, so nothing to badge.
+            for _slot, mask, cell in cells:
+                corner_x = cell.right() - side
+                if mask & ATTR_PRIORITY_BIT:
+                    badge = QRect(corner_x, cell.y() + inset, side, side)
+                    painter.fillRect(badge, ATTR_PRIORITY_COLOR)
+                    painter.setPen(ATTR_BADGE_FRAME)
+                    painter.drawRect(badge)
+                if mask & ATTR_FLAGS_BIT:
+                    badge = QRect(corner_x, cell.bottom() - side, side, side)
+                    painter.setPen(ATTR_BADGE_FRAME)
+                    painter.drawRect(badge)
+                    painter.setPen(ATTR_FLAGS_COLOR)
+                    painter.drawRect(badge.adjusted(inset, inset, -inset, -inset))
 
     def _paint_line_ends(self, painter: QPainter, exposed: QRect) -> None:
         """Rule the trailing edge of every cell a fontmap's line ends on.
@@ -1926,24 +2046,25 @@ class Canvas(PanZoomSurface, QWidget):
             return
         across, down = max(1, self._block_cols), max(1, self._block_rows)
         cell_w = self._tile_w * self._zoom_x * across
-        width = LINE_END_WIDTH if cell_w >= LINE_END_MIN_CELL else 1
+        width = self._device_width(LINE_END_WIDTH if cell_w >= LINE_END_MIN_CELL else 1)
+        area = self._device_area(exposed)
         layout = self._layout()
         cols, rows = self._columns(), self._rows()
         # Walked as the *set* rather than as the band, this one being sparse — a
         # mark every line rather than one per cell. The band is what it is tested
         # against, which is a lookup where a rectangle per mark was not.
         band = self._exposed_slots(exposed)
-        for slot in self._line_ends:
-            if slot not in band:
-                continue
-            tile_x, tile_y = layout.slot_to_pos(slot)
-            if not (0 <= tile_x < cols and 0 <= tile_y < rows):
-                continue
-            cell = self._cell_rect(tile_x, tile_y, across, down)
-            bar = QRect(cell.right() + 1 - width, cell.y(), width, cell.height())
-            if not exposed.intersects(bar):
-                continue
-            painter.fillRect(bar, LINE_END_COLOR)
+        with self._device_pixels(painter):
+            for slot in self._line_ends:
+                if slot not in band:
+                    continue
+                tile_x, tile_y = layout.slot_to_pos(slot)
+                if not (0 <= tile_x < cols and 0 <= tile_y < rows):
+                    continue
+                cell = self._device_cell_rect(tile_x, tile_y, across, down)
+                bar = QRect(cell.right() + 1 - width, cell.y(), width, cell.height())
+                if area.intersects(bar):
+                    painter.fillRect(bar, LINE_END_COLOR)
 
     def _paint_selection(self, painter: QPainter, exposed: QRect) -> None:
         if not self._selected_slots:
@@ -1961,23 +2082,28 @@ class Canvas(PanZoomSurface, QWidget):
             if 0 <= tile_x < cols and 0 <= tile_y < rows:
                 cells_by_row.setdefault(tile_y, []).append(tile_x)
         solid = self._solid_rect(cells_by_row) if self._selection_as_rect else None
-        if solid is not None:
-            x0, y0, width, height = solid
-            rect = self._cell_rect(x0, y0, width, height)
-            if rect.intersects(exposed):
-                paint_selection_outline(painter, rect)
-            return
-        for tile_y, xs in cells_by_row.items():
-            xs.sort()
-            run_start = prev = xs[0]
-            for x in xs[1:] + [-1]:  # -1 sentinel flushes the final run
-                if x == prev + 1:
-                    prev = x
-                    continue
-                rect = self._cell_rect(run_start, tile_y, prev - run_start + 1, 1)
-                if rect.intersects(exposed):
-                    paint_selection_outline(painter, rect)
-                run_start = prev = x
+        area = self._device_area(exposed)
+        ring = self._device_width(1)
+        with self._device_pixels(painter):
+            if solid is not None:
+                x0, y0, width, height = solid
+                rect = self._device_cell_rect(x0, y0, width, height)
+                if rect.intersects(area):
+                    paint_selection_outline(painter, rect, width=ring)
+                return
+            for tile_y, xs in cells_by_row.items():
+                xs.sort()
+                run_start = prev = xs[0]
+                for x in xs[1:] + [-1]:  # -1 sentinel flushes the final run
+                    if x == prev + 1:
+                        prev = x
+                        continue
+                    rect = self._device_cell_rect(
+                        run_start, tile_y, prev - run_start + 1, 1
+                    )
+                    if rect.intersects(area):
+                        paint_selection_outline(painter, rect, width=ring)
+                    run_start = prev = x
 
     @staticmethod
     def _solid_rect(

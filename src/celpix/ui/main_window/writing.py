@@ -30,11 +30,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from celpix.core.context import KEY_SOURCE_OFFSET
 from celpix.core.document import Document
-from celpix.core.errors import PipelineError
+from celpix.core.errors import Pathway, PipelineError
 from celpix.pipeline import pipeline
-from celpix.project.workspace import Entry, EntryKind, unavailable
+from celpix.project.workspace import Entry, EntryKind, reorders_bytes, unavailable
 from celpix.ui.widgets import confirm_destructive, counted
 
 
@@ -127,9 +126,6 @@ class WritingMixin:
         entry = self._workspace.current
         if entry is None or entry.doc is None:
             return
-        # Read before the write, which clears the flags it acts on.
-        palette_only = entry.palette_dirty and not entry.pixel_dirty
-        has_palette_file = entry.doc.palette_config.write_enabled
         palette = self._linked_palette_entry()
         # A palette file on screen is its own linked palette, and one write of
         # it covers both halves; a colour edit made through the dock dirties
@@ -150,7 +146,7 @@ class WritingMixin:
             for e in self._unsaved_palette_owners(entry)
             if not any(e is seen for seen in owners)
         ]
-        wrote_entry = self._write_entry(entry)
+        halves = self._write_entry_landed(entry)
         # After the map, so the map's own write is what a failure on the bank is
         # reported against; the order is otherwise free, since a save skips the
         # cached documents of entries that are still dirty when it invalidates
@@ -158,23 +154,19 @@ class WritingMixin:
         wrote_owners = [owner for owner in owners if self._write_owner(owner)]
         wrote_palette_owners = [e for e in palette_owners if self._write_owner(e)]
         wrote_palette = palette is not None and self._write_entry(palette)
-        # Report what actually went to disk: a palette-only write leaves the
-        # graphic alone, and Default/Custom/Emulator palettes have no file
-        # behind them at all (docs/design/palette-editing.md).
-        wrote = (
-            "palette"
-            if palette_only
-            else "pixel + palette"
-            if has_palette_file
-            else "pixel"
+        # Report what actually went to disk, as the save itself says: a
+        # palette-only write leaves the graphic alone, a palette with no edited
+        # colour writes nothing, Default/Custom/Emulator palettes have no file
+        # behind them at all (docs/design/palette-editing.md), and a
+        # **composite** owns no bytes, so its own write is its palette or
+        # nothing — the pieces that really were written are listed below.
+        pixel_landed, palette_landed = halves or (False, False)
+        wrote = " + ".join(
+            half
+            for half, landed in (("pixel", pixel_landed), ("palette", palette_landed))
+            if landed
         )
-        # A **composite** owns no bytes, so its own write is its palette or
-        # nothing at all — saying "pixel" there would name a file that was never
-        # touched, while the pieces that really were are listed below.
-        if entry.kind is EntryKind.COMPOSITE:
-            wrote_entry = wrote_entry and has_palette_file
-            wrote = "palette"
-        landed = [f"{entry.name} ({wrote})"] if wrote_entry else []
+        landed = [f"{entry.name} ({wrote})"] if wrote else []
         landed += [f"{owner.name} (tiles)" for owner in wrote_owners]
         landed += [f"{owner.name} (colors)" for owner in wrote_palette_owners]
         if wrote_palette:
@@ -323,18 +315,32 @@ class WritingMixin:
             else entry.doc.data_config.write_enabled
         )
         if not writable:
-            self._alert(
-                f"{entry.name} is view-only: a stage it reads through cannot write "
-                "back (a compression scheme with no compressor, a reshape with no "
-                "inverse, or a missing plugin).",
-                title="celPix - write",
-            )
+            self._alert_view_only(entry)
             return
         if self._write_entry(entry):
             self.statusBar().showMessage(f"Wrote {entry.name}.")
 
+    def _alert_view_only(self, entry: Entry) -> None:
+        """Say that ``entry``'s own data has no way back to disk."""
+        self._alert(
+            f"{entry.name} is view-only: a stage it reads through cannot write "
+            "back (a compression scheme with no compressor, a reshape with no "
+            "inverse, or a missing plugin).",
+            title="celPix - write",
+        )
+
     def _write_entry(self, entry: Entry) -> bool:
-        """Save one entry through the pipeline; True on success.
+        """Save one entry through the pipeline; True when anything landed.
+
+        :meth:`_write_entry_landed` with the two halves folded into one answer,
+        for the callers that only list what was written.
+        """
+        landed = self._write_entry_landed(entry)
+        return landed is not None and any(landed)
+
+    def _write_entry_landed(self, entry: Entry) -> tuple[bool, bool] | None:
+        """Save one entry through the pipeline; ``(pixel, palette)`` — which of
+        its halves reached the disk — or None when the write failed.
 
         Writes only the pathway that needs it: when the **palette alone** is
         dirty the graphic is left untouched, since the two live in different
@@ -342,10 +348,20 @@ class WritingMixin:
         bump (docs/design/palette-editing.md §2). Any other case - pixel edits,
         or an explicit Write on a clean entry - writes both, as it always did.
 
+        **Marked saved is what landed**, as the pipeline reports it
+        (:class:`~celpix.pipeline.pipeline.SaveRecord`), never what was asked
+        for. Edits are not gated on writability, so a view-only entry — a
+        stage with no write half, a missing plugin — can hold unsaved pixels;
+        its pixel half is refused with the same alert the files dock gives,
+        stays dirty, and its palette is still written if that has a file. A
+        palette with no edited colour writes nothing, and is not reported.
+
         A successful write invalidates the cached documents of other entries on
         the same file (their bytes are now stale) - including the one on screen
         when a slice is written back under its parent's feet, which is re-read
-        immediately so the view shows the freshly written bytes.
+        immediately so the view shows the freshly written bytes. Those it keeps,
+        because they hold unsaved edits, take in a palette written inside their
+        bytes (:meth:`_absorb_palette_write`).
 
         Pixels still floating over the current entry are set down first: a float
         is on screen but not in the document, and a file that doesn't match what
@@ -359,29 +375,15 @@ class WritingMixin:
         if entry is self._workspace.current:
             self._commit_float()
         self._capture_session()  # keep the current entry's session snapshot fresh
-        palette_only = entry.palette_dirty and not entry.pixel_dirty
+        stuck = entry.pixel_dirty and not entry.doc.data_config.write_enabled
+        if stuck:
+            self._alert_view_only(entry)
+        palette_only = stuck or (entry.palette_dirty and not entry.pixel_dirty)
         # The entry's own data decides the route: a map carved from a file writes
         # its cells through that file like any slice, whatever the tile bank it
         # borrows its art from would do.
         via_parent = not palette_only and entry.doc.data_config.writes_through_parent
         writes_region = not (palette_only or via_parent)
-        try:
-            if via_parent and not self._write_pixels_through_parent(entry):
-                return False
-            if writes_region:
-                # Belt and braces over the fold each slice edit already did: a
-                # slice edited while this had no document folds here instead.
-                self._fold_slice_edits_into(entry)
-            pipeline.save(entry.doc, self._registry, pixel=writes_region)
-        except PipelineError as exc:
-            self._report(exc)
-            return False
-        self._workspace.mark_saved(entry, pixel=not palette_only)
-        if entry.kind is EntryKind.SLICE and not palette_only:
-            entry.fold_refused = None  # its own write just put the bytes down
-        if writes_region and entry.kind in (EntryKind.FILE, EntryKind.PALETTE):
-            self._mark_region_saved(entry)
-            self._report_refused_folds(entry)
         # Invalidated even for a palette-only write: in Offset mode the palette's
         # target *is* this entry's own file, so other entries on it are stale too.
         # Every file of a region, since a save can have rewritten any of them —
@@ -392,6 +394,45 @@ class WritingMixin:
         touched = list(entry.paths)
         if entry.doc.palette_config.write_enabled:
             touched += entry.doc.palette_config.source.paths
+        saving = False
+        try:
+            if via_parent and not self._write_pixels_through_parent(entry):
+                return None
+            if writes_region:
+                # Belt and braces over the fold each slice edit already did: a
+                # slice edited while this had no document folds here instead.
+                self._fold_slice_edits_into(entry)
+            # What the buffer held going in: the save takes a palette it wrote
+            # inside the buffer into it, and says nothing about having done so.
+            held_bytes = entry.doc.pixel_data
+            saving = True
+            record = pipeline.save(entry.doc, self._registry, pixel=writes_region)
+        except PipelineError as exc:
+            # Only what is on disk is this program's own write, which the
+            # watcher must not offer back as another one's; a change still
+            # pending on a file nothing was written to has to keep its prompt.
+            # The save writes the pixel half first and raises before a deposit,
+            # so a pixel failure wrote nothing and a palette failure follows a
+            # pixel half that landed. A slice's way through its parent notes
+            # its own write as it lands.
+            if (
+                saving
+                and exc.pathway is Pathway.PALETTE
+                and writes_region
+                and entry.doc.data_config.write_enabled
+            ):
+                self._note_written(entry.paths)
+            self._report(exc)
+            return None
+        wrote_pixel = via_parent or record.pixel
+        self._workspace.mark_saved(entry, pixel=wrote_pixel)
+        if entry.kind is EntryKind.SLICE and wrote_pixel:
+            entry.fold_refused = None  # its own write just put the bytes down
+        if record.pixel and entry.kind in (EntryKind.FILE, EntryKind.PALETTE):
+            self._mark_region_saved(entry)
+            self._report_refused_folds(entry)
+        if not (wrote_pixel or record.palette):
+            return False, False
         held = {
             e: e.doc
             for e in self._workspace.entries
@@ -399,10 +440,81 @@ class WritingMixin:
         }
         for path in touched:
             self._workspace.invalidate_path(path, keep=entry)
+        if record.palette_window is not None:
+            moved = entry.doc is not None and (
+                entry.doc.pixel_data is not held_bytes
+                and entry.doc.pixel_data != held_bytes
+            )
+            self._absorb_palette_write(record.palette_window, [entry] if moved else [])
         self._note_written(touched)
         self._refresh_stale_current()
         self._reload_mirrored_palettes(held)
-        return True
+        return wrote_pixel, record.palette
+
+    def _absorb_palette_write(
+        self, window: pipeline.WrittenBytes, moved: list[Entry]
+    ) -> None:
+        """Take a palette just written at a plain file position into every pixel
+        buffer still holding those file bytes.
+
+        A palette inside a graphic's own file — an Offset window running on into
+        its tiles — is written by the palette pathway, and every buffer over the
+        same bytes still holds the colours from before. The next pixel write of
+        any of them, which lays its whole buffer down, would put those back. The
+        pipeline brings the written entry's own buffer up to date where it can
+        tell the buffer is the file's bytes in place; this covers the rest: the
+        documents :meth:`~celpix.project.workspace.Workspace.invalidate_path`
+        kept because they hold unsaved edits — a dirty parent file, a dirty
+        sibling slice — and a slice read out of its parent's live buffer, which
+        only the host can tell is in place.
+
+        ``moved`` names the entries whose buffer already took it in — the written
+        one, whose save did. Every buffer that changed is then an edit landing
+        as far as what is **derived** from it goes, and gets what one gets
+        (:meth:`~...tile_bytes.TileBytesMixin._land_byte_edit`): the maps
+        bound to it drop their copy of its art, the composites over it are
+        reassembled, the palettes decoded out of it are decoded again, and the
+        one on screen is repainted — or it goes on drawing the old indices
+        where the palette overlaps its tiles.
+        """
+        moved = list(moved)
+        for e in self._workspace.entries:
+            if e.doc is None or any(e is m for m in moved):
+                continue
+            anchor = self._file_anchor(e)
+            if anchor is not None and pipeline.absorb_written(e.doc, window, anchor):
+                moved.append(e)
+        if not moved:
+            return
+        for owner in moved:
+            self._drop_bound_copies(owner)
+        rebuilt = self._reassemble_composites(moved)
+        self._reresolve_bound_art(self._maps_drawing_from(rebuilt))
+        self._redecode_entry_palettes([*moved, *rebuilt])
+        if self._doc is not None and any(m.doc is self._doc for m in moved):
+            self._refresh_view()
+
+    def _file_anchor(self, entry: Entry) -> int | None:
+        """The file offset ``entry``'s pixel buffer starts at, when that buffer is
+        its files' bytes in place — :func:`~celpix.pipeline.pipeline.file_anchor`,
+        and for a slice of a file whose live buffer it was read out of, the
+        slice's own offset unless that file reorders its bytes."""
+        assert entry.doc is not None
+        anchor = pipeline.file_anchor(entry.doc, self._registry)
+        if anchor is not None or entry.kind is not EntryKind.SLICE:
+            return anchor
+        parent = self._workspace.parent_of(entry)
+        cfg = entry.doc.pixel_config
+        if (
+            parent is None
+            or parent.kind not in (EntryKind.FILE, EntryKind.PALETTE)
+            or entry.doc.is_tilemap
+            or not cfg.reads_raw_bytes
+            or cfg.write_target().data is not None
+            or reorders_bytes(parent, self._registry)
+        ):
+            return None
+        return entry.doc.anchor_base
 
     def _reload_mirrored_palettes(self, held: dict[Entry, Document]) -> None:
         """Re-read each palette file a write just dropped, if anything shows it.
@@ -484,8 +596,10 @@ class WritingMixin:
         opens.
 
         A child whose fold is **refused** is recorded as such on the child
-        (:attr:`~celpix.project.workspace.Entry.fold_refused`). Four things
-        refuse one: a re-encoded stream that no longer fits its slot, a slice
+        (:attr:`~celpix.project.workspace.Entry.fold_refused`). Five things
+        refuse one: a re-encoded stream that no longer fits its slot, a
+        **view-only** slice — a stage it reads through has no write half, which
+        its own Write refuses, so the parent's must not carry it out — a slice
         this buffer does not reach — anchored before the window the parent's
         container opened on the file, or running past the end of it — a parent
         that is a **map**, whose own bytes are its cells and are written from
@@ -528,12 +642,9 @@ class WritingMixin:
         assert parent.doc is not None
         owed = parent.pending_folds
         # A slice's children count from byte 0 of its decoded buffer; a file's
-        # from byte 0 of the file, which its buffer may start past.
-        base = (
-            0
-            if parent.kind is EntryKind.SLICE
-            else parent.doc.pixel_ctx.get(KEY_SOURCE_OFFSET, 0)
-        )
+        # from its anchor base: byte 0 of the file, which a raw buffer may start
+        # past, or byte 0 of the buffer under a reshape or a decompressor.
+        base = 0 if parent.kind is EntryKind.SLICE else parent.doc.anchor_base
         folded: list[Entry] = []
         still_owed: set[Entry] = set()
         for child in self._workspace.children_of(parent):
@@ -571,6 +682,17 @@ class WritingMixin:
                     f"lies inside {parent.name}, a tilemap, whose bytes are "
                     "written from its cells, so there is nowhere in it to fold "
                     "these bytes into"
+                )
+                continue
+            if not child.doc.data_config.write_enabled:
+                # A stage it reads through has no write half — a missing
+                # compressor or codec read through a stand-in — so its own
+                # Write refuses it, and the parent's must too: the encode below
+                # would still produce bytes, in whatever form the stand-in has,
+                # and the parent's write would put them down and mark the slice
+                # saved.
+                child.fold_refused = (
+                    "is view-only: a stage it reads through cannot write back"
                 )
                 continue
             try:
@@ -692,7 +814,16 @@ class WritingMixin:
         goes on showing its own bytes rather than this edit until it fits and is
         written. ``keep``'s subtree is left alone for the same reason: its
         document is held, so nothing under it has moved.
+
+        A slice with unsaved **colours** is re-read on the spot instead, with
+        them carried across: an Offset palette's edits live only in the
+        document (the window is read from disk, not from this buffer), so a
+        drop would lose them, and Write All, which writes only what has a
+        document, would pass the slice over still saying it was unsaved. The
+        one on screen is left to :meth:`_refresh_stale_current`, which re-reads
+        it against the document the window still shows.
         """
+        current = self._workspace.current
         for child in self._workspace.children_of(entry):
             if child.kind is not EntryKind.SLICE or child is keep:
                 continue
@@ -700,7 +831,15 @@ class WritingMixin:
                 continue
             if child.doc is not None:
                 self._drop_bound_copies(child)
-                self._workspace.drop_document(child)
+                previous = child.doc
+                if (
+                    child.palette_dirty
+                    and child is not current
+                    and self._reread_entry(child, live=None, quiet=True)
+                ):
+                    self._carry_palette(previous, child.doc)
+                else:
+                    self._workspace.drop_document(child)
             self._drop_derived_slices(child, keep)
 
     def _settle_region(self, entry: Entry | None) -> None:
@@ -861,8 +1000,8 @@ class WritingMixin:
             f"• {child.name}: {self._refusal_of(child, root)}" for child in left
         )
         self._alert(
-            f"{root.name} was written, but {counted(len(left), 'slice')} did not "
-            f"fit and remain unsaved:\n\n{lines}\n\nMake them fit and write again.",
+            f"{root.name} was written, but {counted(len(left), 'slice')} could "
+            f"not go with it and remain unsaved:\n\n{lines}",
             title="celPix - write",
         )
 
@@ -938,15 +1077,31 @@ class WritingMixin:
         assert root.doc is not None
         # The file's pixel pathway alone: its palette is a separate source in a
         # separate file, and this write says nothing about it.
-        pipeline.save(root.doc, self._registry, palette=False)
+        if not pipeline.save(root.doc, self._registry, palette=False).pixel:
+            # Folded, but with no write half to carry the region out.
+            self._alert_view_only(root)
+            return False
         self._note_written(root.paths)
         self._mark_region_saved(root)
         self._report_refused_folds(root)
         return True
 
     def _refresh_stale_current(self) -> None:
-        """Re-read the active entry if a save into its file dropped its cache,
-        preserving the on-screen view position and palette."""
+        """Re-read the active entry if a save, or an edit to the bytes it is cut
+        from, dropped its cache, preserving the on-screen view position.
+
+        The palette is the re-read's own. The drop already stashed its source
+        (:meth:`~celpix.project.workspace.Workspace.drop_document`), a custom
+        palette's colours included, and the load restored it from there - over
+        the bytes on disk *now* - so copying the old document's palette over it
+        would show an Offset palette whose bytes another program rewrote in the
+        colours from before the reload. Only **unsaved colours** come across,
+        laid over the fresh ones (:meth:`~...disk_watch.DiskWatchMixin.
+        _carry_palette`): a save keeps a dirty document, but an edit to a
+        parent drops its slices' documents dirty or not
+        (:meth:`_drop_derived_slices`), and an Offset palette's edits exist
+        nowhere else.
+        """
         entry = self._workspace.current
         if entry is None or entry.doc is not None or unavailable(entry):
             # Inert on purpose - a missing file, a load that failed and has not
@@ -963,10 +1118,8 @@ class WritingMixin:
             return
         if not self._load_entry(entry):
             return  # reported; the stale view stays until the next activation
-        if stale is not None:
-            entry.doc.view = stale.view
-            entry.doc.palette = stale.palette
-            entry.doc.palette_config = stale.palette_config
-            entry.doc.palette_ctx = stale.palette_ctx
+        if entry.palette_dirty:
+            self._carry_palette(stale, entry.doc)
+        entry.doc.view = stale.view
         self._doc = entry.doc
         self._refresh_view()

@@ -1,5 +1,7 @@
 # Neo Geo Pocket (mono) scroll map entry — 16-bit little-endian: index 0-8,
-# palette select 13, V flip 14, H flip 15.
+# palette select 13, V flip 14, H flip 15. Bits 9-12 are the colour machine's
+# palette (`ngpc-bg`'s `p`), set in any map a colour-compatible game also draws,
+# so they are carried as `f` rather than written back as zero.
 #
 # The flip bits are the other way round from every other console we read —
 # vertical below horizontal — so this is not the Neo Geo Pocket Color entry with
@@ -12,4 +14,4 @@ category = "SNK"
 [params]
 bytes = 2
 endian = "little"
-fields = "hvp. ...i iiii iiii"
+fields = "hvpf fffi iiii iiii"

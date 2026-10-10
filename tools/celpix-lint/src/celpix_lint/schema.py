@@ -22,7 +22,7 @@ from __future__ import annotations
 
 #: The reader's own :data:`celpix.project.projectfile.PROJECT_VERSION`. A file
 #: claiming more than this is one a newer celPix wrote.
-KNOWN_PROJECT_VERSION = 7
+KNOWN_PROJECT_VERSION = 8
 
 # -- enumerations (celpix.project.workspace, celpix.core) ------------------
 #: ``EntryKind`` — how an entry is *bounded*.
@@ -113,11 +113,15 @@ KIND_ONLY = {
     "path": ("file", "slice", "bookmark", "palette"),
     "extra_paths": ("file", "slice", "bookmark", "palette"),
     "container_id": ("file", "palette"),
-    "reshape_id": ("file", "slice"),
+    # A reshape is a property of the region, whichever kind holds it; a
+    # composite's bytes are other entries' buffers, already through theirs.
+    "reshape_id": ("file", "slice", "palette"),
     "slice_offset": ("slice",),
     "slice_length": ("slice",),
     "match_parent": ("slice",),
-    "compression_id": ("slice",),
+    # A slice's own scheme, or a file that is one compressed stream, unpacked
+    # whole. A palette has none: its colours are read as they lie.
+    "compression_id": ("file", "slice"),
     "slot_fill": ("slice",),
     "offset": ("bookmark",),
     "palette_preset_id": ("palette",),

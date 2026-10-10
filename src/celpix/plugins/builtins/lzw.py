@@ -27,7 +27,9 @@ and decoder is settled.
 
 Without an end code the stream has no end of its own: the decode runs to the
 end of the data, and the slice's length is the extent. Pad bits that happen to
-make up a whole code there decode as one more code.
+make up a whole code there decode as one more code — a foreign stream's to own,
+but not one :func:`compress` will write: data whose stream would end that way is
+refused with a request for an end code, since its re-decode would grow by a byte.
 
 Not covered: the Unix ``.Z`` format's habit of skipping to the end of a group of
 eight codes when the width changes or the table clears, and schemes that reset
@@ -53,6 +55,13 @@ from celpix.plugins.base import InputKind, InputSpec, PluginInfo
 from celpix.plugins.builtins._lz import corrupt
 
 MAX_WIDTH = 16
+
+# The most a decode may produce, as aPLib and ZX0 cap theirs. LZW needs it more
+# than either: a stream whose every code is the entry it defines grows each entry
+# a byte longer than the last, so output — and the table, which holds every entry
+# whole — grows with the *square* of the code count, and 128 KiB of 16-bit codes
+# would ask for gigabytes. Far above any graphics payload.
+OUTPUT_CAP = 16 * 1024 * 1024
 
 INPUT_INITIAL_BITS = "initial_bits"
 INPUT_MAX_BITS = "max_bits"
@@ -184,6 +193,8 @@ def decompress(
             table.append(entry)
         else:
             raise _fail(f"code {code:#x} is ahead of the table ({len(table):#x})")
+        if len(out) + len(entry) > OUTPUT_CAP:
+            raise _fail(f"output would exceed {OUTPUT_CAP:,} bytes")
         out += entry
         old = entry
     if params.end_code is not None and not partial:
@@ -257,6 +268,17 @@ def compress(data: bytes, params: Params) -> bytes:
         emit(table[w] if len(w) > 1 else w[0])
     if params.end_code is not None:
         put(params.end_code, params.width(dec_next))
+    elif held and 8 - held >= params.width(dec_next):
+        # The decoder reads codes until the data runs out, and the zeros closing
+        # the last byte are a whole code to it — literal 0, appended to the
+        # output. A save that wrote this would reload a byte longer, and grow
+        # again on every save after.
+        raise ValueError(
+            f"this LZW variant has no end code, so the {8 - held} pad bits "
+            f"closing the stream's last byte would read back as another "
+            f"{params.width(dec_next)}-bit code and add 0x00 bytes; bind an end "
+            f"code to compress this data"
+        )
     if held:
         out.append((acc & 0xFF) if params.lsb_first else (acc << (8 - held)) & 0xFF)
     return bytes(out)

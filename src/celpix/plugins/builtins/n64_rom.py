@@ -23,6 +23,13 @@ normalised and no longer say which order they came from.
 A trailing partial group is left alone, so a truncated dump keeps whatever bytes
 it has rather than losing the tail to a group that was never whole.
 
+**The boot CRC is not maintained.** The CIC boot code checks the CRC pair at
+``$10``/``$14`` over ``$1000-$101000`` and hangs on a mismatch, so an edit inside
+that first MiB after the header makes the saved ROM black-screen on hardware and
+on accurate emulators. Computing it means modelling each CIC variant's seed and
+algorithm, which this container does not; it says so in the info popup, and a
+save that changes a byte in that range warns.
+
 See ``docs/graphics-formats-reference/implementation-guide.md`` §5.
 """
 
@@ -51,6 +58,9 @@ _LITTLE = b"\x40\x12\x37\x80"  # .n64 — 4-byte groups
 # Signature → the width that normalises it. Declared to the host as magic too,
 # so a dump in any of the three orders is claimed whatever it is named.
 _ORDERS: dict[bytes, int] = {_NATIVE: 0, _BYTESWAPPED: 2, _LITTLE: 4}
+
+# The span the CIC boot code's CRC pair (at $10/$14) covers, in native order.
+CRC_RANGE = (0x1000, 0x101000)
 
 
 def swap_groups(data: bytes, width: int) -> bytes:
@@ -127,7 +137,19 @@ class N64RomContainer:
         # splicing into the on-disk order: an offset that is not group-aligned
         # names different bytes in the two orders, and the native one is what the
         # rest of the app has been addressing.
-        native = splice(swap_groups(dest.existing, width), dest.offset, data)
+        before = swap_groups(dest.existing, width)
+        native = splice(before, dest.offset, data)
+        lo, hi = CRC_RANGE
+        if native[:4] == _NATIVE and native[lo:hi] != before[lo:hi]:
+            warn(
+                ctx,
+                "N64 boot CRC not updated: the ROM may not boot",
+                "The edit changes bytes $1000-$101000, which the CIC\n"
+                "boot code checks against the CRC pair at $10/$14.\n"
+                "celPix does not recompute it; fix it with a CRC tool\n"
+                "before running the ROM on hardware or an accurate emulator.",
+                self.info.id,
+            )
         return swap_groups(native, width)
 
     def describe(
@@ -160,5 +182,12 @@ class N64RomContainer:
                 f"{width}-byte groups reversed" if width else "none - read as it lies",
                 "Carried forward so a save restores the order the\n"
                 "file arrived in; the normalized bytes no longer say",
+            ),
+            ContainerField(
+                "Boot CRC",
+                "not maintained on save",
+                "CRC pair at $10/$14 over $1000-$101000, checked by\n"
+                "the CIC boot code; a mismatch hangs on hardware\n"
+                "A save editing that range warns but does not fix it",
             ),
         )

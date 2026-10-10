@@ -74,7 +74,7 @@ Qt-free, like the rest of ``core``.
 from __future__ import annotations
 
 import re
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -97,10 +97,9 @@ BLANK = " "
 # because it is the one code point no font sheet ever draws.
 HOLE = "\u0000"
 
-# The editor's starting points, as ``(name, base, chars)``. These two runs are
-# what the shipped alphabet presets held, kept as data because what a preset ever
-# bought them was a name in a dropdown, and what a table being typed up wants is
-# a *first draft* to correct.
+# The editor's starting points, as ``(name, base, chars)``: a first draft of a
+# run, to correct against the text window — what a table being typed up wants,
+# rather than a finished preset to pick from a dropdown.
 #
 # Each carries an origin only as a guess. Where a run starts is in the game's
 # code and appears in neither the sheet nor the string, so the base is the thing
@@ -126,6 +125,10 @@ _UNSPELLABLE_RE = re.compile(r"[\s\[\]]+")
 
 _TOKEN_RE = re.compile(r"\[([^\[\]]*)\]")
 _HEX_RE = re.compile(r"^[0-9A-Fa-f]+$")
+# A name that reads as a hex code. ``[$03]`` can only mean one cell, and byte 3
+# is the one every code already types as — so a code *named* ``$03`` keeps its
+# own hex rather than taking the name, or the two would type back to one cell.
+_HEX_NAME_RE = re.compile(r"^\$[0-9A-Fa-f]+$")
 
 
 def split_params(stated: str) -> tuple[str, int]:
@@ -422,7 +425,8 @@ class FontAlphabet:
         # :meth:`decode` writes and :meth:`encode` reads. First declaration wins,
         # like every other index here — two codes sharing a name would both parse
         # back to this one, so the second keeps its hex and says which byte it is
-        # rather than claiming to be the first.
+        # rather than claiming to be the first. A name that reads as a hex code is
+        # never entered (:data:`_HEX_NAME_RE`), for the same reason.
         self._names: dict[str, int] = {}
         # How many cells each **command** swallows after itself, for the codes
         # that swallow any (:attr:`Glyph.params`). Its own index rather than a
@@ -442,7 +446,8 @@ class FontAlphabet:
                 self._by_text.setdefault(glyph.text, glyph)
                 self._dictionary = self._dictionary or glyph.role is GlyphRole.DICT
             else:
-                self._names.setdefault(glyph.text, glyph.code)
+                if not _HEX_NAME_RE.match(glyph.text):
+                    self._names.setdefault(glyph.text, glyph.code)
                 if glyph.params > 0:
                     self._params.setdefault(glyph.code, glyph.params)
             if glyph.role is GlyphRole.BREAK and self._break is None:
@@ -496,6 +501,11 @@ class FontAlphabet:
         of them can be what the Enter key means. The first wins because a preset
         lists its codes in the order it wants them offered; the rest stay
         reachable, and unambiguous, as their own hex.
+
+        Under :attr:`flag_break` the newline is the terminator bit's, and this
+        code is only what a newline the bit cannot hold falls back to; it reads
+        as its ``[name]`` token there, so the two mechanisms never share one
+        spelling.
 
         None where the format declares no break at all, which is an ordinary
         thing — a bare index-only text run has no punctuation, and its line width
@@ -688,6 +698,11 @@ class FontAlphabet:
         already follows — the rest stay hex, and marking them would claim a break
         the text does not show.
 
+        Under :attr:`flag_break` the break code still ends its line here, though
+        the text spells it as its token rather than a newline (:meth:`_reading`):
+        the game breaks there either way, and the mark is the one place that can
+        say so without making the text ambiguous.
+
         Asked here rather than worked out by whoever is drawing, because the
         answer has two readers: the text window gets its newline out of
         :meth:`decode`, and the canvas marks the same cells on the picture. A
@@ -791,8 +806,12 @@ class FontAlphabet:
         """
         glyph = self._by_code.get(code)
         if glyph is None or not glyph.spells:
-            if glyph is not None and glyph is self._break:
+            if glyph is not None and glyph is self._break and not self.flag_break:
                 return "\n"
+            # Under ``flag_break`` a newline is the bit's spelling alone and the
+            # break code reads as its token. Were both a newline, ``A`` flagged
+            # and ``A`` followed by the code would read the same and type back to
+            # the one the encoder picks, rewriting the other.
             if glyph is not None and self._names.get(glyph.text) == code:
                 # Named, and the name is still unambiguously this code's — two
                 # codes given the same name would both parse back to the first,
@@ -841,6 +860,8 @@ class FontAlphabet:
         asking for is already spoken for, and setting it again would swallow a
         line break silently. A format that has *both* a flag and a break code
         falls back to the code, which is what makes a blank line expressible.
+        After a command that swallowed cells the bit lands on the **command's**
+        cell, the one :meth:`decode` reads a line end off first.
 
         **The last answer is kept** (:attr:`_encoded`), because one edit asks
         this of the same string several times over: the budget readout, the write
@@ -857,14 +878,102 @@ class FontAlphabet:
         self._encoded = (text, encoded)
         return encoded
 
+    def encode_edit(
+        self,
+        before: Text,
+        codes: Sequence[int],
+        ends_line: Sequence[bool],
+        text: str,
+    ) -> EncodedText:
+        """``text`` as codes, re-encoding only what differs from ``before``.
+
+        ``before`` is what ``codes`` and ``ends_line`` — one per cell — decode
+        to, and ``text`` is that string after an edit. The common head and tail
+        of the two strings keep the cells they were read from; only the pieces
+        between them are encoded, and the result is those cells spliced back in.
+
+        :meth:`encode` of the whole string is not the identity on what
+        :meth:`decode` wrote. A dictionary font matches the longest spelling
+        first, so a ``t``, ``h`` the file stores as two codes types back as one
+        ``th``; and a command whose bit sits on an operand types back with the
+        bit on the command. Encoding the whole region per keystroke would make
+        every such cell, however far from the caret, change under an edit that
+        never touched it — and shift everything after it.
+
+        The span is widened to **whole pieces** at both ends (a cell's run of
+        characters in :attr:`Text.positions`), since half a ``th`` or of a
+        ``[$FE]`` is nothing a cell can hold. Under :attr:`flag_break` a span
+        that opens on a newline also takes the cell before it, which is the cell
+        that newline's bit lands on. And it takes in a neighbour that a
+        spelling **crosses into** from the edit: an ``h`` typed after a ``t`` is
+        the pair the font has a code for, and typing a pair a letter at a time
+        has to reach it. A pair lying wholly in untouched text is never formed.
+
+        ``unknown`` covers the re-encoded span only, which is everything typed:
+        the rest is cells the file holds, and each of them reads back.
+        """
+        old = before.body
+        if text == old:
+            return EncodedText(tuple(codes), (), tuple(ends_line))
+        positions = before.positions
+        size = min(len(old), len(text))
+        head = _common_prefix(old, text, size)
+        tail = _common_suffix(old, text, size - head)
+        count = len(codes)
+        # The first changed character's piece, back to where it starts.
+        start = positions[head] if head < len(old) else count
+        first = bisect_left(positions, start)
+        if self.flag_break and first > 0 and text.startswith("\n", first):
+            start = positions[first - 1]
+            first = bisect_left(positions, start)
+        # And the last changed character's piece, on to where it ends — past a
+        # command's operands too, which own no characters of their own.
+        stop_char = len(old) - tail
+        if stop_char > first:
+            stop_char = bisect_right(positions, positions[stop_char - 1])
+        else:
+            stop_char = first
+        reach = self._text_sizes[0] - 1 if self._text_sizes else 0
+        # A spelling that starts in the head and ends in the edit, farthest first
+        # — the one the encoder's longest-first match would have taken.
+        for back in range(min(reach, first), 0, -1):
+            at = first - back
+            if at and positions[at] == positions[at - 1]:
+                continue  # not where a piece starts
+            glyph = self._longest_text(text, at)
+            if glyph is not None and at + len(glyph.text) > first:
+                first = at
+                start = positions[at]
+                break
+        # And one that starts in the edit and ends in the tail.
+        end = len(text) - (len(old) - stop_char)
+        for at in range(max(first, end - reach), end):
+            glyph = self._longest_text(text, at)
+            if glyph is not None and at + len(glyph.text) > end:
+                into = stop_char + at + len(glyph.text) - end
+                stop_char = bisect_right(positions, positions[into - 1])
+                break
+        stop = positions[stop_char] if stop_char < len(old) else count
+        middle = self.encode(text[first : len(text) - (len(old) - stop_char)])
+        return EncodedText(
+            (*codes[:start], *middle.codes, *codes[stop:]),
+            middle.unknown,
+            (*ends_line[:start], *middle.ends_line, *ends_line[stop:]),
+        )
+
     def _encode(self, text: str) -> EncodedText:
         """:meth:`encode` without the memo — the pass itself."""
         out: list[int] = []
         ends: list[bool] = []
         unknown: list[str] = []
         seen: set[str] = set()
+        # The cell a newline typed next would set the terminator bit on: the last
+        # one written, except after a command, whose own cell carries it.
+        flag_at = -1
 
         def emit(code: int) -> None:
+            nonlocal flag_at
+            flag_at = len(out)
             out.append(code)
             ends.append(False)
 
@@ -898,6 +1007,7 @@ class FontAlphabet:
                     miss(char)
                     at += 1
                     continue
+                flag_at = len(out)
                 out.append(glyph.code)
                 ends.append(False)
                 at += len(glyph.text)
@@ -915,10 +1025,9 @@ class FontAlphabet:
                 inside = found.group(1) if found else ""
                 digits = inside[1:] if inside.startswith("$") else ""
                 if found is not None and inside in self._names:
-                    # A named code, written the way :meth:`decode` writes it.
-                    # Checked before the hex form so a command named ``$FF``
-                    # — which nothing stops a user typing — still reaches its
-                    # own code rather than byte 255.
+                    # A named code, written the way :meth:`decode` writes it. No
+                    # name looks like hex (:data:`_HEX_NAME_RE`), so the order
+                    # against the hex form below cannot change which cell lands.
                     at = found.end()
                     emit(self._names[inside])
                     continue
@@ -930,8 +1039,10 @@ class FontAlphabet:
                     written = self._commanded(inside)
                     if written is not None:
                         at = found.end()
+                        head = len(out)
                         for value in written:
                             emit(value)
+                        flag_at = head
                         continue
                 if found is None or not inside.startswith("$"):
                     # Not a code: an unclosed bracket, brackets around a name
@@ -949,8 +1060,8 @@ class FontAlphabet:
                 continue
             if char == "\n":
                 at += 1
-                if self.flag_break and ends and not ends[-1]:
-                    ends[-1] = True
+                if self.flag_break and flag_at >= 0 and not ends[flag_at]:
+                    ends[flag_at] = True
                 elif self._break is not None:
                     emit(self._break.code)
                 else:
@@ -1015,6 +1126,35 @@ class FontAlphabet:
             if glyph is not None:
                 return glyph
         return None
+
+
+def _common_prefix(a: str, b: str, size: int) -> int:
+    """How many leading characters ``a`` and ``b`` share, up to ``size``.
+
+    Bisected over slice comparisons rather than walked a character at a time:
+    the strings are a whole text region, and a slice compare is one native pass
+    where a loop is tens of thousands of interpreted steps per keystroke.
+    """
+    low, high = 0, size
+    while low < high:
+        mid = (low + high + 1) // 2
+        if a[:mid] == b[:mid]:
+            low = mid
+        else:
+            high = mid - 1
+    return low
+
+
+def _common_suffix(a: str, b: str, size: int) -> int:
+    """How many trailing characters ``a`` and ``b`` share, up to ``size``."""
+    low, high = 0, size
+    while low < high:
+        mid = (low + high + 1) // 2
+        if a[len(a) - mid :] == b[len(b) - mid :]:
+            low = mid
+        else:
+            high = mid - 1
+    return low
 
 
 # -- typing over a decoded string -------------------------------------------
