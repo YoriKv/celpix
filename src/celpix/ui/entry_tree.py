@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeySequence
-from PySide6.QtWidgets import QTreeWidget, QTreeWidgetItem, QWidget
+from PySide6.QtWidgets import QAbstractItemView, QTreeWidget, QTreeWidgetItem, QWidget
 
 from celpix.ui.widgets import ShortcutIsland
 
@@ -115,6 +115,30 @@ class EntryTree(ShortcutIsland, QTreeWidget):
             super().keyPressEvent(event)  # emits currentItemChanged synchronously
         finally:
             self.key_navigating = False
+
+    def step_row(self, delta: int) -> None:
+        """Move to the row above (``delta < 0``) or below, exactly as Up/Down do
+        with the list focused — the same cursor walk, so a collapsed group, a row
+        the filter hid and the Palettes header are passed over the same way.
+
+        Flagged as a keyboard move for the reason a real arrow press is: the
+        activation it causes leaves focus wherever the user is, rather than
+        handing it to the canvas between one step and the next.
+        """
+        action = (
+            QAbstractItemView.CursorAction.MoveDown
+            if delta > 0
+            else QAbstractItemView.CursorAction.MoveUp
+        )
+        index = self.moveCursor(action, Qt.KeyboardModifier.NoModifier)
+        if not index.isValid() or index == self.currentIndex():
+            return
+        self.key_navigating = True
+        try:
+            self.setCurrentIndex(index)  # clears and selects, as the arrow does
+        finally:
+            self.key_navigating = False
+        self.scrollTo(index)
 
     # -- reordering by drag ---------------------------------------------------
     def startDrag(self, actions) -> None:  # noqa: ANN001, N802 — Qt override

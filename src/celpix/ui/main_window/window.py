@@ -141,6 +141,7 @@ from celpix.ui.main_window.tilemap_edit import TilemapEditMixin
 from celpix.ui.main_window.transfer import TransferMixin
 from celpix.ui.main_window.transform import TransformMixin
 from celpix.ui.main_window.view_menu import ViewMenuMixin
+from celpix.ui.main_window.view_settings import ViewSettingsMixin
 from celpix.ui.main_window.writing import WritingMixin
 from celpix.ui.subsprite_window import SubspriteWindow
 from celpix.ui.text_window import TextWindow
@@ -212,6 +213,7 @@ class MainWindow(
     JumpsMixin,
     ContainersMixin,
     EntryClipboardMixin,
+    ViewSettingsMixin,
     WritingMixin,
     TransferMixin,
     CompressionMixin,
@@ -551,6 +553,7 @@ class MainWindow(
         self._connect_pixel_palette()  # after palette dock: needs its swatch grid
         self._build_hex_dock()
         self._build_clipboard_actions()  # before _build_menus: shared with it
+        self._build_view_settings_actions()
         self._build_menus()
         self._build_toolbar()
         # Both after _build_toolbar: the spins exist only then. setValue clamps to

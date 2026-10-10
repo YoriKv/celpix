@@ -661,6 +661,32 @@ def test_every_input_has_a_tooltip_shared_with_its_label(qtbot) -> None:
     assert mismatched == []
 
 
+def test_the_shortcut_filter_reads_names_keys_and_section_titles(qtbot) -> None:
+    from PySide6.QtWidgets import QLabel
+
+    from celpix.ui.help_dialogs import ShortcutGuide, filtered_sections
+
+    sections = [
+        ("Edit", [("Copy", "Ctrl+C"), ("Copy View Settings", "Ctrl+Shift+C")]),
+        ("Palette", [("Palette from Selection", "P"), ("Pinned colors", "Shift+P")]),
+    ]
+    # Words in any order, across the name and the keys.
+    assert filtered_sections(sections, "settings ctrl+shift") == [
+        ("Edit", [("Copy View Settings", "Ctrl+Shift+C")])
+    ]
+    # A section's title keeps all of it; a section left empty is dropped.
+    assert filtered_sections(sections, "palette") == [sections[1]]
+    assert filtered_sections(sections, "  ") == sections
+
+    guide = ShortcutGuide(sections)
+    qtbot.addWidget(guide)
+    guide._filter.setText("no such key")
+    page = guide._scroll.widget()
+    assert [label.text() for label in page.findChildren(QLabel)] == [
+        "No shortcut matches."
+    ]
+
+
 def test_the_help_menu_builds_its_dialogs_and_documents_both_key_styles(
     qtbot,
 ) -> None:

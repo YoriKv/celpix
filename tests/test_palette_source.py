@@ -327,7 +327,7 @@ def test_use_bookmark_as_palette_stays_on_the_current_slice(qtbot, tmp_path) -> 
 
 def test_offset_palette_step_buttons_move_by_one_tile(qtbot, tmp_path) -> None:
     # snes-4bpp: 32 bytes per tile. Start an offset palette at byte 32, then step.
-    data = bytearray(bytes((i * 13 + 1) & 0xFF for i in range(32 * 8)))
+    data = bytearray(bytes((i * 13 + 1) & 0xFF for i in range(32 * 64)))
     px = tmp_path / "p.4bpp.sfc"
     px.write_bytes(bytes(data))
 
@@ -349,6 +349,12 @@ def test_offset_palette_step_buttons_move_by_one_tile(qtbot, tmp_path) -> None:
     assert window._doc.palette_config.source.offset == 0
     window._step_palette_offset(-1)
     assert window._doc.palette_config.source.offset == 0
+    # The fine step is one colour entry: BGR555 is 2 bytes a colour; the coarse
+    # one is a full 256-colour palette, 512 bytes.
+    window._step_palette_offset(1, unit="color")
+    assert window._doc.palette_config.source.offset == 2
+    window._step_palette_offset(1, unit="palette")
+    assert window._doc.palette_config.source.offset == 514
 
 
 def test_palette_dock_header_tracks_mode(qtbot, tmp_path, monkeypatch) -> None:
@@ -1172,11 +1178,11 @@ def test_palette_panel_copy_paste_keys_emit(qtbot) -> None:
     panel.copy_palette_row_requested.connect(lambda: events.append("copy-sub"))
     panel.paste_palette_row_requested.connect(lambda: events.append("paste-sub"))
     ctrl = Qt.KeyboardModifier.ControlModifier
-    ctrl_shift = ctrl | Qt.KeyboardModifier.ShiftModifier
+    ctrl_alt = ctrl | Qt.KeyboardModifier.AltModifier
     qtbot.keyClick(panel, Qt.Key.Key_C, ctrl)
     qtbot.keyClick(panel, Qt.Key.Key_V, ctrl)
-    qtbot.keyClick(panel, Qt.Key.Key_C, ctrl_shift)  # Ctrl+Shift → palette row
-    qtbot.keyClick(panel, Qt.Key.Key_V, ctrl_shift)
+    qtbot.keyClick(panel, Qt.Key.Key_C, ctrl_alt)  # Ctrl+Alt → palette row
+    qtbot.keyClick(panel, Qt.Key.Key_V, ctrl_alt)
     assert events == ["copy", "paste", "copy-sub", "paste-sub"]
 
 

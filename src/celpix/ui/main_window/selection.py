@@ -125,6 +125,9 @@ class SelectionMixin:
         for action in self._clipboard_actions():
             menu.addAction(action)
         menu.addSeparator()
+        for action in self._view_settings_actions():
+            menu.addAction(action)
+        menu.addSeparator()
         menu.addAction(self._import_png_action)
         menu.addSeparator()
         menu.addAction(self._select_all_action)
@@ -400,6 +403,7 @@ class SelectionMixin:
         # back by the next click on a cell (``capability_sync._GATED_IN_PLACE``).
         self._import_png_action.setEnabled(self._import_available())
         self._select_all_action.setEnabled(has_doc)
+        self._sync_view_settings_actions()
         self._sync_entry_scope()  # a veto that runs after every owner
 
     # -- tile selection ----------------------------------------------------

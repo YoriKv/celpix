@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.2.7 - unreleased
+
+- More fine grained palette offset control (hold ctrl or shift for big jumps)
+- Copy/Paste View Settings (Ctrl+Shift+C/V)
+- Move to Previous/Next File (Ctrl+Shift+Up/Down)
+- Copying and pasting a whole palette row is now Ctrl+Alt+C/V
+- Importing a new file uses the current view's settings if able
+- Added a search box to shortcuts
+
 ## v1.2.6 - 2026-10-09
 
 - Added compression and reshape to all file types

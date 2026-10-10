@@ -93,6 +93,22 @@ class HistoryMixin:
             "Filter the Files list by name\nWords match in any order"
         )
         self._find_entry_action.triggered.connect(self._find_entry)
+        # Up/Down through the Files list without going there first: the list's
+        # own arrows, from wherever focus is. Ctrl+Shift because the bare and
+        # Shift-ed arrows move the view and resize it, and Ctrl+arrows nudge
+        # bytes; both modifiers held is a pair no text input in the window
+        # spends, so an ordinary shortcut is safe here too. Mnemonics "v" and
+        # "x": the rest of each word is taken in the Navigate menu.
+        self._previous_entry_action = QAction("Pre&vious Entry", self)
+        self._previous_entry_action.setShortcut(QKeySequence("Ctrl+Shift+Up"))
+        self._previous_entry_action.setToolTip("Select the Files row above")
+        self._previous_entry_action.triggered.connect(
+            lambda: self._files_panel.step_row(-1)
+        )
+        self._next_entry_action = QAction("Ne&xt Entry", self)
+        self._next_entry_action.setShortcut(QKeySequence("Ctrl+Shift+Down"))
+        self._next_entry_action.setToolTip("Select the Files row below")
+        self._next_entry_action.triggered.connect(lambda: self._files_panel.step_row(1))
         self._sync_history_actions()
 
     def _find_entry(self) -> None:
@@ -108,11 +124,14 @@ class HistoryMixin:
 
     # -- the actions ---------------------------------------------------------
     def _add_history_actions(self, menu: QMenu) -> None:
-        """Put Back/Forward and Find at the head of ``menu`` (Navigate), then a
-        separator — the three that move between entries rather than within one."""
+        """Put Back/Forward, Find and Previous/Next Entry at the head of ``menu``
+        (Navigate), then a separator — the five that move between entries rather
+        than within one."""
         menu.addAction(self._back_action)
         menu.addAction(self._forward_action)
         menu.addAction(self._find_entry_action)
+        menu.addAction(self._previous_entry_action)
+        menu.addAction(self._next_entry_action)
         menu.addSeparator()
 
     def _sync_history_actions(self) -> None:

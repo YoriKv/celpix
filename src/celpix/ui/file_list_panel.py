@@ -770,6 +770,11 @@ class FileListPanel(EntryRowsMixin, EntryMenuMixin, IconBaker, QWidget):
         # just stopped matching — or started.
         self._refilter()
 
+    def step_row(self, delta: int) -> None:
+        """Select the row above or below, as Up/Down do in the list — Navigate ▸
+        Previous / Next Entry, which reach here from anywhere in the window."""
+        self._tree.step_row(delta)
+
     # -- filtering -----------------------------------------------------------
     def focus_filter(self) -> None:
         """Put the cursor in the filter field with its text selected — Ctrl+F.

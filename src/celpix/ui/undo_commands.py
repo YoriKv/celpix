@@ -1520,8 +1520,12 @@ class RemoveEntriesCommand(QUndoCommand):
 
 @dataclass(frozen=True)
 class ParentState:
-    """Everything a jump changes on the file it jumps into: the four things a
+    """Everything a jump changes on the file it jumps into: the five things a
     save records for it, and the document they live on once it is loaded.
+
+    Paste View Settings installs one on the entry on screen the same way, which
+    is why the cell format is here although no jump moves it: a jump's state
+    carries the parent's own, so only a paste ever changes it.
 
     ``doc`` is held as the object itself, the way an undone removal holds an
     ``Entry``: it carries the file's unsaved bytes, the palette it was showing
@@ -1535,32 +1539,46 @@ class ParentState:
     pending_view: ViewOptions | None
     pending_palette: PaletteSource | None
     inputs: dict
+    tilemap_preset_id: str | None = None
     doc: Document | None = None
     reread: bool = False
 
 
-class JumpToParentCommand(QUndoCommand):
-    """Jump to Source / Jump to Bookmark: the parent file shown under the child's
-    settings, landed on the child's offset.
+class EntryStateCommand(QUndoCommand):
+    """An entry re-read under a new :class:`ParentState` — its format, palette,
+    view and bindings — as one step.
 
-    A step because the jump rewrites the parent's own recorded state — its
-    format, palette, view and bindings are what a save writes for it — and the
-    parent's arrangement before the jump is nothing the rows left behind can
-    describe. The two directions are the same operation over a
+    A step because what it rewrites is the entry's own recorded state, which a
+    save writes, and the arrangement it replaces is nothing the rows left behind
+    can describe. The two directions are the same operation over a
     :class:`ParentState` pair, but each captures the state it is leaving as it
     goes, so a redo puts back the very document the undo took away rather than
     re-reading, and the other way round. Only the first redo can refuse (the
-    file will not read under the child's settings); it then leaves the parent
-    as it was and marks itself obsolete, so the push drops it.
+    entry will not read under the new settings); it then leaves the entry as it
+    was and marks itself obsolete, so the push drops it.
+
+    ``land`` and ``position`` say where the first redo leaves the view: on a
+    child's offset (a jump) or on a byte position counted from the view's
+    position 0 (a paste, which keeps the view where it was standing).
     """
 
     def __init__(
-        self, window: MainWindow, parent: Entry, child: Entry, target: ParentState
+        self,
+        window: MainWindow,
+        entry: Entry,
+        text: str,
+        target: ParentState,
+        *,
+        land: Entry | None = None,
+        position: int | None = None,
     ) -> None:
-        super().__init__(f'jump to "{child.name}"')
+        super().__init__(text)
         self._window = window
-        self._parent = parent
-        self._child: Entry | None = child  # landed on by the first redo only
+        self._parent = entry
+        # Landed on by the first redo only.
+        self._land = land
+        self._position = position
+        self._first = True
         self._before: ParentState | None = None
         self._after = target
 
@@ -1568,13 +1586,14 @@ class JumpToParentCommand(QUndoCommand):
         with self._window._undo_apply():
             leaving = self._window._parent_state(self._parent)
             landed = self._window._apply_parent_state(
-                self._parent, self._after, land=self._child
+                self._parent, self._after, land=self._land, position=self._position
             )
             if landed:
                 self._before = leaving
-            elif self._child is not None:
+            elif self._first:
                 self.setObsolete(True)
-            self._child = None
+            self._first = False
+            self._land = self._position = None
 
     def undo(self) -> None:
         if self._before is None:
@@ -1583,6 +1602,16 @@ class JumpToParentCommand(QUndoCommand):
             leaving = self._window._parent_state(self._parent)
             if self._window._apply_parent_state(self._parent, self._before):
                 self._after = leaving
+
+
+class JumpToParentCommand(EntryStateCommand):
+    """Jump to Source / Jump to Bookmark: the parent file shown under the child's
+    settings, landed on the child's offset."""
+
+    def __init__(
+        self, window: MainWindow, parent: Entry, child: Entry, target: ParentState
+    ) -> None:
+        super().__init__(window, parent, f'jump to "{child.name}"', target, land=child)
 
 
 @dataclass(frozen=True)

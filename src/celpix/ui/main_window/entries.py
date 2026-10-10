@@ -215,7 +215,7 @@ class EntriesMixin:
     def _open_pixel(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Open pixel data")
         if path:
-            self._load_pixel(path, content_kind=ContentKind.PIXELS)
+            self._load_pixel(path, content_kind=ContentKind.PIXELS, inherit=True)
 
     def _open_tilemap(self) -> None:
         """File ▸ Open tilemap data — read any file as a map of tile indices.
@@ -227,7 +227,7 @@ class EntriesMixin:
         """
         path, _ = QFileDialog.getOpenFileName(self, "Open tilemap data")
         if path:
-            self._load_pixel(path, content_kind=ContentKind.TILEMAP)
+            self._load_pixel(path, content_kind=ContentKind.TILEMAP, inherit=True)
 
     def _ask_content_kind(self, path: str) -> ContentKind | None:
         """Which of the three readings to open ``path`` as, or None if cancelled —
@@ -253,7 +253,11 @@ class EntriesMixin:
         return buttons.get(box.clickedButton())
 
     def _load_pixel(
-        self, path: str, *, content_kind: ContentKind | None = None
+        self,
+        path: str,
+        *,
+        content_kind: ContentKind | None = None,
+        inherit: bool = False,
     ) -> None:
         """Open ``path`` as a workspace entry and switch the view to it.
 
@@ -272,6 +276,12 @@ class EntriesMixin:
         open-as prompt. Detection can only recognise a format it knows, so a raw
         region of a ROM has no way to announce itself as a map; asking is how
         that is said. ``None`` keeps the container's own answer.
+
+        ``inherit`` is for the gestures where the *user* opens a file — File ▸
+        Open and a drop: the file then reads the way the entry on screen does,
+        where both are the same kind (:meth:`~...view_settings.ViewSettingsMixin.
+        _inherit_view_settings`). A file opened on the way to something else — a
+        map's tile source, a bookmark's file — is read as itself.
         """
         existing = self._workspace.find_file(path)
         if existing is not None:
@@ -290,6 +300,8 @@ class EntriesMixin:
             content_kind=content_kind or detected,
             tilemap_preset_id=tilemap_preset_for(self._registry, container_id) or None,
         )
+        if inherit:
+            self._inherit_view_settings(entry)
         self._push_command(AddEntryCommand(self, entry, f"open {entry.name}"))
 
     # -- removal -------------------------------------------------------------

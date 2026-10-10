@@ -15,7 +15,7 @@ the details readout below the grid.
 sampling surfaces, and while armed a click reports the swatch's color instead
 of selecting it — the selected swatch is the one being *edited*, so moving it
 would retarget the editor mid-pick (``docs/design/palette-editing.md``).
-Copy/Paste — from the keyboard (Ctrl+C/V for the selected color, Ctrl+Shift+C/V
+Copy/Paste — from the keyboard (Ctrl+C/V for the selected color, Ctrl+Alt+C/V
 for the whole active palette row) or a right-click menu — move colors through the
 system clipboard as hex text. The panel only reports the intent (the
 ``*_requested`` signals and ``customContextMenuRequested``); the window owns the
@@ -67,7 +67,7 @@ class PalettePanel(ShortcutIsland, QWidget):
     # int is 32-bit *signed*, and any ARGB with alpha >= 0x80 overflows it.
     color_picked = Signal(object)
     # Copy/paste the selected color (Ctrl+C/V) or the whole active palette row
-    # (Ctrl+Shift+C/V), when the grid holds focus. The panel just reports intent;
+    # (Ctrl+Alt+C/V), when the grid holds focus. The panel just reports intent;
     # the window owns the clipboard and the undoable write-back.
     copy_requested = Signal()
     paste_requested = Signal()
@@ -266,16 +266,16 @@ class PalettePanel(ShortcutIsland, QWidget):
         colors."""
         # Copy/Paste reach here as key presses because the island claimed their
         # shortcut override; the window does the actual clipboard + write-back.
-        # Ctrl+Shift+C/V (whole palette row) aren't standard sequences, so they're
-        # matched by hand; check them first, as they subsume the plain ones.
-        ctrl_shift = (
-            Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
-        )
-        if event.modifiers() == ctrl_shift and event.key() == Qt.Key.Key_C:
+        # Ctrl+Alt+C/V (whole palette row) aren't standard sequences, so they're
+        # matched by hand; check them first, as they subsume the plain ones. Not
+        # Ctrl+Shift: that pair is the window's Copy/Paste View Settings, which
+        # applies whatever has focus.
+        ctrl_alt = Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier
+        if event.modifiers() == ctrl_alt and event.key() == Qt.Key.Key_C:
             self.copy_palette_row_requested.emit()
             event.accept()
             return
-        if event.modifiers() == ctrl_shift and event.key() == Qt.Key.Key_V:
+        if event.modifiers() == ctrl_alt and event.key() == Qt.Key.Key_V:
             self.paste_palette_row_requested.emit()
             event.accept()
             return

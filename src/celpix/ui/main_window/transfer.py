@@ -233,7 +233,7 @@ class TransferMixin:
                 if kind is ContentKind.PALETTE:
                     self._open_palette_data(path)
                 else:
-                    self._load_pixel(path, content_kind=kind)
+                    self._load_pixel(path, content_kind=kind, inherit=True)
         finally:
             if macro:
                 self._undo_stack.endMacro()

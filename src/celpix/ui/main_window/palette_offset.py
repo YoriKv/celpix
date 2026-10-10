@@ -41,6 +41,7 @@ another entry's buffer (:mod:`~celpix.ui.main_window.palette_entry`).
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from celpix.core.address import format_hex, parse_hex
 from celpix.core.document import Document
@@ -158,24 +159,33 @@ class PaletteOffsetMixin:
             return
         self._load_palette_at_offset(byte_off)
 
-    def _step_palette_offset(self, delta_tiles: int) -> None:
-        """Nudge the palette window by ``delta_tiles`` whole tiles.
+    def _step_palette_offset(
+        self, delta: int, *, unit: Literal["color", "tile", "palette"] = "tile"
+    ) -> None:
+        """Nudge the palette window by ``delta`` units of ``unit``.
 
         The ◄/► buttons: one tile of the current pixel format is the step, so
         walking the palette window a tile at a time hunts for the colors a few
-        tiles off the graphics. Clamped so a step never runs before byte 0 or
-        past the last position a full palette entry still fits - holding an
-        arrow at the edge simply stops, without the past-EOF alert a typed
-        offset would raise. Reuses each mode's own load, so a step is an
-        ordinary undoable palette change either way.
+        tiles off the graphics. Ctrl on the button steps one colour entry, for a
+        palette that is found but misaligned - one whose rows start a colour or
+        two off a tile boundary; Shift steps a full palette, so the panel pages
+        on to swatches it has not shown yet. Clamped so a step
+        never runs before byte 0 or past the last position a full palette entry
+        still fits - holding an arrow at the edge simply stops, without the
+        past-EOF alert a typed offset would raise. Reuses each mode's own load,
+        so a step is an ordinary undoable palette change either way.
         """
         entry = self._workspace.current
         if self._doc is None or entry is None or not self._palette_mode_has_offset():
             return
-        step = self._doc.bytes_per_tile
         entry_size = pipeline.palette_entry_size(
             self._palette_preset_id(), self._registry
         )
+        step = {
+            "color": entry_size,
+            "tile": self._doc.bytes_per_tile,
+            "palette": FULL_PALETTE_COUNT * entry_size,
+        }[unit]
         try:
             end = self._palette_offset_end(entry)
         except OSError as exc:
@@ -191,7 +201,7 @@ class PaletteOffsetMixin:
         # source.offset is already in the coordinates the load expects, so a step
         # is just arithmetic on it.
         current = self._doc.palette_config.source.offset
-        target = min(max(0, current + delta_tiles * step), last)
+        target = min(max(0, current + delta * step), last)
         if target == current:
             return
         if self._palette_mode is PaletteMode.ENTRY:

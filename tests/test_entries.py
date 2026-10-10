@@ -494,6 +494,21 @@ def _open_files(qtbot, tmp_path, *names):
     return window, list(window._workspace.entries)
 
 
+def test_previous_and_next_entry_step_the_files_list_from_anywhere(
+    qtbot, tmp_path
+) -> None:
+    window, (first, second, third) = _open_files(qtbot, tmp_path, "a", "b", "c")
+    window._activate_entry(second)
+    window._next_entry_action.trigger()
+    assert window._workspace.current is third
+    assert window._files_panel.selected_entries() == [third]
+    window._next_entry_action.trigger()  # the last row: nothing below it
+    assert window._workspace.current is third
+    window._previous_entry_action.trigger()
+    window._previous_entry_action.trigger()
+    assert window._workspace.current is first
+
+
 def _pick(panel, *entries) -> None:
     """Select exactly these rows, the first of them current — what a click
     followed by Shift- or Ctrl-clicks leaves behind."""

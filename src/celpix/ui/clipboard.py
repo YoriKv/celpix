@@ -19,13 +19,15 @@ This module is the **Qt bridge alone** — what goes on the clipboard and what c
 off it. The tile flavour's own byte format, and the validation that makes reading
 one safe, are :class:`~celpix.core.tilepayload.TilePayload`'s: a payload arrives
 from outside the process, so parsing it belongs with the rest of the model where
-it can be tested without a window. The same split holds for the two JSON
+it can be tested without a window. The same split holds for the three JSON
 flavours at the foot of this file: files-pane rows, whose records are
-:func:`~celpix.project.projectfile.entries_payload`'s, and one entry's input
-bindings (Copy Inputs).
+:func:`~celpix.project.projectfile.entries_payload`'s, one entry's input
+bindings (Copy Inputs), and one entry's view settings
+(:mod:`~celpix.project.view_settings`).
 
-Those two are the flavours with a half that **cannot** be written down — a tile
-binding or an input's source is an entry, and an entry is not a value — so a copy
+Those three are the flavours with a half that **cannot** be written down — a tile
+binding, an input's source or an ENTRY palette's source is an entry, and an
+entry is not a value — so a copy
 of one leaves the objects behind in memory beside the payload
 (:class:`_JsonFlavour`) rather than writing a position that the next drag would
 invalidate.
@@ -64,6 +66,9 @@ ENTRIES_MIME = "application/x-celpix-entries"
 # One entry's input bindings (Copy Inputs / Paste Inputs), keyed by plugin id —
 # the entry's own record, narrowed to its inputs. As celPix-only as the rows.
 INPUTS_MIME = "application/x-celpix-inputs"
+# One entry's view settings (Copy View Settings): formats, arrangement,
+# compression preview and palette (:mod:`celpix.project.view_settings`).
+VIEW_SETTINGS_MIME = "application/x-celpix-view-settings"
 
 # This process, so a paste can tell a copy taken from the running editor from one
 # taken from another window (or another day). It buys exactly one thing: it says
@@ -259,6 +264,7 @@ class _JsonFlavour:
 
 _ENTRIES = _JsonFlavour(ENTRIES_MIME)
 _INPUTS = _JsonFlavour(INPUTS_MIME)
+_VIEW_SETTINGS = _JsonFlavour(VIEW_SETTINGS_MIME)
 #: The bound entries the last entry copy remembered (:class:`_JsonFlavour`).
 _COPIED_BINDINGS = _ENTRIES.refs
 
@@ -316,3 +322,28 @@ def take_input_sources() -> dict[int, object]:
 def has_inputs() -> bool:
     """Whether Paste Inputs could do anything — drives the row's state."""
     return _INPUTS.has()
+
+
+def put_view_settings(payload: dict, sources: dict[int, object]) -> None:
+    """Place one entry's view settings on the clipboard (Copy View Settings).
+
+    ``sources`` holds the entry an ENTRY palette reads its colours from, under
+    the position the payload names it by.
+    """
+    _VIEW_SETTINGS.put(payload, sources)
+
+
+def take_view_settings() -> dict | None:
+    """The view-settings payload on the clipboard, if Copy View Settings put one
+    there."""
+    return _VIEW_SETTINGS.take()
+
+
+def take_view_settings_sources() -> dict[int, object]:
+    """The entries the last Copy View Settings remembered, minus any since freed."""
+    return _VIEW_SETTINGS.remembered()
+
+
+def has_view_settings() -> bool:
+    """Whether Paste View Settings could do anything — drives the action's state."""
+    return _VIEW_SETTINGS.has()

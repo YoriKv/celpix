@@ -86,7 +86,7 @@ CANVAS_GESTURES: tuple[tuple[str, str], ...] = (
 # the menu section already lists.
 PANEL_KEYS: tuple[tuple[str, str], ...] = (
     ("Copy / paste a color (Palette)", "Ctrl+C / Ctrl+V"),
-    ("Copy / paste a palette row (Palette)", "Ctrl+Shift+C / Ctrl+Shift+V"),
+    ("Copy / paste a palette row (Palette)", "Ctrl+Alt+C / Ctrl+Alt+V"),
     ("Move the color selection (Palette)", "Arrow keys"),
     ("Edit a color (Palette)", "Double-click"),
     ("Step the tile pick (Tile Source)", "Arrow keys"),

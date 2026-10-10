@@ -556,6 +556,13 @@ class EntrySession:
     selected_tile: int | None = None
     selected_last: int | None = None
     selection_slots: tuple[int, int] | None = None
+    # Whether these settings were **handed on** from the entry on screen when
+    # the file was opened, rather than stated for this entry by a project or the
+    # user (``ui/main_window/view_settings.py``). Only the first load reads it: a
+    # format the container states for its own payload still wins over an
+    # inherited one (:func:`~celpix.project.documents.apply_pixel_preset_hint`).
+    # Never persisted, and gone with the first capture.
+    inherited: bool = False
 
     def __post_init__(self) -> None:
         # PaletteMode is str-valued so it persists as itself, which makes a bare

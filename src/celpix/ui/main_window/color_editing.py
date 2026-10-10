@@ -676,8 +676,8 @@ class ColorEditingMixin:
                 has_selection and can_paste,
             ),
             (None, None, None, None),  # separator
-            ("Copy Palette &Row", self._copy_palette_row, "Ctrl+Shift+C", True),
-            ("Paste Palette Ro&w", self._paste_palette_row, "Ctrl+Shift+V", can_paste),
+            ("Copy Palette &Row", self._copy_palette_row, "Ctrl+Alt+C", True),
+            ("Paste Palette Ro&w", self._paste_palette_row, "Ctrl+Alt+V", can_paste),
         ):
             if label is None:
                 menu.addSeparator()

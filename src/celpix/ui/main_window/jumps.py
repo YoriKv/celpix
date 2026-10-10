@@ -115,6 +115,7 @@ class JumpsMixin:
                     if bound
                     else parent.inputs
                 ),
+                tilemap_preset_id=parent.tilemap_preset_id,
                 reread=True,
             )
 
@@ -211,13 +212,20 @@ class JumpsMixin:
             pending_view=parent.pending_view,
             pending_palette=parent.pending_palette,
             inputs=parent.inputs,
+            tilemap_preset_id=parent.tilemap_preset_id,
             doc=parent.doc,
         )
 
     def _apply_parent_state(
-        self, parent: Entry, state: ParentState, *, land: Entry | None = None
+        self,
+        parent: Entry,
+        state: ParentState,
+        *,
+        land: Entry | None = None,
+        position: int | None = None,
     ) -> bool:
-        """Install ``state`` on ``parent`` and show it; land on ``land``'s offset.
+        """Install ``state`` on ``parent`` and show it; land on ``land``'s offset,
+        or on ``position`` counted from the view's position 0.
 
         A ``reread`` state is the jump itself: the parent's document is read
         again under the supplied snapshot, since a new format, palette and view
@@ -232,6 +240,7 @@ class JumpsMixin:
         previous = parent.doc
         kept = (parent.session, parent.pending_view, parent.pending_palette)
         kept_inputs = parent.inputs
+        kept_cells = parent.tilemap_preset_id
         # Copies: a load consumes and a capture rewrites these in place, and the
         # command's state must survive to be applied again.
         parent.session = replace(state.session) if state.session is not None else None
@@ -244,6 +253,7 @@ class JumpsMixin:
             else None
         )
         parent.inputs = state.inputs
+        parent.tilemap_preset_id = state.tilemap_preset_id
         if state.reread:
             # No pending seed of the re-read's own: the jump arrives under the
             # child's palette and view, installed just above, not the parent's.
@@ -254,9 +264,14 @@ class JumpsMixin:
                 self._restore_document(parent, previous)
                 parent.session, parent.pending_view, parent.pending_palette = kept
                 parent.inputs = kept_inputs
+                parent.tilemap_preset_id = kept_cells
                 return False
         else:
             parent.doc = state.doc
+        # A row names its map's layout off the cell format
+        # (:meth:`~...tilemap_bar.TilemapBarMixin._apply_tilemap_binding`).
+        if parent.tilemap_preset_id != kept_cells:
+            self._files_panel.refresh_entry(parent)
         if parent is self._workspace.current:
             self._on_current_entry_changed(parent)  # show it again in place
         else:
@@ -270,6 +285,8 @@ class JumpsMixin:
             if parent.kind is EntryKind.SLICE:
                 at += self._anchor_base()
             self._land_on_byte(at)
+        elif position is not None and self._workspace.current is parent and self._doc:
+            self._land_on_byte(self._anchor_base() + position)
         # The parent's format may have moved either way, and a map bound to it
         # holds tiles decoded under the old one.
         self._reresolve_bound_art(self._maps_drawing_from([parent]))
@@ -295,9 +312,9 @@ class JumpsMixin:
                 previous.pixel_data
             ) != len(doc.pixel_data):
                 self._alert(
-                    f"{parent.name} has unsaved changes the jump cannot carry. "
-                    "Write it first.",
-                    title="celPix - jump",
+                    f"{parent.name} has unsaved changes that cannot be carried "
+                    "into it read this way. Write it first.",
+                    title="celPix",
                 )
                 return False
             doc.pixel_data = previous.pixel_data
@@ -390,6 +407,7 @@ class JumpsMixin:
                     else None  # the snapshot renders through the default palette
                 ),
                 inputs=parent.inputs,
+                tilemap_preset_id=parent.tilemap_preset_id,
                 reread=True,
             )
 

@@ -538,11 +538,15 @@ def apply_pixel_preset_hint(
     A tile bank that records its own bit depth should not need one guessed: 2bpp,
     4bpp and 8bpp all decode into something that *looks* like graphics. Only the
     geometry is re-derived, and only on a **fresh** entry — once a project has
-    stored a format, or the user picked one, that is the answer.
+    stored a format, or the user picked one, that is the answer. A file opened
+    with the settings of the entry on screen is still fresh: those were handed
+    on, not stated for it (:attr:`~celpix.project.entry.EntrySession.inherited`).
     """
     wanted = str(px.ctx.get(KEY_PIXEL_PRESET, "") or "")
     session = entry.session
-    if not wanted or session is None or entry.pending_view is not None:
+    if not wanted or session is None:
+        return px, cfg
+    if entry.pending_view is not None and not session.inherited:
         return px, cfg
     if wanted == session.pixel_preset_id:
         return px, cfg

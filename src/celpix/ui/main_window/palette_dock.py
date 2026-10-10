@@ -178,18 +178,28 @@ class PaletteDockMixin:
 
         # Step the palette offset one tile at a time: nudging the source window by
         # a whole tile is how you hunt for a palette that sits a few tiles off the
-        # graphics. Shown with the offset
-        # field, in Offset mode only. The same icon-font arrows the navbar's tile
-        # steps wear, baked in _bake_palette_offset_arrows.
+        # graphics. Ctrl on the click steps one colour entry instead, the fine
+        # nudge Ctrl+arrows is on the navbar; Shift steps a full palette, a page
+        # of the panel. Shown with the offset field, in Offset mode only. The
+        # same icon-font arrows the navbar's tile steps wear, baked in
+        # _bake_palette_offset_arrows.
         self._palette_offset_prev = QPushButton()
-        self._palette_offset_prev.setToolTip("Palette offset back one tile")
+        self._palette_offset_prev.setToolTip(
+            "Palette offset back one tile\n"
+            "Ctrl+click: back one color\n"
+            "Shift+click: back one full palette"
+        )
         self._palette_offset_prev.setFixedWidth(28)
-        self._palette_offset_prev.clicked.connect(lambda: self._step_palette_offset(-1))
+        self._palette_offset_prev.clicked.connect(lambda: self._on_palette_step(-1))
         self._palette_offset_prev.hide()
         self._palette_offset_next = QPushButton()
-        self._palette_offset_next.setToolTip("Palette offset forward one tile")
+        self._palette_offset_next.setToolTip(
+            "Palette offset forward one tile\n"
+            "Ctrl+click: forward one color\n"
+            "Shift+click: forward one full palette"
+        )
         self._palette_offset_next.setFixedWidth(28)
-        self._palette_offset_next.clicked.connect(lambda: self._step_palette_offset(1))
+        self._palette_offset_next.clicked.connect(lambda: self._on_palette_step(1))
         self._palette_offset_next.hide()
         self._bake_palette_offset_arrows()
 
@@ -279,7 +289,7 @@ class PaletteDockMixin:
         self._palette_panel.edit_requested.connect(self._open_color_editor)
         self._palette_panel.color_picked.connect(self._on_color_picked)
         # Copy/paste the selected color (Ctrl+C/V) or the active palette row
-        # (Ctrl+Shift+C/V) while the grid has focus, or from its right-click menu.
+        # (Ctrl+Alt+C/V) while the grid has focus, or from its right-click menu.
         self._palette_panel.copy_requested.connect(self._copy_palette_color)
         self._palette_panel.paste_requested.connect(self._paste_palette_color)
         self._palette_panel.copy_palette_row_requested.connect(self._copy_palette_row)
@@ -363,6 +373,21 @@ class PaletteDockMixin:
             [self._palette_dock.sizeHint().width()],
             Qt.Orientation.Horizontal,
         )
+
+    def _on_palette_step(self, direction: int) -> None:
+        """A ◄/► click: one tile, one colour entry with Ctrl held, or a full
+        palette with Shift held (Ctrl wins if both are).
+
+        Read from the application: ``clicked`` carries no modifiers.
+        """
+        mods = QApplication.keyboardModifiers()
+        if mods & Qt.KeyboardModifier.ControlModifier:
+            unit = "color"
+        elif mods & Qt.KeyboardModifier.ShiftModifier:
+            unit = "palette"
+        else:
+            unit = "tile"
+        self._step_palette_offset(direction, unit=unit)
 
     def _bake_palette_offset_arrows(self) -> None:
         """Stamp the palette-offset steps in the theme's button-text color.
