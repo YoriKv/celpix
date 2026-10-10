@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.2.6 - unreleased
+## v1.2.6 - 2026-10-09
 
 - Added compression and reshape to all file types
 - Added a compression dropdown for tilemap views and tilemap preview
