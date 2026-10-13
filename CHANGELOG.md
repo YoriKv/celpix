@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.2.8 - unreleased
+## v1.2.8 - 2026-10-13
 
 - Bitmap width now finds tile sizes better.
 - Edit Palette… on the palette dock with a few options. Undo and preview supported.
