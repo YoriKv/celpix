@@ -144,7 +144,8 @@ class ViewOptions:
     ``bitmap_width`` (0 = off) says the data is a bitmap that many pixels wide.
     It belongs to ``two_dimensional`` and applies only with it: the codec's tile
     size is replaced by the largest divisor of the width that still fits inside
-    it (:func:`~celpix.core.arrangement.bitmap_tile_size`) so whole tiles span
+    it and that the codec accepts
+    (:func:`~celpix.core.arrangement.bitmap_tile_sizes`) so whole tiles span
     the bitmap, and ``columns`` follows as the count that does. It is display
     state like the rest of these, but unlike them it changes the codec's
     geometry — so it is resolved on the load path, and only for codecs whose

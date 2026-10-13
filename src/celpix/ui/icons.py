@@ -34,6 +34,10 @@ class Icon(Enum):
     # solid colour bar under the bucket which stays black whatever the weight
     # axis is set to, and reads as an underline beside these light strokes.
     PAINT_BUCKET = "\ue997"  # colors
+    # A paint roller: the replace-colour tool repaints every pixel of one
+    # colour across the view, the whole-surface stroke a roller is for, where
+    # the bucket's flood stops at the region's edge.
+    PAINT_ROLLER = "\ue243"  # format_paint
 
     # The file list's row markers.
     FLAG = "\uf0c6"  # flag - a bookmark row's ribbon

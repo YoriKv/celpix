@@ -76,6 +76,7 @@ from celpix.plugins.compress_reshape import (
 )
 from celpix.plugins.data_lut import DATA_LUT_ENGINE, data_lut_from_spec
 from celpix.plugins.formats import adapt_format, format_behind
+from celpix.plugins.gs_swizzle import GS_SWIZZLE_ENGINE, gs_swizzle_from_spec
 from celpix.plugins.split_parts import SPLIT_PARTS_ENGINE, split_parts_from_spec
 from celpix.plugins.trust import (
     ConfirmCallback,
@@ -777,12 +778,13 @@ def _load_preset(
 # The reshape preset engines, keyed by the `engine_id` a preset declares. Unlike
 # a pixel or palette preset's, a reshape preset's engine_id is a *discriminator*:
 # it picks which adapter turns the spec into a plugin rather than naming one to
-# resolve at decode time. Address permutations, value substitutions and part
-# joins are unrelated transforms sharing only a file format, so this is where
-# they part.
+# resolve at decode time. Address permutations, value substitutions, part joins
+# and the PS2 GS swizzle are unrelated transforms sharing only a file format, so
+# this is where they part.
 RESHAPE_ENGINES = {
     BITSWAP_ENGINE: bitswap_from_spec,
     DATA_LUT_ENGINE: data_lut_from_spec,
+    GS_SWIZZLE_ENGINE: gs_swizzle_from_spec,
     SPLIT_PARTS_ENGINE: split_parts_from_spec,
 }
 

@@ -562,6 +562,46 @@
         "pixels",
         "tilemap"
       ],
+      "reshape.ps2-psmt4-w1024": [
+        "pixels",
+        "tilemap"
+      ],
+      "reshape.ps2-psmt4-w128": [
+        "pixels",
+        "tilemap"
+      ],
+      "reshape.ps2-psmt4-w256": [
+        "pixels",
+        "tilemap"
+      ],
+      "reshape.ps2-psmt4-w512": [
+        "pixels",
+        "tilemap"
+      ],
+      "reshape.ps2-psmt4-w64": [
+        "pixels",
+        "tilemap"
+      ],
+      "reshape.ps2-psmt8-w1024": [
+        "pixels",
+        "tilemap"
+      ],
+      "reshape.ps2-psmt8-w128": [
+        "pixels",
+        "tilemap"
+      ],
+      "reshape.ps2-psmt8-w256": [
+        "pixels",
+        "tilemap"
+      ],
+      "reshape.ps2-psmt8-w512": [
+        "pixels",
+        "tilemap"
+      ],
+      "reshape.ps2-psmt8-w64": [
+        "pixels",
+        "tilemap"
+      ],
       "reshape.reverse-byte-bits": [
         "pixels",
         "tilemap"

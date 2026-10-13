@@ -115,7 +115,7 @@ Make the other three slices:
 2. Set **Zoom** to 6.
 3. Click **Pixel Mode** (E).
 4. Select a tool: Select, Pencil, Eyedropper, Fill, Line, Rectangle, Filled
-   Rectangle, Ellipse or Filled Ellipse (keys 1 to 9).
+   Rectangle, Ellipse, Filled Ellipse or Replace Color (keys 1 to 9, then 0).
 5. Select a colour in the **Palette** dock and draw.
 
 ![Drawing on a tile](images/05-pixel-edit.png)

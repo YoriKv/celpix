@@ -29,6 +29,12 @@ from celpix.plugins.data_lut import (
     MAX_SELECTOR_BIT,
     data_lut_from_spec,
 )
+from celpix.plugins.gs_swizzle import (
+    GS_SWIZZLE_ENGINE,
+    GsSwizzleReshape,
+    gs_permutation,
+    gs_swizzle_from_spec,
+)
 from celpix.plugins.registry import default_registry
 from celpix.plugins.split_parts import (
     SPLIT_PARTS_ENGINE,
@@ -702,3 +708,145 @@ def test_reshape_preset_needs_an_id_and_name_of_its_own(tmp_path) -> None:
     issues = discovery.load_directory(reg, str(tmp_path))
     assert [i.message for i in issues if "reshape engine's" in i.message]
     assert SPLIT_PARTS_ENGINE not in {p.info.id for p in reg.plugins(Stage.RESHAPE)}
+
+
+# -- PS2 GS swizzle ----------------------------------------------------------
+
+
+def _closed_form_psmt8(data: bytes, width: int, height: int) -> bytes:
+    """The widely used arithmetic PSMT8 unswizzle, written independently of the
+    engine's GS tables, so the two agreeing is evidence rather than a tautology."""
+    out = bytearray(width * height)
+    for y in range(height):
+        for x in range(width):
+            block = (y & ~0xF) * width + (x & ~0xF) * 2
+            swap = (((y + 2) >> 2) & 1) * 4
+            row = (((y & ~3) >> 1) + (y & 1)) & 7
+            column = row * width * 2 + ((x + swap) & 7) * 4
+            byte = ((y >> 1) & 1) + ((x >> 2) & 2)
+            out[y * width + x] = data[block + column + byte]
+    return bytes(out)
+
+
+def test_gs_swizzle_8bpp_matches_the_closed_form_unswizzle() -> None:
+    """Two PSMT8 pages across, so page addressing is exercised as well as the
+    block and column tables. Every byte distinct mod 256 is not possible at this
+    size, so the data is a counter whose period is not a power of two."""
+    width, height = 256, 64
+    data = bytes((i * 7 + i // 251) & 0xFF for i in range(width * height))
+    plugin = GsSwizzleReshape(8, width)
+    assert plugin.reshape(data, PipelineContext()) == _closed_form_psmt8(
+        data, width, height
+    )
+
+
+def test_gs_swizzle_4bpp_keeps_each_gs_block_whole() -> None:
+    """A GS block is 256 bytes in every format, numbered by the format's own
+    block table. Uploaded page for page, the 32x16 pixels of PSMT4 block k must
+    all come from the 8x8 pixels of PSMCT32 block k — a check on the column
+    tables that does not use them."""
+    block32 = (
+        (0, 1, 4, 5, 16, 17, 20, 21),
+        (2, 3, 6, 7, 18, 19, 22, 23),
+        (8, 9, 12, 13, 24, 25, 28, 29),
+        (10, 11, 14, 15, 26, 27, 30, 31),
+    )
+    block4 = (
+        (0, 2, 8, 10),
+        (1, 3, 9, 11),
+        (4, 6, 12, 14),
+        (5, 7, 13, 15),
+        (16, 18, 24, 26),
+        (17, 19, 25, 27),
+        (20, 22, 28, 30),
+        (21, 23, 29, 31),
+    )
+    perm = gs_permutation(4, 128, 128)
+    assert perm is not None and sorted(perm) == list(range(128 * 128))
+    upload_block = {}  # region byte -> PSMCT32 block, for the 64x32 upload
+    for y in range(32):
+        for x in range(64):
+            for k in range(4):
+                upload_block[(y * 64 + x) * 4 + k] = block32[y // 8][x // 8]
+    for i, nibble in enumerate(perm):
+        y, x = divmod(i, 128)
+        assert upload_block[nibble >> 1] == block4[y // 16][x // 32], (x, y)
+
+
+def _published_psmt4_writer(pixels: list[int], width: int, height: int) -> bytes:
+    """The 4bpp-to-32-bit conversion published in the PS2 Linux "HOWTO swizzle
+    textures", in its own arithmetic: GS-order bytes from row-order nibbles."""
+    out = bytearray(width * height // 2)
+    pages_across, pages_down = (width + 127) // 128, (height + 127) // 128
+    for y in range(height):
+        for x in range(width):
+            page = (y // 128) * pages_across + x // 128
+            page_at = (page // pages_down) * 32 * height * 2 + (page % pages_down) * 256
+            block_at = ((x & 0x7F & ~0x1F) >> 1) * height + (y & 0x7F & ~0xF) * 2
+            swap = (((y + 2) >> 2) & 1) * 4
+            row = (((y & ~3) >> 1) + (y & 1)) & 7
+            column_at = row * height * 2 + ((x + swap) & 7) * 4
+            at = page_at + block_at + column_at + ((x >> 3) & 3)
+            out[at] |= pixels[y * width + x] << ((y >> 1) & 1) * 4
+    return bytes(out)
+
+
+def test_gs_swizzle_4bpp_follows_the_published_upload_convention() -> None:
+    """Two pages across and one down: more than one 32-bit upload fills the
+    texture's memory, and the published conversion's is the one read. The
+    transposed shape is just as valid to the GS and swaps the pages' bytes."""
+    width, height = 256, 128
+    pixels = [(i * 5 + i // 97) & 0xF for i in range(width * height)]
+    rows = bytes(pixels[i] | pixels[i + 1] << 4 for i in range(0, len(pixels), 2))
+    stored = _published_psmt4_writer(pixels, width, height)
+    plugin = GsSwizzleReshape(4, width)
+    assert plugin.reshape(stored, PipelineContext()) == rows
+    assert plugin.unshape(rows, PipelineContext()) == stored
+
+
+@pytest.mark.parametrize(
+    ("bpp", "width", "height"),
+    [(4, 64, 128), (4, 128, 64), (4, 256, 256), (8, 128, 128)],
+)
+def test_gs_swizzle_round_trips_and_moves_bytes(bpp: int, width: int, height: int):
+    """The shapes narrower or shorter than a page have one upload rectangle, the
+    page-sized ones several; each must invert exactly, or a save scrambles."""
+    size = width * height * bpp // 8
+    data = bytes((i * 13 + i // 256) & 0xFF for i in range(size))
+    plugin = GsSwizzleReshape(bpp, width)
+    shaped = plugin.reshape(data, PipelineContext())
+    assert shaped != data
+    assert plugin.unshape(shaped, PipelineContext()) == data
+
+
+def test_gs_swizzle_refuses_a_region_that_is_not_one_texture() -> None:
+    """A slice with its header or CLUT still on would otherwise draw as stripes
+    with nothing saying the slice, not the preset, is wrong."""
+    plugin = GsSwizzleReshape(4, 128)
+    with pytest.raises(ValueError, match="128 pixels wide"):
+        plugin.reshape(bytes(128 * 128 // 2 + 32), PipelineContext())
+
+
+def test_shipped_gs_swizzle_presets_build_the_shapes_their_ids_name() -> None:
+    reg = default_registry()
+    for bpp in (4, 8):
+        for width in (64, 128, 256, 512, 1024):
+            plugin = reg.plugin(Stage.RESHAPE, f"reshape.ps2-psmt{bpp}-w{width}")
+            assert isinstance(plugin, GsSwizzleReshape)
+            assert (plugin.bpp, plugin.width) == (bpp, width)
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"bpp": 4},  # no width
+        {"bpp": 2, "width": 128},  # the GS's 4bpp and 8bpp formats only
+        {"bpp": 4, "width": 96},  # TEX0 states a log2
+        {"bpp": 4, "width": 2048},
+        {"bpp": 4, "width": 128, "height": 64},  # misspelt or misunderstood
+    ],
+)
+def test_gs_swizzle_preset_rejects_numbers_it_cannot_mean(params: dict) -> None:
+    spec = {"id": "reshape.test-gs", "name": "Test", "engine_id": GS_SWIZZLE_ENGINE}
+    with pytest.raises(ValueError):
+        gs_swizzle_from_spec(spec | {"params": params})

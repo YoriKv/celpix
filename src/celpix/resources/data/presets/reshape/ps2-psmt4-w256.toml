@@ -1,0 +1,13 @@
+# A PS2 4bpp (PSMT4) texture 256 pixels wide, stored in GS-memory order:
+# the bytes a 32-bit upload leaves in GS memory, which the GS samples as PSMT4.
+# Read as rows it draws as interlaced stripes. Slice exactly the texture's pixels;
+# the height is the slice's. One preset per width, because the GS's page layout
+# makes the permutation depend on it (docs/design/reshape-stage.md §10).
+id = "reshape.ps2-psmt4-w256"
+name = "PS2 GS swizzle (4bpp, 256 wide)"
+engine_id = "reshape.ps2-gs-swizzle"
+category = "Sony"
+
+[params]
+bpp = 4
+width = 256

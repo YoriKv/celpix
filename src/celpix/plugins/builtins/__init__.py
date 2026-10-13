@@ -26,6 +26,7 @@ from celpix.plugins.discovery import (
     preset_from_toml,
 )
 from celpix.plugins.formats import adapt_format
+from celpix.plugins.gs_swizzle import GsSwizzleReshape
 from celpix.plugins.split_parts import SplitPartsReshape
 
 from .aplib import AplibCompression
@@ -308,7 +309,11 @@ def _picker_order(plugin: ReshapePlugin) -> tuple:
     The joins are ordered by what they join instead - one table before several,
     bytes before words, fewer parts first, the plain corner order before the
     clockwise one - and every other table keeps its file order ahead of them.
+    The PS2 swizzles go by depth, then width as a number: in file order
+    ``w1024`` would sort ahead of ``w128``.
     """
+    if isinstance(plugin, GsSwizzleReshape):
+        return 1, plugin.bpp, plugin.width
     if not isinstance(plugin, SplitPartsReshape):
         return (0,)
-    return 1, plugin.groups, plugin.unit, plugin.parts, plugin.clockwise
+    return 2, plugin.groups, plugin.unit, plugin.parts, plugin.clockwise

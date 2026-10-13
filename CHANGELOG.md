@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.2.8 - unreleased
+
+- Bitmap width now finds tile sizes better.
+- Edit Palette… on the palette dock with a few options. Undo and preview supported.
+- Replace Color pixel tool. Replaces every pixel of the clicked color in the view.
+- PS2 GS swizzle reshapes. Read and edit 4bpp/8bpp PS2 textures stored in GS-memory order.
+
 ## v1.2.7 - 2026-10-10
 
 - More fine grained palette offset control (hold ctrl or shift for big jumps)

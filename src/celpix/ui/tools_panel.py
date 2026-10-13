@@ -2,15 +2,16 @@
 
 A dumb view, like :class:`~celpix.ui.palette_panel.PalettePanel`, embedded down
 the canvas's right edge: it shows one checkable button per tool in
-:data:`~celpix.ui.tools.TOOL_SPECS` order — which is also the 1–9 key order, so a
-button's position in the column is its number key — and reports the picked tool
-via :attr:`tool_selected`. It owns no editing logic and no mode state: the
+:data:`~celpix.ui.tools.TOOL_SPECS` order — which is also the number-key order,
+1–9 then 0, so a button's position in the column is its key — and reports the
+picked tool via :attr:`tool_selected`. It owns no editing logic and no mode state: the
 pixel-edit controller decides what a tool *does* and drives :meth:`set_tool` back
 when the tool changes by a number-key shortcut, so the buttons always mirror the
 active tool.
 
 Each button is a fixed square showing an icon only. The face comes from a glyph in
-the bundled icon font where one exists (pencil, fill bucket, eyedropper) or a shape
+the bundled icon font where one exists (pencil, fill bucket, eyedropper, paint
+roller) or a shape
 the panel paints for the geometry tools (line/rect/ellipse and their filled variants,
 plus the selection marquee), so those share one size and padding. Both are
 rasterized here and tinted to the palette's button-text color — in its enabled
@@ -36,9 +37,9 @@ from celpix.ui.tools import TOOL_SPECS, Tool, ToolSpec
 from celpix.ui.widgets import IconBaker
 
 # A single vertical column: the panel is a rail down the right edge of the canvas,
-# so the nine tools read top-to-bottom like a paint program's toolbox.
-# The rail follows TOOL_SPECS order, which is also the 1..9 key order — so a
-# button's position in the column is its number key. Reorder there, not here.
+# so the tools read top-to-bottom like a paint program's toolbox.
+# The rail follows TOOL_SPECS order, which is also the number-key order — so a
+# button's position in the column is its key. Reorder there, not here.
 
 # The square button and the icon drawn inside it, in logical pixels. The icon
 # leaves a little breathing room inside the button's frame and check highlight.

@@ -553,7 +553,7 @@ class ColorEditingMixin:
         if not colors:
             self.statusBar().showMessage("No color on the clipboard to paste.")
             return
-        if self._paste_colors_at(index, colors, 1, "color"):
+        if self._write_colors_at(index, colors, 1, "paste color"):
             self.statusBar().showMessage(
                 f"Pasted color {clipboard.color_text(colors[0])}."
             )
@@ -569,21 +569,23 @@ class ColorEditingMixin:
             self.statusBar().showMessage("No colors on the clipboard to paste.")
             return
         start, count = self._active_palette_row()
-        if self._paste_colors_at(start, colors, count, "palette row"):
+        if self._write_colors_at(start, colors, count, "paste palette row"):
             self.statusBar().showMessage("Pasted colors into the palette row.")
         else:
             self.statusBar().showMessage("Clipboard colors match the palette row.")
 
-    def _paste_colors_at(
-        self, start: int, colors: list[int], limit: int, label: str
+    def _write_colors_at(
+        self, start: int, colors: list[int], limit: int, text: str
     ) -> bool:
         """Write ``colors`` onto entries ``[start, start+limit)``; True if any changed.
 
-        Clamped to both the clipboard run and the palette's end, and only the
-        entries that actually differ are written, so an identical paste is a no-op.
-        The edits take the same write-back as an editor edit — forking a read-only
-        source to a Custom palette first — and, when more than one lands, are
-        grouped in a macro so the whole paste undoes in a single step.
+        The one landing for a run of colours — a paste, and the Edit Palette
+        window's result (:mod:`~celpix.ui.main_window.palette_edit`). Clamped
+        to both the run and the palette's end, and only the entries that
+        actually differ are written, so an identical run is a no-op. The edits
+        take the same write-back as an editor edit — forking a read-only source
+        to a Custom palette first — and, when more than one lands, are grouped
+        in a macro named ``text`` so the whole run undoes in a single step.
         """
         palette = self._shown_palette()
         span = max(0, min(len(colors), limit, len(palette) - start))
@@ -608,7 +610,7 @@ class ColorEditingMixin:
         fork = self._palette_needs_fork()
         grouped = len(changed) > 1 or fork
         if grouped:
-            self._undo_stack.beginMacro(f"paste {label}")
+            self._undo_stack.beginMacro(text)
         try:
             # Inside the macro, so undo peels the fork off with the edits.
             if fork:

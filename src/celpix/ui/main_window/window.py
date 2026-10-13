@@ -112,6 +112,7 @@ from celpix.ui.main_window.interpretation import (
 from celpix.ui.main_window.jumps import JumpsMixin
 from celpix.ui.main_window.navigation import NavigationMixin
 from celpix.ui.main_window.palette_dock import PaletteDockMixin
+from celpix.ui.main_window.palette_edit import PaletteEditMixin
 from celpix.ui.main_window.palette_entry import PaletteEntryMixin
 from celpix.ui.main_window.palette_offset import PaletteOffsetMixin
 from celpix.ui.main_window.palette_regions import PaletteRegionsMixin
@@ -188,6 +189,7 @@ class MainWindow(
     PaletteTransferMixin,
     PaletteDockMixin,
     ColorEditingMixin,
+    PaletteEditMixin,
     SelectionMixin,
     ClipboardOpsMixin,
     TileBytesMixin,

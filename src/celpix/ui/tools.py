@@ -36,6 +36,8 @@ class Gesture(Enum):
     - ``SHAPE`` — anchor on press, rubber-band a shape to the pointer with a live
       preview, commit on release (line, rectangles, ellipses).
     - ``FILL`` — a single click floods the region under it.
+    - ``REPLACE`` — a single click repaints every pixel of the colour under it,
+      across the whole view.
     - ``SAMPLE`` — a click picks the color under it (the eyedropper); no edit.
     - ``MARQUEE`` — drag a pixel rectangle for the floating selection.
     """
@@ -43,6 +45,7 @@ class Gesture(Enum):
     FREEHAND = "freehand"
     SHAPE = "shape"
     FILL = "fill"
+    REPLACE = "replace"
     SAMPLE = "sample"
     MARQUEE = "marquee"
 
@@ -57,6 +60,7 @@ class Tool(Enum):
     ELLIPSE = "ellipse"
     ELLIPSE_FILLED = "ellipse_filled"
     FILL = "fill"
+    REPLACE = "replace"
     EYEDROPPER = "eyedropper"
     SELECT = "select"
 
@@ -82,19 +86,21 @@ class ToolSpec:
     tool: Tool
     label: str
     tooltip: str
-    key: str  # the bare number key that selects it (1..9)
+    key: str  # the bare number key that selects it (1..9, then 0)
     gesture: Gesture
     rasterize: Rasterize | None = None
     icon: Icon | None = None
     shape: str | None = None
 
 
-# This order is the rail's top-to-bottom order *and* the 1..9 number keys, so a
+# This order is the rail's top-to-bottom order *and* the number keys, so a
 # tool's key is always its position in the panel — one list rather than a display
 # order and a key mapping that can drift apart. The marquee leads, then the pen
-# and the two samplers, then the shape tools grouped outline-before-filled.
+# and the two samplers, then the shape tools grouped outline-before-filled, and
+# the replace tool last on 0 — the key after 9 on the row, which is where a
+# tenth tool goes without renumbering the nine everyone has learned.
 # Reordering here moves the buttons and renumbers the keys together; only the
-# ``key`` strings need to stay 1..9 in sequence.
+# ``key`` strings need to stay in keyboard order, 1..9 then 0.
 TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         Tool.SELECT,
@@ -173,6 +179,14 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         Gesture.SHAPE,
         draw.ellipse_filled,
         shape="ellipse_filled",
+    ),
+    ToolSpec(
+        Tool.REPLACE,
+        "Replace Color",
+        "Repaint every pixel of the color under the cursor across the view",
+        "0",
+        Gesture.REPLACE,
+        icon=Icon.PAINT_ROLLER,
     ),
 )
 

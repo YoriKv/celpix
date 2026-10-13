@@ -1,0 +1,49 @@
+# Example preset: `reshape.ps2-gs-swizzle` — a PS2 texture in GS-memory order.
+#
+# To use: copy, remove the leading "_", edit, press F5. "_" files are ignored and
+# rewritten at startup. Presets are data: nothing executes and no confirmation
+# is asked. `engine_id` selects the reshape engine; this folder has one example
+# for each (see _bitswap.toml, _data-lut.toml, _split-parts.toml). For a
+# reordering none of them expresses, _example.py.
+#
+# ENGINE
+#   A PS2 game can store a 4bpp or 8bpp texture as the bytes a 32-bit upload
+#   leaves in the Graphics Synthesizer's memory, rather than as rows. Read as
+#   rows it draws as interlaced stripes: shapes cut into bands that no width
+#   setting fixes. The engine replays the upload and reads the texture back in
+#   rows; save puts the bytes back in GS order.
+#
+#   Slice exactly the texture's pixels, without its header or CLUT. The height
+#   is the slice length's; a slice that is not a whole texture of this width is
+#   refused rather than drawn as stripes.
+#
+# SHIPPED PRESETS ON THIS ENGINE
+#   ps2-psmt4-w64      4bpp, 64 wide
+#   ps2-psmt4-w128     4bpp, 128 wide
+#   ps2-psmt4-w256     4bpp, 256 wide
+#   ps2-psmt4-w512     4bpp, 512 wide
+#   ps2-psmt4-w1024    4bpp, 1024 wide
+#   ps2-psmt8-w64      8bpp, 64 wide
+#   ps2-psmt8-w128     8bpp, 128 wide
+#   ps2-psmt8-w256     8bpp, 256 wide
+#   ps2-psmt8-w512     8bpp, 512 wide
+#   ps2-psmt8-w1024    8bpp, 1024 wide
+#
+# Every power-of-two width the GS can sample is shipped from 64 up, so a copy
+# is for a narrower texture. Chulip stores its 32x64 textures as plain rows, but
+# another game may not.
+
+id = "reshape.ps2-psmt4-w32"
+name = "PS2 GS swizzle (4bpp, 32 wide)"
+engine_id = "reshape.ps2-gs-swizzle"
+
+[params]
+
+# Required. Bits per pixel: 4 (PSMT4) or 8 (PSMT8). For an 8bpp texture, the
+# 256-colour CLUT usually needs its own reorder too: see
+# docs/rom-mapping/console-others.md.
+bpp = 4
+
+# Required. The texture's width in pixels, a power of two from 8 to 1024 (the
+# width TEX0 states as a log2).
+width = 32

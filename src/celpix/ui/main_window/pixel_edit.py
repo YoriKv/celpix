@@ -61,6 +61,7 @@ from celpix.ui.tools import SPEC_BY_TOOL, TOOL_BY_KEY, EditMode, Gesture, Tool
 from celpix.ui.tools_panel import ToolsPanel
 from celpix.ui.undo_commands import FloatState, PixelSelectionCommand
 from celpix.ui.widgets import (
+    counted,
     load_enum_setting,
     save_enum_setting,
     signals_blocked,
@@ -257,7 +258,7 @@ class PixelEditMixin:
         marquee selects, so neither previews a colour. Called wherever the pen, the
         tool, the palette or the mode can have moved under it.
         """
-        drawing = {Gesture.FREEHAND, Gesture.SHAPE, Gesture.FILL}
+        drawing = {Gesture.FREEHAND, Gesture.SHAPE, Gesture.FILL, Gesture.REPLACE}
         if (
             self._doc is None
             or self._edit_mode is not EditMode.PIXEL
@@ -686,6 +687,8 @@ class PixelEditMixin:
             self._commit_float(keep_selection=True)
         if spec.gesture is Gesture.FILL:
             self._fill_at(x, y)
+        elif spec.gesture is Gesture.REPLACE:
+            self._replace_at(x, y)
         elif spec.gesture is Gesture.MARQUEE:
             self._marquee_press(x, y)
         else:  # FREEHAND / SHAPE
@@ -762,6 +765,76 @@ class PixelEditMixin:
         self._paint_pixels(grid, draw.flood_fill(grid, x, y, bounds))
         if self._commit_grid(grid, base, "fill"):
             self.statusBar().showMessage("Filled a region.")
+
+    def _replace_at(self, x: int, y: int) -> None:
+        """Repaint every pixel in the view showing the colour under ``(x, y)``.
+
+        The flood fill's whole-view twin: one click, the pen's colour, but
+        reaching every pixel of the clicked colour wherever it sits rather than
+        the connected region under the cursor. The pixels go through the same
+        paint as a stroke (:meth:`_paint_pixels`), so a selection masks it and a
+        map's palette rows fold in exactly as they do for the pen.
+        """
+        base = self._window_grid()
+        if base is None or not (0 <= x < base.width and 0 <= y < base.height):
+            return
+        grid = base.copy()
+        pixels = self._pixels_of_color_at(base, x, y)
+        self._paint_pixels(grid, pixels)
+        if self._commit_grid(grid, base, "replace color"):
+            self.statusBar().showMessage(
+                f"Replaced {counted(len(pixels), 'pixel')} of the clicked color."
+            )
+
+    def _pixels_of_color_at(self, grid, x: int, y: int) -> list[tuple[int, int]]:  # noqa: ANN001 — a grid
+        """Every pixel of ``grid`` drawn in the colour at ``(x, y)``.
+
+        **Colour, not stored index.** A pixel's colour is its index *and the
+        row it is drawn through*: two tiles storing index 3 show different
+        colours when one sits in a region pinned to another row, and the user
+        clicked a colour. So where pixels of the view can be drawn through
+        different rows, the row is part of the match. A map that folds rows into
+        its indices has already answered — its composed indices are absolute,
+        so equal values are equal colours — and so has a direct-colour view,
+        whose values are the colours. Only a pixel document with pinned regions
+        needs the row looked up, and it is constant across a tile, so it is
+        asked once per tile (:meth:`~...palette_regions.PaletteRegionsMixin.
+        _pinned_palette_base`).
+        """
+        target = grid.get(x, y)
+        w = grid.width
+        if grid.bytes_per_pixel == 1:
+            # The index grid is one byte per pixel, so its buffer is the pixels.
+            matches = [
+                divmod(i, w)[::-1] for i, v in enumerate(grid.data) if v == target
+            ]
+        else:
+            matches = [
+                (px, py)
+                for py in range(grid.height)
+                for px in range(w)
+                if grid.get(px, py) == target
+            ]
+        if (
+            self._is_direct_color()
+            or self._folds_palette_rows()
+            or self._active_palette_regions().is_empty()
+        ):
+            return matches
+        tile_w, tile_h = self._pixel_tile_size()
+        bases: dict[tuple[int, int], int] = {}
+
+        def row_at(px: int, py: int) -> int:
+            at = (px // tile_w, py // tile_h)
+            base = bases.get(at)
+            if base is None:
+                base = bases[at] = self._pinned_palette_base(
+                    at[0] * tile_w, at[1] * tile_h
+                )
+            return base
+
+        wanted = row_at(x, y)
+        return [(px, py) for px, py in matches if row_at(px, py) == wanted]
 
     def _sampled_value(self, x: int, y: int) -> int | None:
         """What the pixel at canvas ``(x, y)`` shows — the eyedropper's read.
@@ -1583,9 +1656,9 @@ class PixelEditMixin:
     def _pixel_key(self, key, shift: bool, ctrl: bool) -> bool:
         """Pixel-mode bare-key shortcuts routed from the nav event filter.
 
-        Number keys 1–9 pick a tool; Escape commits a live float, else drops the
-        marquee. Returns True when it consumed the key. Inert outside pixel mode
-        or with modifiers, so tile-mode navigation is untouched.
+        Number keys 1–9 and 0 pick a tool; Escape commits a live float, else
+        drops the marquee. Returns True when it consumed the key. Inert outside
+        pixel mode or with modifiers, so tile-mode navigation is untouched.
 
         The tool keys are the rail's keys, so they are asked of the rail rather
         than of the mode: pixel mode can outlive the document that could be
@@ -1612,7 +1685,7 @@ class PixelEditMixin:
                 self._after_pixel_change()
                 return True
             return False
-        if Qt.Key.Key_1 <= key <= Qt.Key.Key_9:
+        if Qt.Key.Key_0 <= key <= Qt.Key.Key_9:
             tool = TOOL_BY_KEY.get(chr(key))
             if tool is not None:
                 # Swallowed either way - the rail is showing a tool set that is

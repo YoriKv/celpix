@@ -358,6 +358,16 @@ def test_bitmap_params_only_re_cuts_codecs_that_take_a_tile_size() -> None:
         planar_preset.params
     )
 
+    # A codec that takes a tile size only within its own rules gets the largest
+    # divisor it accepts: a packed 4bpp row is whole bytes, so 70 px refuses its
+    # 7 and lands on 2, and 63 px - no even divisor - has no reading at all.
+    packed, packed_preset = reg.engine_for("preset.pixel.psx-4bpp")
+    recut = pipeline.bitmap_params(packed, packed_preset.params, 70)
+    assert packed.tile_size(recut) == (2, 2)
+    assert pipeline.bitmap_params(packed, packed_preset.params, 63) is (
+        packed_preset.params
+    )
+
 
 def test_pixel_bpp_covers_code_formats() -> None:
     # A code format has empty preset params: any params["bpp"] read would fail.

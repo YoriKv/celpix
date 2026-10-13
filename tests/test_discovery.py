@@ -22,6 +22,7 @@ from celpix.plugins import discovery
 from celpix.plugins.base import FileRef, InputKind, ReadSource, WriteTarget
 from celpix.plugins.bitswap import BitswapReshape
 from celpix.plugins.data_lut import DataLutReshape
+from celpix.plugins.gs_swizzle import GsSwizzleReshape
 from celpix.plugins.registry import default_registry
 from celpix.plugins.split_parts import SplitPartsReshape
 from celpix.plugins.trust import TrustStore
@@ -697,6 +698,7 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
         "reshape/_bitswap.toml",
         "reshape/_data-lut.toml",
         "reshape/_example.py",
+        "reshape/_ps2-gs-swizzle.toml",
         "reshape/_split-parts.toml",
         "tilemap/_example.py",
         "tilemap/_indirect-record.toml",
@@ -991,7 +993,13 @@ def test_seeded_examples_are_valid_when_activated(tmp_path) -> None:
     # Asserted per example rather than by counting instances: the shipped
     # bit-order tables are data-LUTs and the chip splits split-parts presets as
     # well (builtins.register_builtins).
-    assert len(discovery.RESHAPE_ENGINES) == 3
+    assert len(discovery.RESHAPE_ENGINES) == 4
+    # GS swizzle example: a width no shipped preset covers, round-tripping a
+    # 32x64 texture, the smallest shape a 32-bit upload fills.
+    gs = reg.plugin(Stage.RESHAPE, "reshape.ps2-psmt4-w32")
+    assert isinstance(gs, GsSwizzleReshape) and (gs.bpp, gs.width) == (4, 32)
+    texture = _probe_bytes(32 * 64 // 2)
+    assert gs.unshape(gs.reshape(texture, ctx), ctx) == texture
     assert isinstance(reg.plugin(Stage.RESHAPE, "reshape.gaelco-16x16"), BitswapReshape)
     assert isinstance(reg.plugin(Stage.RESHAPE, "reshape.nmk-bg"), DataLutReshape)
     ff2 = reg.plugin(Stage.RESHAPE, "reshape.ff2-field-tables")
@@ -1132,14 +1140,14 @@ def test_example_presets_name_shipped_presets_that_exist(tmp_path) -> None:
     # Every example in the three format folders has to carry a parsed block, or
     # one that quietly stops writing the list opts out of this check instead of
     # being caught by it — which is also what guards the parse itself against the
-    # day the comment format changes. Of `reshape/` only the split-parts example
-    # lists presets; the bitswap and data-LUT tables are each one board's, so
-    # their blocks are prose.
+    # day the comment format changes. Of `reshape/` only the split-parts and GS
+    # swizzle examples list presets; the bitswap and data-LUT tables are each one
+    # board's, so their blocks are prose.
     expected = {
         path.relative_to(tmp_path).as_posix()
         for folder in ("palette", "pixel", "tilemap")
         for path in (tmp_path / folder).glob("_*.toml")
-    } | {"reshape/_split-parts.toml"}
+    } | {"reshape/_split-parts.toml", "reshape/_ps2-gs-swizzle.toml"}
     assert set(named) == expected
 
     missing = {

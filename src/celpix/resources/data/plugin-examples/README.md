@@ -48,6 +48,7 @@ engine; each lists every parameter and the shipped presets built on the engine.
 | `reshape/_bitswap.toml` | an address-line permutation |
 | `reshape/_data-lut.toml` | a byte-value substitution |
 | `reshape/_split-parts.toml` | equal parts joined: ROM chips, tables stored as parallel arrays |
+| `reshape/_ps2-gs-swizzle.toml` | a PS2 texture stored in GS-memory order |
 | `compression/_compress-reshape.toml` | a compression scheme followed by a reshape |
 
 **File ▸ New Compress & Reshape Plugin…** writes a compress-and-reshape preset

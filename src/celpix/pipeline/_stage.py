@@ -31,7 +31,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TypeVar
 
-from celpix.core.arrangement import bitmap_tile_size
+from celpix.core.arrangement import bitmap_tile_sizes
 from celpix.core.context import KEY_INPUTS, PipelineContext
 from celpix.core.document import Document
 from celpix.core.errors import (
@@ -307,27 +307,46 @@ def _with_tile_size(engine, params: dict, size: tuple[int, int]) -> dict:  # noq
     a raise counts as "no" rather than propagating. Returning ``params``
     unchanged is therefore the ordinary outcome.
     """
-    if not all(size) or size == engine.tile_size(params):
+    if not all(size):
+        return params
+    accepted = _accepting_tile_size(engine, params, size)
+    return params if accepted is None else accepted
+
+
+def _accepting_tile_size(engine, params: dict, size: tuple[int, int]) -> dict | None:  # noqa: ANN001
+    """``params`` cut to ``size`` if the engine takes it, else ``None``.
+
+    :func:`_with_tile_size`'s probe with the refusal kept distinct: there,
+    ``params`` back means either "already that size" or "declined", and the
+    bitmap-width search needs to tell those apart to know whether to go on.
+    """
+    if size == engine.tile_size(params):
         return params
     merged = {**params, "tile_width": size[0], "tile_height": size[1]}
     try:
         accepted = engine.tile_size(merged) == size
     except Exception:  # noqa: BLE001 — a probe must not be able to fail the load
         accepted = False
-    return merged if accepted else params
+    return merged if accepted else None
 
 
 def bitmap_params(engine, params: dict, bitmap_width: int) -> dict:  # noqa: ANN001
     """``params`` re-cut to the tile size a ``bitmap_width`` bitmap needs.
 
-    The size itself is :func:`~celpix.core.arrangement.bitmap_tile_size`, applied
-    to both axes; whether the codec accepts it is :func:`_with_tile_size`'s probe.
+    The first of :func:`~celpix.core.arrangement.bitmap_tile_sizes` the codec
+    accepts, applied to both axes — the largest divisor alone is not enough,
+    since a packed row of whole bytes refuses an odd width that a smaller even
+    divisor still spans. ``params`` unchanged when none sticks, which is every
+    codec whose tile size is not a parameter at all.
     """
     if bitmap_width <= 0:
         return params
     tile_w, _tile_h = engine.tile_size(params)
-    size = bitmap_tile_size(bitmap_width, tile_w)
-    return _with_tile_size(engine, params, (size, size))
+    for size in bitmap_tile_sizes(bitmap_width, tile_w):
+        accepted = _accepting_tile_size(engine, params, (size, size))
+        if accepted is not None:
+            return accepted
+    return params
 
 
 def tile_params(doc: Document, engine, params: dict) -> dict:  # noqa: ANN001

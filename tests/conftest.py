@@ -317,6 +317,8 @@ def unexpected_modals(monkeypatch):
     if widgets is None:
         yield []
         return
+    from PySide6.QtGui import QColor  # noqa: PLC0415 - only once Qt is in play
+
     opened: list[str] = []
 
     roles = widgets.QMessageBox.ButtonRole
@@ -360,6 +362,8 @@ def unexpected_modals(monkeypatch):
         ("getExistingDirectory", ""),
     ):
         static(widgets.QFileDialog, name, answer)
+    # An invalid colour is the picker's own cancel answer.
+    static(widgets.QColorDialog, "getColor", QColor())
 
     yield opened
     if opened:
@@ -546,6 +550,23 @@ def _pixel_aspect_dialog_never_blocks(monkeypatch):
     if module is None:
         return
     monkeypatch.setattr(module.PixelAspectDialog, "exec", lambda self: 0, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _palette_edit_dialog_never_blocks(monkeypatch):
+    """Make the Edit Palette window's ``exec()`` return Rejected, not block.
+
+    Reachable from the palette dock's Edit Palette button, and the same rule as
+    :func:`_container_dialog_never_blocks`: offscreen, ``exec()`` never returns.
+    Rejected is the safe default — the host takes its preview back down and
+    writes nothing. A test that means to commit patches ``exec`` itself, poking
+    the dialog's inputs before answering Accepted. Skipped until the module is
+    imported: before then there is nothing to patch.
+    """
+    module = sys.modules.get("celpix.ui.palette_edit_dialog")
+    if module is None:
+        return
+    monkeypatch.setattr(module.PaletteEditDialog, "exec", lambda self: 0, raising=False)
 
 
 @pytest.fixture(autouse=True)

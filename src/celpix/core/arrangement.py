@@ -551,30 +551,29 @@ def _split_positions(
     return positions
 
 
-def bitmap_tile_size(bitmap_width: int, tile_width: int) -> int:
-    """The tile size a ``bitmap_width``-pixel-wide image can be cut into.
+def bitmap_tile_sizes(bitmap_width: int, tile_width: int) -> list[int]:
+    """The tile sizes a ``bitmap_width``-pixel-wide image can be cut into, best first.
 
     A wide-bitmap view only lines up when a whole number of tiles spans the
     bitmap's width, and a codec's natural tile is usually 8 — so a 306-pixel
     bitmap has no 8-px reading at all (306 / 8 = 38.25) and every row of the
-    view slides two pixels further off. This picks the **largest divisor of
-    ``bitmap_width`` that is no bigger than ``tile_width``** — 6 for that 306,
-    so 51 tiles span it exactly. Square tiles: the same number sizes both axes,
-    since only the width is constrained and a non-square display tile would
-    just be a second thing to explain.
+    view slides two pixels further off. The candidates are **the divisors of
+    ``bitmap_width`` no bigger than ``tile_width``, largest first** — 6 for that
+    306, so 51 tiles span it exactly. Square tiles: the same number sizes both
+    axes, since only the width is constrained and a non-square display tile
+    would just be a second thing to explain.
 
-    Returns ``tile_width`` unchanged when there is no bitmap width to honour, so
-    "off" is the ordinary path rather than a special case. A width smaller than
-    one tile yields the width itself (it divides itself), and 1 is always a
-    valid answer — a per-pixel grid, the degenerate but correct reading of a
-    prime width.
+    A list rather than one answer because the codec has a say too: a packed 4bpp
+    row is whole bytes, so a 70-px bitmap's 7 is no tile it can build, while its
+    2 is. The caller walks down until the codec accepts one. A width smaller than
+    one tile starts at the width itself (it divides itself), and 1 always ends
+    the list — a per-pixel grid, the degenerate but correct reading of a prime
+    width. Empty when there is no bitmap width to honour.
     """
     if bitmap_width <= 0 or tile_width <= 0:
-        return max(1, tile_width)
-    for size in range(min(bitmap_width, tile_width), 0, -1):
-        if bitmap_width % size == 0:
-            return size
-    return 1  # unreachable: 1 divides everything
+        return []
+    top = min(bitmap_width, tile_width)
+    return [size for size in range(top, 0, -1) if bitmap_width % size == 0]
 
 
 def has_2d_reading(bytes_per_tile: int, tile_height: int) -> bool:

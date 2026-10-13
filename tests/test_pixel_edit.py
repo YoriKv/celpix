@@ -276,6 +276,93 @@ def test_a_selection_confines_a_fill(qtbot, tmp_path) -> None:
     assert _pixel(window, 5, 5) == 0  # ...fills nothing
 
 
+# -- the replace-colour tool -----------------------------------------------
+def _values(window) -> dict[tuple[int, int], int]:
+    grid = window._window_grid()
+    return {
+        (x, y): grid.get(x, y) for y in range(grid.height) for x in range(grid.width)
+    }
+
+
+def test_replace_recolors_every_pixel_of_the_clicked_color(qtbot, tmp_path) -> None:
+    window = _window(qtbot, tmp_path)
+    before = _values(window)
+    target = before[(0, 0)]
+    pen = (target + 1) % 16
+    window._palette_panel.select_index(pen)
+    assert window._pen_value() == pen
+    matched = {at for at, v in before.items() if v == target}
+    assert 1 < len(matched) < len(before)  # the click reaches more than itself
+
+    window._tool = Tool.REPLACE
+    steps = window._undo_stack.index()
+    window._on_pixel_pressed(0, 0, Qt.MouseButton.LeftButton)
+
+    after = _values(window)
+    assert all(after[at] == pen for at in matched)
+    assert all(after[at] == before[at] for at in before if at not in matched)
+    assert window._undo_stack.index() == steps + 1
+    window._undo_stack.undo()
+    assert _values(window) == before
+
+
+def test_a_selection_confines_a_replace(qtbot, tmp_path) -> None:
+    window = _window(qtbot, tmp_path)
+    before = _values(window)
+    target = before[(1, 1)]
+    pen = (target + 1) % 16
+    window._palette_panel.select_index(pen)
+    window._marquee = QRect(0, 0, 4, 4)
+    window._canvas.set_marquee(window._marquee)
+    window._tool = Tool.REPLACE
+    window._on_pixel_pressed(1, 1, Qt.MouseButton.LeftButton)
+
+    after = _values(window)
+    inside = {at for at in before if window._marquee.contains(*at)}
+    assert all(
+        after[at] == (pen if before[at] == target else before[at]) for at in inside
+    )
+    assert all(after[at] == before[at] for at in before if at not in inside)
+
+
+def test_replace_matches_the_row_a_pixel_is_drawn_through(qtbot, tmp_path) -> None:
+    """Two tiles storing the same index show different colours when one sits in
+    a region pinned to another row, and the tool replaces a *colour*."""
+    window = _window(qtbot, tmp_path)
+    window._columns.setValue(8)
+    window._rows.setValue(1)
+    # Pin the second half of the row to palette row 2, then go back to row 0.
+    window._set_linear_selection(4, 7)
+    window._palette_row.setValue(2)
+    window._pin_selection()
+    window._palette_row.setValue(0)
+    window._set_edit_mode(EditMode.PIXEL)
+
+    before = _values(window)
+    tile_w, _ = window._pixel_tile_size()
+    pinned = tile_w * 4
+    target = before[(0, 0)]
+    assert any(v == target for (x, _y), v in before.items() if x >= pinned)
+    pen = (target + 1) % 16
+    window._palette_panel.select_index(pen)
+    window._tool = Tool.REPLACE
+    window._on_pixel_pressed(0, 0, Qt.MouseButton.LeftButton)
+
+    after = _values(window)
+    for (x, y), v in before.items():
+        if x < pinned:
+            assert after[(x, y)] == (pen if v == target else v)
+        else:
+            assert after[(x, y)] == v  # same index, another row: another colour
+
+
+def test_the_0_key_picks_the_replace_tool(qtbot, tmp_path) -> None:
+    window = _window(qtbot, tmp_path)
+    assert window._pixel_key(Qt.Key.Key_0, False, False)
+    assert window._tool is Tool.REPLACE
+    assert window._tools_panel._buttons[Tool.REPLACE].isChecked()
+
+
 def test_right_click_eyedropper_sets_pen(qtbot, tmp_path) -> None:
     window = _window(qtbot, tmp_path)
     # Paint index 5 somewhere, move the pen off it, then sample it back.

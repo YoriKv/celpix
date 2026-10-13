@@ -3,7 +3,8 @@
 # To use: copy, remove the leading "_", edit, press F5. "_" files are ignored and
 # rewritten at startup. Presets are data: nothing executes and no confirmation
 # is asked. `engine_id` selects the reshape engine; this folder has one example
-# for each (see _data-lut.toml). For a reordering neither expresses, _example.py.
+# for each (see _data-lut.toml, _split-parts.toml, _ps2-gs-swizzle.toml). For a
+# reordering none of them expresses, _example.py.
 #
 # ENGINE
 #   Permutes the byte ADDRESS; byte values are unchanged. A table of N entries

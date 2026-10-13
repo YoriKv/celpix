@@ -270,6 +270,18 @@ class PaletteDockMixin:
             self._row_base,
             _ROW_BASE_TIP,
         )
+
+        # One operation over a run of these colors - invert, grayscale, a blend
+        # - previewed live and committed as one step (palette_edit.py). Armed
+        # wherever an edit can land, which the read-only idle default is not.
+        # It shares the Base Palette Row line: both are about these colours
+        # as loaded, and the spin leaves the room.
+        self._edit_palette_action = QPushButton("Edit Palette…")
+        self._edit_palette_action.setToolTip(
+            "Invert, grayscale, colorize or blend a run of colors,\nwith a live preview"
+        )
+        self._edit_palette_action.clicked.connect(self._edit_palette)
+        row_base_row.addWidget(self._edit_palette_action)
         row_base_row.addStretch(1)
 
         # Its own row under Format: it acts *on* the picked format rather than
@@ -563,10 +575,13 @@ class PaletteDockMixin:
             self._refresh_view()  # which also re-marks the project modified
 
     def _sync_palette_export_action(self) -> None:
-        """Arm the dock's Export to File button iff there is a palette to write."""
+        """Arm the dock's Export to File button iff there is a palette to write,
+        and Edit Palette iff there is one an edit can land on."""
+        editable = self._palette_doc() is not None
         self._export_palette_action.setEnabled(
-            self._palette_doc() is not None and self._palette_mode.is_exportable
+            editable and self._palette_mode.is_exportable
         )
+        self._edit_palette_action.setEnabled(editable)
 
     def _sync_palette_mode_items(self) -> None:
         """Grey out the load modes that have no graphic to act on.
