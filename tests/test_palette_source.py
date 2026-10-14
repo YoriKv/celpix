@@ -15,6 +15,7 @@ from uihelpers import (
     _cgx_file,
     _combo_ids,
     _drag_payload,
+    _make_big_snes_file,
     _make_snes_file,
     _map_file,
     _open_big,
@@ -3010,3 +3011,99 @@ def test_a_file_mode_palette_at_an_offset_reads_the_palette_entry_whole(
         graphic, PaletteSource(path=str(pal), offset=0x20), registry, ws
     )
     assert restored.palette.colors == owner.doc.palette.colors
+
+
+# -- Jump to Source on the dock -----------------------------------------------
+def _palette_source_jump(window: MainWindow) -> tuple:
+    """What the dock's Jump to Source left on screen: the current entry, whether
+    the pixel picker is on the swatch view, the swatch colour format, and the
+    byte the view's origin sits on."""
+    return (
+        window._workspace.current,
+        window._palette_view_active(),
+        window._palette_view_preset_id(),
+        window._recorded_byte_position(),
+    )
+
+
+def test_jump_to_source_shows_an_offset_palette_in_its_owner_as_swatches(
+    qtbot, tmp_path
+) -> None:
+    """An Offset address on a slice is written in the parent file's coordinates,
+    so the jump lands there: the file, read as swatches in the palette's own
+    format, with the palette's first colour at the origin. One undo step for
+    the two picker moves it took."""
+    px = _make_big_snes_file(tmp_path, 512)  # more than a page of swatches
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    parent = window._workspace.current
+    assert window._palette_mode is PaletteMode.DEFAULT
+    assert not window._palette_source_action.isVisibleTo(window)
+    slice_entry = window._workspace.add_slice(str(px), "gfx", 64, 64)
+    window._activate_entry(slice_entry)
+    assert window._load_palette_at_offset(32)
+    assert window._palette_source_action.isVisibleTo(window)
+    steps = window._undo_stack.index()
+
+    window._palette_source_action.click()
+
+    assert _palette_source_jump(window) == (parent, True, "preset.palette.bgr555", 32)
+    assert window._undo_stack.index() == steps + 1
+    window._undo_stack.undo()
+    assert window._workspace.current is parent
+    assert not window._palette_view_active()
+
+
+def test_jump_to_source_opens_an_entry_palettes_source_at_its_offset(
+    qtbot, tmp_path
+) -> None:
+    """An Entry offset counts into the source's resolved bytes from 0, the way a
+    composite piece's does."""
+    px = _make_big_snes_file(tmp_path, 512)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    graphic = window._workspace.current
+    table = window._workspace.add_slice(str(px), "table", 0x40, 0x2000)
+    assert window._load_palette_from_entry(table, 16, "preset.palette.bgr555")
+    assert window._palette_mode is PaletteMode.ENTRY
+    assert window._palette_source_action.isVisibleTo(window)
+
+    window._palette_source_action.click()
+
+    assert _palette_source_jump(window) == (table, True, "preset.palette.bgr555", 16)
+    # On the source its own palette is whatever it has; the graphic's was Entry.
+    window._activate_entry(graphic)
+    assert window._palette_mode is PaletteMode.ENTRY
+
+
+def test_jump_to_source_activates_a_file_palettes_entry_and_then_hides(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """A palette file already shows itself as swatches, so the jump is its
+    activation; on itself there is nowhere further to go, so the button goes."""
+    from PySide6.QtWidgets import QFileDialog
+
+    from celpix.project.workspace import EntryKind
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    pal = tmp_path / "colors.pal"
+    pal.write_bytes(bytes((i * 7 + 2) & 0xFF for i in range(2 * 16)))
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(pal), ""))
+    )
+    window._open_palette()
+    assert window._palette_mode is PaletteMode.FILE
+    palette_entry = window._palette_owner_entry()
+    assert palette_entry.kind is EntryKind.PALETTE
+    assert window._palette_source_action.isVisibleTo(window)
+
+    window._palette_source_action.click()
+
+    assert window._workspace.current is palette_entry
+    assert window._palette_view_active()
+    assert window._palette_mode is PaletteMode.FILE
+    assert not window._palette_source_action.isVisibleTo(window)

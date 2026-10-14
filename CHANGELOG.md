@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.2.9 - unreleased
+
+- Edit Palette… added to View as Palette/Swatch view.
+- Added Jump to Source on the palette dock.
+
 ## v1.2.8 - 2026-10-13
 
 - Bitmap width now finds tile sizes better.

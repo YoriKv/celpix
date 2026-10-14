@@ -317,6 +317,17 @@ class PaletteDockMixin:
         )
         self._export_palette_action.clicked.connect(self._export_palette_file)
 
+        # Where these colours are read from, shown as swatches (jumps.py).
+        # Hidden rather than greyed where there is nowhere to go - Default,
+        # Custom and Emulator read no bytes the canvas could show - since
+        # a disabled jump would only ask what it jumps to.
+        self._palette_source_action = QPushButton("Jump to Source")
+        self._palette_source_action.setToolTip(
+            "Show the bytes this palette is read from as swatches,\n"
+            "in View as Palette, its first color at the view's origin"
+        )
+        self._palette_source_action.clicked.connect(self._jump_to_palette_source)
+
         # How the *next* palette file to come in is read - nothing more. A .pal
         # records nothing about its own encoding, so reading one is always a
         # guess; this is where the user makes it in advance, and it seeds each
@@ -343,7 +354,7 @@ class PaletteDockMixin:
         )
         import_row.addStretch(1)
 
-        export_row = _dock_row(self._export_palette_action)
+        export_row = _dock_row(self._export_palette_action, self._palette_source_action)
 
         container = QWidget()
         column = QVBoxLayout(container)
@@ -576,12 +587,16 @@ class PaletteDockMixin:
 
     def _sync_palette_export_action(self) -> None:
         """Arm the dock's Export to File button iff there is a palette to write,
-        and Edit Palette iff there is one an edit can land on."""
+        Edit Palette iff there is one an edit can land on, and show Jump to
+        Source iff the palette is read from bytes the canvas can show."""
         editable = self._palette_doc() is not None
         self._export_palette_action.setEnabled(
             editable and self._palette_mode.is_exportable
         )
         self._edit_palette_action.setEnabled(editable)
+        self._palette_source_action.setVisible(
+            self._palette_source_target() is not None
+        )
 
     def _sync_palette_mode_items(self) -> None:
         """Grey out the load modes that have no graphic to act on.

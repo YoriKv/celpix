@@ -405,8 +405,20 @@ class InterpretationMixin:
         self._palette_view_preset.currentIndexChanged.connect(
             self._on_palette_view_change
         )
+        # The dock's Edit Palette… over the swatches on screen instead of the
+        # dock's palette (palette_edit.py): a colour table viewed as swatches
+        # is edited where it is looked at, and the dock may be showing some
+        # other palette entirely.
+        self._edit_view_palette_action = QPushButton("Edit Palette…")
+        self._edit_view_palette_action.setToolTip(
+            "Invert, grayscale, colorize or blend the swatches in view\n"
+            "or the selected ones, with a live preview"
+        )
+        self._edit_view_palette_action.clicked.connect(self._edit_view_palette)
         self._palette_view_action = codecs.addWidget(
-            _group("Palette:", self._palette_view_preset)
+            _group(
+                "Palette:", self._palette_view_preset, self._edit_view_palette_action
+            )
         )
         self._palette_view_action.setVisible(False)
         self._bake_inputs_badges()
@@ -823,6 +835,9 @@ class InterpretationMixin:
         swatches = allowed and not tilemap and self._palette_view_active()
         self._compression_action.setVisible(allowed and not swatches)
         self._palette_view_action.setVisible(swatches)
+        # The group shows with nothing open (the picker configures the next
+        # open); the edit needs swatches to reach.
+        self._edit_view_palette_action.setEnabled(self._doc is not None)
 
     def _on_palette_view_change(self, *_args) -> None:
         """Push one move of the palette-format picker.

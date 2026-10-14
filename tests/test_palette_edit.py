@@ -20,10 +20,10 @@ ACCEPTED = QDialog.DialogCode.Accepted.value
 REJECTED = QDialog.DialogCode.Rejected.value
 
 
-def _open(qtbot, tmp_path, monkeypatch) -> MainWindow:
-    """An 8-tile SNES-4bpp file, on the generated default palette."""
+def _open(qtbot, tmp_path, monkeypatch, tiles: int = 8) -> MainWindow:
+    """A ``tiles``-tile SNES-4bpp file, on the generated default palette."""
     px = tmp_path / "p.4bpp.sfc"
-    px.write_bytes(bytes((i * 13 + 1) & 0xFF for i in range(32 * 8)))
+    px.write_bytes(bytes((i * 13 + 1) & 0xFF for i in range(32 * tiles)))
     monkeypatch.setattr(
         QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(px), ""))
     )
@@ -33,9 +33,9 @@ def _open(qtbot, tmp_path, monkeypatch) -> MainWindow:
     return window
 
 
-def _open_in_offset_mode(qtbot, tmp_path, monkeypatch) -> MainWindow:
+def _open_in_offset_mode(qtbot, tmp_path, monkeypatch, tiles: int = 8) -> MainWindow:
     """...with its palette read from tile 1 of its own bytes, edited in place."""
-    window = _open(qtbot, tmp_path, monkeypatch)
+    window = _open(qtbot, tmp_path, monkeypatch, tiles)
     window._on_slots_selected(1, 1)
     window._load_palette_from_selection()
     assert window._palette_mode == "offset"
@@ -316,3 +316,92 @@ def test_with_nothing_open_the_button_is_dead(qtbot, monkeypatch) -> None:
     monkeypatch.setattr(PaletteEditDialog, "exec", lambda self: opened.append(1) or 0)
     window._edit_palette()  # the idle default has nowhere to put an edit
     assert not opened
+
+
+# -- the toolbar's window: the swatches on the canvas ---------------------
+SWATCHES = "preset.pixel.view-as-palette"
+
+
+def _as_swatches(window: MainWindow) -> None:
+    combo = window._pixel_preset
+    combo.setCurrentIndex(combo.findData(SWATCHES))
+
+
+def _changed(before: list[int], after: list[int]) -> list[int]:
+    return [i for i, (a, b) in enumerate(zip(before, after, strict=True)) if a != b]
+
+
+def _swatch_colors(window: MainWindow, first: int, count: int) -> list[int]:
+    """Each tile's first swatch colour, decoded fresh from the bytes."""
+    return [tile.get(0, 0) for tile in window._decode_run(first, count)]
+
+
+def test_the_toolbar_edit_palette_recolors_every_swatch_in_view_as_one_step(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """A 64-tile file is more than a page of swatches, so "entire view" and
+    "the whole file" differ: the window's swatches change, the rest do not."""
+    window = _open_in_offset_mode(qtbot, tmp_path, monkeypatch, tiles=64)
+    assert not window._palette_view_action.isVisible()
+    _as_swatches(window)
+    assert window._palette_view_action.isVisible()
+    assert window._edit_view_palette_action.isEnabled()
+    total = window._doc.tile_count
+    shown = min(window._window_slots(), total)
+    assert 0 < shown < total
+    before = _swatch_colors(window, 0, total)
+    painted = window._canvas._image.copy()
+    seen: dict[str, object] = {}
+
+    def exec_(dialog: PaletteEditDialog) -> int:
+        seen["scopes"] = list(dialog._scopes)
+        seen["selection_offered"] = dialog._scopes[EditScope.SELECTION].isEnabled()
+        dialog.set_op(OpKind.SET)
+        dialog.set_color(0xFFFF0000)
+        dialog.set_scope(EditScope.ENTIRE_VIEW)
+        seen["previewed"] = window._canvas._image != painted
+        return seen.pop("answer")
+
+    monkeypatch.setattr(PaletteEditDialog, "exec", exec_)
+    seen["answer"] = REJECTED
+    window._edit_view_palette_action.click()
+    assert seen["scopes"] == [EditScope.ENTIRE_VIEW, EditScope.SELECTION]
+    assert seen["selection_offered"] is False
+    assert seen["previewed"] is True
+    assert window._canvas._image == painted  # Cancel took the preview down
+    assert _swatch_colors(window, 0, total) == before
+
+    seen["answer"] = ACCEPTED
+    steps = window._undo_stack.index()
+    window._edit_view_palette_action.click()
+    after = _swatch_colors(window, 0, total)
+    red = after[0]
+    assert red != before[0] and (red >> 16) & 0xFF > 0xF0  # BGR555's red
+    assert after[:shown] == [red] * shown
+    assert after[shown:] == before[shown:]
+    assert window._undo_stack.index() == steps + 1
+    window._undo_stack.undo()
+    assert _swatch_colors(window, 0, total) == before
+
+
+def test_the_toolbar_edit_palette_can_recolor_only_the_selected_swatches(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    window = _open_in_offset_mode(qtbot, tmp_path, monkeypatch, tiles=64)
+    _as_swatches(window)
+    window._on_slots_selected(2, 3)
+    total = window._doc.tile_count
+    before = _swatch_colors(window, 0, total)
+
+    def exec_(dialog: PaletteEditDialog) -> int:
+        assert dialog.scope() is EditScope.SELECTION  # the default with one
+        dialog.set_op(OpKind.SET)
+        dialog.set_color(0xFFFF0000)
+        return ACCEPTED
+
+    monkeypatch.setattr(PaletteEditDialog, "exec", exec_)
+    window._edit_view_palette_action.click()
+
+    after = _swatch_colors(window, 0, total)
+    assert _changed(before, after) == [2, 3]
+    assert after[2] == after[3]

@@ -69,11 +69,22 @@ class ClickableSwatch(ColorSwatch):
 
 
 class EditScope(Enum):
-    """Which entries an operation reaches; ``value`` is the radio's caption."""
+    """Which entries an operation reaches; ``value`` is the radio's caption.
+
+    The first three are the palette dock's, over the dock's palette; the last
+    two are the swatch view's, over the colour words on the canvas
+    (``on_view``), and a window offers one set or the other.
+    """
 
     ROW = "Palette row"
     ALL = "Whole palette"
     SELECTED = "Selected color"
+    ENTIRE_VIEW = "Entire view"
+    SELECTION = "Selection"
+
+
+_PALETTE_SCOPES = (EditScope.ROW, EditScope.ALL, EditScope.SELECTED)
+_VIEW_SCOPES = (EditScope.ENTIRE_VIEW, EditScope.SELECTION)
 
 
 # Which inputs each operation reads; the rest are hidden rather than greyed,
@@ -95,13 +106,23 @@ class PaletteEditDialog(QDialog):
         *,
         selected_color: int | None = None,
         rows: bool = True,
+        on_view: bool = False,
+        has_selection: bool = False,
     ) -> None:
         """``selected_color`` is the swatch grid's selection, or ``None`` when
         nothing is selected — then *Selected color* is not offered and the
         colour input starts white instead of on it. ``rows`` is whether the
         pixel format has palette rows at all: a direct-colour view indexes
         nothing, so *Palette row* is not offered there and the whole palette
-        is the default instead."""
+        is the default instead.
+
+        ``on_view`` is the toolbar's window instead of the dock's: the
+        operation reaches the swatches on the canvas rather than the dock's
+        palette, so the scopes offered are *Entire view* and *Selection* —
+        the latter only with a canvas selection (``has_selection``), and the
+        default when there is one, since a selection made before opening the
+        window is what the user means to recolour. Which swatches either
+        names is the host's to work out — this form knows no document."""
         super().__init__(parent)
         self.setWindowTitle("Edit Palette")
         self._selected_color = selected_color
@@ -161,14 +182,23 @@ class PaletteEditDialog(QDialog):
 
         self._scopes: dict[EditScope, QRadioButton] = {}
         scope_row = QHBoxLayout()
-        for scope in EditScope:
+        for scope in _VIEW_SCOPES if on_view else _PALETTE_SCOPES:
             radio = QRadioButton(scope.value)
             radio.toggled.connect(self._on_scope_toggle)
             self._scopes[scope] = radio
             scope_row.addWidget(radio)
-        self._scopes[EditScope.ROW if rows else EditScope.ALL].setChecked(True)
-        self._scopes[EditScope.ROW].setEnabled(rows)
-        self._scopes[EditScope.SELECTED].setEnabled(selected_color is not None)
+        if on_view:
+            self._scopes[EditScope.SELECTION].setEnabled(has_selection)
+            self._scopes[EditScope.SELECTION].setToolTip(
+                "The swatches selected on the canvas"
+            )
+            self._scopes[
+                EditScope.SELECTION if has_selection else EditScope.ENTIRE_VIEW
+            ].setChecked(True)
+        else:
+            self._scopes[EditScope.ROW if rows else EditScope.ALL].setChecked(True)
+            self._scopes[EditScope.ROW].setEnabled(rows)
+            self._scopes[EditScope.SELECTED].setEnabled(selected_color is not None)
         scope_row.addStretch(1)
 
         color_row = QHBoxLayout()
@@ -195,7 +225,9 @@ class PaletteEditDialog(QDialog):
                     "scope",
                     "Apply to:",
                     scope_row,
-                    "Which entries the operation changes",
+                    "Which swatches the operation changes"
+                    if on_view
+                    else "Which entries the operation changes",
                 ),
             )
         ):
@@ -253,7 +285,7 @@ class PaletteEditDialog(QDialog):
         for scope, radio in self._scopes.items():
             if radio.isChecked():
                 return scope
-        return EditScope.ROW
+        return next(iter(self._scopes))
 
     # -- programmatic setters, for the host and for tests -----------------
     def set_op(self, kind: OpKind) -> None:

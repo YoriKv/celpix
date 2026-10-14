@@ -13,7 +13,10 @@ step (:class:`~celpix.ui.undo_commands.JumpToParentCommand`,
 ``docs/design/undo-redo.md`` §3); the parent's unsaved edits are carried into
 the re-read document rather than asked about, since a jump changes how the file
 is *read*, never which bytes it has. A composite's jump to one of its pieces
-opens that piece's entry as it already reads, and so takes no step at all.
+opens that piece's entry as it already reads, and so takes no step at all. The
+palette dock's **Jump to Source** is a piece jump's shape for the dock's
+palette: the entry its bytes are read from, shown as swatches in the palette's
+colour format with the palette's first colour at the view origin.
 
 Reads, through ``self``: ``_doc`` and ``_workspace`` (created in
 ``MainWindow.__init__``), and the session capture, seed and re-read of
@@ -34,7 +37,9 @@ from celpix.project.workspace import (
     CompositePiece,
     Entry,
     EntryKind,
+    PaletteMode,
     palette_source_for,
+    swatch_preset_id,
 )
 from celpix.ui.main_window.interpretation import _same_bytes
 from celpix.ui.undo_commands import (
@@ -42,6 +47,7 @@ from celpix.ui.undo_commands import (
     JumpToParentCommand,
     ParentState,
 )
+from celpix.ui.widgets import select_combo_data
 
 
 class JumpsMixin:
@@ -139,6 +145,103 @@ class JumpsMixin:
         if self._workspace.current is source and self._doc is not None:
             self._land_on_byte(self._anchor_base() + piece.offset)
             self._refresh_view()
+
+    # -- jumping to a palette's source ---------------------------------------
+    def _palette_source_target(self) -> tuple[Entry, int, bool] | None:
+        """Where the dock's palette is read from — ``(entry, byte, absolute)``:
+        the entry holding the bytes, the palette's first byte, and whether that
+        byte is in the coordinates :meth:`~...navigation.NavigationMixin.
+        _land_on_byte` takes (else counted from the entry's position 0) — or
+        ``None`` where there is nowhere to go, which hides the dock's button.
+
+        Only the modes reading bytes have one. Default and Custom carry colours
+        of their own and Emulator reads a save state the canvas cannot show. A
+        **File** palette's source is the registered palette entry, whole, and
+        none when that entry is the one on screen: a palette file opened on
+        itself is already there. An **Offset** address is written in the owner
+        file's coordinates — the root of a slice's chain, the way Load from
+        Selection wrote it (:func:`~celpix.project.palettes.palette_offset_owner`)
+        — except on a view without file coordinates, where it is a position in
+        this very buffer. An **Entry** offset counts into the source's resolved
+        bytes from 0, as a composite piece's does (:meth:`_jump_to_piece`).
+        """
+        doc = self._doc
+        current = self._workspace.current
+        if doc is None or current is None:
+            return None
+        mode = self._palette_mode
+        if mode is PaletteMode.FILE:
+            linked = self._linked_palette_entry()
+            if linked is None or linked is current:
+                return None
+            return linked, 0, False
+        if mode is PaletteMode.OFFSET:
+            owner = (
+                self._palette_offset_owner(current)
+                if self._view_has_file_coordinates()
+                else current
+            )
+            if owner is None:
+                return None
+            return owner, doc.palette_config.source.offset, True
+        if mode is PaletteMode.ENTRY:
+            source = self._entry_palette_target(current)
+            if source is None:
+                return None
+            return source, self._entry_palette_offset(current), False
+        return None
+
+    def _jump_to_palette_source(self) -> None:
+        """Palette dock ▸ Jump to Source: show the bytes the palette is read
+        from, as swatches, with its first colour at the view's origin.
+
+        A piece jump's shape rather than a slice's: the source keeps its own
+        settings and is only switched to the swatch view in the palette's
+        colour format, so what lands on screen *is* the palette, one swatch per
+        colour. The switch is the toolbar's own two picks — the colour format,
+        then the pixel format, in that order because the pixel switch validates
+        the read under the format — pushed as the steps they always are and
+        grouped when both move, so one Ctrl+Z puts the source's view back; the
+        activation and the landing take no step, as a piece jump's do not. A
+        palette file already shows itself as swatches in its own format, so it
+        only needs activating.
+        """
+        target = self._palette_source_target()
+        if target is None or self._doc is None:
+            return
+        source, offset, absolute = target
+        # Read before activating: the dock's palette, and so its format, is the
+        # entry being left's.
+        format_id = self._doc.palette_config.interpret_preset_id
+        self._activate_entry(source)
+        if self._workspace.current is not source or self._doc is None:
+            return  # would not open, and has said why
+        if source.kind is not EntryKind.PALETTE:
+            swatches = swatch_preset_id(self._registry)
+            format_moves = (
+                self._palette_view_preset.findData(format_id) >= 0
+                and self._palette_view_preset_id() != format_id
+            )
+            pixel_moves = bool(swatches) and self._pixel_preset_id() != swatches
+            grouped = format_moves and pixel_moves
+            if grouped:
+                self._undo_stack.beginMacro("jump to palette source")
+            try:
+                if format_moves:
+                    select_combo_data(self._palette_view_preset, format_id)
+                    self._on_palette_view_change()
+                if pixel_moves:
+                    # A fresh switch, anchored on the view as it is now rather
+                    # than on a target left over from cycling the dropdown.
+                    self._end_pixel_switch_run()
+                    select_combo_data(self._pixel_preset, swatches)
+                    self._on_pixel_preset_change()
+            finally:
+                if grouped:
+                    self._undo_stack.endMacro()
+        self._land_on_byte(offset if absolute else self._anchor_base() + offset)
+        self._refresh_view()
+        self.statusBar().showMessage(f"Showing the palette's bytes in {source.name}")
 
     def _jump_into_parent(
         self, child: Entry, target: Callable[[Entry], ParentState]
