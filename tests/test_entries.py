@@ -1787,6 +1787,31 @@ def test_jump_to_source_shows_slice_in_parent_at_absolute_offset(
     assert window._byte_position() == 64
 
 
+def test_jump_to_source_hands_the_parent_the_slices_cols_and_rows(
+    qtbot, tmp_path
+) -> None:
+    """The slice's tiles stand in the parent as they stood in the slice: its
+    Cols and Rows travel with the jump, in the jump's one step."""
+    px = _make_snes_file(tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    parent = window._workspace.current
+    assert (window._columns.value(), window._rows.value()) == (16, 16)
+    slice_entry = window._workspace.add_slice(str(px), "gfx", 64, 64)
+    window._activate_entry(slice_entry)
+    window._columns.setValue(4)
+    window._rows.setValue(2)
+
+    window._jump_to_slice_source(slice_entry)
+
+    assert window._workspace.current is parent
+    assert (window._columns.value(), window._rows.value()) == (4, 2)
+    window._undo_stack.undo()
+    assert window._workspace.current is parent
+    assert (window._columns.value(), window._rows.value()) == (16, 16)
+
+
 def test_jump_to_source_arms_the_slices_compression_preview(qtbot, tmp_path) -> None:
     # The parent reads raw, so a compressed slice's bytes are packed at its
     # address: the jump has to arm the preview combo with the codec that unpacks

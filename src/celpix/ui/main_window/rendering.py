@@ -122,16 +122,6 @@ class RenderingMixin:
         """
         if self._doc is None or self._applying_undo:
             return
-        entry = self._workspace.current
-        assert entry is not None  # a document implies a current entry
-        view = self._doc.view
-        before = ViewAxisState(
-            view.columns,
-            view.rows,
-            view.palette_row,
-            self._recorded_offset(),
-            self._nudge,
-        )
         columns = self._floored_columns(self._columns.value())
         if columns != self._columns.value():
             # Floored here rather than left to the settle: the step has to hold
@@ -147,6 +137,29 @@ class RenderingMixin:
             # The position the gesture started from, not a new one: widening the
             # window can put it past the last page, and the refresh the apply
             # runs is what clamps it — the same path the gesture always took.
+            self._recorded_offset(),
+            self._nudge,
+        )
+        self._push_view_axes(axis, after)
+
+    def _push_view_axes(self, axis: str, after: ViewAxisState) -> None:
+        """Push one move of the view axes to ``after``, as the step named
+        ``axis``; nothing when the view already stands there.
+
+        The spins' own push, and the one a programmatic move takes — the
+        palette dock's Jump to Source laying the swatches out as its grid — so
+        both are steps of the same shape. ``doc.view`` is the before: the
+        settled state of the last refresh, framed at the position on screen.
+        """
+        if self._doc is None or self._applying_undo:
+            return
+        entry = self._workspace.current
+        assert entry is not None  # a document implies a current entry
+        view = self._doc.view
+        before = ViewAxisState(
+            view.columns,
+            view.rows,
+            view.palette_row,
             self._recorded_offset(),
             self._nudge,
         )

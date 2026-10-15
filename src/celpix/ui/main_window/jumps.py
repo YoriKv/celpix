@@ -1,8 +1,9 @@
 """Jumping from an entry to where its bytes come from, and bookmarks.
 
 **Jump to Source** shows a slice's bytes in its parent: the parent is handed the
-slice's presets, palette and bindings, keeps its own view geometry, and lands
-byte-exactly on the slice's offset, opening first if it was closed. A
+slice's presets, palette, bindings and Cols and Rows, keeps the rest of its own
+view geometry, and lands byte-exactly on the slice's offset, opening first if it
+was closed. A
 **bookmark** is the position-only sibling — a view origin with a snapshot of the
 settings at creation time and no document of its own, anchored to a whole file
 or palette — and jumping to one is the same flow with the snapshot applied
@@ -29,8 +30,10 @@ from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
-from celpix.core.document import Document
+from celpix.core import ceil_div
+from celpix.core.document import Document, ViewOptions
 from celpix.core.errors import PipelineError
+from celpix.pipeline import pipeline
 from celpix.project.inputs import (
     with_bindings,
 )
@@ -43,10 +46,12 @@ from celpix.project.workspace import (
     swatch_preset_id,
 )
 from celpix.ui.main_window.interpretation import _same_bytes
+from celpix.ui.palette_panel import SWATCH_COLUMNS
 from celpix.ui.undo_commands import (
     AddEntryCommand,
     JumpToParentCommand,
     ParentState,
+    ViewAxisState,
 )
 from celpix.ui.widgets import select_combo_data
 
@@ -104,11 +109,26 @@ class JumpsMixin:
         # source decodes with the same table the slice does, or it would show
         # nothing where the slice shows tiles (``main_window/inputs.py``).
         bound = slice_entry.inputs.get(slice_entry.compression_id)
+        # The slice's Cols and Rows travel too, so its tiles stand in the parent
+        # as they stood in the slice; a slice never opened has no geometry of
+        # its own to hand over. The rest of the parent's view - arrangement,
+        # grid - stays its own.
+        child_view = (
+            slice_entry.doc.view
+            if slice_entry.doc is not None
+            else slice_entry.pending_view
+        )
 
         def target(parent: Entry) -> ParentState:
-            # Keep the parent's view geometry (columns/rows/grid); the origin is
-            # landed after load, once the new preset's tile size is known.
+            # The origin is landed after load, once the new preset's tile size
+            # is known.
             prior = parent.doc.view if parent.doc is not None else parent.pending_view
+            if child_view is not None:
+                prior = replace(
+                    prior if prior is not None else ViewOptions(),
+                    columns=child_view.columns,
+                    rows=child_view.rows,
+                )
             return ParentState(
                 session=session,
                 pending_view=(
@@ -200,29 +220,34 @@ class JumpsMixin:
 
     def _jump_to_palette_source(self) -> None:
         """Palette dock ▸ Jump to Source: show the bytes the palette is read
-        from, as swatches, with its first colour at the view's origin.
+        from, as swatches laid out like the dock's grid, with its first colour
+        at the view's origin.
 
         A piece jump's shape rather than a slice's: the source keeps its own
         settings and is only switched to the swatch view in the palette's
-        colour format, so what lands on screen *is* the palette, one swatch per
-        colour. The switch is the toolbar's own two picks — the colour format,
-        then the pixel format — pushed as the steps they always are and grouped
-        when both move, so one Ctrl+Z puts the source's view back; the
-        activation and the landing take no step, as a piece jump's do not. The
-        read is probed under both picks **before** the macro opens: a macro
-        cannot be abandoned once begun, and the format step alone would be a
-        half-made jump. A palette file already shows itself as swatches in its
-        own format, so it only needs activating.
+        colour format, with Cols and Rows set so the window is the dock's grid
+        — sixteen colours a row, as many rows as the palette has — so what
+        lands on screen *is* the palette as the dock shows it. The switch is
+        the toolbar's own picks — the colour format, the pixel format, the two
+        axes — pushed as the steps they always are and grouped when more than
+        one moves, so one Ctrl+Z puts the source's view back; the activation
+        and the landing take no step, as a piece jump's do not. The read is
+        probed under the format and pixel picks **before** the macro opens: a
+        macro cannot be abandoned once begun, and the format step alone would
+        be a half-made jump. A palette file already shows itself as swatches in
+        its own format, so only its axes are touched.
         """
         target = self._palette_source_target()
         if target is None or self._doc is None:
             return
         source, offset, absolute = target
-        # Read before activating: the dock's palette, and so its format, is the
-        # entry being left's.
+        # Read before activating: the dock's palette, and so its format and
+        # length, are the entry being left's.
         format_id = self._doc.palette_config.interpret_preset_id
+        colors = len(self._doc.palette)
         if not self._open_source(source):
             return
+        moves: list[Callable[[], None]] = []
         if source.kind is not EntryKind.PALETTE:
             swatches = swatch_preset_id(self._registry)
             format_moves = (
@@ -234,25 +259,66 @@ class JumpsMixin:
                 source, format_id if format_moves else None, swatches
             ):
                 return
-            grouped = format_moves and pixel_moves
+            if format_moves:
+                moves.append(lambda: self._pick_palette_view_format(format_id))
+            if pixel_moves:
+                moves.append(lambda: self._pick_pixel_preset(swatches))
+        axes = self._palette_grid_axes(source, format_id, colors)
+        if axes is not None:
+            moves.append(lambda: self._push_view_axes("view", axes))
+        grouped = len(moves) > 1
+        if grouped:
+            self._undo_stack.beginMacro("jump to palette source")
+        try:
+            for move in moves:
+                move()
+        finally:
             if grouped:
-                self._undo_stack.beginMacro("jump to palette source")
-            try:
-                if format_moves:
-                    select_combo_data(self._palette_view_preset, format_id)
-                    self._on_palette_view_change()
-                if pixel_moves:
-                    # A fresh switch, anchored on the view as it is now rather
-                    # than on a target left over from cycling the dropdown.
-                    self._end_pixel_switch_run()
-                    select_combo_data(self._pixel_preset, swatches)
-                    self._on_pixel_preset_change()
-            finally:
-                if grouped:
-                    self._undo_stack.endMacro()
+                self._undo_stack.endMacro()
         self._land_on_byte(offset if absolute else self._anchor_base() + offset)
         self._refresh_view()
         self.statusBar().showMessage(f"Showing the palette's bytes in {source.name}")
+
+    def _pick_palette_view_format(self, format_id: str) -> None:
+        """Move the toolbar's palette-format picker as a hand would, step and all."""
+        select_combo_data(self._palette_view_preset, format_id)
+        self._on_palette_view_change()
+
+    def _pick_pixel_preset(self, preset_id: str) -> None:
+        """Move the pixel-format picker as a hand would, step and all.
+
+        A fresh switch, anchored on the view as it is now rather than on a
+        target left over from cycling the dropdown.
+        """
+        self._end_pixel_switch_run()
+        select_combo_data(self._pixel_preset, preset_id)
+        self._on_pixel_preset_change()
+
+    def _palette_grid_axes(
+        self, source: Entry, format_id: str, colors: int
+    ) -> ViewAxisState | None:
+        """Cols and Rows that lay ``colors`` swatches out as the dock's grid
+        does, or ``None`` when the view already has them.
+
+        Sixteen colours a row (:data:`~celpix.ui.palette_panel.SWATCH_COLUMNS`),
+        in tiles: a packed format's tile is several swatches wide, so Cols is
+        that many fewer. Rows is what the palette fills, within the spin's
+        range. The current position rides along, as on every axis step, for the
+        refresh to re-clamp.
+        """
+        assert self._doc is not None
+        try:
+            per_unit = pipeline.palette_entries_per_unit(format_id, self._registry)
+        except (PipelineError, KeyError):
+            per_unit = 1
+        columns = max(1, SWATCH_COLUMNS // max(1, per_unit))
+        rows = min(self._rows.maximum(), max(1, ceil_div(colors, SWATCH_COLUMNS)))
+        view = self._doc.view
+        if (view.columns, view.rows) == (columns, rows) or self._doc.is_tilemap:
+            return None
+        return ViewAxisState(
+            columns, rows, view.palette_row, self._recorded_offset(), self._nudge
+        )
 
     def _swatches_readable(
         self, entry: Entry, format_id: str | None, swatches: str

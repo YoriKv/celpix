@@ -1,9 +1,14 @@
 # Changelog
 
+## v1.2.10 - unreleased
+
+- Jump to source changes rows/cols as well now
+
 ## v1.2.9 - 2026-10-14
 
 - Edit Palette… added to View as Palette/Swatch view.
 - Added Jump to Source on the palette dock.
+- Jump to Source on a slice now gives the file the slice's Cols and Rows.
 
 ## v1.2.8 - 2026-10-13
 

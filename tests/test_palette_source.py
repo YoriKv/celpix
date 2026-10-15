@@ -3129,3 +3129,7 @@ def test_jump_to_source_activates_a_file_palettes_entry_and_then_hides(
     assert window._palette_view_active()
     assert window._palette_mode is PaletteMode.FILE
     assert not window._palette_source_action.isVisibleTo(window)
+    # Sixteen colours: one row of the dock's grid, so one row of swatches.
+    assert (window._columns.value(), window._rows.value()) == (16, 1)
+    window._undo_stack.undo()
+    assert window._rows.value() != 1

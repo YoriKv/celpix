@@ -323,8 +323,8 @@ class PaletteDockMixin:
         # a disabled jump would only ask what it jumps to.
         self._palette_source_action = QPushButton("Jump to Source")
         self._palette_source_action.setToolTip(
-            "Show the bytes this palette is read from as swatches,\n"
-            "in View as Palette, its first color at the view's origin"
+            "Show the bytes this palette is read from as swatches\n"
+            "in View as Palette, laid out like this grid"
         )
         self._palette_source_action.clicked.connect(self._jump_to_palette_source)
 
