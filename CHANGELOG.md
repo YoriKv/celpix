@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.2.10 - unreleased
+## v1.2.10 - 2026-10-14
 
 - Jump to source changes rows/cols as well now
 
