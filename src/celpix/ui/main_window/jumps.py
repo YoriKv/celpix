@@ -30,6 +30,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from celpix.core.document import Document
+from celpix.core.errors import PipelineError
 from celpix.project.inputs import (
     with_bindings,
 )
@@ -141,10 +142,19 @@ class JumpsMixin:
         source = piece.entry
         if source is None or not any(e is source for e in self._workspace.entries):
             return
-        self._activate_entry(source)
-        if self._workspace.current is source and self._doc is not None:
+        if self._open_source(source):
             self._land_on_byte(self._anchor_base() + piece.offset)
             self._refresh_view()
+
+    def _open_source(self, source: Entry) -> bool:
+        """Activate ``source``; whether it is now the one on screen, loaded.
+
+        The activation reports its own failure — a file gone, bytes that will
+        not read — and leaves the view where it was, so a caller that was
+        about to land on an offset in ``source`` has nowhere to land.
+        """
+        self._activate_entry(source)
+        return self._workspace.current is source and self._doc is not None
 
     # -- jumping to a palette's source ---------------------------------------
     def _palette_source_target(self) -> tuple[Entry, int, bool] | None:
@@ -159,11 +169,12 @@ class JumpsMixin:
         **File** palette's source is the registered palette entry, whole, and
         none when that entry is the one on screen: a palette file opened on
         itself is already there. An **Offset** address is written in the owner
-        file's coordinates — the root of a slice's chain, the way Load from
-        Selection wrote it (:func:`~celpix.project.palettes.palette_offset_owner`)
-        — except on a view without file coordinates, where it is a position in
-        this very buffer. An **Entry** offset counts into the source's resolved
-        bytes from 0, as a composite piece's does (:meth:`_jump_to_piece`).
+        file's coordinates — the root of a slice's chain, however nested, the
+        way the palette was read (:func:`~celpix.project.palettes.
+        palette_offset_owner`), so that file's own :meth:`~...navigation.
+        NavigationMixin._anchor_base` is what it counts from. An **Entry**
+        offset counts into the source's resolved bytes from 0, as a composite
+        piece's does (:meth:`_jump_to_piece`).
         """
         doc = self._doc
         current = self._workspace.current
@@ -176,11 +187,7 @@ class JumpsMixin:
                 return None
             return linked, 0, False
         if mode is PaletteMode.OFFSET:
-            owner = (
-                self._palette_offset_owner(current)
-                if self._view_has_file_coordinates()
-                else current
-            )
+            owner = self._palette_offset_owner(current)
             if owner is None:
                 return None
             return owner, doc.palette_config.source.offset, True
@@ -199,12 +206,13 @@ class JumpsMixin:
         settings and is only switched to the swatch view in the palette's
         colour format, so what lands on screen *is* the palette, one swatch per
         colour. The switch is the toolbar's own two picks — the colour format,
-        then the pixel format, in that order because the pixel switch validates
-        the read under the format — pushed as the steps they always are and
-        grouped when both move, so one Ctrl+Z puts the source's view back; the
-        activation and the landing take no step, as a piece jump's do not. A
-        palette file already shows itself as swatches in its own format, so it
-        only needs activating.
+        then the pixel format — pushed as the steps they always are and grouped
+        when both move, so one Ctrl+Z puts the source's view back; the
+        activation and the landing take no step, as a piece jump's do not. The
+        read is probed under both picks **before** the macro opens: a macro
+        cannot be abandoned once begun, and the format step alone would be a
+        half-made jump. A palette file already shows itself as swatches in its
+        own format, so it only needs activating.
         """
         target = self._palette_source_target()
         if target is None or self._doc is None:
@@ -213,9 +221,8 @@ class JumpsMixin:
         # Read before activating: the dock's palette, and so its format, is the
         # entry being left's.
         format_id = self._doc.palette_config.interpret_preset_id
-        self._activate_entry(source)
-        if self._workspace.current is not source or self._doc is None:
-            return  # would not open, and has said why
+        if not self._open_source(source):
+            return
         if source.kind is not EntryKind.PALETTE:
             swatches = swatch_preset_id(self._registry)
             format_moves = (
@@ -223,6 +230,10 @@ class JumpsMixin:
                 and self._palette_view_preset_id() != format_id
             )
             pixel_moves = bool(swatches) and self._pixel_preset_id() != swatches
+            if pixel_moves and not self._swatches_readable(
+                source, format_id if format_moves else None, swatches
+            ):
+                return
             grouped = format_moves and pixel_moves
             if grouped:
                 self._undo_stack.beginMacro("jump to palette source")
@@ -242,6 +253,32 @@ class JumpsMixin:
         self._land_on_byte(offset if absolute else self._anchor_base() + offset)
         self._refresh_view()
         self.statusBar().showMessage(f"Showing the palette's bytes in {source.name}")
+
+    def _swatches_readable(
+        self, entry: Entry, format_id: str | None, swatches: str
+    ) -> bool:
+        """Whether ``entry``'s bytes read as swatches in colour format
+        ``format_id`` (its session's when ``None``); reported if not.
+
+        :meth:`~...interpretation.InterpretationMixin._palette_view_readable`'s
+        probe, for the moment before either pick has been made: the config
+        reads the session, so the format is lent to it for the read and put
+        back either way.
+        """
+        session = entry.session
+        if session is None:
+            return True
+        held = session.palette_view_preset_id
+        if format_id is not None:
+            session.palette_view_preset_id = format_id
+        try:
+            self._pixel_data_for(self._pixel_config(entry, swatches))
+        except PipelineError as exc:
+            self._report(exc)
+            return False
+        finally:
+            session.palette_view_preset_id = held
+        return True
 
     def _jump_into_parent(
         self, child: Entry, target: Callable[[Entry], ParentState]

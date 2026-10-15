@@ -9,12 +9,14 @@ original. Both are checked from inside the modal, where the preview is up.
 
 from __future__ import annotations
 
+from PySide6.QtCore import QRect
 from PySide6.QtWidgets import QDialog, QFileDialog
 
 from celpix.core.color_ops import BlendMode, OpKind, PaletteOp
 from celpix.project.workspace import EntryKind
 from celpix.ui.main_window import MainWindow
 from celpix.ui.palette_edit_dialog import EditScope, PaletteEditDialog
+from celpix.ui.tools import EditMode
 
 ACCEPTED = QDialog.DialogCode.Accepted.value
 REJECTED = QDialog.DialogCode.Rejected.value
@@ -405,3 +407,35 @@ def test_the_toolbar_edit_palette_can_recolor_only_the_selected_swatches(
     after = _swatch_colors(window, 0, total)
     assert _changed(before, after) == [2, 3]
     assert after[2] == after[3]
+
+
+def test_in_pixel_mode_the_selection_is_the_marquee_and_a_float_comes_down_first(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """Pixel mode has no tile selection: the marquee is the mask every pixel
+    tool paints through, so it is this window's Selection too, and a swatch it
+    touches counts whole. Pixels lifted into the air are not in the bytes the
+    grid is composed from, so they land before the edit, as before any other
+    repaint under them."""
+    window = _open_in_offset_mode(qtbot, tmp_path, monkeypatch, tiles=64)
+    _as_swatches(window)
+    window._set_edit_mode(EditMode.PIXEL)
+    total = window._doc.tile_count
+    before = _swatch_colors(window, 0, total)
+    # Half of swatch 0 and a sliver of swatch 1: both count, nothing else does.
+    window._marquee = QRect(4, 0, 6, 8)
+    window._lift_float(cut=False)
+    assert window._float_grid is not None
+
+    def exec_(dialog: PaletteEditDialog) -> int:
+        assert dialog.scope() is EditScope.SELECTION
+        dialog.set_op(OpKind.SET)
+        dialog.set_color(0xFFFF0000)
+        return ACCEPTED
+
+    monkeypatch.setattr(PaletteEditDialog, "exec", exec_)
+    window._edit_view_palette_action.click()
+
+    assert window._float_grid is None
+    after = _swatch_colors(window, 0, total)
+    assert _changed(before, after) == [0, 1]

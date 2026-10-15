@@ -24,12 +24,16 @@ modal, which is what makes the swap safe to undo by hand.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from PySide6.QtWidgets import QDialog
 
+from celpix.core.color_ops import PaletteOp
 from celpix.core.palette import Palette
 from celpix.plugins.builtins.palette_swatch import SWATCH
 from celpix.project.workspace import EntryKind
 from celpix.ui.palette_edit_dialog import EditScope, PaletteEditDialog
+from celpix.ui.tools import EditMode
 from celpix.ui.widgets import counted
 
 
@@ -43,9 +47,7 @@ class PaletteEditMixin:
         if doc is None or self._applying_undo:
             return
         original = doc.palette
-        selected = self._palette_panel.selected_index()
-        if selected is not None and selected >= len(original):
-            selected = None
+        selected = self._dock_selected_index()
         dialog = PaletteEditDialog(
             self,
             selected_color=None if selected is None else original.color(selected),
@@ -62,26 +64,59 @@ class PaletteEditMixin:
             )
             self._show_palette(Palette(colors))
 
-        dialog.changed.connect(preview)
-        preview()
-        try:
-            accepted = dialog.exec() == QDialog.DialogCode.Accepted
-        finally:
-            # Back to the real palette before anything is written: the commit
-            # diffs each entry against what is on screen, and on Cancel this
-            # *is* the whole undo.
-            self._show_palette(original)
-        if not accepted:
+        # Back to the real palette before anything is written: the commit
+        # diffs each entry against what is on screen, and on Cancel this *is*
+        # the whole undo.
+        restore = lambda: self._show_palette(original)  # noqa: E731 — a one-use thunk
+        if not self._run_palette_edit(dialog, preview, restore):
             return
         op = dialog.op()
         start, count = self._palette_edit_range(dialog.scope(), selected)
         colors = op.apply_all([original.color(i) for i in range(start, start + count)])
-        if self._write_colors_at(start, colors, count, "edit palette"):
+        written = self._write_colors_at(start, colors, count, "edit palette")
+        self._report_palette_edit(op, written, count, "color")
+
+    # -- what both windows share -------------------------------------------
+    def _dock_selected_index(self) -> int | None:
+        """The swatch grid's selection as an index into the palette on screen,
+        or ``None`` — also when the grid's selection has outrun a palette that
+        shrank under it."""
+        selected = self._palette_panel.selected_index()
+        if selected is not None and selected >= len(self._shown_palette()):
+            return None
+        return selected
+
+    def _run_palette_edit(
+        self,
+        dialog: PaletteEditDialog,
+        preview: Callable[[], None],
+        restore: Callable[[], None],
+    ) -> bool:
+        """Show ``dialog`` with ``preview`` live under it; whether it was accepted.
+
+        ``preview`` runs once before the window opens and again on every input
+        change, and ``restore`` takes the preview down afterwards whichever way
+        the window closed — the commit that follows an OK wants the real
+        picture under it as much as a Cancel does.
+        """
+        dialog.changed.connect(preview)
+        preview()
+        try:
+            return dialog.exec() == QDialog.DialogCode.Accepted
+        finally:
+            restore()
+
+    def _report_palette_edit(
+        self, op: PaletteOp, written: object, count: int, noun: str
+    ) -> None:
+        """The status line after a commit: what was applied to how many of
+        ``noun``, or that it changed nothing."""
+        if written:
             self.statusBar().showMessage(
-                f"Applied {op.describe()} to {counted(count, 'color')}."
+                f"Applied {op.describe()} to {counted(count, noun)}."
             )
         else:
-            self.statusBar().showMessage(f"{op.describe()} changed no color.")
+            self.statusBar().showMessage(f"{op.describe()} changed no {noun}.")
 
     def _palette_edit_range(
         self, scope: EditScope, selected: int | None
@@ -113,8 +148,8 @@ class PaletteEditMixin:
         whole — the codec encodes a tile's most common colour, so a square is
         the smallest thing that reads back as one colour — and the result goes
         out through the pixel tools' preview and commit, which is what makes
-        it one undo step and what takes the preview down on Cancel (the
-        commit's own refresh, or an explicit one).
+        it one undo step. Cancel is the ordinary refresh: the committed
+        picture, with any float re-laid over it.
         """
         doc = self._doc
         if (
@@ -125,13 +160,15 @@ class PaletteEditMixin:
             or not self._palette_view_active()
         ):
             return
+        # Pixels in the air come down first, as before any other repaint of
+        # the window under them: the grid below is composed from the bytes,
+        # which a float is not in yet, and the preview draws no float. The
+        # marquee stays - it is what Selection is about to name.
+        self._commit_float(keep_selection=True)
         base = self._window_grid()
         if base is None:
             return
-        selected = self._palette_panel.selected_index()
-        palette = self._shown_palette()
-        if selected is not None and selected >= len(palette):
-            selected = None
+        selected = self._dock_selected_index()
         in_view = [
             (x, y)
             for y in range(0, base.height, SWATCH)
@@ -140,65 +177,66 @@ class PaletteEditMixin:
         in_selection = self._selected_swatches(base)
         dialog = PaletteEditDialog(
             self,
-            selected_color=None if selected is None else palette.color(selected),
+            selected_color=None
+            if selected is None
+            else self._shown_palette().color(selected),
             on_view=True,
             has_selection=bool(in_selection),
         )
 
         def edited():  # noqa: ANN202 — a grid
-            squares = in_selection if dialog.scope() is EditScope.SELECTION else in_view
+            cells = in_selection if dialog.scope() is EditScope.SELECTION else in_view
             op = dialog.op()
             grid = base.copy()
             # Memoised per colour: a table is a few hundred distinct colours
             # drawn as thousands of pixels.
             results: dict[int, int] = {}
-            for x, y in squares:
-                before = base.get(x, y)
+            for px, py in self._clipped(
+                self._whole_swatches(cells), base.width, base.height, masked=False
+            ):
+                before = base.get(px, py)
                 after = results.get(before)
                 if after is None:
                     after = results[before] = op.apply(before)
-                if after == before:
-                    continue
-                for py in range(y, min(y + SWATCH, base.height)):
-                    for px in range(x, min(x + SWATCH, base.width)):
-                        grid.set(px, py, after)
-            return grid, len(squares)
+                if after != before:
+                    grid.set(px, py, after)
+            return grid, len(cells)
 
         def preview() -> None:
             self._render_preview(edited()[0])
 
-        dialog.changed.connect(preview)
-        preview()
-        accepted = False
-        try:
-            accepted = dialog.exec() == QDialog.DialogCode.Accepted
-        finally:
-            if not accepted:
-                self._refresh_view()  # the committed picture, preview gone
-        if not accepted:
+        if not self._run_palette_edit(dialog, preview, self._refresh_view):
             return
         grid, count = edited()
-        op = dialog.op()
-        if self._commit_grid(grid, base, "edit palette", no_op_step=False):
-            self.statusBar().showMessage(
-                f"Applied {op.describe()} to {counted(count, 'swatch')}."
-            )
-        else:
-            self.statusBar().showMessage(f"{op.describe()} changed no swatch.")
+        written = self._commit_grid(grid, base, "edit palette", no_op_step=False)
+        self._report_palette_edit(dialog.op(), written, count, "swatch")
 
     def _selected_swatches(self, grid) -> list[tuple[int, int]]:  # noqa: ANN001 — a grid
-        """The top-left pixel of every swatch of ``grid`` the canvas selection
-        covers, in selection order.
+        """One pixel of every swatch of ``grid`` the canvas selection covers.
 
-        A selected tile is a slot of the window, and the window's layout says
-        which cell that slot was composed into — the same mapping the canvas
-        drew it with, so a block grouping scatters nothing. A tile is a whole
-        number of swatches side by side (a packed format's several entries), so
-        the squares are stepped off along it. Tiles scrolled out of the window
-        have no square to name and are passed over.
+        The selection is the mode's: in pixel mode the **marquee**, the mask
+        every pixel tool paints through, and a swatch it touches counts whole;
+        in tile mode the selected **tiles**. A selected tile is a slot of the
+        window, and the window's layout says which cell that slot was composed
+        into — the same mapping the canvas drew it with, so a block grouping
+        scatters nothing — and a tile is a whole number of swatches side by
+        side (a packed format's several entries), so the squares are stepped
+        off along it. Tiles scrolled out of the window are passed over.
         """
         assert self._doc is not None
         doc = self._doc
+        if self._edit_mode is EditMode.PIXEL:
+            rect = self._marquee
+            if rect is None:
+                return []
+            top = rect.top() - rect.top() % SWATCH
+            left = rect.left() - rect.left() % SWATCH
+            return [
+                (x, y)
+                for y in range(top, rect.bottom() + 1, SWATCH)
+                for x in range(left, rect.right() + 1, SWATCH)
+                if 0 <= x < grid.width and 0 <= y < grid.height
+            ]
         layout = self._view_layout()
         tile_w, tile_h = doc.tile_width, doc.tile_height
         slots = self._window_slots()

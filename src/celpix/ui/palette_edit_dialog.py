@@ -83,7 +83,7 @@ class EditScope(Enum):
     SELECTION = "Selection"
 
 
-_PALETTE_SCOPES = (EditScope.ROW, EditScope.ALL, EditScope.SELECTED)
+_DOCK_SCOPES = (EditScope.ROW, EditScope.ALL, EditScope.SELECTED)
 _VIEW_SCOPES = (EditScope.ENTIRE_VIEW, EditScope.SELECTION)
 
 
@@ -182,7 +182,7 @@ class PaletteEditDialog(QDialog):
 
         self._scopes: dict[EditScope, QRadioButton] = {}
         scope_row = QHBoxLayout()
-        for scope in _VIEW_SCOPES if on_view else _PALETTE_SCOPES:
+        for scope in _VIEW_SCOPES if on_view else _DOCK_SCOPES:
             radio = QRadioButton(scope.value)
             radio.toggled.connect(self._on_scope_toggle)
             self._scopes[scope] = radio

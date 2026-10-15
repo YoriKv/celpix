@@ -6,8 +6,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from PySide6.QtWidgets import QFileDialog
 
-from celpix.project.workspace import FileStages, PaletteMode
+from celpix.project.workspace import EntryKind, FileStages, PaletteMode
 from celpix.ui.main_window import MainWindow
 from uihelpers import (
     _bound_screen,
@@ -3055,24 +3056,49 @@ def test_jump_to_source_shows_an_offset_palette_in_its_owner_as_swatches(
     assert not window._palette_view_active()
 
 
+def test_jump_to_source_lands_a_nested_slices_offset_palette_in_the_root_file(
+    qtbot, tmp_path
+) -> None:
+    """A nested slice has no file coordinates of its own, but its Offset palette
+    was still read from the root file at a file-absolute address, so that is
+    where the jump goes."""
+    px = _make_big_snes_file(tmp_path, 512)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    root = window._workspace.current
+    outer = window._workspace.add_slice(str(px), "outer", 64, 0x1000)
+    inner = window._workspace.add_slice_under(outer, "inner", 16, 0x800)
+    window._activate_entry(inner)
+    assert window._load_palette_at_offset(32)
+    assert window._doc.palette_config.source.path == str(px)
+
+    window._palette_source_action.click()
+
+    assert _palette_source_jump(window) == (root, True, "preset.palette.bgr555", 32)
+
+
 def test_jump_to_source_opens_an_entry_palettes_source_at_its_offset(
     qtbot, tmp_path
 ) -> None:
     """An Entry offset counts into the source's resolved bytes from 0, the way a
-    composite piece's does."""
+    composite piece's does. A format the source was not on travels with the
+    jump, and the two picker moves are one step."""
     px = _make_big_snes_file(tmp_path, 512)
     window = MainWindow()
     qtbot.addWidget(window)
     window._load_pixel(str(px))
     graphic = window._workspace.current
     table = window._workspace.add_slice(str(px), "table", 0x40, 0x2000)
-    assert window._load_palette_from_entry(table, 16, "preset.palette.bgr555")
+    assert window._load_palette_from_entry(table, 15, "preset.palette.rgb888")
     assert window._palette_mode is PaletteMode.ENTRY
     assert window._palette_source_action.isVisibleTo(window)
 
     window._palette_source_action.click()
 
-    assert _palette_source_jump(window) == (table, True, "preset.palette.bgr555", 16)
+    assert _palette_source_jump(window) == (table, True, "preset.palette.rgb888", 15)
+    stack = window._undo_stack
+    assert stack.text(stack.index() - 1) == "jump to palette source"
     # On the source its own palette is whatever it has; the graphic's was Entry.
     window._activate_entry(graphic)
     assert window._palette_mode is PaletteMode.ENTRY
@@ -3083,10 +3109,6 @@ def test_jump_to_source_activates_a_file_palettes_entry_and_then_hides(
 ) -> None:
     """A palette file already shows itself as swatches, so the jump is its
     activation; on itself there is nowhere further to go, so the button goes."""
-    from PySide6.QtWidgets import QFileDialog
-
-    from celpix.project.workspace import EntryKind
-
     window = MainWindow()
     qtbot.addWidget(window)
     window._load_pixel(str(_make_snes_file(tmp_path)))
