@@ -354,7 +354,7 @@ class PaletteDockMixin:
         )
         import_row.addStretch(1)
 
-        export_row = _dock_row(self._export_palette_action, self._palette_source_action)
+        export_row = _dock_row(self._palette_source_action, self._export_palette_action)
 
         container = QWidget()
         column = QVBoxLayout(container)
