@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.2.9 - unreleased
+## v1.2.9 - 2026-10-14
 
 - Edit Palette… added to View as Palette/Swatch view.
 - Added Jump to Source on the palette dock.
