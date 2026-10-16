@@ -2,6 +2,37 @@
 
 Specification of the `.celpix` project file. Schema version **8**.
 
+**Contents**
+
+- [1. Encoding](#1-encoding)
+- [2. Conventions](#2-conventions)
+  - [2.1 Types](#21-types)
+  - [2.2 Defaults and tolerance](#22-defaults-and-tolerance)
+  - [2.3 Paths](#23-paths)
+  - [2.4 Entry references](#24-entry-references)
+  - [2.5 Plugin and preset ids](#25-plugin-and-preset-ids)
+  - [2.6 Built-in defaults](#26-built-in-defaults)
+- [3. Versioning](#3-versioning)
+- [4. Top level](#4-top-level)
+- [5. Entry](#5-entry)
+  - [5.1 Order](#51-order)
+  - [5.2 Kinds](#52-kinds)
+  - [5.3 Key matrix](#53-key-matrix)
+  - [5.4 Common keys](#54-common-keys)
+  - [5.5 `slice`](#55-slice)
+  - [5.6 `bookmark`](#56-bookmark)
+  - [5.7 `palette`](#57-palette)
+  - [5.8 `composite`](#58-composite)
+  - [5.9 `font`](#59-font)
+  - [5.10 `inputs`](#510-inputs)
+  - [5.11 `session`](#511-session)
+  - [5.12 `view`](#512-view)
+  - [5.13 `palette`](#513-palette)
+  - [5.14 Tilemap keys](#514-tilemap-keys)
+- [6. Load behaviour](#6-load-behaviour)
+- [7. Clipboard form](#7-clipboard-form)
+- [8. Example](#8-example)
+
 ## 1. Encoding
 
 | Property | Value |

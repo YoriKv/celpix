@@ -13,6 +13,18 @@ Contract for `.py` code plugins, per stage. A file defines one class and a
 - Code runs with the app's privileges, so celPix asks before loading a file.
 - Every folder ships a working `_example.py`. Copy it, remove the `_`, edit, press <kbd>F5</kbd>.
 
+**Contents**
+
+- [1. Common rules](#1-common-rules)
+- [2. Containers](#2-containers)
+- [3. Reshape](#3-reshape)
+- [4. Compression](#4-compression)
+- [5. Pixel formats](#5-pixel-formats)
+- [6. Palette formats](#6-palette-formats)
+- [7. Tilemap formats](#7-tilemap-formats)
+- [8. Context keys](#8-context-keys)
+- [9. Errors and notices](#9-errors-and-notices)
+
 ## 1. Common rules
 
 ### 1.1 Rules

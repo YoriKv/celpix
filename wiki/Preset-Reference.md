@@ -5,6 +5,37 @@ an engine by `engine_id` and sets that engine's `[params]`. The folder sets the
 stage. `id` is stable and is what a project stores, `name` is shown in the
 picker, `category` is optional. Folders, loading and the picker: [Plugins](Plugins).
 
+**Contents**
+
+- [1. Conventions](#1-conventions)
+  - [1.1 Preset keys](#11-preset-keys)
+  - [1.2 Bit layouts](#12-bit-layouts)
+- [2. Pixel stage](#2-pixel-stage)
+  - [2.1 Planar](#21-planar)
+  - [2.2 Packed](#22-packed)
+  - [2.3 Packed, fields straddling bytes](#23-packed-fields-straddling-bytes)
+  - [2.4 Nibble-planar](#24-nibble-planar)
+  - [2.5 Direct color](#25-direct-color)
+  - [2.6 Palette swatches](#26-palette-swatches)
+- [3. Palette stage](#3-palette-stage)
+  - [3.1 Color mask](#31-color-mask)
+  - [3.2 Color indexed](#32-color-indexed)
+- [4. Tilemap stage](#4-tilemap-stage)
+  - [4.1 Keys read by celPix on any tilemap preset](#41-keys-read-by-celpix-on-any-tilemap-preset)
+  - [4.2 Packed cell](#42-packed-cell)
+  - [4.3 Sprite record](#43-sprite-record)
+  - [4.4 Mega Drive sprite](#44-mega-drive-sprite)
+  - [4.5 Sprite table](#45-sprite-table)
+  - [4.6 Indirect record](#46-indirect-record)
+- [5. Reshape stage](#5-reshape-stage)
+  - [5.1 Bitswap](#51-bitswap)
+  - [5.2 Data LUT](#52-data-lut)
+  - [5.3 Split parts](#53-split-parts)
+  - [5.4 PS2 GS swizzle](#54-ps2-gs-swizzle)
+- [6. Compression stage](#6-compression-stage)
+  - [6.1 Compress and reshape](#61-compress-and-reshape)
+- [7. Where a preset is not enough](#7-where-a-preset-is-not-enough)
+
 ## 1. Conventions
 
 ### 1.1 Preset keys
