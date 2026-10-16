@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.2.11 - unreleased
+## v1.2.11 - 2026-10-16
 
 - Sprite record presets can read a size code and added offsets to bit field
 - A sprite preset that states its size pair hides the Sm/Lg inputs
