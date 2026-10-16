@@ -857,9 +857,10 @@ class PartialDecompression:
     the module functions take the data alone, an ordinary method where the variant
     has a parameter to bind (the size-prefix width of an SLZ framing, say).
     ``_encode`` is optional on the same rule as ``compress`` itself — a scheme that
-    can be read but not written leaves it unset, and the class then has to leave
-    ``compress`` off too, since shipping the method *is* the declaration that a
-    save-back works.
+    can be read but not written leaves it unset and sets ``compress = None`` on
+    the class, since a callable ``compress`` *is* the declaration that a save-back
+    works (:func:`writes_back`); the inherited one would promise a save that
+    raises.
     """
 
     # Every subclass is a plugin, so every one states this; declared here so code

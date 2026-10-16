@@ -26,3 +26,6 @@
 
 - [Project File Format](Project-File-Format)
 - [Sample Projects](Sample-Projects)
+- [Plugins](Plugins)
+- [Preset Reference](Preset-Reference)
+- [Code Plugin Reference](Code-Plugin-Reference)

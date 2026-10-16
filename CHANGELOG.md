@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.2.11 - unreleased
+
+- Sprite record presets can read a size code and added offsets to bit field
+- A sprite preset that states its size pair hides the Sm/Lg inputs
+- Added a wikie page for example plugins
+
 ## v1.2.10 - 2026-10-14
 
 - Jump to source changes rows/cols as well now

@@ -1684,6 +1684,203 @@ def test_a_sprite_record_draws_a_fixed_size_where_the_record_states_none() -> No
         engine.decode(raw, {**params, "subsprite_tiles": [2]}, ctx)
 
 
+# Final Fantasy VI's ending-animation sprite record: a size bit sharing its byte
+# with a 7-bit X, an unsigned Y, then the SNES OBJ tile/attribute word.
+_FF6_RECORD = {
+    "layout": "sprite",
+    "subsprite_size": "stated",
+    "endian": "little",
+    "size_pair": [1, 2],
+    "record": [
+        {"name": "pos", "type": "u8", "bits": "sxxx xxxx"},
+        {"name": "y", "type": "u8"},
+        {"name": "attr", "type": "u16", "bits": "vhoo pppi iiii iiii"},
+    ],
+}
+# Size bit 0 at x 5, y 248, tile $10 row 2; size bit 1 at x $78, y 16, tile $20
+# flipped horizontally.
+_FF6_RAW = bytes([0x05, 0xF8, 0x10, 0x04, 0xF8, 0x10, 0x20, 0x40])
+
+
+def test_a_sprite_record_resolves_a_lone_size_bit_against_the_size_pair() -> None:
+    """The bit picks the small or large square of the pair the host publishes,
+    the preset's own where nothing is published; X is the 7 bits below the size
+    bit, unsigned on a u8; and the bytes round-trip untouched."""
+    from celpix.core.context import KEY_TILEMAP_SUBSPRITE_TILES
+    from celpix.core.sprite import Subsprite
+    from celpix.plugins.builtins.sprite_record import SpriteRecordCodec
+
+    engine = SpriteRecordCodec()
+    ctx = PipelineContext()
+    cells = engine.decode(_FF6_RAW, _FF6_RECORD, ctx)
+    small = Subsprite(x=5, y=248, index=0x10, palette_row=2)
+    large = Subsprite(x=0x78, y=16, index=0x20, flip_h=True)
+    assert engine.frames(cells, _FF6_RECORD, ctx) == [
+        (replace(small, across=1, down=1), replace(large, across=2, down=2))
+    ]
+    ctx.set(KEY_TILEMAP_SUBSPRITE_TILES, (2, 4))
+    assert engine.frames(cells, _FF6_RECORD, ctx) == [
+        (replace(small, across=2, down=2), replace(large, across=4, down=4))
+    ]
+    assert engine.size_pair(_FF6_RECORD) == (1, 2)
+    assert engine.encode(cells, _FF6_RECORD, ctx) == _FF6_RAW
+
+
+def test_the_host_publishes_a_sprite_record_presets_size_pair(tmp_path) -> None:
+    """With no pair chosen for the entry, the load asks the engine for the
+    preset's `size_pair`, frames by it and reports it back — the probe's whole
+    route, which a pair equal to the default could not tell from no probe. The
+    preset that states its pair hides the bar's spins; a lone size bit without
+    one leaves them live."""
+    from celpix.plugins.base import Preset
+    from celpix.project.declarations import states_subsprite_size
+    from celpix.project.entry import new_slice
+
+    path = tmp_path / "ff6.bin"
+    path.write_bytes(_FF6_RAW)
+    registry = default_registry()
+    registry.register_preset(
+        Preset(
+            id="preset.tilemap.test-ff6-ending",
+            name="test",
+            stage=Stage.INTERPRET_TILEMAP,
+            engine_id="codec.tilemap.sprite-record",
+            params={**_FF6_RECORD, "size_pair": [2, 3]},
+        )
+    )
+    cfg = PathwayConfig(
+        source=FileRef(str(path)), interpret_preset_id="preset.tilemap.test-ff6-ending"
+    )
+    loaded = load_tilemap_data(cfg, registry)
+    assert loaded.size_pair == (2, 3)
+    assert [(p.across, p.down) for p in loaded.frames[0]] == [(2, 2), (3, 3)]
+
+    unknown = {k: v for k, v in _FF6_RECORD.items() if k != "size_pair"}
+    del unknown["subsprite_size"]
+    registry.register_preset(
+        Preset(
+            id="preset.tilemap.test-lone-size-bit",
+            name="test",
+            stage=Stage.INTERPRET_TILEMAP,
+            engine_id="codec.tilemap.sprite-record",
+            params=unknown,
+        )
+    )
+    entry = new_slice(str(path), "o", 0)
+    for preset_id, stated in (
+        ("preset.tilemap.test-ff6-ending", True),
+        ("preset.tilemap.test-lone-size-bit", False),
+    ):
+        entry.tilemap_preset_id = preset_id
+        assert states_subsprite_size(registry, entry) is stated
+
+
+def test_a_signed_field_reads_its_x_and_y_bits_as_twos_complement() -> None:
+    """The field's sign reaches its x/y bits at their own width — 7 bits beside
+    the size bit, and a split X around a Y — and no other letter."""
+    from celpix.plugins.builtins.sprite_record import SpriteRecordCodec
+
+    engine = SpriteRecordCodec()
+    ctx = PipelineContext()
+    signed = {
+        **_FF6_RECORD,
+        "record": [
+            {**_FF6_RECORD["record"][0], "type": "s8"},
+            *_FF6_RECORD["record"][1:],
+        ],
+    }
+    (frame,) = engine.frames(engine.decode(_FF6_RAW, signed, ctx), signed, ctx)
+    assert [(p.x, p.across) for p in frame] == [(5, 1), (-8, 2)]
+
+    # x -3 split 4+3 bits around s 0 and y -2: 1111 0 11111110 101
+    split = {"layout": "sprite", "record": [{"name": "pos", "type": "s16"}]}
+    split["record"][0]["bits"] = "xxxx syyy yyyy yxxx"
+    raw = bytes([0xF7, 0xF5])
+    ((piece,),) = engine.frames(engine.decode(raw, split, ctx), split, ctx)
+    assert (piece.x, piece.y) == (-3, -2)
+    split["record"][0]["type"] = "u16"
+    ((piece,),) = engine.frames(engine.decode(raw, split, ctx), split, ctx)
+    assert (piece.x, piece.y) == (125, 254)
+
+
+def test_a_sprite_record_indexes_its_sizes_table_by_the_size_code() -> None:
+    """A 2-bit code picks one of `sizes`, oblong ones included; a code the table
+    lacks draws 1x1 with a notice rather than failing the frame."""
+    from celpix.core.notices import notices
+    from celpix.plugins.builtins.sprite_record import SpriteRecordCodec
+
+    params = {
+        "layout": "sprite",
+        "subsprite_size": "stated",
+        "sizes": [[1, 1], [2, 1], [1, 2], [2, 2]],
+        "record": [{"name": "a", "type": "u8", "bits": "ssii iiii"}],
+    }
+    raw = bytes([0x01, 0x42, 0x83, 0xC4])
+    engine = SpriteRecordCodec()
+    ctx = PipelineContext()
+    cells = engine.decode(raw, params, ctx)
+    (frame,) = engine.frames(cells, params, ctx)
+    assert [(p.index, p.across, p.down) for p in frame] == [
+        (1, 1, 1),
+        (2, 2, 1),
+        (3, 1, 2),
+        (4, 2, 2),
+    ]
+    assert not notices(ctx)
+    assert engine.encode(cells, params, ctx) == raw
+
+    short = {**params, "sizes": params["sizes"][:3]}
+    (frame,) = engine.frames(cells, short, ctx)
+    assert (frame[3].across, frame[3].down) == (1, 1)
+    (notice,) = notices(ctx)
+    assert notice.summary.startswith("1 piece has")
+
+
+def test_a_sprite_record_refuses_a_size_or_offset_it_could_not_place() -> None:
+    """Each leaves a bit meaning nothing, or two answers for one value."""
+    from celpix.plugins.builtins.sprite_record import RecordLayout
+
+    def record(bits: str, **params: object) -> dict:
+        return {"record": [{"name": "a", "type": "u8", "bits": bits}], **params}
+
+    stated = {"subsprite_size": "stated"}
+    table = {"sizes": [[1, 1], [2, 2]]}
+    with pytest.raises(ValueError, match="not both"):
+        RecordLayout(record("sccc iiii"))
+    with pytest.raises(ValueError, match="has none"):
+        RecordLayout(record("iiii iiii", **table, **stated))
+    with pytest.raises(ValueError, match="needs a `sizes`"):
+        RecordLayout(record("ssii iiii"))
+    # The pair's one owner: stated with no pair says nobody sets it, a pair not
+    # stated lets the entry override what the preset knows.
+    with pytest.raises(ValueError, match="hides"):
+        RecordLayout(record("siii iiii", **stated))
+    with pytest.raises(ValueError, match="must declare"):
+        RecordLayout(record("siii iiii", size_pair=[1, 2]))
+    assert RecordLayout(record("siii iiii", size_pair=[1, 2], **stated)).coded
+    with pytest.raises(ValueError, match="must declare"):
+        RecordLayout(record("siii iiii", **table))
+    # `size_pair` where nothing picks from it: a sizes table, c/r, no s at all.
+    for bits, extra in (("ssii iiii", {**table, **stated}), ("ccii iiii", {})):
+        with pytest.raises(ValueError, match="`size_pair`"):
+            RecordLayout(record(bits, size_pair=[1, 2], **extra))
+    with pytest.raises(ValueError, match="`size_pair`"):
+        RecordLayout(record("iiii iiii", size_pair=[1, 2]))
+    # A field named `x` placing its own x bits is one statement, not two.
+    assert RecordLayout(
+        {"record": [{"name": "x", "type": "u8", "bits": "sxxx xxxx"}]}
+    ).coded
+    with pytest.raises(ValueError, match="placed twice"):
+        RecordLayout(
+            {
+                "record": [
+                    {"name": "x", "type": "s8"},
+                    {"name": "a", "type": "u8", "bits": "xxxx iiii"},
+                ]
+            }
+        )
+
+
 def test_a_mega_drive_run_says_when_its_mirror_offsets_disagree() -> None:
     """The one way this format is misread has no other symptom: a byte X plus a
     mirrored-frame X is the same six bytes as a signed word X, so the wrong

@@ -13,8 +13,10 @@
 #
 #   A frame is a header holding its part count, then the parts. Frames and
 #   parts take every parameter of _sprite-record.toml (record, frame_header,
-#   arrays, column_major, subsprite_tiles, legend, endian); frame_header is
-#   required here. `endian` also orders the offsets.
+#   arrays, column_major, subsprite_tiles, sizes, size_pair, legend, endian);
+#   frame_header is required here. The part record takes the same letters,
+#   s/x/y included, with the same sign and size rules. `endian` also orders
+#   the offsets.
 #
 #   Each distinct offset is one frame, in table order. A count of 0 is an empty
 #   frame. A frame past the Frames region draws empty, with a notice.
@@ -31,7 +33,9 @@ engine_id = "codec.tilemap.sprite-table"
 [params]
 
 # Required on this engine: cells are frames of sprite parts, and each part
-# states its own size, so the toolbar offers no size pair.
+# states its own size (c/r, `sizes`, `size_pair` or `subsprite_tiles`), so the
+# toolbar offers no size pair. Leave it out only for a lone s bit whose pair is
+# not yet known, as in _sprite-record.toml.
 layout = "sprite"
 subsprite_size = "stated"
 column_major = true

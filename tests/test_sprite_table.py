@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from celpix.core.context import KEY_INPUTS, PipelineContext
+from celpix.core.context import (
+    KEY_INPUTS,
+    KEY_TILEMAP_SUBSPRITE_TILES,
+    PipelineContext,
+)
 from celpix.core.errors import Stage
 from celpix.core.notices import notices
 from celpix.core.sprite import Subsprite
@@ -113,3 +117,24 @@ def test_grid_frames_read_a_grid_of_nametable_words_only_when_asked() -> None:
     assert got == (Subsprite(x=16, y=-16, index=5, palette_row=1),)
     with pytest.raises(ValueError, match="u8 at count_at = 0"):
         _frames("preset.tilemap.sonic3k-mappings", table, region, grid_frames=True)
+
+
+def test_a_piece_with_a_lone_size_bit_reads_the_size_pair_off_the_context() -> None:
+    """The table hands its pieces the pair the host published, and answers the
+    host's probe with its preset's stated `size_pair`."""
+    engine, params = _engine_and_params("preset.tilemap.sega-mappings-5")
+    params["record"] = [
+        {"name": "y", "type": "s8"},
+        {"name": "size", "type": "u8", "bits": "s... ...."},
+        {"name": "attr", "type": "u16", "bits": "oppv hiii iiii iiii"},
+        {"name": "x", "type": "s8"},
+    ]
+    params["size_pair"] = [2, 3]
+    table = b"\x00\x02"
+    frame = b"\x02" + _Y + b"\x00" + _ATTR + b"\xe8" + _Y + b"\x80" + _ATTR + b"\xe8"
+    ctx = PipelineContext()
+    ctx.set(KEY_INPUTS, {"frames": table + frame})
+    ctx.set(KEY_TILEMAP_SUBSPRITE_TILES, (1, 4))
+    (got,) = engine.frames(engine.decode(table, params, ctx), params, ctx)
+    assert [(p.across, p.down) for p in got] == [(1, 1), (4, 4)]
+    assert engine.size_pair(params) == (2, 3)

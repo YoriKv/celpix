@@ -19,6 +19,7 @@ is the most a tracked test can do for untracked data.
 
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -604,3 +605,46 @@ def test_a_chained_sample_map_names_the_corner_cell_it_always_has(
         dense=True,
     )[0]
     assert first == chain.source[corner]
+
+
+def test_the_ff6_ending_sprite_frames_resolve_their_size_bit() -> None:
+    """The size bit over real data: Final Fantasy VI's ending animation stores
+    its sprite frames as `sxxx xxxx y tile attr` records, the top bit of the X
+    byte choosing 8x8 or 16x16. Every carved run is read through the sprite-record
+    preset, the pieces counted by size against the disassembly's own layout, the
+    bytes re-encoded untouched — and then the entry re-read at another size pair,
+    which is the edit the binding bar's Sm/Lg spins make.
+    """
+    workspace, registry = _open("ff6/ff6.celpix")
+    ws = _workspace(workspace)
+    preset = "preset.tilemap.ff6-misc-ending-sprite-frames"
+    entries = [e for e in ws.entries if e.tilemap_preset_id == preset]
+    assert len(entries) == 13
+
+    sizes: Counter[tuple[int, int]] = Counter()
+    for entry in entries:
+        cfg = tilemap_config_for(entry, preset, registry, ws)
+        assert cfg.interpret_preset_id == preset  # nothing degraded
+        loaded = pipeline.load_tilemap_data(
+            cfg, registry, size_pair=entry.sprite_size_pair
+        )
+        assert loaded.size_pair == (1, 2)
+        for frame in loaded.frames:
+            for sub in frame:
+                sizes[sub.size()] += 1
+                # A 7-bit unsigned X and a byte Y: never negative here
+                assert 0 <= sub.x <= 127 and 0 <= sub.y <= 255
+        assert pipeline.encode_cells(loaded.cells, preset, registry, loaded.ctx) == (
+            loaded.data
+        )
+    # 123 records with the bit set, 393 clear, across all 52 frames
+    assert sizes == {(1, 1): 393, (2, 2): 123}
+
+    big = next(e for e in entries if "big airship" in e.name)
+    cfg = tilemap_config_for(big, preset, registry, ws)
+    loaded = pipeline.load_tilemap_data(cfg, registry, size_pair=(2, 4))
+    assert loaded.size_pair == (2, 4)
+    assert Counter(s.size() for f in loaded.frames for s in f) == {
+        (4, 4): 28,
+        (2, 2): 2,
+    }

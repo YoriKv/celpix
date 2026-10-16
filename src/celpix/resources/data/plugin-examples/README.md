@@ -27,7 +27,9 @@ prefix.
 
 A preset is data: it names a built-in engine (`engine_id`) and sets its
 parameters. Nothing executes, and celPix loads presets without asking. Parameters
-are checked when the preset is first used, not at load. There is one example per
+are checked when the preset is first used, not at load, for `pixel/`, `palette/`
+and `tilemap/`; a `reshape/` or `compression/` preset is built into its plugin
+at load, so a bad value there is a load issue. There is one example per
 engine; each lists every parameter and the shipped presets built on the engine.
 
 | Example | Engine |

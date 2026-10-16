@@ -18,8 +18,9 @@ frames" without claiming bytes another entry owns
 (``docs/design/sprite-map.md`` §3).
 
 **The frame and its pieces are sprite-record's parameters, unchanged**:
-``record``, ``frame_header`` (required here — a frame's count is what ends it),
-``arrays``, ``column_major``, ``subsprite_tiles``, ``legend``, ``endian``. So a
+``record`` (its ``s``, ``x`` and ``y`` letters included), ``frame_header``
+(required here — a frame's count is what ends it), ``arrays``, ``column_major``,
+``subsprite_tiles``, ``sizes``, ``size_pair``, ``legend``, ``endian``. So a
 Mega Drive dialect is a preset, and three ship: ``sega-mappings-5`` (a count
 byte and five-byte pieces — Sonic 1's, Sonic CD's and Phantasy Star II's),
 ``sonic2-mappings`` (a count word and eight-byte pieces
@@ -59,7 +60,13 @@ from celpix.core.sprite import Frame, Subsprite
 from celpix.core.tilemap import Cell
 from celpix.plugins._params import flag
 from celpix.plugins.base import InputKind, InputSpec, PluginInfo
-from celpix.plugins.builtins.sprite_record import RecordLayout, piece_bytes, subsprite
+from celpix.plugins.builtins.sprite_record import (
+    RecordLayout,
+    frame_pair,
+    piece_bytes,
+    subsprite,
+    warn_unsized,
+)
 
 SPRITE_TABLE_ENGINE = "codec.tilemap.sprite-table"
 INPUT_FRAMES = "frames"
@@ -129,23 +136,29 @@ def _grid(region: bytes, at: int, order: _Order) -> Frame | None:
     return tuple(out)
 
 
-def read_frame(table: TableLayout, region: bytes, at: int) -> Frame | None:
-    """The frame at ``region[at]``, or ``None`` when it runs past the region."""
+def read_frame(
+    table: TableLayout, region: bytes, at: int, pair: tuple[int, int]
+) -> tuple[Frame, int] | None:
+    """The frame at ``region[at]`` and how many of its pieces have a size code
+    ``sizes`` lacks, or ``None`` when it runs past the region. ``pair`` is what a
+    lone size bit resolves against."""
     layout = table.record
     length, count_at, count_width = layout.header
     if at + length > len(region):
         return None
     if table.grid and (region[at] == 0 or region[at] & _GRID_FLAG):
-        return _grid(region, at, layout.order)
+        grid = _grid(region, at, layout.order)
+        return None if grid is None else (grid, 0)
     count = int.from_bytes(
         region[at + count_at : at + count_at + count_width], layout.order
     )
     first = at + length
     if first + count * layout.size > len(region):
         return None
-    return tuple(
-        subsprite(layout, piece_bytes(layout, region, first, count, i))
-        for i in range(count)
+    records = [piece_bytes(layout, region, first, count, i) for i in range(count)]
+    return (
+        tuple(subsprite(layout, r, pair) for r in records),
+        sum(layout.unsized(r) for r in records),
     )
 
 
@@ -196,6 +209,11 @@ class SpriteTableCodec:
         # A cell is an offset, not a tile; the frame renderer asks each piece.
         return (1, 1)
 
+    def size_pair(self, params: dict[str, Any]) -> tuple[int, int]:
+        """The pair a lone size bit picks between: the preset's stated
+        ``size_pair``, or the default where the entry's spins set it."""
+        return TableLayout(params).record.size_pair
+
     def frames(
         self, cells: list[Cell], params: dict[str, Any], ctx: PipelineContext
     ) -> list[Frame]:
@@ -203,14 +221,17 @@ class SpriteTableCodec:
         region = (ctx.get(KEY_INPUTS) or {}).get(INPUT_FRAMES)
         if not isinstance(region, bytes) or not region:
             return []
+        pair = frame_pair(table.record, ctx)
         out: list[Frame] = []
-        outside = 0
+        outside = unsized = 0
         for offset in distinct([c.flags for c in cells]):
-            frame = read_frame(table, region, offset)
-            if frame is None:
+            read = read_frame(table, region, offset, pair)
+            if read is None:
                 outside += 1
-                frame = ()
-            out.append(frame)
+                read = ((), 0)
+            out.append(read[0])
+            unsized += read[1]
+        warn_unsized(ctx, unsized, table.record, SPRITE_TABLE_ENGINE)
         if outside:
             warn(
                 ctx,

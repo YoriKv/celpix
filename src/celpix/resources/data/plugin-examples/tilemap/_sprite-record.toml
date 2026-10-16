@@ -22,8 +22,11 @@ engine_id = "codec.tilemap.sprite-record"
 
 [params]
 
-# Required on this engine: cells are sprite parts, and each part states its own
-# size (the c/r bits), so the toolbar offers no size pair.
+# Required on this engine: cells are sprite parts. `subsprite_size = "stated"`
+# says each part's size is in the preset — c/r bits, `sizes`, `size_pair` or
+# `subsprite_tiles` — so the toolbar offers no size pair. Leave it out (and only
+# then) for a record whose size is one `s` bit and whose pair is not yet known:
+# the toolbar's Sm/Lg spins then set it per entry.
 layout = "sprite"
 subsprite_size = "stated"
 
@@ -36,16 +39,24 @@ column_major = true
 endian = "big"
 
 # Required. The fields in file order. `type`: u8, s8, u16, s16, u32 or s32.
-# Fields named `x` and `y` are the part's offset from the frame origin; absent
-# reads as 0. `bits` splits a field by a bit layout, most significant first:
+# `bits` splits a field by a bit layout, most significant first:
 #
 #   i  tile index        p  palette row      o  priority
 #   h  horizontal flip   v  vertical flip
 #   c  width in tiles - 1                    r  height in tiles - 1
-#   .  unused bit
+#   s  size code (below)
+#   x  x offset          y  y offset         .  unused bit
 #
-# No c/r bits: every part is `subsprite_tiles` (below). All other fields, and
-# `.` bits, are preserved byte for byte on write. Maximum record size: 64 bytes.
+# A part's offset from the frame origin is its x/y bits, else the whole field
+# named `x`/`y`, else 0 (a field named `x` may place its own x bits). x bits
+# in one field beside another field named `x` is an error. On this engine `x`
+# is the offset, never an unused bit. x and y bits take their field's sign: on
+# an s8/s16/s32 field they read as two's complement at their own width
+# (`sxxx xxxx` on s8 is -64..63, on u8 0..127). Every other letter is unsigned.
+#
+# A part's size: c/r bits, else the s code, else `subsprite_tiles` (below).
+# s with c or r is an error. All other fields, and `.` bits, are preserved byte
+# for byte on write. Maximum record size: 64 bytes.
 record = [
   { name = "x",        type = "s16" },
   { name = "x_mirror", type = "s16" },
@@ -56,7 +67,7 @@ record = [
 ]
 
 # Optional: rename bit letters. Key: one character. Value: index, palette,
-# priority, flip_h, flip_v, columns or rows.
+# priority, flip_h, flip_v, columns, rows, size, x or y.
 #   [params.legend]
 #   t = "index"
 
@@ -78,10 +89,24 @@ record = [
 #   ]
 #   arrays = [["y"], ["x", "tile"]]
 
-# The size of every part, in tiles, when the record has no c/r bits: what a
-# drawing routine fixes rather than stores. A SNES OAM table of 16x16 objects
-# is [2, 2]. Default [1, 1]. A record with c/r bits ignores this.
+# The size of every part, in tiles, when the record has no c/r or s bits: what
+# a drawing routine fixes rather than stores. A SNES OAM table of 16x16 objects
+# is [2, 2]. Default [1, 1]. A record with c/r or s bits ignores this.
 # subsprite_tiles = [2, 2]
+
+# The size an s code picks. With `sizes` — two or more [across, down] pairs —
+# the code indexes it, and a code past the end draws 1x1 with a notice. Needs
+# subsprite_size = "stated". Without `sizes`, s must be one bit: 0 picks the
+# small square of the size pair, 1 the large. The pair has one owner: a preset
+# that knows it gives `size_pair` = [small, large] in tiles and says
+# subsprite_size = "stated" (the Sm/Lg spins hide); one that does not leaves
+# both out, and the spins set it per entry (default [1, 2]). `size_pair`
+# without "stated", "stated" on a lone s bit without `size_pair`, and
+# `size_pair` on a record without a lone s bit are errors.
+# A 2-bit code over four sizes:
+#   record = [{ name = "obj", type = "u16", bits = "ssii iiii iiii iiii" }]
+#   sizes = [[1, 1], [2, 1], [1, 2], [2, 2]]
+# size_pair = [1, 2]
 
 # Palette row that a part's row 0 means. Default 0.
 # palette_row_base = 4
@@ -93,4 +118,20 @@ record = [
 #     { name = "attr",     type = "u16", bits = "oppv hiii iiii iiii" },
 #     { name = "x",        type = "s8" },
 #     { name = "x_mirror", type = "s8" },
+#   ]
+
+# Final Fantasy VI's ending-animation sprite frames (bank $C2, where the
+# disassembly's comment reads "msb set means 16x16 sprite"): a size bit above a
+# 7-bit unsigned x, an unsigned y, then the SNES OBJ tile/attribute word. The
+# ending sets OBSEL to 8x8/16x16, so the preset states the pair and keeps the
+# subsprite_size = "stated" line above: the Sm/Lg spins hide. Leave `size_pair`
+# out (and "stated" with it) while a game's pair is still unknown, and the
+# spins appear.
+#   endian = "little"
+#   size_pair = [1, 2]
+#   palette_row_base = 8
+#   record = [
+#     { name = "pos",  type = "u8",  bits = "sxxx xxxx" },
+#     { name = "y",    type = "u8" },
+#     { name = "attr", type = "u16", bits = "vhoo pppi iiii iiii" },
 #   ]

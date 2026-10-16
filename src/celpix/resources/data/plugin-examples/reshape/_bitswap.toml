@@ -23,8 +23,9 @@ engine_id = "reshape.bitswap"
 
 # Required. The permutation in the argument order of MAME's `bitswap<N>`: most
 # significant bit first, entry k naming the source address bit of output bit
-# N - 1 - k. A driver's argument list copies in unchanged. Up to 24 entries, of
-# which at most 16 may differ from the identity.
+# N - 1 - k. A driver's argument list copies in unchanged. Up to 24 entries.
+# Every line from the lowest one the table moves up to the top counts as
+# permuted, identity entries between them included, and at most 16 may be.
 #
 # This table is the Gaelco "Modular System" 16x16 tile scramble (MAME:
 # descramble_16x16tiles in the *_ms.cpp drivers), used by Splash!, Big Karnak,

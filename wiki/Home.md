@@ -26,3 +26,6 @@ Reference:
 
 - **[Project File Format](Project-File-Format)**: a complete reference for the `.celpix` file type.
 - **[Sample Projects](Sample-Projects)**: sample projects, demoing various features.
+- **[Plugins](Plugins)**: the plugin folder, presets against code plugins, loading and approval.
+- **[Preset Reference](Preset-Reference)**: every parameter of every `.toml` preset engine.
+- **[Code Plugin Reference](Code-Plugin-Reference)**: the `.py` plugin contract for each stage.

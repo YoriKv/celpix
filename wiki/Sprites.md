@@ -57,9 +57,13 @@ palette_row_base = 8
 
 - `record` lists the fields of one record, in file order.
 - `bits` names the bits of a field, most significant first: `i` tile index,
-  `p` palette row, `o` priority, `h` and `v` flips, `c` and `r` size.
-- `subsprite_tiles` is the size of every record when it has no `c` and `r`
-  bits.
+  `p` palette row, `o` priority, `h` and `v` flips, `c` and `r` size, `s` a
+  size code (from `sizes`, or one bit picking the size pair), `x` and `y`
+  offsets. A preset with one size bit either states its pair
+  (`size_pair` with `subsprite_size = "stated"`) or leaves both out, so the
+  Sm/Lg spins appear.
+- `subsprite_tiles` is the size of every record when it has no `c`, `r` or
+  `s` bits.
 
 ## 3. Carve the object
 
