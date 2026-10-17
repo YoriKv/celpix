@@ -21,6 +21,7 @@ gated on the document rather than on the mode (:meth:`_sync_row_base`).
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import (
@@ -101,7 +102,16 @@ def _dock_row(*widgets: QWidget) -> QHBoxLayout:
     return row
 
 
-class PaletteDockMixin:
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
+
+
+class PaletteDockMixin(_Host):
     """The palette dock's header, format row and readout - and per-mode visibility.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

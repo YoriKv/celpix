@@ -25,6 +25,7 @@ for its one edit.
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import TYPE_CHECKING
 
 from celpix.core.capabilities import ContentKind
 from celpix.core.tilemap import Geometry, IndexAddressing, rebased
@@ -70,7 +71,16 @@ def _counts_elements(geometry: Geometry | None) -> bool:
     return geometry is None or geometry[:2] == (1, 1)
 
 
-class IndexAddressingMixin:
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
+
+
+class IndexAddressingMixin(_Host):
     """What an index counts: the nouns, the Index unit combo, the base re-count.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

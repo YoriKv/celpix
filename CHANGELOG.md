@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.2.12 - unreleased
+
+- Added Subset to Edit Palette which lets you select individual colors
+
 ## v1.2.11 - 2026-10-16
 
 - Sprite record presets can read a size code and added offsets to bit field

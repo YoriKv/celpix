@@ -36,6 +36,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PySide6.QtWidgets import (
     QMessageBox,
@@ -76,8 +77,16 @@ from celpix.ui.widgets import (
     counted,
 )
 
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
 
-class ContainersMixin:
+
+class ContainersMixin(_Host):
     """Containers, the file resize, and the re-read after a re-point.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

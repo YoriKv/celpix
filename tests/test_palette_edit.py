@@ -9,7 +9,7 @@ original. Both are checked from inside the modal, where the preview is up.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRect
+from PySide6.QtCore import QCoreApplication, QEvent, QRect
 from PySide6.QtWidgets import QDialog, QFileDialog
 
 from celpix.core.color_ops import BlendMode, OpKind, PaletteOp
@@ -164,6 +164,26 @@ def test_with_nothing_selected_the_selection_scope_is_not_offered(qtbot) -> None
     assert dialog.op().color == 0xFFFFFFFF
 
 
+def test_the_subset_scope_shows_its_grid_only_while_checked(qtbot) -> None:
+    assert not PaletteEditDialog()._scopes[EditScope.SUBSET].isEnabled()
+    dialog = PaletteEditDialog(
+        colors=[0xFF000000 + i for i in range(32)], selected_index=4
+    )
+    qtbot.addWidget(dialog)
+    label, holder = dialog._rows["subset"]
+    assert dialog._scopes[EditScope.SUBSET].isEnabled()
+    assert dialog.subset() == [4]  # starts on the dock's selected entry
+    assert label.isHidden() and holder.isHidden()
+    dialog.set_scope(EditScope.SUBSET)
+    assert not label.isHidden() and not holder.isHidden()
+    seen: list[int] = []
+    dialog.changed.connect(lambda: seen.append(1))
+    dialog.set_subset([1, 7, 20])
+    assert dialog.subset() == [1, 7, 20] and seen == [1]
+    dialog.set_scope(EditScope.ALL)
+    assert holder.isHidden()
+
+
 # -- preview and cancel ------------------------------------------------------
 def test_cancel_takes_the_preview_back_down(qtbot, tmp_path, monkeypatch) -> None:
     window = _open_in_offset_mode(qtbot, tmp_path, monkeypatch)
@@ -244,6 +264,43 @@ def test_the_selected_color_scope_touches_one_entry(
         if a != b
     ]
     assert changed == [3]
+
+
+def test_the_subset_scope_touches_exactly_the_picked_entries_as_one_step(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    window = _open_in_offset_mode(qtbot, tmp_path, monkeypatch)
+    original = window._doc.palette
+
+    def exec_(dialog: PaletteEditDialog) -> int:
+        dialog.set_scope(EditScope.SUBSET)
+        dialog.set_subset([0, 5, 9])
+        return ACCEPTED  # Invert
+
+    monkeypatch.setattr(PaletteEditDialog, "exec", exec_)
+    steps = window._undo_stack.index()
+    window._edit_palette_action.click()
+
+    after = window._doc.palette.colors
+    assert _changed(original.colors, after) == [0, 5, 9]
+    assert window._undo_stack.index() == steps + 1
+    assert "3 colors" in window.statusBar().currentMessage()
+    window._undo_stack.undo()
+    assert window._doc.palette.colors == original.colors
+
+
+def test_the_window_is_freed_once_it_closes(qtbot, tmp_path, monkeypatch) -> None:
+    """Parented to the window to centre on it, the dialog would otherwise
+    outlive every session - with its swatch grid and the palette copy its
+    preview closed over - one more per opening."""
+    window = _open_in_offset_mode(qtbot, tmp_path, monkeypatch)
+    monkeypatch.setattr(PaletteEditDialog, "exec", lambda dialog: REJECTED)
+    window._edit_palette_action.click()
+    window._edit_palette_action.click()
+    # Posted from outside an event loop here, so the deferred deletes are
+    # flushed by hand; the app's main loop does that itself on return.
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert window.findChildren(PaletteEditDialog) == []
 
 
 def test_editing_the_default_palette_forks_custom_in_the_same_step(

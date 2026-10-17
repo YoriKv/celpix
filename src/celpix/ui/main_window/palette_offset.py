@@ -41,7 +41,7 @@ another entry's buffer (:mod:`~celpix.ui.main_window.palette_entry`).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from celpix.core.address import format_hex, parse_hex
 from celpix.core.document import Document
@@ -58,8 +58,16 @@ from celpix.project.workspace import (
     entry_view_bytes,
 )
 
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
 
-class PaletteOffsetMixin:
+
+class PaletteOffsetMixin(_Host):
     """Where an Offset-mode palette is read from, and how far it may reach.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

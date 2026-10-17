@@ -34,6 +34,7 @@ the Qt-free pipeline's.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from celpix.core.errors import PipelineError
 from celpix.core.tilerearrangement import (
@@ -50,8 +51,16 @@ from celpix.ui.undo_commands import (
     PixelEditCommand,
 )
 
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
 
-class TileBytesMixin:
+
+class TileBytesMixin(_Host):
     """The one decode and the one write behind every tile edit.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

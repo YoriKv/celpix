@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import os
 from os.path import basename
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QEvent, QFileSystemWatcher, QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
@@ -82,7 +83,16 @@ class _Reload:
         self.dropped += merge.dropped
 
 
-class DiskWatchMixin:
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
+
+
+class DiskWatchMixin(_Host):
     """Watching open files for outside changes, and the reload that follows.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

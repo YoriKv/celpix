@@ -22,6 +22,7 @@ spin's own path, so the two are one undoable step and cannot disagree
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -60,7 +61,16 @@ _DEFAULT_COLUMNS = 16
 _DEFAULT_ZOOM = 2
 
 
-class TileSourceDockMixin:
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
+
+
+class TileSourceDockMixin(_Host):
     """The tile source dock's header, sheet and readout.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

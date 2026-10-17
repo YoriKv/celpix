@@ -34,6 +34,8 @@ Four things it has to get right, and none of them is the window's to know:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from celpix.core.arrangement import BlockLayout
 from celpix.core.capabilities import ContentKind
 from celpix.core.font import HOLE
@@ -44,8 +46,16 @@ from celpix.ui import render_bridge
 from celpix.ui.undo_commands import FontAlphabetCommand, FontAlphabetState
 from celpix.ui.widgets import signals_blocked
 
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
 
-class FontAlphabetMixin:
+
+class FontAlphabetMixin(_Host):
     """Building, gating and committing the font alphabet window.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

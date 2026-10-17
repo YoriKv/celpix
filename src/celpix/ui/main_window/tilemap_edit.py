@@ -35,7 +35,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from dataclasses import replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from celpix.core import ceil_div
 from celpix.core.arrangement import BlockLayout, compose_window, split_grid
@@ -111,7 +111,16 @@ _AS_DEFAULT = object()
 _NO_ANSWER = object()
 
 
-class TilemapEditMixin:
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
+
+
+class TilemapEditMixin(_Host):
     """Cell flips and the in-app cell clipboard.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

@@ -1,7 +1,8 @@
 """The palette dock's Edit Palette window: preview a colour operation, commit it.
 
-One operation over a run of entries — the selected colour, the active palette
-row or the whole palette — previewed live while the window is up and written
+One operation over a set of entries — the selected colour, the active palette
+row, the whole palette or a subset picked in the window's own swatch grid —
+previewed live while the window is up and written
 as **one undo step** on OK (``docs/design/palette-editing.md`` §1).
 
 The toolbar's **Edit Palette…** on a swatch view (:meth:`PaletteEditMixin.
@@ -25,6 +26,7 @@ modal, which is what makes the swap safe to undo by hand.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from PySide6.QtWidgets import QDialog
 
@@ -36,8 +38,16 @@ from celpix.ui.palette_edit_dialog import EditScope, PaletteEditDialog
 from celpix.ui.tools import EditMode
 from celpix.ui.widgets import counted
 
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
 
-class PaletteEditMixin:
+
+class PaletteEditMixin(_Host):
     """The Edit Palette window and its preview, a slice of
     :class:`~celpix.ui.main_window.window.MainWindow`."""
 
@@ -54,15 +64,24 @@ class PaletteEditMixin:
             # A direct-colour format - View as Palette among them - indexes no
             # row, and the row its geometry would size is a 2-colour accident.
             rows=not self._is_direct_color(),
+            colors=original.colors,
+            selected_index=selected,
         )
 
-        def preview() -> None:
-            start, count = self._palette_edit_range(dialog.scope(), selected)
-            colors = list(original.colors)
-            colors[start : start + count] = dialog.op().apply_all(
-                colors[start : start + count]
+        def edited() -> tuple[list[int], int]:
+            """The whole palette with the operation on the scope's entries,
+            and how many entries that was."""
+            indices = self._palette_edit_indices(
+                dialog.scope(), selected, dialog.subset()
             )
-            self._show_palette(Palette(colors))
+            op = dialog.op()
+            colors = list(original.colors)
+            for i in indices:
+                colors[i] = op.apply(colors[i])
+            return colors, len(indices)
+
+        def preview() -> None:
+            self._show_palette(Palette(edited()[0]))
 
         # Back to the real palette before anything is written: the commit
         # diffs each entry against what is on screen, and on Cancel this *is*
@@ -70,11 +89,12 @@ class PaletteEditMixin:
         restore = lambda: self._show_palette(original)  # noqa: E731 — a one-use thunk
         if not self._run_palette_edit(dialog, preview, restore):
             return
-        op = dialog.op()
-        start, count = self._palette_edit_range(dialog.scope(), selected)
-        colors = op.apply_all([original.color(i) for i in range(start, start + count)])
-        written = self._write_colors_at(start, colors, count, "edit palette")
-        self._report_palette_edit(op, written, count, "color")
+        colors, count = edited()
+        # The whole palette goes down, but the landing writes only the entries
+        # that differ from what is on screen, so the ones outside the scope
+        # are never touched.
+        written = self._write_colors_at(0, colors, len(colors), "edit palette")
+        self._report_palette_edit(dialog.op(), written, count, "color")
 
     # -- what both windows share -------------------------------------------
     def _dock_selected_index(self) -> int | None:
@@ -105,6 +125,12 @@ class PaletteEditMixin:
             return dialog.exec() == QDialog.DialogCode.Accepted
         finally:
             restore()
+            # Parented to the window so it centres on it, which also keeps it
+            # alive after exec returns: without this every opening would leave
+            # a dead window, its swatch grid and the palette copy its preview
+            # closed over behind. Deferred, so the caller still reads the
+            # answers off it before the event loop takes it.
+            dialog.deleteLater()
 
     def _report_palette_edit(
         self, op: PaletteOp, written: object, count: int, noun: str
@@ -118,24 +144,26 @@ class PaletteEditMixin:
         else:
             self.statusBar().showMessage(f"{op.describe()} changed no {noun}.")
 
-    def _palette_edit_range(
-        self, scope: EditScope, selected: int | None
-    ) -> tuple[int, int]:
-        """``(start, count)`` of the entries ``scope`` names, clamped to the palette.
+    def _palette_edit_indices(
+        self, scope: EditScope, selected: int | None, subset: list[int]
+    ) -> list[int]:
+        """The entries ``scope`` names, as indices into the palette on screen.
 
         The row is the one the view indexes through — the Copy/Paste Palette
-        Row unit — and the selection is the grid's; both are asked of the
-        palette's length, so a short palette never yields an index off its end.
+        Row unit — the selection is the grid's, and the subset the window's
+        own picks; all are asked of the palette's length, so a short palette
+        never yields an index off its end.
         """
         length = len(self._shown_palette())
         if scope is EditScope.SELECTED and selected is not None:
-            start, count = selected, 1
-        elif scope is EditScope.ALL:
-            start, count = 0, length
-        else:
-            start, count = self._active_palette_row()
+            return [selected] if selected < length else []
+        if scope is EditScope.ALL:
+            return list(range(length))
+        if scope is EditScope.SUBSET:
+            return [i for i in subset if 0 <= i < length]
+        start, count = self._active_palette_row()
         start = min(start, length)
-        return start, max(0, min(count, length - start))
+        return list(range(start, start + max(0, min(count, length - start))))
 
     # -- the toolbar's window: the swatches on the canvas ----------------------
     def _edit_view_palette(self) -> None:

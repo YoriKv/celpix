@@ -1,8 +1,10 @@
-"""The Edit Palette window: one colour operation over a run of entries.
+"""The Edit Palette window: one colour operation over a set of entries.
 
-A modal input form and nothing else: it knows no palette and no document.
-Every input change emits :attr:`PaletteEditDialog.changed`, and the host
-reads :meth:`op` and :meth:`scope` back to preview the result live — on the
+A modal input form and nothing else: it knows no document. It holds a copy
+of the dock's colours only so that the *Subset* scope can show them for the
+user to point at entries; what those indices mean is the host's. Every input
+change emits :attr:`PaletteEditDialog.changed`, and the host reads
+:meth:`op`, :meth:`scope` and :meth:`subset` back to preview the result live — on the
 canvas and on the swatch grid — and to commit it on OK. Cancel is the host's
 to honour: it put the preview up, so it takes it down
 (``docs/design/palette-editing.md`` §1).
@@ -16,6 +18,7 @@ puts everything back" a promise.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from enum import Enum
 
 from PySide6.QtCore import QSize, Qt, Signal
@@ -38,6 +41,7 @@ from PySide6.QtWidgets import (
 from celpix.core.color_ops import BlendMode, OpKind, PaletteOp
 from celpix.core.palette import format_argb, parse_argb
 from celpix.ui.color_editor import ColorSwatch
+from celpix.ui.swatch_subset_picker import SwatchSubsetPicker
 from celpix.ui.widgets import (
     CommittingLineEdit,
     dialog_buttons,
@@ -71,7 +75,7 @@ class ClickableSwatch(ColorSwatch):
 class EditScope(Enum):
     """Which entries an operation reaches; ``value`` is the radio's caption.
 
-    The first three are the palette dock's, over the dock's palette; the last
+    The first four are the palette dock's, over the dock's palette; the last
     two are the swatch view's, over the colour words on the canvas
     (``on_view``), and a window offers one set or the other.
     """
@@ -79,11 +83,12 @@ class EditScope(Enum):
     ROW = "Palette row"
     ALL = "Whole palette"
     SELECTED = "Selected color"
+    SUBSET = "Subset"
     ENTIRE_VIEW = "Entire view"
     SELECTION = "Selection"
 
 
-_DOCK_SCOPES = (EditScope.ROW, EditScope.ALL, EditScope.SELECTED)
+_DOCK_SCOPES = (EditScope.ROW, EditScope.ALL, EditScope.SELECTED, EditScope.SUBSET)
 _VIEW_SCOPES = (EditScope.ENTIRE_VIEW, EditScope.SELECTION)
 
 
@@ -108,6 +113,8 @@ class PaletteEditDialog(QDialog):
         rows: bool = True,
         on_view: bool = False,
         has_selection: bool = False,
+        colors: Sequence[int] = (),
+        selected_index: int | None = None,
     ) -> None:
         """``selected_color`` is the swatch grid's selection, or ``None`` when
         nothing is selected — then *Selected color* is not offered and the
@@ -116,13 +123,21 @@ class PaletteEditDialog(QDialog):
         nothing, so *Palette row* is not offered there and the whole palette
         is the default instead.
 
+        ``colors`` is the dock's palette as it stands when the window opens,
+        shown as a swatch grid under the scope row while *Subset* is checked
+        so the user can pick the entries — the originals, not the preview —
+        and *Subset* is offered only with some. ``selected_index`` is the
+        swatch grid's selected entry, which the subset starts on.
+
         ``on_view`` is the toolbar's window instead of the dock's: the
         operation reaches the swatches on the canvas rather than the dock's
         palette, so the scopes offered are *Entire view* and *Selection* —
         the latter only with a canvas selection (``has_selection``), and the
         default when there is one, since a selection made before opening the
         window is what the user means to recolour. Which swatches either
-        names is the host's to work out — this form knows no document."""
+        names is the host's to work out — this form knows no document. The
+        window never offers *Subset*: its swatches are the canvas's, picked
+        with the canvas selection."""
         super().__init__(parent)
         self.setWindowTitle("Edit Palette")
         self._selected_color = selected_color
@@ -180,6 +195,24 @@ class PaletteEditDialog(QDialog):
             -100, 100, 0, "%", value_tip
         )
 
+        # The subset is picked against the colours the window opened on; the
+        # preview recolours the dock's grid, not this one, so the entries stay
+        # recognisable while the operation changes them.
+        self._picker = SwatchSubsetPicker()
+        self._picker.set_colors(colors)
+        if selected_index is not None and 0 <= selected_index < len(colors):
+            self._picker.set_selection([selected_index])
+        self._picker.selection_changed.connect(self._announce)
+        subset_tip = (
+            "The entries the operation changes:\n"
+            "click one, Shift+click a range, Ctrl+click to toggle,\n"
+            "or drag a rectangle. The colors are the palette\n"
+            "as it was when the window opened."
+        )
+
+        # Before the radios: checking one re-syncs the rows, which must find
+        # none yet while the form is being built.
+        self._rows: dict[str, tuple[QLabel, QWidget]] = {}
         self._scopes: dict[EditScope, QRadioButton] = {}
         scope_row = QHBoxLayout()
         for scope in _VIEW_SCOPES if on_view else _DOCK_SCOPES:
@@ -199,7 +232,15 @@ class PaletteEditDialog(QDialog):
             self._scopes[EditScope.ROW if rows else EditScope.ALL].setChecked(True)
             self._scopes[EditScope.ROW].setEnabled(rows)
             self._scopes[EditScope.SELECTED].setEnabled(selected_color is not None)
+            self._scopes[EditScope.SUBSET].setEnabled(bool(colors))
+            self._scopes[EditScope.SUBSET].setToolTip(
+                "The entries picked in the grid below"
+            )
         scope_row.addStretch(1)
+
+        subset_row = QHBoxLayout()
+        subset_row.addWidget(self._picker)
+        subset_row.addStretch(1)
 
         color_row = QHBoxLayout()
         color_row.addWidget(self._hex)
@@ -211,26 +252,26 @@ class PaletteEditDialog(QDialog):
         # captions stay one column however many rows are showing.
         grid = QGridLayout()
         grid.setColumnStretch(1, 1)
-        self._rows: dict[str, tuple[QLabel, QWidget]] = {}
-        for at, (name, caption, widget_or_row, tip) in enumerate(
+        rows = [
+            ("op", "Operation:", self._op, self._op.toolTip()),
+            ("mode", "Blend mode:", self._mode, self._mode.toolTip()),
+            ("color", "Color:", color_row, self._hex.toolTip()),
+            ("amount", "Amount:", amount_row, amount_tip),
+            ("hue", "Hue:", hue_row, hue_tip),
+            ("saturation", "Saturation:", saturation_row, saturation_tip),
+            ("value", "Value:", value_row, value_tip),
             (
-                ("op", "Operation:", self._op, self._op.toolTip()),
-                ("mode", "Blend mode:", self._mode, self._mode.toolTip()),
-                ("color", "Color:", color_row, self._hex.toolTip()),
-                ("amount", "Amount:", amount_row, amount_tip),
-                ("hue", "Hue:", hue_row, hue_tip),
-                ("saturation", "Saturation:", saturation_row, saturation_tip),
-                ("value", "Value:", value_row, value_tip),
-                (
-                    "scope",
-                    "Apply to:",
-                    scope_row,
-                    "Which swatches the operation changes"
-                    if on_view
-                    else "Which entries the operation changes",
-                ),
-            )
-        ):
+                "scope",
+                "Apply to:",
+                scope_row,
+                "Which swatches the operation changes"
+                if on_view
+                else "Which entries the operation changes",
+            ),
+        ]
+        if not on_view:
+            rows.append(("subset", "Subset:", subset_row, subset_tip))
+        for at, (name, caption, widget_or_row, tip) in enumerate(rows):
             if isinstance(widget_or_row, QWidget):
                 holder = widget_or_row
             else:
@@ -287,6 +328,10 @@ class PaletteEditDialog(QDialog):
                 return scope
         return next(iter(self._scopes))
 
+    def subset(self) -> list[int]:
+        """The entries picked for *Subset*, sorted; read whatever the scope."""
+        return self._picker.selection()
+
     # -- programmatic setters, for the host and for tests -----------------
     def set_op(self, kind: OpKind) -> None:
         self._op.setCurrentIndex(self._op.findData(kind))
@@ -309,6 +354,9 @@ class PaletteEditDialog(QDialog):
     def set_scope(self, scope: EditScope) -> None:
         self._scopes[scope].setChecked(True)
 
+    def set_subset(self, indices: Iterable[int]) -> None:
+        self._picker.set_selection(indices)
+
     # -- input handling ----------------------------------------------------
     def _announce(self, *_args: object) -> None:
         self.changed.emit()
@@ -319,8 +367,11 @@ class PaletteEditDialog(QDialog):
 
     def _on_scope_toggle(self, checked: bool) -> None:
         # Radios announce twice per change (the one going off, the one coming
-        # on); only the arrival is a new answer.
+        # on); only the arrival is a new answer. Empty while the form is
+        # still being built, before there are rows to show or hide.
         if checked:
+            if self._rows:
+                self._sync_rows()
             self.changed.emit()
 
     def _on_slider(self, slider: QSlider, spin: QSpinBox, value: int) -> None:
@@ -363,7 +414,8 @@ class PaletteEditDialog(QDialog):
         return format_argb(self._color, alpha=False)
 
     def _sync_rows(self) -> None:
-        """Show only the inputs the chosen operation reads."""
+        """Show only the inputs the chosen operation reads, and the subset's
+        grid only while *Subset* is the scope."""
         kind = self._op.currentData()
         for name, shown in (
             ("mode", kind is OpKind.BLEND),
@@ -372,7 +424,8 @@ class PaletteEditDialog(QDialog):
             ("hue", kind in _USES_HSV),
             ("saturation", kind in _USES_HSV),
             ("value", kind in _USES_HSV),
+            ("subset", self.scope() is EditScope.SUBSET),
         ):
-            for widget in self._rows[name]:
+            for widget in self._rows.get(name, ()):
                 widget.setVisible(shown)
         self.adjustSize()

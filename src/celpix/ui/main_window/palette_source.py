@@ -28,6 +28,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -89,7 +90,16 @@ DEFAULT_SESSION_PALETTE_FORMAT = "preset.palette.rgb888"
 _ERROR_PALETTE_COUNT = 16
 
 
-class PaletteSourceMixin:
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
+
+
+class PaletteSourceMixin(_Host):
     """The palette's source: the six load modes, their loaders, and the commit.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

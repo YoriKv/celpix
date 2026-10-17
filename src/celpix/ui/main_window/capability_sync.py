@@ -60,6 +60,7 @@ flip is the sharpest: pixels here, an attribute bit there.
 from __future__ import annotations
 
 from enum import Enum, auto
+from typing import TYPE_CHECKING
 
 from celpix.core.capabilities import Capability, ContentKind, supports
 
@@ -356,7 +357,16 @@ _GESTURE_CAPABILITY: dict[Gesture, Capability] = {
 }
 
 
-class CapabilitySyncMixin:
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
+
+
+class CapabilitySyncMixin(_Host):
     """Applies the capability table to the window's controls, and to its dispatch.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

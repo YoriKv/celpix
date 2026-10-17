@@ -29,6 +29,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from celpix.core import ceil_div
 from celpix.core.document import Document, ViewOptions
@@ -55,8 +56,16 @@ from celpix.ui.undo_commands import (
 )
 from celpix.ui.widgets import select_combo_data
 
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
 
-class JumpsMixin:
+
+class JumpsMixin(_Host):
     """Jump to Source, composite piece jumps, and bookmarks.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

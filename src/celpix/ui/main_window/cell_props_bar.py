@@ -61,6 +61,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from functools import partial
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QSpinBox, QWidget
@@ -135,7 +136,16 @@ _PROPERTY_SPECS = (
 _SPEC_BY_FIELD = {spec.field: spec for spec in _PROPERTY_SPECS}
 
 
-class CellPropsMixin:
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
+
+
+class CellPropsMixin(_Host):
     """The property row's build, sync and write slots.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

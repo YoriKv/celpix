@@ -29,6 +29,7 @@ dropped and re-read (see :meth:`~SessionMixin._load_entry`).
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from PySide6.QtGui import QImage
 
@@ -64,8 +65,16 @@ from celpix.project.workspace import (
 from celpix.ui.tools import EditMode
 from celpix.ui.widgets import counted, select_combo_data, signals_blocked
 
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
 
-class SessionMixin:
+
+class SessionMixin(_Host):
     """Entry activation, per-entry session capture/restore, the empty states.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

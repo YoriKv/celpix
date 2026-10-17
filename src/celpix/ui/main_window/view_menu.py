@@ -45,6 +45,7 @@ state what the bytes *are* rather than how they are shown
 from __future__ import annotations
 
 from functools import partial
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import (
@@ -93,7 +94,16 @@ TILE_IDS_KEY = "view/tile_ids"
 CELL_ATTRS_KEY = "view/cell_attrs"
 
 
-class ViewMenuMixin:
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
+
+
+class ViewMenuMixin(_Host):
     """The View menu and the display preferences behind it.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

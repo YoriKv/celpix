@@ -38,6 +38,8 @@ once it has an owner (:mod:`~celpix.ui.main_window.color_editing`).
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from PySide6.QtGui import QCursor
 
 from celpix.core.address import format_hex
@@ -59,8 +61,16 @@ from celpix.project.workspace import (
 )
 from celpix.ui.searchable_combo import pick_from_list
 
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
 
-class PaletteEntryMixin:
+
+class PaletteEntryMixin(_Host):
     """Where an Entry-mode palette is read from, and where an edit to it lands.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

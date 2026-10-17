@@ -25,6 +25,7 @@ between these entries is :mod:`~celpix.ui.main_window.session`'s.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -57,8 +58,16 @@ from celpix.ui.widgets import (
     ask_save_path,
 )
 
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
 
-class EntriesMixin:
+
+class EntriesMixin(_Host):
     """Creating and opening files, and removing entries from the list.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

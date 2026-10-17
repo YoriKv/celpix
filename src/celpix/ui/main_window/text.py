@@ -57,13 +57,22 @@ Six things it has to get right, and none of them is the window's to know:
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import TYPE_CHECKING
 
 from celpix.core.font import EncodedText
 from celpix.core.tilemap import Cell
 from celpix.ui.widgets import Badge
 
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
 
-class TextMixin:
+
+class TextMixin(_Host):
     """Building, gating and committing the fontmap text window.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

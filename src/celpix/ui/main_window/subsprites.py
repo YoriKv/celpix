@@ -30,11 +30,21 @@ about the art (:meth:`~SubspritesMixin._subsprite_square`).
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from celpix.pipeline import pipeline
 from celpix.ui.widgets import Badge, counted
 
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
 
-class SubspritesMixin:
+
+class SubspritesMixin(_Host):
     """Building and gating the subsprite sheet.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

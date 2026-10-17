@@ -39,13 +39,23 @@ could have moved.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from PySide6.QtCore import QRect
 
 from celpix.core.sprite import Subsprite
 from celpix.pipeline import pipeline
 
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
 
-class SpriteSelectMixin:
+
+class SpriteSelectMixin(_Host):
     """The picked subsprite of the sprite object on screen.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

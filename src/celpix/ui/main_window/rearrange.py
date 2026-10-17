@@ -52,6 +52,7 @@ needs a square block.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QImage, QKeySequence
@@ -108,7 +109,16 @@ class RearrangeDrag:
     orient: int = TILE_ORIENT_NONE
 
 
-class RearrangeMixin:
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
+
+
+class RearrangeMixin(_Host):
     """The rearrange tool, a slice of :class:`~celpix.ui.main_window.window.MainWindow`.
 
     Owns the live :class:`~celpix.core.tilerearrangement.TileRearrangement`, the

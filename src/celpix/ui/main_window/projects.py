@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -56,8 +57,16 @@ from celpix.ui.widgets import (
     show_in_file_manager,
 )
 
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
 
-class ProjectsMixin:
+
+class ProjectsMixin(_Host):
     """Projects: New, Open, recent, Save, and locating missing files.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

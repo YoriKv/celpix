@@ -59,6 +59,27 @@ SWATCH_SIZE = 14  # logical px per swatch; Qt scales logical painting on HiDPI
 SWATCH_COLUMNS = 16
 
 
+def swatch_rect(index: int) -> QRect:
+    """Where swatch ``index`` sits — the grid geometry, in one place.
+
+    Module-level because every swatch grid draws the palette the same way (the
+    Edit Palette window's subset picker too), so a palette reads alike in each.
+    """
+    return QRect(
+        (index % SWATCH_COLUMNS) * SWATCH_SIZE,
+        (index // SWATCH_COLUMNS) * SWATCH_SIZE,
+        SWATCH_SIZE,
+        SWATCH_SIZE,
+    )
+
+
+def swatch_grid_size(count: int) -> QSize:
+    """The size of a grid of ``count`` swatches — at least one row, so an empty
+    grid stays visible."""
+    rows = max(1, ceil_div(count, SWATCH_COLUMNS))
+    return QSize(SWATCH_COLUMNS * SWATCH_SIZE, rows * SWATCH_SIZE)
+
+
 class PalettePanel(ShortcutIsland, QWidget):
     palette_row_selected = Signal(int)  # clicked entry index // palette row size
     color_selected = Signal(int)  # entry index of the newly selected color
@@ -188,10 +209,7 @@ class PalettePanel(ShortcutIsland, QWidget):
             self.color_selected.emit(index)
 
     def _update_size(self) -> None:
-        rows = max(
-            1, ceil_div(len(self._colors), SWATCH_COLUMNS)
-        )  # ≥1 keeps it visible
-        self.setFixedSize(SWATCH_COLUMNS * SWATCH_SIZE, rows * SWATCH_SIZE)
+        self.setFixedSize(swatch_grid_size(len(self._colors)))
         self.update()
 
     @staticmethod
@@ -204,8 +222,7 @@ class PalettePanel(ShortcutIsland, QWidget):
         which is sized to the palette actually loaded — nothing at all until
         one is.
         """
-        rows = ceil_div(FULL_PALETTE_COUNT, SWATCH_COLUMNS)
-        return QSize(SWATCH_COLUMNS * SWATCH_SIZE, rows * SWATCH_SIZE)
+        return swatch_grid_size(FULL_PALETTE_COUNT)
 
     def mousePressEvent(self, event) -> None:  # noqa: ANN001 — Qt override
         if event.button() == Qt.MouseButton.LeftButton:
@@ -319,13 +336,7 @@ class PalettePanel(ShortcutIsland, QWidget):
 
     @staticmethod
     def _swatch_rect(index: int) -> QRect:
-        """Where swatch ``index`` sits — the grid geometry, in one place."""
-        return QRect(
-            (index % SWATCH_COLUMNS) * SWATCH_SIZE,
-            (index // SWATCH_COLUMNS) * SWATCH_SIZE,
-            SWATCH_SIZE,
-            SWATCH_SIZE,
-        )
+        return swatch_rect(index)
 
     def _range_rect(self, start: int) -> QRect:
         """The swatches of one palette row, from entry ``start``.

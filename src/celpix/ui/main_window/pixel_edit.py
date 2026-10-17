@@ -42,6 +42,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import replace
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QRect, Qt
 from PySide6.QtGui import QColor
@@ -73,7 +74,16 @@ from celpix.ui.widgets import (
 CURRENT_TOOL_KEY = "view/tool"
 
 
-class PixelEditMixin:
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
+
+
+class PixelEditMixin(_Host):
     """The drawing tools and pixel-mode state for the main window.
 
     See the module docstring for the round-trip every edit rides and for how this

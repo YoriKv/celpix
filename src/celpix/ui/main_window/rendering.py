@@ -29,7 +29,7 @@ from __future__ import annotations
 import weakref
 from collections.abc import Callable
 from dataclasses import replace
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 from celpix.core import ceil_div
 from celpix.core.arrangement import BlockLayout, tile_first_pixel
@@ -64,7 +64,16 @@ from celpix.ui.widgets import signals_blocked
 _T = TypeVar("_T")
 
 
-class RenderingMixin:
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
+
+
+class RenderingMixin(_Host):
     """Compose and paint the current view, and the surfaces that follow it.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

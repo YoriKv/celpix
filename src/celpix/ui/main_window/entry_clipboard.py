@@ -42,6 +42,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from os.path import basename, exists
+from typing import TYPE_CHECKING
 
 from celpix.project import projectfile
 from celpix.project.inputs import iter_bindings, names_entry, with_bindings
@@ -129,7 +130,16 @@ def _subtree_end(row: Entry, pending: list[Entry]) -> int:
     return max(pending.index(e) for e in group) + 1
 
 
-class EntryClipboardMixin:
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
+
+
+class EntryClipboardMixin(_Host):
     """The four clipboard verbs over the files pane's rows.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

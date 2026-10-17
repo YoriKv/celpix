@@ -29,6 +29,8 @@ it is wanted the focus is on the canvas, which a row selection put there.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import QApplication, QMenu
@@ -41,7 +43,16 @@ from celpix.ui.file_list_panel import FILTER_KEY
 _TRAIL_LIMIT = 64
 
 
-class HistoryMixin:
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
+
+
+class HistoryMixin(_Host):
     """The visit trail, its two actions, and the mouse buttons that drive them.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

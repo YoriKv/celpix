@@ -59,6 +59,7 @@ the right way round for a feature whose job is "colour what I am looking at".
 from __future__ import annotations
 
 from functools import partial
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence
@@ -90,7 +91,16 @@ SHOW_PALETTE_ROWS_KEY = "view/show_palette_rows"
 WRAP_PALETTE_ROWS_KEY = "view/wrap_palette_rows"
 
 
-class PaletteRegionsMixin:
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
+
+
+class PaletteRegionsMixin(_Host):
     """Pinned palette regions, a slice of the main window.
 
     Owns the live :class:`~celpix.core.paletteregions.PaletteRegions`, the Palette

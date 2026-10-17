@@ -38,6 +38,7 @@ from __future__ import annotations
 import weakref
 from dataclasses import replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from celpix.core.capabilities import ContentKind
 from celpix.core.document import Document
@@ -59,8 +60,16 @@ from celpix.project.workspace import (
 )
 from celpix.ui.widgets import wrap_lines
 
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
 
-class BindingsMixin:
+
+class BindingsMixin(_Host):
     """The tile-binding dependency graph: the chain, its audiences, the re-reads.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

@@ -29,6 +29,7 @@ goes between them is :mod:`~celpix.ui.main_window.session`.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from celpix.core.document import Document
 from celpix.core.errors import Pathway, PipelineError
@@ -48,7 +49,16 @@ def _and_list(names: list[str]) -> str:
     return f"{', '.join(names[:-1])} and {names[-1]}"
 
 
-class WritingMixin:
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
+
+
+class WritingMixin(_Host):
     """Write-back to disk, and the file/slice reconciliation behind it.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

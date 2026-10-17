@@ -16,6 +16,7 @@ preview becomes editable.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -44,8 +45,16 @@ from celpix.plugins.builtins.lz16 import KEY_LZ16_ROWS
 from celpix.ui.decompress_overlay import Badge
 from celpix.ui.searchable_combo import fill_stage_combo
 
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
 
-class CompressionMixin:
+
+class CompressionMixin(_Host):
     """The decompression preview, the structure scan and the smart scan.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

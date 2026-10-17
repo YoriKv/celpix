@@ -31,6 +31,8 @@ clipboard is likewise :mod:`~celpix.ui.main_window.pixel_edit`'s.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from PySide6.QtGui import QImage
 
 from celpix.core import ceil_div
@@ -49,8 +51,16 @@ from celpix.ui.widgets import (
     counted,
 )
 
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
 
-class ClipboardOpsMixin:
+
+class ClipboardOpsMixin(_Host):
     """The four clipboard verbs over the tile selection, and the paste anchor.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

@@ -17,6 +17,7 @@ the entry is, and must load. :func:`_same_bytes` is the test.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from PySide6.QtWidgets import (
     QApplication,
@@ -212,7 +213,16 @@ def _same_bytes(a: PathwayConfig, b: PathwayConfig) -> bool:
     ) == (b.source, b.container_id, b.compression_id, b.inputs.get(Stage.COMPRESSION))
 
 
-class InterpretationMixin:
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
+
+
+class InterpretationMixin(_Host):
     """The toolbar, and the codec and container the bytes are read through.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QRect
 from PySide6.QtGui import QImage
@@ -32,8 +33,16 @@ from celpix.project.workspace import export_basename
 from celpix.ui import export
 from celpix.ui.widgets import ask_save_path
 
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
 
-class AnimationMixin:
+
+class AnimationMixin(_Host):
     """Building and gating the animation player.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

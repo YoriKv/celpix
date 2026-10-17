@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import (
@@ -80,7 +81,16 @@ class SelectionShape(Enum):
     RECT = "rect"
 
 
-class SelectionMixin:
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
+
+
+class SelectionMixin(_Host):
     """What is selected on the canvas, and the Edit menu over it.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a

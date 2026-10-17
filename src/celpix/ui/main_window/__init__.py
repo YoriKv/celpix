@@ -21,6 +21,13 @@ declared once in :data:`~celpix.core.capabilities.CAPABILITIES` and applied by
 ``capability_sync`` at the tail of the refresh, rather than each surface carrying
 its own "...and not on a tilemap" clause.
 
+Each mixin names the window as its base **for the type checker only**
+(``MainWindow if TYPE_CHECKING else object``): a mixin's ``self`` *is* the
+window, and without that declaration every widget and attribute it reaches for
+reads as unresolved, which buries the one misspelling the inspection is there to
+catch. At runtime the base is ``object`` and the import never happens, so there
+is no cycle.
+
 ``window.py`` itself is what is left when every surface has one: the widgets and
 docks, the menu bar and the File/Panels/Help rows on it, the shared undo stack,
 the open project's dirty state, and the error modal. It is the shell the mixins

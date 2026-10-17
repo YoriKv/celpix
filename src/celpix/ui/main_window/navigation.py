@@ -19,7 +19,7 @@ while the thing it drives is switched off.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 from PySide6.QtCore import QEvent, QPointF, Qt
 from PySide6.QtGui import (
@@ -124,7 +124,16 @@ class KeyControl(NamedTuple):
         (self.press or self.control.trigger)()
 
 
-class NavigationMixin:
+if TYPE_CHECKING:
+    # For the checker only: a mixin is a slice of the window, so its
+    # ``self`` is the window, widgets, state and all (see the package
+    # docstring). At runtime it is a plain mixin.
+    from celpix.ui.main_window.window import MainWindow as _Host
+else:
+    _Host = object
+
+
+class NavigationMixin(_Host):
     """The view window's position in the file, and every way of moving it.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a
