@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.2.12 - unreleased
+## v1.2.12 - 2026-10-16
 
 - Added Subset to Edit Palette which lets you select individual colors
 
