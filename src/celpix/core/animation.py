@@ -90,10 +90,10 @@ def read_sequences(
 ) -> tuple[Sequence, ...]:
     """The table at ``at`` read as ``count`` groups of ``steps_per_sequence``.
 
-    The structure both S-CG-CAD sprite forms share, differing only in those two
-    numbers — 16 groups of 32 for an object, 32 of 32 for the extended one — so
-    the shape is stated by the caller that knows which form it is holding rather
-    than guessed from the length.
+    The structure both S-CG-CAD sprite forms share, differing only in the second
+    number — 16 groups of 32 for an object, 16 of 64 for the extended one and the
+    transfer object — so the shape is stated by the caller that knows which form
+    it is holding rather than guessed from the length.
 
     Each step is a **byte pair, duration first**. That is the same thing as the
     little-endian word the format reference names it (a word of ``0x0103`` is

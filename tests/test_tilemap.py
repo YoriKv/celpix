@@ -2386,6 +2386,21 @@ def test_a_transfer_object_reads_the_same_table_at_its_own_shape() -> None:
     assert not any(groups[2:])
 
 
+def test_a_transfer_object_saved_to_a_new_path_keeps_its_tail() -> None:
+    """An OBZ's animation table and the 0x200 past it live in the tail the write
+    splices around, and a path with no file at it has no tail to offer - so the
+    write borrows the file the records were read from, as an object's does. A
+    context that read nothing still writes a whole file, blank-tailed."""
+    from celpix.plugins.builtins.scgcad import OBZ_PAYLOAD, OBZ_SIZE, ObzContainer
+
+    blob = bytes(range(256)) * (OBZ_SIZE // 256)
+    ctx = PipelineContext()
+    records = ObzContainer().read(ReadSource(data=blob), ctx)
+    assert ObzContainer().write(records, WriteTarget(existing=b""), ctx) == blob
+    fresh = ObzContainer().write(records, WriteTarget(existing=b""), PipelineContext())
+    assert fresh == records + bytes(OBZ_SIZE - OBZ_PAYLOAD)
+
+
 def test_the_stamp_preset_declares_itself_indirect() -> None:
     """A hint about the format, read before any binding exists — it words the
     binding bar and orders its candidates. It does not gate chaining, which is
@@ -4199,6 +4214,27 @@ def test_a_pattern_saved_to_a_new_path_keeps_its_frame_boundaries() -> None:
     assert back.get(KEY_TILEMAP_FRAME_SIZES) == ctx.get(KEY_TILEMAP_FRAME_SIZES)
 
 
+def test_a_pattern_saved_to_a_new_path_keeps_its_trailer() -> None:
+    """The trailer is the animation blocks and the tool's signature, and a path
+    with no file at it has none to offer - so the write borrows the file the
+    records came from, where a blank would hand a Save As an empty table. A
+    source that was not whole has no trailer to lend and gets the blank."""
+    from celpix.plugins.builtins.object_codec import SprCodec
+    from celpix.plugins.builtins.ys_spr import TRAILER, SprContainer
+
+    codec = SprCodec()
+    raw = _spr_bytes([_spr_record(tile=1)], steps=[(3, 0), (3, 1)])
+    ctx = PipelineContext()
+    cells = codec.decode(SprContainer().read(ReadSource(data=raw), ctx), ctx)
+    encoded = codec.encode(cells, ctx)
+    assert SprContainer().write(encoded, WriteTarget(existing=b""), ctx) == raw
+
+    ctx = PipelineContext()
+    records = SprContainer().read(ReadSource(data=raw[:20]), ctx)
+    out = SprContainer().write(records, WriteTarget(existing=b""), ctx)
+    assert out.endswith(bytes(TRAILER))
+
+
 def test_a_sprite_sheet_no_machine_could_hold_is_refused_not_allocated(
     tmp_path,
 ) -> None:
@@ -4374,7 +4410,36 @@ def test_an_object_publishes_the_sequences_in_the_tail_it_cuts_away(tmp_path) ->
     """The table sits past the records and past the header, in the part the
     container preserves opaquely — so the container is the only thing holding both
     the bytes and the offsets, and the codec never sees it. Both forms, since the
-    extended one doubles the groups while keeping 32 steps each."""
+    extended one lengthens the sequences while keeping 16 of them."""
+    from celpix.core.animation import Step
+    from celpix.core.context import KEY_TILEMAP_ANIMATIONS
+    from celpix.plugins.builtins.scgcad import (
+        HEADER,
+        OBJ_PAYLOADS,
+        OBJ_SEQUENCES,
+        OBJ_SIZES,
+        ObjContainer,
+    )
+
+    for payload in OBJ_PAYLOADS:
+        blob = bytearray(OBJ_SIZES[payload])
+        blob[payload : payload + len(SIGNATURE)] = SIGNATURE
+        at = payload + HEADER
+        blob[at : at + 4] = bytes((4, 2, 4, 6))  # frames 2 then 6, four ticks each
+        ctx = PipelineContext()
+        ObjContainer().read(ReadSource(data=bytes(blob)), ctx)
+        groups = ctx.get(KEY_TILEMAP_ANIMATIONS)
+        assert len(groups) == OBJ_SEQUENCES
+        assert groups[0].steps == (Step(4, 2), Step(4, 6))
+        assert not any(groups[1:])
+
+
+def test_an_extended_object_plays_a_long_sequence_whole() -> None:
+    """The extended form's table is 16 sequences of 64 steps, not 32 of 32: the
+    tool's loader reads one step per frame slot, and in the corpus a populated
+    "odd group" under the 32-of-32 reading only ever continues an even one that
+    is full with no terminator. Read at 32, a 40-step walk would come back as two
+    sequences, and a writer would put a terminator in the middle of it."""
     from celpix.core.animation import Step
     from celpix.core.context import KEY_TILEMAP_ANIMATIONS
     from celpix.plugins.builtins.scgcad import (
@@ -4384,17 +4449,19 @@ def test_an_object_publishes_the_sequences_in_the_tail_it_cuts_away(tmp_path) ->
         ObjContainer,
     )
 
-    for payload, sequences in zip(OBJ_PAYLOADS, (16, 32), strict=True):
-        blob = bytearray(OBJ_SIZES[payload])
-        blob[payload : payload + len(SIGNATURE)] = SIGNATURE
-        at = payload + HEADER
-        blob[at : at + 4] = bytes((4, 2, 4, 6))  # frames 2 then 6, four ticks each
-        ctx = PipelineContext()
-        ObjContainer().read(ReadSource(data=bytes(blob)), ctx)
-        groups = ctx.get(KEY_TILEMAP_ANIMATIONS)
-        assert len(groups) == sequences
-        assert groups[0].steps == (Step(4, 2), Step(4, 6))
-        assert not any(groups[1:])
+    payload = OBJ_PAYLOADS[1]
+    blob = bytearray(OBJ_SIZES[payload])
+    blob[payload : payload + len(SIGNATURE)] = SIGNATURE
+    at = payload + HEADER
+    blob[at : at + 80] = bytes(b for frame in range(40) for b in (2, frame))
+    blob[at + 128 : at + 130] = bytes((9, 7))  # the second sequence, 64 steps on
+    ctx = PipelineContext()
+    ObjContainer().read(ReadSource(data=bytes(blob)), ctx)
+    groups = ctx.get(KEY_TILEMAP_ANIMATIONS)
+    assert len(groups) == 16
+    assert groups[0].steps == tuple(Step(2, frame) for frame in range(40))
+    assert groups[1].steps == (Step(9, 7),)
+    assert not any(groups[2:])
 
 
 # -- NES nametables --------------------------------------------------------

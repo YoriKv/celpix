@@ -114,6 +114,7 @@ from .tilemap_codec import TilemapCodec
 from .tim import TimClutContainer, TimContainer
 from .tpl_palette import TplPaletteContainer
 from .ys_spr import SprContainer
+from .zlib_stream import ZlibCompression
 from .zx0 import Zx0Compression
 
 if TYPE_CHECKING:
@@ -200,6 +201,7 @@ def register_builtins(reg: Registry) -> None:
         Zx0Compression(),
         PvrCompression(),
         PackBitsCompression(),
+        ZlibCompression(),
         PhantasyStarRleCompression(),
         CapcomMask8Compression(),
         SegaMask32Compression(),

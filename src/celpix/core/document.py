@@ -28,7 +28,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 
 from celpix.core import ceil_div
-from celpix.core.arrangement import BlockLayout
+from celpix.core.arrangement import BlockLayout, slots_holding_data
 
 # CellChain, resolve_chain and TextFit are re-exported: callers reach a chain
 # and a text fit through the document that holds them.
@@ -1913,7 +1913,15 @@ class Document:
     @property
     def tile_count(self) -> int:
         # Ceiling: a trailing partial tile counts — it's viewable, zero-padded.
+        # Under the 2D walk the count is of slots, and the last bitmap-row's
+        # partial pixel rows reach every slot across (slots_holding_data). Not
+        # on a tilemap, whose view describes the map rather than the tile bank
+        # this counts.
         tb = self.bytes_per_tile
+        if self.view.two_dimensional and not self.is_tilemap:
+            return slots_holding_data(
+                len(self.pixel_data), tb, self.tile_height, self.view.columns
+            )
         return ceil_div(len(self.pixel_data), tb) if tb else 0
 
     @property

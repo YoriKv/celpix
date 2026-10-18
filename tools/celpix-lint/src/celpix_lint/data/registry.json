@@ -383,6 +383,10 @@
         "pixels",
         "tilemap"
       ],
+      "compression.zlib": [
+        "pixels",
+        "tilemap"
+      ],
       "compression.zx0": [
         "pixels",
         "tilemap"

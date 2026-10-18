@@ -643,6 +643,29 @@ def reflow_2d(
     return bytes(out)
 
 
+def slots_holding_data(
+    data_len: int, bytes_per_tile: int, tile_height: int, columns: int
+) -> int:
+    """How many tile slots ``data_len`` bytes reach under the 2D walk.
+
+    Not ``ceil(data_len / bytes_per_tile)``, which is the 1D count. In 2D the
+    last bitmap-row of tiles can hold only the top few pixel rows of a bitmap
+    whose height is not a whole number of tiles (60x80 at 6x6 tiles leaves 2 of
+    6), and those rows run the **full width**: every one of the ``columns``
+    slots across holds data, where the 1D count would stop 40% of the way along
+    and treat the rest as past the end. A slot holds data when its first pixel
+    row starts inside the data. Without a wide-bitmap reading
+    (:func:`has_2d_reading`) the walk is 1D and so is the count.
+    """
+    if bytes_per_tile <= 0:
+        return 0
+    if not has_2d_reading(bytes_per_tile, tile_height):
+        return ceil_div(data_len, bytes_per_tile)
+    cols = max(1, columns)
+    whole, rest = divmod(data_len, cols * bytes_per_tile)
+    return whole * cols + min(cols, ceil_div(rest, bytes_per_tile // tile_height))
+
+
 def scatter_2d(
     out: bytearray,
     slot: int,

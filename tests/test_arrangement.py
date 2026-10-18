@@ -16,6 +16,7 @@ from celpix.core.arrangement import (
     bitmap_tile_sizes,
     compose_window,
     reflow_2d,
+    slots_holding_data,
     split_coverage,
     split_grid,
 )
@@ -188,6 +189,20 @@ def test_reflow_2d_leaves_indivisible_tiles_untouched() -> None:
     # bytes_per_tile not a whole number of per-row chunks has no wide-bitmap reading.
     data = bytes(range(9))
     assert reflow_2d(data, bytes_per_tile=9, tile_height=2, columns=2) == data
+
+
+def test_slots_holding_data_counts_a_short_last_bitmap_row_full_width() -> None:
+    # A 60x80 ARGB4444 bitmap at 6x6 tiles: 10 slots across, 13 whole
+    # bitmap-rows, then 2 of 6 pixel rows. Those 2 rows span all 10 slots, so
+    # 140 hold data; the 1D count, 9600 / 72 rounded up, is 134, and stopped the
+    # last row 4 slots in.
+    assert slots_holding_data(9600, 72, 6, 10) == 140
+    # A last bitmap-row less than one pixel row deep reaches only the slots its
+    # bytes start in: 30 bytes of 12-byte rows is 3 slots.
+    assert slots_holding_data(9360 + 30, 72, 6, 10) == 133
+    assert slots_holding_data(9360, 72, 6, 10) == 130  # whole bitmap-rows only
+    # No wide-bitmap reading (72 bytes are not 7 equal rows): the 1D count.
+    assert slots_holding_data(100, 72, 7, 10) == 2
 
 
 def test_bitmap_tile_sizes_are_the_divisors_that_fit_largest_first() -> None:

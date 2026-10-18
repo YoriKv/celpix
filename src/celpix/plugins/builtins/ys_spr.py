@@ -71,6 +71,9 @@ ANIMATION_STEPS = 40  # one of those blocks; the trailer holds one sequence
 # one writes 81 and a signature. A tail this big is not a table.
 _DEAD_TRAILER = 512
 FRAMES_ACROSS = 8  # how many frames the sheet opens laid out at, as for an object
+# bytes: the pattern file this pathway's records were read out of, for a save to
+# a path with no file at it to take its trailer from (:meth:`SprContainer.write`).
+KEY_SPR_SOURCE = "ys-spr.source"
 
 
 def _scan(data: bytes) -> tuple[tuple[int, ...], bytes, int, bool]:
@@ -167,6 +170,7 @@ class SprContainer:
         sizes, records, trailer_at, _whole = _scan(source.data)
         ctx.set(KEY_TILEMAP_COLUMNS, FRAMES_ACROSS)
         ctx.set(KEY_TILEMAP_FRAME_SIZES, sizes)
+        ctx.set(KEY_SPR_SOURCE, source.data)
         # The one animation table in hand that is a *reading* rather than a spec,
         # and it says so: the two blocks are opaque byte arrays to the writer, so
         # which is frames and which durations comes off the corpus.
@@ -209,6 +213,12 @@ class SprContainer:
         shows what parsed of such a file, but a write would have to invent the
         missing counts and the trailer, growing a foreign or damaged ``.spr`` by
         bytes that were never in it.
+
+        A path with **no** file at it takes its trailer from the file the records
+        were read out of (:data:`KEY_SPR_SOURCE`): the trailer is the animation
+        blocks and the tool's signature, and a blank one would turn a Save As
+        into a pattern with an empty table. A source that was not whole has no
+        trailer to lend and the blank stands.
         """
         sizes = ctx.get(KEY_TILEMAP_FRAME_SIZES)
         tail = bytes(TRAILER)  # a file written from nothing gets an empty table
@@ -223,6 +233,12 @@ class SprContainer:
             tail = dest.existing[trailer_at:]
             if not sizes:
                 sizes = existing_sizes
+        else:
+            stashed = ctx.get(KEY_SPR_SOURCE)
+            if isinstance(stashed, (bytes, bytearray)):
+                _, _, trailer_at, whole = _scan(bytes(stashed))
+                if whole:
+                    tail = bytes(stashed[trailer_at:])
         out = bytearray()
         available = len(data) // SPR_RECORD
         at = 0

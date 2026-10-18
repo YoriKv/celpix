@@ -77,6 +77,7 @@ from celpix.plugins.builtins.phantasy_star_rle import PhantasyStarRleCompression
 from celpix.plugins.builtins.prs import PrsCompression
 from celpix.plugins.builtins.slz import Slz16Compression, Slz24Compression
 from celpix.plugins.builtins.snes_rle import Rle1Compression, Rle2Compression
+from celpix.plugins.builtins.zlib_stream import ZlibCompression
 from celpix.plugins.registry import default_registry
 from celpix.project.workspace import Workspace, pixel_config_for, tilemap_config_for
 
@@ -708,6 +709,35 @@ def test_packbits_output_cap_stops_an_unbounded_read() -> None:
     out, consumed = packbits.decompress(bomb)
     assert len(out) == 0x100000
     assert consumed == 2 * (0x100000 // 128) < len(bomb)
+
+
+# -- zlib -------------------------------------------------------------------
+
+
+def test_zlib_plugin_bounds_the_stream_inside_an_over_read() -> None:
+    # The slice reads to end of file, so the next record's header follows the
+    # stream. The bound is what the inflater left over — the Adler-32 trailer
+    # in, the neighbour out — and the stream completes.
+    data = bytes(range(256)) * 8 + b"\x00" * 300
+    packed = ZlibCompression().compress(data, PipelineContext())
+    ctx = PipelineContext()
+    assert ZlibCompression().decompress(packed + b"N461\x01\x00\x00\x00", ctx) == data
+    assert ctx.get(KEY_COMPRESSED_SIZE) == len(packed)
+    assert ctx.get(KEY_DECOMPRESS_COMPLETE) is True
+
+
+def test_zlib_truncated_stream_raises_unless_partial() -> None:
+    # A view window can cut a stream short. Strict decoding refuses it; a
+    # partial read returns the prefix that inflated and does not claim the end.
+    data = bytes(range(256)) * 64
+    cut = ZlibCompression().compress(data, PipelineContext())[:-40]
+    with pytest.raises(ValueError, match="final block"):
+        ZlibCompression().decompress(cut, PipelineContext())
+    ctx = PipelineContext()
+    ctx.set(KEY_DECOMPRESS_PARTIAL, True)
+    out = ZlibCompression().decompress(cut, ctx)
+    assert 0 < len(out) < len(data) and data.startswith(out)
+    assert ctx.get(KEY_DECOMPRESS_COMPLETE) is False
 
 
 # -- Capcom 8-byte mask -----------------------------------------------------

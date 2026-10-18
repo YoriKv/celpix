@@ -64,12 +64,16 @@ SUBSPRITE_RECORD = RECORD
 OBJ_SIZES = {0x3000: 0x3500, 0xC000: 0xC900}
 OBJ_SIZE = OBJ_SIZES[OBJ_PAYLOADS[0]]  # the ordinary form
 # How many animation sequences each form holds, and how many steps each of those
-# has room for. One group per 64 bytes of table, which is what the sizes above
-# already say — stated rather than divided out, because the step count is the same
-# 32 in both forms and only the group count grows with the frames
-# (``scgcad-formats.md`` §8.3).
-OBJ_SEQUENCES = {0x3000: 16, 0xC000: 32}
-OBJ_SEQUENCE_STEPS = 32
+# has room for: 16 sequences in both forms, and one step per frame slot — 32 in
+# an object, 64 in the extended one — so the table grows with the frames by its
+# sequences getting *longer*, not by there being more of them. The extended
+# form's writer is not in the leak; its shape is the tool's own loader, which
+# reads 16 sequences of one step per frame, borne out by the corpus: read as 32
+# groups of 32, a populated odd group only ever continues an even one that is
+# full with no terminator (``scgcad-formats.md`` §8.3). Read at 32 steps a
+# 40-step walk comes back as two sequences, so the pair is per form.
+OBJ_SEQUENCES = 16
+OBJ_SEQUENCE_STEPS = {0x3000: 32, 0xC000: 64}
 
 # The transfer form of a sprite object: 64 frames of 64 subsprites, then a 0xA00 tail
 # holding the animation table. The one member of the family that carries **no
@@ -77,9 +81,9 @@ OBJ_SEQUENCE_STEPS = 32
 # length and its extension are the whole of what identifies it.
 OBZ_SIZE = 0x6A00
 OBZ_PAYLOAD = 0x6000
-# Its animation table is the object's read at a different shape: 16 sequences of
-# 64 steps in the 0x800 that follows the records, then a 0x200 tail nothing has
-# decoded (``scgcad-formats.md`` §9).
+# Its animation table is the extended object's shape: 16 sequences of 64 steps
+# in the 0x800 that follows the records, then a 0x200 tail nothing has decoded
+# (``scgcad-formats.md`` §9).
 OBZ_SEQUENCES = 16
 OBZ_SEQUENCE_STEPS = 64
 OBZ_TABLE = (OBZ_SEQUENCES, OBZ_SEQUENCE_STEPS)  # the pair both readers take
@@ -88,11 +92,12 @@ OBZ_TABLE = (OBZ_SEQUENCES, OBZ_SEQUENCE_STEPS)  # the pair both readers take
 # so this is a legible default rather than the file's own answer.
 OBJECT_COLUMNS = 8
 
-# bytes: the object this pathway's records were read out of. A save to a path
-# with no file at it splices into a copy of it rather than into a blank object:
-# the blank's empty build marker reads as big-endian, while the codec encodes by
-# the byte order the read published, so an `F`-build object's attribute words
-# would reopen swapped - and its header and animation table would be lost.
+# bytes: the object — or transfer object — this pathway's records were read out
+# of. A save to a path with no file at it splices into a copy of it rather than
+# into a blank: the blank's empty build marker reads as big-endian, while the
+# codec encodes by the byte order the read published, so an `F`-build object's
+# attribute words would reopen swapped — and either form's animation table, and
+# an object's header, would be lost.
 KEY_OBJ_SOURCE = "scgcad-obj.source"
 
 
@@ -153,8 +158,8 @@ class ObjContainer:
             read_sequences(
                 source.data,
                 payload + HEADER,
-                OBJ_SEQUENCES[payload],
-                OBJ_SEQUENCE_STEPS,
+                OBJ_SEQUENCES,
+                OBJ_SEQUENCE_STEPS[payload],
             ),
         )
         return _payload(source, ctx, 0, payload)
@@ -186,7 +191,8 @@ class ObjContainer:
         marker = _obj_marker(data, payload)
         swapped = _obj_swapped(marker)
         extended = payload == OBJ_PAYLOADS[1]
-        groups = OBJ_SEQUENCES[payload]
+        groups = OBJ_SEQUENCES
+        steps = OBJ_SEQUENCE_STEPS[payload]
         slots = OBJ_SUBSPRITES_PER_FRAME[payload]
         return (
             *_metadata_fields(data, payload),
@@ -207,11 +213,12 @@ class ObjContainer:
             ),
             ContainerField(
                 "Animation table",
-                f"{format_size(groups * OBJ_SEQUENCE_STEPS * 2)}"
+                f"{format_size(groups * steps * 2)}"
                 f" at {format_hex(payload + HEADER, 4)}, "
-                f"{_live_sequences(data, payload + HEADER, groups, OBJ_SEQUENCE_STEPS)}"
+                f"{_live_sequences(data, payload + HEADER, groups, steps)}"
                 f" of {groups} sequences used",
-                "Runs of (duration, frame) naming frames in the payload\n"
+                f"{groups} sequences of {steps} (duration, frame)\n"
+                "naming frames in the payload\n"
                 "Read for playback only; frames draw in file order\n"
                 "Written back exactly as read",
             ),
@@ -246,9 +253,10 @@ class ObzContainer:
 
     def read(self, source: ReadSource, ctx: PipelineContext) -> bytes:
         ctx.set(KEY_TILEMAP_COLUMNS, OBJECT_COLUMNS)
+        ctx.set(KEY_OBJ_SOURCE, source.data)
         # The table sits where the records stop, with no header between them —
         # the one difference from an object, whose 0x100 metadata block comes
-        # first. Same steps, same terminator, wider groups.
+        # first. Same steps, same terminator, the extended object's groups.
         ctx.set(
             KEY_TILEMAP_ANIMATIONS,
             read_sequences(source.data, OBZ_PAYLOAD, OBZ_SEQUENCES, OBZ_SEQUENCE_STEPS),
@@ -256,7 +264,11 @@ class ObzContainer:
         return _payload(source, ctx, 0, OBZ_PAYLOAD)
 
     def write(self, data: bytes, dest: WriteTarget, ctx: PipelineContext) -> bytes:
-        existing = dest.existing or bytes(OBZ_SIZE)
+        # The tail is the animation table and the 0x200 past it, and a path with
+        # no file at it has no tail to offer — so, as an object's write does, this
+        # borrows the file the records were read from before falling back to a
+        # blank. Only a whole transfer object is worth borrowing.
+        existing = dest.existing or _stashed(ctx, OBZ_SIZE) or bytes(OBZ_SIZE)
         return splice(existing, 0, data[:OBZ_PAYLOAD])
 
     def describe(
@@ -292,10 +304,18 @@ class ObzContainer:
         )
 
 
-def _stashed(ctx: PipelineContext) -> bytes:
-    """The object the read stashed, or ``b""`` when there is none to borrow."""
+def _stashed(ctx: PipelineContext, size: int | None = None) -> bytes:
+    """The file the read stashed, or ``b""`` when there is none to borrow.
+
+    ``size`` asks for exactly that length — a transfer object has one, where an
+    object's write sorts its two forms out for itself.
+    """
     source = ctx.get(KEY_OBJ_SOURCE)
-    return bytes(source) if isinstance(source, (bytes, bytearray)) else b""
+    if not isinstance(source, (bytes, bytearray)):
+        return b""
+    if size is not None and len(source) != size:
+        return b""
+    return bytes(source)
 
 
 def _obj_payload(data: bytes) -> int:

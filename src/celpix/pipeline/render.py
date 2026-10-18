@@ -36,6 +36,7 @@ from celpix.core.arrangement import (
     has_2d_reading,
     reflow_2d,
     scatter_2d,
+    slots_holding_data,
 )
 from celpix.core.cellchain import resolve_chain
 from celpix.core.context import PipelineContext
@@ -289,8 +290,9 @@ def decode_and_compose(
     sizes to the data (export and the overlay show every tile). ``biases`` shifts
     each slot's indices for a pinned palette row (see :func:`compose_tiles`).
     Returns ``(grid, filled)`` — an index or direct-color grid, and the count of
-    real tiles (excluding any 2D-reflow / partial-tile padding) so a caller can
-    background the rest.
+    slots holding data (excluding any 2D-reflow / partial-tile padding) so a
+    caller can background the rest. Under the 2D walk that is a count of slots,
+    not of whole tiles' worth of bytes (:func:`slots_holding_data`).
 
     Every call into the codec runs as the pixel-interpret stage, so a codec that
     raises arrives as a :class:`PipelineError` naming ``plugin`` (the preset id
@@ -304,7 +306,10 @@ def decode_and_compose(
         lambda: (engine.bytes_per_tile(params), engine.tile_size(params)[1]),
         plugin=plugin,
     )
-    filled = ceil_div(len(pixel_bytes), tile_bytes) if tile_bytes else 0
+    if two_dimensional:
+        filled = slots_holding_data(len(pixel_bytes), tile_bytes, tile_h, cols)
+    else:
+        filled = ceil_div(len(pixel_bytes), tile_bytes) if tile_bytes else 0
     buffer = (
         reflow_2d(pixel_bytes, tile_bytes, tile_h, cols)
         if two_dimensional

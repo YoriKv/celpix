@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from celpix.core.arrangement import BlockLayout
 from celpix.core.context import KEY_SOURCE_FILES, KEY_SOURCE_PATH, PipelineContext
 from celpix.core.errors import Pathway, PipelineError, Stage
 from celpix.core.index_grid import IndexGrid
@@ -91,6 +92,28 @@ def test_decode_window_2d_reflows_the_window_before_decode(tmp_path) -> None:
     assert got == expected
     # … and a different picture from the 1D walk (proves the flag is applied).
     assert got != pipeline.decode_window(doc, reg, 0, cols * 2)
+
+
+def test_2d_partial_last_bitmap_row_counts_every_slot_it_reaches(tmp_path) -> None:
+    # 4 tiles' bytes read 3 tiles across: one whole bitmap-row, then a second
+    # whose first pixel rows run the full width. All 6 slots hold data, so the
+    # selection bound (tile_count) and the canvas's filled count must both say
+    # 6, not the 4 whole tiles of bytes — or the right of the last rows paints
+    # as background and cannot be selected or edited.
+    from celpix.core.document import ViewOptions
+
+    reg = default_registry()
+    px, pl, pixel_bytes, _ = _make_files(tmp_path)
+    doc = pipeline.load(*_configs(px, pl), reg)
+    assert doc.tile_count == 4
+    doc.view = ViewOptions(columns=3, two_dimensional=True)
+    assert doc.tile_count == 6
+
+    engine, preset = reg.engine_for(doc.pixel_config.interpret_preset_id)
+    _grid, filled = pipeline.decode_and_compose(
+        pixel_bytes, engine, preset.params, BlockLayout(3), True, None
+    )
+    assert filled == 6
 
 
 def test_provenance_recorded(tmp_path) -> None:

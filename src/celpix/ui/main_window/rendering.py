@@ -1036,6 +1036,11 @@ class RenderingMixin(_Host):
                     biases=self._window_biases(cols, rows),
                     plugin=preset.id,
                 )
+                # The window arrives padded to whole tiles, which the 1D count
+                # shrugs off and the 2D one does not: padding a short last
+                # bitmap-row reaches slots the data never did. The document's
+                # own count is of the unpadded bytes.
+                filled = min(filled, max(0, self._doc.tile_count - self._offset))
                 return image, filled, None
             return (*self._render_rearranged(layout, rows), None)
 

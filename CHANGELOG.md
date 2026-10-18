@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.2.14 - unreleased
+
+- Fixed some sprite and animation issues in OBX/OBZ/SPR
+- Added zlib compression
+- Fixed an issue with bitmap rendering
+
 ## v1.2.13 - 2026-10-17
 
 - Linux build AppImage improvements
