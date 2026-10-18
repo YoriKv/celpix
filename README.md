@@ -46,6 +46,8 @@ celPix is built on Python + Qt (PySide6) and runs on Windows, macOS, and Linux.
 ### Install
 
 Grab the build for your platform from the [Releases page](https://github.com/YoriKv/celpix/releases), unpack and run, no installer.
+On Linux, `celpix-x86_64.AppImage` is a single file instead: mark it executable
+(`chmod +x celpix-x86_64.AppImage`) and run it.
 
 ### First steps
 

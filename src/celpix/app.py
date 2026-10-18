@@ -234,6 +234,10 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication(raw)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(__version__)
+    # The Linux desktop file's id (packaging/linux/), so a desktop that installed
+    # it - an AppImage integrated into the menu - matches the window to its
+    # entry and icon. Unrelated to where data is stored, unlike the name above.
+    app.setDesktopFileName("io.github.yorikv.celpix")
     # Qt has removed the options it recognized, so what is left over is ours.
     # Parsed here, at the top, so a command line that cannot work costs nothing:
     # no plugin scan, no window, and the reason on the terminal.

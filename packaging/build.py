@@ -7,6 +7,7 @@ release ships — there is no second copy of the flags to drift out of sync.
 
     python3 packaging/build.py             # -> dist/celpix (or dist/celpix.app)
     python3 packaging/build.py --archive   # ... plus the release archive
+    python3 packaging/build.py --appimage  # ... plus the AppImage (Linux only)
 
 PyInstaller freezes the interpreter it runs under, so the build always targets
 the OS it runs on and there is no cross-compiling: build the Windows app from
@@ -20,6 +21,7 @@ do, including a bare system interpreter.
 from __future__ import annotations
 
 import argparse
+import datetime
 import os
 import platform
 import plistlib
@@ -29,6 +31,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import urllib.request
 import zipfile
 from pathlib import Path
 from typing import NoReturn
@@ -39,6 +42,20 @@ BUILD = REPO_ROOT / "build"
 VERSION_FILE = REPO_ROOT / "src" / "celpix" / "__init__.py"
 ENTRY_POINT = REPO_ROOT / "src" / "celpix" / "__main__.py"
 APP_NAME = "celpix"
+APP_ICON = REPO_ROOT / "src" / "celpix" / "resources" / "icons" / "app.png"
+CHANGELOG = REPO_ROOT / "CHANGELOG.md"
+
+# The AppImage's desktop file and AppStream metadata live in packaging/linux/,
+# both named after the reverse-DNS id — the name software centers key them by.
+LINUX_PACKAGING = REPO_ROOT / "packaging" / "linux"
+APP_ID = "io.github.yorikv.celpix"
+# Pinned rather than "continuous", so a release is never built by an
+# appimagetool nobody has tried yet.
+APPIMAGETOOL_VERSION = "1.9.1"
+APPIMAGETOOL_URL = (
+    "https://github.com/AppImage/appimagetool/releases/download/"
+    "{version}/appimagetool-{arch}.AppImage"
+)
 
 # PyInstaller stamps LSMinimumSystemVersion from the build Python's own
 # deployment target (11.0 on arm64), but the app's real floor is Qt's: PySide6
@@ -107,6 +124,12 @@ def app_path() -> Path:
     return DIST / APP_NAME
 
 
+def appimage_path() -> Path:
+    """The AppImage asset. No version in the name: the embedded update
+    information points at the latest release's asset of this exact name."""
+    return DIST / f"{APP_NAME}-{platform.machine()}.AppImage"
+
+
 def launcher_path() -> Path:
     """The executable a user actually double-clicks / runs."""
     if sys.platform == "darwin":
@@ -131,11 +154,18 @@ def show(cmd: list) -> str:
     return subprocess.list2cmdline(parts) if os.name == "nt" else shlex.join(parts)
 
 
-def run(cmd: list, *, dry_run: bool) -> None:
+def run(
+    cmd: list,
+    *,
+    dry_run: bool,
+    extra_env: dict | None = None,
+    cwd: Path = REPO_ROOT,
+) -> None:
     info(f"  $ {show(cmd)}")
     if dry_run:
         return
-    result = subprocess.run([str(part) for part in cmd], cwd=REPO_ROOT, env=build_env())
+    env = build_env() | (extra_env or {})
+    result = subprocess.run([str(part) for part in cmd], cwd=cwd, env=env)
     if result.returncode != 0:
         die(f"command failed with exit code {result.returncode}: {show(cmd)}")
 
@@ -223,6 +253,120 @@ def make_archive(*, dry_run: bool) -> Path:
     return archive
 
 
+def release_date(version: str) -> str:
+    """The date ``CHANGELOG.md`` gives this version, else today.
+
+    ``release.sh`` stamps the heading before it tags, so a release build reads
+    the release's own date; a build of unreleased work falls back to today.
+    """
+    match = re.search(
+        rf"^## v{re.escape(version)} - (\d{{4}}-\d{{2}}-\d{{2}})\s*$",
+        CHANGELOG.read_text(encoding="utf-8"),
+        re.M,
+    )
+    return match.group(1) if match else datetime.date.today().isoformat()
+
+
+def assemble_appdir(*, dry_run: bool) -> Path:
+    """Lay the frozen app out as an AppDir for appimagetool.
+
+    The top-level desktop file, icon, ``.DirIcon`` and executable ``AppRun`` are
+    what the AppImage format requires; the copies under ``usr/share`` are where
+    desktop integration and software catalogs look for them.
+    """
+    appdir = BUILD / "AppDir"
+    info(f"  {app_path().relative_to(REPO_ROOT)} -> {appdir.relative_to(REPO_ROOT)}")
+    if dry_run:
+        return appdir
+    if appdir.exists():
+        shutil.rmtree(appdir)
+    share = appdir / "usr" / "share"
+    # Symlinks as symlinks: the onedir output relies on them, as for the tarball.
+    shutil.copytree(app_path(), appdir / "usr" / "lib" / APP_NAME, symlinks=True)
+
+    desktop = LINUX_PACKAGING / f"{APP_ID}.desktop"
+    for target in (appdir, share / "applications"):
+        target.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(desktop, target / desktop.name)
+
+    icon_dir = share / "icons" / "hicolor" / "256x256" / "apps"
+    icon_dir.mkdir(parents=True)
+    for target in (
+        appdir / f"{APP_NAME}.png",
+        appdir / ".DirIcon",
+        icon_dir / f"{APP_NAME}.png",
+    ):
+        shutil.copy2(APP_ICON, target)
+
+    # The version is stamped here rather than kept in the XML, so a release
+    # never has to edit the metadata to keep it honest. The legacy .appdata.xml
+    # name, not .metainfo.xml: it is the only one appimagetool finds and the
+    # AppImage catalog's lint validates.
+    version = read_version()
+    appdata_name = f"{APP_ID}.appdata.xml"
+    appdata = (LINUX_PACKAGING / appdata_name).read_text(encoding="utf-8")
+    releases = (
+        f'  <releases>\n    <release version="{version}" '
+        f'date="{release_date(version)}"/>\n  </releases>\n'
+    )
+    appdata = appdata.replace("</component>", releases + "</component>")
+    (share / "metainfo").mkdir()
+    (share / "metainfo" / appdata_name).write_text(appdata, encoding="utf-8")
+
+    apprun = appdir / "AppRun"
+    # The AppImage runtime sets APPDIR; the fallback lets an extracted AppDir
+    # run on its own too.
+    apprun.write_text(
+        "#!/bin/sh\n"
+        'HERE="${APPDIR:-$(dirname "$(readlink -f "$0")")}"\n'
+        f'exec "$HERE/usr/lib/{APP_NAME}/{APP_NAME}" "$@"\n',
+        encoding="utf-8",
+    )
+    apprun.chmod(0o755)
+    return appdir
+
+
+def appimagetool(*, dry_run: bool) -> Path:
+    """An ``appimagetool`` from PATH, else the pinned release, fetched once."""
+    found = shutil.which("appimagetool")
+    if found:
+        return Path(found)
+    arch = platform.machine()
+    tool = BUILD / "tools" / f"appimagetool-{APPIMAGETOOL_VERSION}-{arch}.AppImage"
+    if tool.exists():
+        return tool
+    url = APPIMAGETOOL_URL.format(version=APPIMAGETOOL_VERSION, arch=arch)
+    info(f"  fetch {url}")
+    if not dry_run:
+        tool.parent.mkdir(parents=True, exist_ok=True)
+        urllib.request.urlretrieve(url, tool)
+        tool.chmod(0o755)
+    return tool
+
+
+def make_appimage(*, dry_run: bool) -> Path:
+    """Pack the frozen app into a type-2 (SquashFS) AppImage, plus its .zsync."""
+    appdir = assemble_appdir(dry_run=dry_run)
+    output = appimage_path()
+    run(
+        [
+            appimagetool(dry_run=dry_run),
+            "--updateinformation",
+            f"gh-releases-zsync|YoriKv|celpix|latest|{output.name}.zsync",
+            appdir,
+            output,
+        ],
+        dry_run=dry_run,
+        # appimagetool is an AppImage itself, and neither CI runners nor WSL
+        # can be counted on for FUSE to mount it; ARCH saves it guessing from
+        # the bundled libraries.
+        extra_env={"APPIMAGE_EXTRACT_AND_RUN": "1", "ARCH": platform.machine()},
+        # The .zsync is written to the working directory, not beside the output.
+        cwd=DIST,
+    )
+    return output
+
+
 def clean(*, dry_run: bool) -> None:
     for path in (BUILD, DIST, REPO_ROOT / f"{APP_NAME}.spec"):
         if not path.exists():
@@ -245,6 +389,7 @@ def main(argv: list | None = None) -> int:
             "examples:\n"
             "  python3 packaging/build.py            build dist/celpix\n"
             "  python3 packaging/build.py -a         ... and the release archive\n"
+            "  python3 packaging/build.py -a -i      ... and the AppImage (Linux)\n"
             "  python3 packaging/build.py -c -n      preview a from-scratch build\n"
         ),
     )
@@ -253,6 +398,12 @@ def main(argv: list | None = None) -> int:
         "--archive",
         action="store_true",
         help="also pack the app into the release archive (zip / tar.gz) in dist/",
+    )
+    parser.add_argument(
+        "-i",
+        "--appimage",
+        action="store_true",
+        help="also pack the app into an AppImage in dist/ (Linux only)",
     )
     parser.add_argument(
         "-c",
@@ -272,6 +423,8 @@ def main(argv: list | None = None) -> int:
         die("uv not found in PATH — see https://docs.astral.sh/uv/ to install it")
     if not ENTRY_POINT.is_file():
         die(f"{ENTRY_POINT} not found; is this a full checkout?")
+    if args.appimage and not sys.platform.startswith("linux"):
+        die("--appimage builds on Linux only")
 
     slug = target_slug()
     env = build_env()
@@ -300,6 +453,11 @@ def main(argv: list | None = None) -> int:
         info("Packing the release archive ...")
         archive = make_archive(dry_run=args.dry_run)
 
+    appimage = None
+    if args.appimage:
+        info("Packing the AppImage ...")
+        appimage = make_appimage(dry_run=args.dry_run)
+
     info()
     if args.dry_run:
         info("(dry run) nothing was built.")
@@ -309,6 +467,9 @@ def main(argv: list | None = None) -> int:
     if archive is not None:
         size_mb = archive.stat().st_size / 1_000_000
         info(f"  archive: {archive.relative_to(REPO_ROOT)} ({size_mb:.1f} MB)")
+    if appimage is not None:
+        size_mb = appimage.stat().st_size / 1_000_000
+        info(f"  appimage: {appimage.relative_to(REPO_ROOT)} ({size_mb:.1f} MB)")
     return 0
 
 

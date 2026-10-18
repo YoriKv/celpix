@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=celPix
+GenericName=Graphics Editor
+Comment=Graphics viewer and editor for romhacking and research
+Exec=celpix %F
+Icon=celpix
+Terminal=false
+Categories=Graphics;2DGraphics;RasterGraphics;
+Keywords=ROM;romhacking;tiles;sprites;palette;tilemap;SNES;GBA;
+StartupWMClass=celpix

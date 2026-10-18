@@ -4,6 +4,7 @@ name: Release
 # macOS with PyInstaller and publish a GitHub Release with the artifacts:
 #   - celpix-win.zip        (portable Windows app folder, zipped)
 #   - celpix-linux.tar.gz   (portable Linux app folder, tarred)
+#   - celpix-x86_64.AppImage (+ .zsync, the delta-update index it points at)
 #   - celpix-mac-arm64.zip  (macOS .app bundle, Apple Silicon)
 #   - celpix-mac-intel.zip  (macOS .app bundle, Intel)
 # The release body is the matching `## v<version>` section of CHANGELOG.md
@@ -43,7 +44,12 @@ jobs:
         # own runner. macos-latest is Apple Silicon; macos-15-intel is GitHub's
         # last x86_64 image (hosted until Aug 2027). build.py tells the two
         # apart by the machine it is running on and names its archive to match.
-        os: [windows-latest, ubuntu-latest, macos-latest, macos-15-intel]
+        #
+        # Linux builds on the oldest Ubuntu LTS still in standard support, not
+        # ubuntu-latest: the frozen app links the build host's glibc, so it runs
+        # only on systems at least that new, and the AppImage catalog tests on
+        # that oldest LTS.
+        os: [windows-latest, ubuntu-22.04, macos-latest, macos-15-intel]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -55,26 +61,35 @@ jobs:
 
       # PySide6 links a handful of system libraries the Linux runner does not
       # ship by default; PyInstaller must find them at build time to bundle them.
+      # libxcb-cursor0 is the one Qt's X11 plugin cannot load without and a
+      # stock desktop lacks. desktop-file-utils and appstream are for
+      # appimagetool, which validates the desktop file and metainfo with them.
       - name: Install Qt runtime libs (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libegl1 libgl1 libxkbcommon0 libdbus-1-3 libfontconfig1
+            libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0 libdbus-1-3 \
+            libfontconfig1 libxcb-cursor0 desktop-file-utils appstream
 
       - name: Sync dependencies
         run: uv sync --frozen
 
-      # Split by OS only to spell the interpreter the way each runner image
-      # guarantees it (`python` on Windows, `python3` elsewhere); only the
-      # matching step runs. build.py needs nothing but the stdlib and uv.
+      # Split by OS to spell the interpreter the way each runner image
+      # guarantees it (`python` on Windows, `python3` elsewhere), and because
+      # only Linux also packs an AppImage; only the matching step runs.
+      # build.py needs nothing but the stdlib and uv.
       - name: Build app (Windows)
         if: runner.os == 'Windows'
         run: python packaging\build.py --archive
 
-      - name: Build app (Unix)
-        if: runner.os != 'Windows'
+      - name: Build app (macOS)
+        if: runner.os == 'macOS'
         run: python3 packaging/build.py --archive
+
+      - name: Build app (Linux)
+        if: runner.os == 'Linux'
+        run: python3 packaging/build.py --archive --appimage
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -83,6 +98,8 @@ jobs:
           path: |
             dist/celpix-*.zip
             dist/celpix-*.tar.gz
+            dist/celpix-*.AppImage
+            dist/celpix-*.AppImage.zsync
           if-no-files-found: error
 
   release:

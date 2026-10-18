@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.2.13 - unreleased
+
+- Linux build AppImage improvements
+
 ## v1.2.12 - 2026-10-16
 
 - Added Subset to Edit Palette which lets you select individual colors

@@ -335,8 +335,10 @@ def test_the_alttp_sample_project_reads_its_dialogue_as_sentences() -> None:
     # a second I, i and ! — `Text_FilterPlayerNameCharacters` rewrites a stored
     # name's $5F/$60/$61 to $08/$22/$3E, which are exactly those three — so they
     # keep their codes here and read as hex, the canonical spellings having been
-    # claimed thirty codes earlier.
-    assert len(font.font_chars) == 0x63
+    # claimed thirty codes earlier. $62, the table's last entry, draws nothing,
+    # and a trailing hole is trimmed on save (``fontmap-entry.md`` §5), so the
+    # run ends at $61.
+    assert len(font.font_chars) == 0x62
     assert font.font_chars[0x5F:0x62] == "Ii!"
     assert font.font_chars[0x08], font.font_chars[0x22] == ("I", "i")
 
