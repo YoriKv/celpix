@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.2.14 - unreleased
+## v1.2.14 - 2026-10-18
 
 - Fixed some sprite and animation issues in OBX/OBZ/SPR
 - Added zlib compression
