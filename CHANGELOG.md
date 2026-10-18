@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.2.13 - unreleased
+## v1.2.13 - 2026-10-17
 
 - Linux build AppImage improvements
 
