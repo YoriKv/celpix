@@ -34,7 +34,6 @@
   <url type="homepage">https://github.com/YoriKv/celpix</url>
   <url type="bugtracker">https://github.com/YoriKv/celpix/issues</url>
   <url type="help">https://github.com/YoriKv/celpix/wiki</url>
-  <url type="vcs-browser">https://github.com/YoriKv/celpix</url>
   <provides>
     <binary>celpix</binary>
   </provides>
