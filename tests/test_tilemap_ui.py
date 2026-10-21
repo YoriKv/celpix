@@ -133,13 +133,15 @@ def test_a_sprite_object_opens_and_draws_its_frames_one_after_another(
     # at the origin and one at x=24 make a 32-pixel box, eight frames across.
     assert window._canvas._image.width() == 8 * 32
 
-    # View-only, and it says so rather than silently doing nothing. Copy is the
-    # exception and takes the pixels instead - see the sheet-copy test below.
+    # Outside Edit Subsprites a tile selection is squares of the sheet, which no
+    # record write can take, and it says so rather than silently doing nothing.
+    # Copy is the exception and takes the pixels - see the sheet-copy test below.
     window._selected_tile = 0
     window._clear_cells()
-    assert "view-only" in window.statusBar().currentMessage()
+    refusal = "Arm Edit Subsprites (T) to {} pieces of a sprite map."
+    assert window.statusBar().currentMessage() == refusal.format("clear")
     window._cut_cells()
-    assert "view-only" in window.statusBar().currentMessage()
+    assert window.statusBar().currentMessage() == refusal.format("cut")
 
 
 def test_a_sprite_sheet_selects_its_drawn_tiles_and_backs_its_empty_frames(

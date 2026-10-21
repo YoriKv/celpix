@@ -729,7 +729,9 @@ class NavigationMixin(_Host):
         Yields (returns False) when an arrow-consuming input has focus, a popup
         (e.g. an open menu, which arrow keys navigate) is up, or the event carries
         Alt/Meta, so only bare / Shift-ed / Ctrl-ed navigation keys ever act (an
-        unregistered Ctrl combo still falls through to the normal shortcuts).
+        unregistered Ctrl combo still falls through to the normal shortcuts). The
+        one exception to the Alt rule is Edit Subsprites' reorder keys, claimed
+        ahead of it (:meth:`~...sprite_edit.SpriteEditMixin._subsprite_key`).
 
         Two tables, in this order: the bare letters that press a control
         (:meth:`_build_key_controls`), then the navigation keys that move the view
@@ -745,8 +747,7 @@ class NavigationMixin(_Host):
         if isinstance(focus, self._ARROW_INPUT_TYPES):
             return False
         mods = event.modifiers()
-        blocked = Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.MetaModifier
-        if mods & blocked:
+        if mods & Qt.KeyboardModifier.MetaModifier:
             return False
         # The tile source sheet steps its pick on the bare arrows (its own
         # keyPressEvent), but only those: Shift+Left/Right is its Cols, which
@@ -760,6 +761,14 @@ class NavigationMixin(_Host):
             return False
         shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
         ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)
+        alt = bool(mods & Qt.KeyboardModifier.AltModifier)
+        # Edit Subsprites claims its keys before anything else here - the arrows
+        # nudge the picked pieces - and before the Alt refusal, since Alt+Up/Down
+        # are its reorder rows' keys (sprite_edit.py).
+        if self._subsprite_key(event.key(), shift, ctrl, alt=alt):
+            return True
+        if alt:
+            return False
         # A rearrange drag claims Escape first: whatever navigation would
         # otherwise do with it, it cannot put a tile stranded in the air back
         # down. Then the transform bar's flip/rotate letters, which act on

@@ -62,9 +62,12 @@ from celpix.plugins.base import (
     WriteTarget,
     format_size,
 )
-from celpix.plugins.builtins.object_codec import SPR_RECORD
+from celpix.plugins.builtins.object_codec import SPR_FRAMES, SPR_RECORD
 
-FRAMES = 32  # every file has exactly this many, empty ones included
+# Every file has exactly this many, empty ones included. The codec's number,
+# because the codec states it too — as the frame count a counted edit keeps —
+# and the two must not drift apart.
+FRAMES = SPR_FRAMES
 TRAILER = 81  # 40 bytes of frame numbers, 40 of durations, one flag byte
 ANIMATION_STEPS = 40  # one of those blocks; the trailer holds one sequence
 # The earliest build's tail: 512 bytes of uninitialised buffer where the later

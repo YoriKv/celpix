@@ -139,6 +139,18 @@ DROP_TARGET_COLOR = QColor(0x40, 0xC0, 0xFF)
 DROP_REFUSED_COLOR = QColor(0xFF, 0x50, 0x50)
 DROP_TARGET_WIDTH = 2
 
+
+def _paint_band(painter: QPainter, rect: QRect, width: int) -> None:
+    """A ``width``-pixel band just inside ``rect``, in the painter's pen.
+
+    One-pixel rings stacked inward rather than one wide pen: a wide aliased pen
+    straddles its path by a rounding that differs between odd and even widths,
+    and the band has to stay inside the box it marks.
+    """
+    for step in range(width):
+        painter.drawRect(rect.adjusted(step, step, -1 - step, -1 - step))
+
+
 # Where a fontmap's line ends (:meth:`Canvas.set_line_ends`). Amber for the same
 # reason the structural grid is blue: it has to be separable at a glance from
 # both levels of the lattice and from the art, and on a fontmap the coarse level
@@ -307,6 +319,23 @@ class Canvas(PanZoomSurface, QWidget):
     # ``stamp_pressed`` — which one it was is only knowable on release, so the
     # pick reports there rather than on the press.
     stamp_area_picked = Signal(int, int)  # anchor slot, far slot
+    # The same stamp gestures in **image pixels**, while the canvas is told to
+    # report them so (:meth:`set_stamp_in_pixels`) — a sprite map, whose pieces
+    # sit at signed pixel offsets and are not on the slot grid, so a slot could
+    # not say which piece a press is on. A set of their own rather than the
+    # ``pixel_*`` triple: pixel mode's handlers listen there and paint, and a
+    # piece drag reaching them would be read as a pen stroke. Each mirrors its
+    # slot twin's rule — the right press reports on release, as a click or as
+    # the band it swept — with one addition the slot gestures never needed:
+    # ``stamp_pixel_cancelled`` says a left drag ended with nothing to commit (a
+    # right press during it, :meth:`cancel_drag`, or the tool disarming), since
+    # a dragged piece, unlike a stamp stroke, lands only on release.
+    stamp_pixel_pressed = Signal(int, int, object)  # x, y, Qt.MouseButton
+    stamp_pixel_moved = Signal(int, int)  # x, y — left held, clamped to the image
+    stamp_pixel_released = Signal(int, int)  # x, y — the left drag's last pixel
+    stamp_pixel_area_picked = Signal(int, int, int, int)  # x0, y0, x1, y1 inclusive
+    stamp_pixel_hovered = Signal(object)  # (x, y) | None, no button held
+    stamp_pixel_cancelled = Signal()
     # A space-drag pan step, in logical pixels: how far to shift the view. The
     # window feeds it to the scroll bars, which clamp it so the image can't be
     # dragged off screen. Emitted in either edit mode.
@@ -385,11 +414,14 @@ class Canvas(PanZoomSurface, QWidget):
         self._marquee: QRect | None = None
         self._float_image: QImage | None = None
         self._float_pos = (0, 0)
-        # The picked subsprite's box, in image pixels (:meth:`set_pick_outline`).
-        # A pixel-space overlay drawn in **tile** mode, which is the one thing
-        # separating it from the marquee above: what it outlines is not on the
-        # slot grid the tile selection is made of.
-        self._pick_outline: QRect | None = None
+        # The picked subsprites' boxes, in image pixels (:meth:`set_pick_outline`),
+        # or None with none picked. A pixel-space overlay drawn in **tile** mode,
+        # which is the one thing separating it from the marquee above: what it
+        # outlines is not on the slot grid the tile selection is made of.
+        self._pick_outline: list[QRect] | None = None
+        # Image pixels where a sprite frame's object origin falls, one per frame
+        # slot (:meth:`set_origin_marks`); painted only while the grid is.
+        self._origin_marks: tuple[tuple[int, int], ...] = ()
         # Rearrange tool: like the eyedropper and the pan it is a modal flag the
         # mouse handlers check before the mode split (it is armed over tile mode,
         # never together with pixel mode). ``_rearrange_slot`` is the last slot
@@ -424,6 +456,23 @@ class Canvas(PanZoomSurface, QWidget):
         # The last slot reported over :attr:`stamp_hovered`, so every mouse
         # move does not re-announce the same cell (:meth:`_report_stamp_hover`).
         self._stamp_hover_slot: int | None = None
+        # The stamp gestures in image pixels instead of slots
+        # (:meth:`set_stamp_in_pixels`), and their own drag state beside the
+        # slot one: the last pixel a left drag reported, the right drag's two
+        # corner pixels, and the last pixel reported over hover.
+        self._stamp_in_pixels = False
+        self._stamp_pixel: tuple[int, int] | None = None
+        self._stamp_pick_from: tuple[int, int] | None = None
+        self._stamp_pick_to: tuple[int, int] | None = None
+        self._stamp_hover_at: tuple[int, int] | None = None
+        # Where the controller has placed the stamp ghost, in image pixels, or
+        # None to anchor it on the hovered unit (:meth:`set_stamp_preview`).
+        self._stamp_preview_at: tuple[int, int] | None = None
+        # Pixel-space drop outlines (:meth:`set_drop_rects`), and whether the
+        # drop they mark may land — the slot target's pair, for boxes that are
+        # not on the slot grid.
+        self._drop_rects: tuple[QRect, ...] = ()
+        self._drop_rects_valid = True
         # Where a rearrange drag would land, and whether it may: the controller
         # decides (a drop that would overlap its own source is refused), the
         # canvas only draws it.
@@ -663,13 +712,11 @@ class Canvas(PanZoomSurface, QWidget):
             return
         self._stamping = on
         if not on and self._stamp_drag:
-            self._end_stamp_drag()
-            self.stamp_finished.emit()
+            self._close_stamp_drag()
         if not on:
             # A half-made pick drag dies with the tool; it was never reported.
-            self._stamp_picking = False
-            self._stamp_pick_anchor = self._stamp_pick_slot = None
-            self._stamp_hover_slot = None
+            self._end_stamp_pick()
+            self._stamp_hover_slot = self._stamp_hover_at = None
         self._drag_anchor = self._drag_slot = None
         self._apply_cursor()
         self.update()
@@ -677,6 +724,27 @@ class Canvas(PanZoomSurface, QWidget):
     def _end_stamp_drag(self) -> None:
         self._stamp_drag = False
         self._stamp_slot = None
+        self._stamp_pixel = None
+
+    def _close_stamp_drag(self) -> None:
+        """End a left stamp drag the pointer did not end, and say so.
+
+        The two reports differ for the reason the gestures do: a stamp stroke
+        has laid every cell it crossed already, so it is *finished* and kept,
+        where a dragged piece lands only on release and an ended drag has
+        nothing to land — it is *cancelled*.
+        """
+        in_pixels = self._stamp_in_pixels
+        self._end_stamp_drag()
+        if in_pixels:
+            self.stamp_pixel_cancelled.emit()
+        else:
+            self.stamp_finished.emit()
+
+    def _end_stamp_pick(self) -> None:
+        self._stamp_picking = False
+        self._stamp_pick_anchor = self._stamp_pick_slot = None
+        self._stamp_pick_from = self._stamp_pick_to = None
 
     def cancel_drag(self) -> None:
         """Forget a left drag in progress without reporting its end.
@@ -685,19 +753,52 @@ class Canvas(PanZoomSurface, QWidget):
         or an entry switch under a held button): the pointer's further moves and
         its release then report nothing, so the abandoned gesture cannot be
         resumed or committed by them.
+
+        A stamp drag reported in pixels is the one that *is* told
+        (``stamp_pixel_cancelled``): what it carries is a float over the sheet,
+        and the handler that put it up is the one that has to take it down.
         """
         self._pixel_dragging = False
         self._last_pixel = None
+        if self._stamp_in_pixels and self._stamp_drag:
+            self._end_stamp_drag()
+            self.stamp_pixel_cancelled.emit()
+            return
         self._end_stamp_drag()
 
-    def set_stamp_preview(self, image: QImage | None) -> None:
+    def set_stamp_in_pixels(self, on: bool) -> None:
+        """Report the stamp gestures in image pixels (the ``stamp_pixel_*``
+        signals) rather than slots.
+
+        For a sprite map, whose pieces sit at pixel offsets no slot names; the
+        controller sets it with the document, beside :meth:`set_stamp_unit`. A
+        gesture open across the switch is closed the way disarming closes it,
+        since its press was reported in the other unit.
+        """
+        if self._stamp_in_pixels == on:
+            return
+        if self._stamp_drag:
+            self._close_stamp_drag()
+        self._end_stamp_pick()
+        self._stamp_in_pixels = on
+        self._stamp_hover_slot = self._stamp_hover_at = None
+        self.update()
+
+    def set_stamp_preview(
+        self, image: QImage | None, at: tuple[int, int] | None = None
+    ) -> None:
         """Arm the stamp preview: ``image`` shown over the hovered cell.
 
         The controller passes the held tiles already rendered — it alone knows
         which tiles are held and what colours they land in — so the canvas only
         anchors the picture on the cell under the pointer (``None`` disarms it).
+
+        ``at`` places the picture's top-left at that image pixel instead: a
+        piece dropped on a sprite map lands where the controller's snap puts
+        it, which no cell of the slot grid describes.
         """
         self._stamp_preview = None if (image is None or image.isNull()) else image
+        self._stamp_preview_at = at if self._stamp_preview is not None else None
         if self._stamp_preview is None and self._preview_color is None:
             self._hover_pixel = None
         self.update()
@@ -729,6 +830,19 @@ class Canvas(PanZoomSurface, QWidget):
         """
         self._drop_slots = frozenset(slots or ())
         self._drop_valid = valid
+        self.update()
+
+    def set_drop_rects(
+        self, rects: Sequence[QRect] | None, *, valid: bool = True
+    ) -> None:
+        """Outline pixel-space drop boxes; ``valid`` says the drop may land.
+
+        :meth:`set_drop_target` for what is not on the slot grid — a sprite
+        piece's box sits at any pixel — in the same band and the same refused
+        colour. ``None`` clears it.
+        """
+        self._drop_rects = tuple(rects or ())
+        self._drop_rects_valid = valid
         self.update()
 
     def _end_rearrange_drag(self) -> None:
@@ -774,7 +888,10 @@ class Canvas(PanZoomSurface, QWidget):
             self._hover_pixel = None
             self.update()
         if self._stamping:
-            self._report_stamp_hover(None)
+            if self._stamp_in_pixels:
+                self._report_stamp_pixel_hover(None)
+            else:
+                self._report_stamp_hover(None)
 
     def _wants_hover(self) -> bool:
         """Whether anything on screen follows the pointer between clicks —
@@ -789,7 +906,9 @@ class Canvas(PanZoomSurface, QWidget):
         if pixel != self._hover_pixel:
             self._hover_pixel = pixel
             self.update()
-        if self._stamping:
+        if self._stamping and not self._stamp_in_pixels:
+            # The pixel report is the move handler's: it is made with no button
+            # held, which only the event knows (:meth:`_stamp_pixel_move`).
             self._report_stamp_hover(self._slot_at(pos) if pixel is not None else None)
 
     def _report_stamp_hover(self, slot: int | None) -> None:
@@ -799,23 +918,46 @@ class Canvas(PanZoomSurface, QWidget):
             self._stamp_hover_slot = slot
             self.stamp_hovered.emit(slot)
 
+    def _report_stamp_pixel_hover(self, pixel: tuple[int, int] | None) -> None:
+        """:meth:`_report_stamp_hover` in image pixels, once per new pixel."""
+        if pixel != self._stamp_hover_at:
+            self._stamp_hover_at = pixel
+            self.stamp_pixel_hovered.emit(pixel)
+
     def set_marquee(self, rect: QRect | None) -> None:
         """Show a pixel-space rectangle marquee (``None`` clears it)."""
         self._marquee = rect
         self.update()
 
-    def set_pick_outline(self, rect: QRect | None) -> None:
-        """Outline a pixel-space ``rect`` that is not a slot (``None`` clears it).
+    def set_pick_outline(self, rects: QRect | Sequence[QRect] | None) -> None:
+        """Outline pixel-space rects that are not slots (``None`` clears them).
 
-        The picked subsprite, and only that: what is drawn on a sprite object
-        does not sit on the slot grid, so the tile selection's own highlight
-        cannot describe it. Drawn in the **structural** colour rather than the
-        selection's white, the same distinction the tile source panel's two rings
-        make — the white square is where the user clicked, this is what the click
-        resolved to.
+        The picked subsprites, and only those — one rect or several, one per
+        piece picked: what is drawn on a sprite object does not sit on the slot
+        grid, so the tile selection's own highlight cannot describe it. Drawn in
+        the **structural** colour rather than the selection's white, the same
+        distinction the tile source panel's two rings make — the white square is
+        where the user clicked, this is what the click resolved to.
         """
-        self._pick_outline = rect
+        if isinstance(rects, QRect):
+            rects = [rects]
+        self._pick_outline = list(rects) if rects else None
         self.update()
+
+    def set_origin_marks(self, points: Sequence[tuple[int, int]] | None) -> None:
+        """Mark object origins: a small crosshair at each image pixel.
+
+        A sprite frame's offsets are measured from an origin the trimmed sheet
+        does not show, and where it sits is the game's convention — centre,
+        top-left, bottom-centre — so nothing else on screen can say it. Painted
+        only while the grid is shown, because it is the same kind of thing: a
+        reading aid about structure, in the grid's structural colour. ``None``
+        clears them.
+        """
+        marks = tuple(points or ())
+        if marks != self._origin_marks:
+            self._origin_marks = marks
+            self.update()
 
     def set_float(self, image: QImage | None, x: int = 0, y: int = 0) -> None:
         """Show a floating selection ``image`` at image-pixel ``(x, y)``.
@@ -1105,6 +1247,9 @@ class Canvas(PanZoomSurface, QWidget):
         only knowable on release, so the press just opens the gesture and the
         release reports it (:meth:`_stamp_release`).
         """
+        if self._stamp_in_pixels:
+            self._stamp_pixel_press(event)
+            return
         slot = self._slot_at(event.position())
         if slot is None:
             return
@@ -1118,6 +1263,9 @@ class Canvas(PanZoomSurface, QWidget):
             self.update()
 
     def _stamp_move(self, event) -> None:  # noqa: ANN001 — Qt event
+        if self._stamp_in_pixels:
+            self._stamp_pixel_move(event)
+            return
         buttons = event.buttons()
         if self._stamp_picking and buttons & Qt.MouseButton.RightButton:
             # The pick drag: nothing is emitted until release, so all a move
@@ -1128,6 +1276,9 @@ class Canvas(PanZoomSurface, QWidget):
             self._track_slot(event, "_stamp_slot", self.stamp_moved.emit)
 
     def _stamp_release(self, event) -> None:  # noqa: ANN001 — Qt event
+        if self._stamp_in_pixels:
+            self._stamp_pixel_release(event)
+            return
         if event.button() == Qt.MouseButton.RightButton:
             if not self._stamp_picking:
                 return
@@ -1151,6 +1302,84 @@ class Canvas(PanZoomSurface, QWidget):
             return
         self._end_stamp_drag()
         self.stamp_finished.emit()
+
+    def _stamp_pixel_press(self, event) -> None:  # noqa: ANN001 — Qt event
+        """:meth:`_stamp_press` in image pixels.
+
+        One difference from the slot gesture: a right press during a left drag
+        **cancels** the drag rather than opening a pick, the rearrange drag's
+        escape — a carried piece cannot be put down by a pick, and leaving it in
+        the air while a band is swept would end in two answers on release.
+        """
+        button = event.button()
+        if button == Qt.MouseButton.RightButton and self._stamp_drag:
+            self._end_stamp_drag()
+            self.stamp_pixel_cancelled.emit()
+            self.update()
+            return
+        pixel = self._pixel_at(event.position())
+        if pixel is None:
+            return
+        if button == Qt.MouseButton.LeftButton:
+            self._stamp_drag = True
+            self._stamp_pixel = pixel
+            self.stamp_pixel_pressed.emit(pixel[0], pixel[1], button)
+        elif button == Qt.MouseButton.RightButton:
+            self._stamp_picking = True
+            self._stamp_pick_from = self._stamp_pick_to = pixel
+            self.update()
+
+    def _stamp_pixel_move(self, event) -> None:  # noqa: ANN001 — Qt event
+        buttons = event.buttons()
+        if self._stamp_picking and buttons & Qt.MouseButton.RightButton:
+            pixel = self._pixel_at(event.position(), clamp=True)
+            if pixel is not None and pixel != self._stamp_pick_to:
+                self._stamp_pick_to = pixel
+                self.update()  # the band grows; nothing is reported until release
+            return
+        if self._stamp_drag and buttons & Qt.MouseButton.LeftButton:
+            pixel = self._pixel_at(event.position(), clamp=True)
+            if pixel is not None and pixel != self._stamp_pixel:
+                self._stamp_pixel = pixel
+                self.stamp_pixel_moved.emit(pixel[0], pixel[1])
+            return
+        if not buttons & (Qt.MouseButton.LeftButton | Qt.MouseButton.RightButton):
+            self._report_stamp_pixel_hover(self._pixel_at(event.position()))
+
+    def _stamp_pixel_release(self, event) -> None:  # noqa: ANN001 — Qt event
+        if event.button() == Qt.MouseButton.RightButton:
+            if not self._stamp_picking:
+                return
+            start, end = self._stamp_pick_from, self._stamp_pick_to
+            self._end_stamp_pick()
+            self.update()
+            if start is None:
+                return
+            end = end or start
+            # Click or band is asked in **tiles**, the slot gesture's rule in
+            # the unit a sprite sheet is drawn in: a hand never releases on the
+            # pixel it pressed, so asked per pixel every click would be a band.
+            if self._pixel_tile(start) == self._pixel_tile(end):
+                self.stamp_pixel_pressed.emit(
+                    start[0], start[1], Qt.MouseButton.RightButton
+                )
+            else:
+                self.stamp_pixel_area_picked.emit(
+                    min(start[0], end[0]),
+                    min(start[1], end[1]),
+                    max(start[0], end[0]),
+                    max(start[1], end[1]),
+                )
+            return
+        if event.button() != Qt.MouseButton.LeftButton or not self._stamp_drag:
+            return
+        pixel = self._pixel_at(event.position(), clamp=True) or self._stamp_pixel
+        self._end_stamp_drag()
+        if pixel is not None:
+            self.stamp_pixel_released.emit(pixel[0], pixel[1])
+
+    def _pixel_tile(self, pixel: tuple[int, int]) -> tuple[int, int]:
+        return pixel[0] // self._tile_w, pixel[1] // self._tile_h
 
     def _stamp_unit_tiles(self) -> tuple[int, int]:
         """The stamp gestures' unit in tiles — the stated one, or the block.
@@ -1388,6 +1617,10 @@ class Canvas(PanZoomSurface, QWidget):
             and min(zx, zy) >= 2
         ):
             self._draw_grid(painter, zx, zy, exposed)
+        # On the lattice and under every outline: an origin is structure, read
+        # beside the grid lines, and a pick ring over it must stay whole.
+        if self._show_grid and self._grid_style is not GridStyle.NONE:
+            self._paint_origin_marks(painter, exposed)
         # Over the lattice and under the labels: it is read as structure, and a
         # cell that carries both a number and a line end must not hide either.
         self._paint_line_ends(painter, exposed)
@@ -1406,7 +1639,9 @@ class Canvas(PanZoomSurface, QWidget):
         air, so the float is painted for either; the marquee and pen preview
         belong to pixel editing alone, the drop target to the rearrange, and the
         stamp tool's pair — the held tiles over the hovered cell, the pick drag's
-        rectangle — to that tool's own armed flag.
+        rectangle — to that tool's own armed flag, with the float and the
+        pixel-space drop boxes beside them where the stamp reports pixels
+        (pieces carried over a sprite map, :meth:`set_stamp_in_pixels`).
 
         Gated on the mode rather than trusting the overlays to be ``None`` there:
         undo steps through pixel-mode selections wherever the history is walked,
@@ -1427,14 +1662,19 @@ class Canvas(PanZoomSurface, QWidget):
         """:meth:`_paint_overlays` in physical pixels, ``area`` the exposed band
         — each mark on the art's own edges at any screen scale."""
         ring = self._device_width(1)
-        if self._pick_outline is not None:
+        for outline in self._pick_outline or ():
             paint_selection_outline(
                 painter,
-                self._device_rect(*self._pick_outline.getRect()),
+                self._device_rect(*outline.getRect()),
                 color=GRID_STRUCTURE_COLOR,
                 width=ring,
             )
         if self._stamping:
+            if self._stamp_in_pixels:
+                # Pieces carried over a sprite map: the rearrange drag's pair,
+                # the drop boxes under the float, on the stamp tool's flag.
+                self._paint_drop_rects(painter, area)
+                self._paint_float(painter, ring)
             self._paint_stamp_pick(painter, ring)
             self._paint_stamp_preview(painter, ring)
             return
@@ -1443,13 +1683,8 @@ class Canvas(PanZoomSurface, QWidget):
             return
         if self._rearranging:
             self._paint_drop_target(painter, area)
-        if self._float_image is not None:
-            fx, fy = self._float_pos
-            rect = self._device_rect(
-                fx, fy, self._float_image.width(), self._float_image.height()
-            )
-            painter.drawImage(rect, self._float_image)
-            paint_selection_outline(painter, rect, width=ring)
+            self._paint_drop_rects(painter, area)
+        self._paint_float(painter, ring)
         if not pixel_mode:
             return
         if self._marquee is not None and not self._marquee.isNull():
@@ -1457,6 +1692,55 @@ class Canvas(PanZoomSurface, QWidget):
                 painter, self._device_rect(*self._marquee.getRect()), width=ring
             )
         self._paint_pen_preview(painter, ring)
+
+    def _paint_float(self, painter: QPainter, ring: int) -> None:
+        """The lifted image at its float position, and its outline."""
+        if self._float_image is None:
+            return
+        fx, fy = self._float_pos
+        rect = self._device_rect(
+            fx, fy, self._float_image.width(), self._float_image.height()
+        )
+        painter.drawImage(rect, self._float_image)
+        paint_selection_outline(painter, rect, width=ring)
+
+    def _paint_origin_marks(self, painter: QPainter, exposed: QRect) -> None:
+        """A crosshair at each object origin (:meth:`set_origin_marks`).
+
+        Centred on the origin pixel's top-left **corner**, which is the point an
+        offset of (0, 0) puts a piece's corner on, and sized in screen pixels so
+        it reads the same at every zoom. Filled rects rather than lines: a
+        one-pixel aliased line lands on either side of its path by rounding,
+        and the arms have to cross exactly on the corner.
+        """
+        if not self._origin_marks:
+            return
+        with self._device_pixels(painter):
+            area = self._device_area(exposed)
+            arm = self._device_width(4)
+            width = self._device_width(1)
+            for x, y in self._origin_marks:
+                corner = self._device_rect(x, y, 0, 0)
+                cx, cy = corner.x(), corner.y()
+                horizontal = QRect(cx - arm, cy, 2 * arm + width, width)
+                vertical = QRect(cx, cy - arm, width, 2 * arm + width)
+                if horizontal.intersects(area) or vertical.intersects(area):
+                    painter.fillRect(horizontal, GRID_STRUCTURE_COLOR)
+                    painter.fillRect(vertical, GRID_STRUCTURE_COLOR)
+
+    def _paint_drop_rects(self, painter: QPainter, area: QRect) -> None:
+        """Outline the pixel-space drop boxes (:meth:`set_drop_rects`), in the
+        drop target's band and colours."""
+        if not self._drop_rects:
+            return
+        color = DROP_TARGET_COLOR if self._drop_rects_valid else DROP_REFUSED_COLOR
+        width = self._device_width(DROP_TARGET_WIDTH)
+        painter.setPen(QPen(color, 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        for rect in self._drop_rects:
+            box = self._device_rect(*rect.getRect())
+            if box.intersects(area):
+                _paint_band(painter, box, width)
 
     def _paint_drop_target(self, painter: QPainter, area: QRect) -> None:
         """Outline the cells a rearrange drag would land on (physical pixels,
@@ -1479,14 +1763,8 @@ class Canvas(PanZoomSurface, QWidget):
             tile_x, tile_y = layout.slot_to_pos(slot)
             if 0 <= tile_x < cols and 0 <= tile_y < rows:
                 cell = self._device_cell_rect(tile_x, tile_y, 1, 1)
-                if not cell.intersects(area):
-                    continue
-                # One-pixel rings stacked inward rather than one wide pen: a
-                # wide aliased pen straddles its path by a rounding that differs
-                # between odd and even widths, and the band has to stay inside
-                # the cell it marks.
-                for step in range(width):
-                    painter.drawRect(cell.adjusted(step, step, -1 - step, -1 - step))
+                if cell.intersects(area):
+                    _paint_band(painter, cell, width)
 
     def _paint_pen_preview(self, painter: QPainter, ring: int) -> None:
         """Tint the pixel the pen is aimed at, in the colour it would write.
@@ -1527,15 +1805,19 @@ class Canvas(PanZoomSurface, QWidget):
             or self._stamp_picking
         ):
             return
-        x, y = self._hover_pixel
-        unit_w, unit_h = self._stamp_unit_tiles()
-        cell_w = self._tile_w * unit_w
-        cell_h = self._tile_h * unit_h
+        if self._stamp_preview_at is not None:
+            # Placed by the controller, which alone knows how the landing snaps
+            # — still shown only while the pointer is over the canvas, as the
+            # anchored ghost is.
+            x, y = self._stamp_preview_at
+        else:
+            x, y = self._hover_pixel
+            unit_w, unit_h = self._stamp_unit_tiles()
+            cell_w = self._tile_w * unit_w
+            cell_h = self._tile_h * unit_h
+            x, y = x // cell_w * cell_w, y // cell_h * cell_h
         rect = self._device_rect(
-            x // cell_w * cell_w,
-            y // cell_h * cell_h,
-            self._stamp_preview.width(),
-            self._stamp_preview.height(),
+            x, y, self._stamp_preview.width(), self._stamp_preview.height()
         )
         painter.drawImage(rect, self._stamp_preview)
         _preview_outline(painter, rect, ring)
@@ -1548,8 +1830,24 @@ class Canvas(PanZoomSurface, QWidget):
         Snapped to whole units for the reason the pick itself is — a stamp lays
         whole units (a cell, or a stamped chain's whole stamp), so a rectangle
         cutting one in half would promise a pick the release cannot deliver.
+
+        In pixels where the gestures are (:meth:`set_stamp_in_pixels`): the band
+        a release would report, pixel for pixel, since what it picks are pieces
+        and not units.
         """
-        if not self._stamp_picking or self._stamp_pick_anchor is None:
+        if not self._stamp_picking:
+            return
+        if self._stamp_in_pixels:
+            start, end = self._stamp_pick_from, self._stamp_pick_to
+            if start is None:
+                return
+            end = end or start
+            x0, x1 = min(start[0], end[0]), max(start[0], end[0])
+            y0, y1 = min(start[1], end[1]), max(start[1], end[1])
+            rect = self._device_rect(x0, y0, x1 - x0 + 1, y1 - y0 + 1)
+            paint_selection_outline(painter, rect, width=ring)
+            return
+        if self._stamp_pick_anchor is None:
             return
         swept = self._stamp_pick_slot
         ax, ay = self._stamp_cell_of(self._stamp_pick_anchor)

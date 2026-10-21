@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.2.15 - unreleased
+
+- Sprite maps are editable: move, nudge, retile, flip, resize, add, remove, reorder and duplicate subsprites with the Edit Subsprites tool, the property row and the Subsprites window
+- The subsprite pick can hold several pieces, and each frame's origin is marked on the canvas
+
 ## v1.2.14 - 2026-10-18
 
 - Fixed some sprite and animation issues in OBX/OBZ/SPR

@@ -69,6 +69,20 @@ CANVAS_GESTURES: tuple[tuple[str, str], ...] = (
     ("Lay the picked tile down (Edit Tiles)", "Click or drag"),
     ("Pick the tile a cell names (Edit Tiles)", "Right-click"),
     ("Pick an area of cells as the stamp (Edit Tiles)", "Right-drag"),
+    # The same tool on a sprite map, where it reads as Edit Subsprites. Its
+    # reorder and duplicate keys are not here: they sit on Edit-menu rows, which
+    # the menu walk above already lists.
+    (
+        "Move the picked pieces (Edit Subsprites)",
+        "Drag - Shift locks an axis, Ctrl snaps",
+    ),
+    (
+        "Add the held piece (Edit Subsprites)",
+        "Click on empty sheet - Ctrl places at the pixel",
+    ),
+    ("Pick a piece as the held record (Edit Subsprites)", "Right-click"),
+    ("Select pieces (Edit Subsprites)", "Right-drag"),
+    ("Nudge the picked pieces", "Arrows, Shift+arrows by a tile"),
     # Not the canvas's own, but gestures the whole window answers to, and this
     # is where someone looks for one. The history keys are on the Navigate menu.
     ("Back / forward through visited entries", "Mouse 4 / Mouse 5"),

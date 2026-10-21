@@ -2,7 +2,8 @@
 
 A **sprite map** is a list of records. Each record places a rectangle of tiles
 at a pixel offset. celPix draws the records as one object. A sprite format is
-marked **[S]**. Its cells cannot be edited on the canvas: edit the sheet.
+marked **[S]**. Its pixels are painted through the frames; its records are
+moved, retiled and rearranged with **Edit Subsprites** (`T`).
 
 Start from the project you made in [Getting Started](Getting-Started).
 

@@ -49,6 +49,7 @@ from celpix.core.context import (
     KEY_SOURCE_PATH,
     KEY_SURROUND,
     KEY_SURROUND_START,
+    KEY_TILEMAP_FRAME_SIZES,
     KEY_TILEMAP_PALETTE_ROW_BASE,
     KEY_TILEMAP_SUBSPRITE_TILES,
     KEY_WRITE_PRESET,
@@ -57,9 +58,14 @@ from celpix.core.context import (
 from celpix.core.document import Document
 from celpix.core.errors import Pathway, PipelineError, Stage
 from celpix.core.font import font_alphabet
-from celpix.core.notices import warn
+from celpix.core.notices import KEY_NOTICES, notices, warn
 from celpix.core.palette import Palette
-from celpix.core.sprite import DEFAULT_SUBSPRITE_TILES, Frame, frame_bounds
+from celpix.core.sprite import (
+    DEFAULT_SUBSPRITE_TILES,
+    Frame,
+    SubspriteLimits,
+    frame_bounds,
+)
 from celpix.core.tilemap import (
     LAYOUT_SPRITE,
     LAYOUT_TEXT,
@@ -229,6 +235,8 @@ __all__ = [
     "resized_slot_bytes",
     "save",
     "spliced_palette_bytes",
+    "sprite_frames",
+    "sprite_frames_of",
     "sprite_hit",
     "sprite_hits",
     "sprite_hoist",
@@ -474,6 +482,21 @@ class TilemapData(NamedTuple):
     (:attr:`~celpix.core.document.Document.tilemap_base_bytes`), and has to come
     out of the read that saw the file, because ``data`` has already stopped
     describing it.
+
+    ``limits`` is the codec's declaration of **editability**
+    (:meth:`~celpix.plugins.base.TilemapCodecPlugin.subsprite_limits`): what its
+    records can hold, and so whether a canvas gesture may write one at all. None
+    for a view-only sprite map — a format that stayed quiet — and for every grid
+    map, which has no subsprites to place.
+
+    ``extent`` is how many bytes of ``data`` the decoded cells **cover**: the
+    length of their own encoding, exact by the codec's round-trip guarantee, so
+    everything past it is the tail a decode did not consume — a trailing partial
+    cell, whatever a prefix-decoding codec never reached. The splice a cell edit
+    and a save make keeps ``data[extent:]`` and nothing else
+    (:attr:`~celpix.core.document.Document.tilemap_extent`). A format whose
+    encode cannot take its own cells back falls back to ``len(cells) *
+    cell_bytes``, the fixed-width reading; its save fails and says why anyway.
     """
 
     cells: list[Cell]
@@ -492,6 +515,8 @@ class TilemapData(NamedTuple):
     disk: bytes = b""
     widths: Callable[[list[Cell]], list[int] | None] | None = None
     line_bytes: int = 0
+    limits: SubspriteLimits | None = None
+    extent: int = 0
 
 
 def load_tilemap_data(
@@ -500,6 +525,7 @@ def load_tilemap_data(
     live: bytes | None = None,
     *,
     size_pair: tuple[int, int] | None = None,
+    frame_sizes: tuple[int, ...] | None = None,
 ) -> TilemapData:
     """Run the tilemap pathway forward: Read -> Decompress -> decode to cells.
 
@@ -514,9 +540,19 @@ def load_tilemap_data(
     a read that went to the file would take them back out again. The file is
     still read, because only the container can answer what its header states —
     the width, the cell and stamp sizes, the byte order — and an edit to the
-    cells has not moved any of that. Spliced on the rule the edit itself follows
+    cells has not moved any of that. ``live`` is the document's **whole** buffer
+    and is decoded as it stands, not laid over the file's bytes: it already
+    carries its own tail, spliced at its extent by every edit
     (:meth:`~celpix.ui.main_window.tilemap_edit.TilemapEditMixin._reencode_cells`),
-    so whatever sits past the last cell stays as the file has it.
+    and after an edit that dropped a record the file's bytes past ``len(live)``
+    are that record again, not a tail.
+
+    ``frame_sizes`` goes with ``live`` for a format that counts each frame's
+    records (:data:`~celpix.core.context.KEY_TILEMAP_FRAME_SIZES`): the
+    container re-publishes the counts **the file** holds, and a buffer whose
+    records were added to or removed from a frame has to be framed by the counts
+    the edit left instead. Set after the container's read and before the decode,
+    so the file's answer is the one replaced.
 
     ``size_pair`` is the **entry's** subsprite size pair, the one thing about a
     sprite object that neither its file nor its format knows
@@ -530,7 +566,9 @@ def load_tilemap_data(
     data = _read_reshape_decompress(cfg, ctx, reg, Pathway.TILEMAP)
     disk = data
     if live is not None:
-        data = live + data[len(live) :]
+        data = live
+    if frame_sizes is not None:
+        ctx.set(KEY_TILEMAP_FRAME_SIZES, tuple(frame_sizes))
     engine, preset = reg.engine_for(cfg.interpret_preset_id, TilemapCodecPlugin)
     counts_records = probe(
         engine, "counts_records", preset.params, bool, False, ctx=ctx, plugin=preset.id
@@ -585,6 +623,7 @@ def load_tilemap_data(
         lambda: engine.cell_tiles(preset.params),
         plugin=preset.id,
     )
+    extent = _decoded_extent(engine, preset.params, ctx, cells, cell_bytes)
     # The optional half of the protocol, and the only one an engine may lack: a
     # format whose cells are subsprites groups them into frames itself, because
     # what they *mean* — which frame, at what offset, how big — is the same
@@ -594,6 +633,7 @@ def load_tilemap_data(
     # counts between its records, so the container is the only thing that can have
     # read them (:data:`~celpix.core.context.KEY_TILEMAP_FRAME_SIZES`).
     frames = None
+    limits = None
     pair = DEFAULT_SUBSPRITE_TILES
     if hasattr(engine, "frames"):
         # Settled **before** the frames are built, because that is what builds
@@ -620,24 +660,22 @@ def load_tilemap_data(
             if size_pair is not None and min(size_pair) >= 1:
                 pair = (int(size_pair[0]), int(size_pair[1]))
             ctx.set(KEY_TILEMAP_SUBSPRITE_TILES, pair)
-        frames = run_stage(
-            Stage.INTERPRET_TILEMAP,
-            Pathway.TILEMAP,
-            lambda: engine.frames(cells, preset.params, ctx),
-            plugin=preset.id,
-        )
-        # Bounded here as well as at the allocation itself, because *this* is the
-        # call the UI can take back: a read that fails leaves the binding on what
-        # it was and says why, where a render that fails has already replaced the
-        # document it was drawing (``docs/design/sprite-map.md`` §2). The box
-        # is measured over nominal 8px tiles — the real ones come from whatever
-        # entry the map is bound to, and are not known until the document exists —
-        # which is close enough for a limit the offsets, not the tiles, blow past.
-        box = frame_bounds(frames)
-        check_sprite_extent(
-            len(frames) * box[2] * box[3],
-            f"{len(frames)} frames of subsprites, {box[2]}x{box[3]} pixels each",
-        )
+        frames = sprite_frames_of(cells, cfg.interpret_preset_id, reg, ctx)
+        # The inverse is asked only of a codec that has one: absence is the
+        # documented view-only answer, and a probe that faults reads the same
+        # way, with a notice, rather than costing the picture. Asked through a
+        # shim because ``probe`` hands over ``params`` alone and this answer is
+        # partly the file's — a slot stride the container stated.
+        if hasattr(engine, "subsprite_limits"):
+            limits = probe(
+                _AskedWith(engine, ctx),
+                "subsprite_limits",
+                preset.params,
+                _subsprite_limits,
+                None,
+                ctx=ctx,
+                plugin=preset.id,
+            )
     # The optional metadata methods, all asked the same way and for one reason:
     # each has a documented answer for a format that does not implement it, so a
     # format that cannot answer is read as one that stayed quiet rather than
@@ -725,7 +763,115 @@ def load_tilemap_data(
             ctx=ctx,
             plugin=preset.id,
         ),
+        limits,
+        extent,
     )
+
+
+def sprite_frames_of(
+    cells: list[Cell], preset_id: str, reg: Registry, ctx: PipelineContext
+) -> list[Frame]:
+    """``cells`` grouped into frames by their sprite codec, bounded; raises
+    :class:`PipelineError` for frames past the sheet limit.
+
+    The one place frames are built, for the load and for every cell edit alike:
+    a sprite map's picture is a function of its cells, so an edit that changed
+    them has to re-run exactly this, and running the same check is what refuses
+    an offset the sheet cannot hold **where it is typed** rather than at the next
+    load (``docs/design/sprite-map.md`` §8.2). ``ctx`` is the document's own,
+    where the size pair and a counted format's frame sizes are already
+    published — this reads them and settles neither.
+    """
+    engine, preset = reg.engine_for(preset_id, TilemapCodecPlugin)
+    frames = run_stage(
+        Stage.INTERPRET_TILEMAP,
+        Pathway.TILEMAP,
+        lambda: engine.frames(cells, preset.params, ctx),
+        plugin=preset.id,
+    )
+    # Bounded here as well as at the allocation itself, because *this* is the
+    # call the UI can take back: a read that fails leaves the binding on what
+    # it was and says why, and an edit that fails is never pushed, where a render
+    # that fails has already replaced the document it was drawing
+    # (``docs/design/sprite-map.md`` §2). The box is measured over nominal 8px
+    # tiles — the real ones come from whatever entry the map is bound to, and are
+    # not known until the document exists — which is close enough for a limit
+    # the offsets, not the tiles, blow past.
+    box = frame_bounds(frames)
+    check_sprite_extent(
+        len(frames) * box[2] * box[3],
+        f"{len(frames)} frames of subsprites, {box[2]}x{box[3]} pixels each",
+    )
+    return frames
+
+
+def sprite_frames(doc: Document, reg: Registry) -> list[Frame]:
+    """A sprite document's frames rebuilt from the cells it holds now
+    (:func:`sprite_frames_of`); raises :class:`PipelineError`.
+
+    A notice the codec leaves while framing is kept only when it is **new**:
+    this runs on every committed edit, undo and redo, and a codec's standing
+    observation about the data (md-sprite's mirror check) would otherwise be
+    appended to the document's context once per step. A notice the edit has
+    made true for the first time still lands.
+    """
+    assert doc.cells is not None and doc.tilemap_config is not None
+    ctx = doc.tilemap_ctx
+    said = notices(ctx)
+    frames = sprite_frames_of(
+        doc.cells, doc.tilemap_config.interpret_preset_id, reg, ctx
+    )
+    added = notices(ctx)[len(said) :]
+    fresh = tuple(notice for notice in added if notice not in said)
+    if len(fresh) != len(added):
+        ctx.set(KEY_NOTICES, (*said, *fresh))
+    return frames
+
+
+class _AskedWith:
+    """An engine's ``subsprite_limits`` with the context bound, for :func:`probe`.
+
+    ``probe`` asks every optional method with ``params`` alone, which is the
+    whole surface of every other one; this one is also answered from the file.
+    """
+
+    def __init__(self, engine: TilemapCodecPlugin, ctx: PipelineContext) -> None:
+        self._engine, self._ctx = engine, ctx
+
+    def subsprite_limits(self, params: dict) -> object:
+        return self._engine.subsprite_limits(params, self._ctx)
+
+
+def _subsprite_limits(answer: object) -> SubspriteLimits:
+    """The answer itself, refused unless it is a :class:`SubspriteLimits` — a
+    codec that returned anything else has declared nothing the host can read,
+    and the record ops would fault on it at the first gesture instead."""
+    if not isinstance(answer, SubspriteLimits):
+        raise TypeError(f"expected SubspriteLimits, got {type(answer).__name__}")
+    return answer
+
+
+def _decoded_extent(
+    engine: TilemapCodecPlugin,
+    params: dict,
+    ctx: PipelineContext,
+    cells: list[Cell],
+    cell_bytes: int,
+) -> int:
+    """How many bytes ``cells`` were decoded from (:attr:`TilemapData.extent`).
+
+    Measured by encoding them rather than counted, because a count is only right
+    for a fixed-width run: a frame header, a count byte or a mixed-width letter
+    is a byte the cells hold that ``cell_bytes`` does not. Over a copy of the
+    context, so the measure publishes nothing the document then carries — a
+    count format's encode states its sizes, a codec may leave a notice. A codec
+    that cannot encode its own cells is read the fixed-width way instead; its
+    save asks again and reports.
+    """
+    try:
+        return len(engine.encode(cells, params, ctx.copy()))
+    except Exception:  # noqa: BLE001 — a measure must not fail the load
+        return len(cells) * cell_bytes
 
 
 def _check_declarations(
@@ -1410,28 +1556,40 @@ def _save_tilemap(doc: Document, reg: Registry) -> bool:
     cfg = doc.tilemap_config
     if cfg is None or not cfg.write_enabled:
         return False
-    data = _tilemap_region(doc, cfg, reg)
+    encoded = _encoded_cells(doc, cfg, reg)
+    data = doc.spliced_cells(encoded)
     _compress_unshape_write(cfg, data, doc.tilemap_ctx, reg, Pathway.TILEMAP)
-    # As :func:`_save_pixel`: the bytes just written are the file's.
+    # As :func:`_save_pixel`: the bytes just written are the file's — and the
+    # cells now cover exactly what was just encoded of them.
     doc.tilemap_data = doc.tilemap_base_bytes = data
+    doc.tilemap_extent = len(encoded)
     return True
 
 
 def _tilemap_region(doc: Document, cfg: PathwayConfig, reg: Registry) -> bytes:
-    """The map's region as a save writes it: the cells encoded, over the tail
-    of the buffer they were read from that no cell covers.
+    """The map's region as a save writes it: the cells encoded, followed by the
+    tail of the buffer that lies past the cells' **extent**.
 
     The tail is what a decode dropped — a trailing partial cell, whatever a
     prefix-decoding codec never reached — and the read handed it over as part of
     the region, so the write hands it back. Cut, a whole-file map loses its last
     bytes, a compressed one packs a shorter stream than it unpacked, and under a
     reshape the region is permuted at a different length, which moves every
-    byte. The same splice an edit makes (``TilemapEditMixin._reencode_cells``).
+    byte. It starts at the extent the cells were decoded from and every edit has
+    moved since (:attr:`~celpix.core.document.Document.tilemap_extent`), not at
+    the new encoding's length: once an edit removes a record the two differ, and
+    the bytes between them are that record, which a save must not put back.
+    The same splice an edit makes (``TilemapEditMixin._reencode_cells``).
     """
-    data = encode_cells(
+    return doc.spliced_cells(_encoded_cells(doc, cfg, reg))
+
+
+def _encoded_cells(doc: Document, cfg: PathwayConfig, reg: Registry) -> bytes:
+    """The cells a save writes, encoded: the settled list
+    (:attr:`~celpix.core.document.Document.settled_cells`)."""
+    return encode_cells(
         doc.settled_cells, cfg.interpret_preset_id, reg, doc.tilemap_ctx
     )
-    return data + doc.tilemap_data[len(data) :]
 
 
 def encoded_tilemap_bytes(doc: Document, reg: Registry) -> bytes:

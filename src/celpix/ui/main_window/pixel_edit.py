@@ -1200,8 +1200,9 @@ class PixelEditMixin(_Host):
         """
         stroke = self._stroke_active
         stamp = self._abort_stamp_stroke()
+        pieces = self._abort_subsprite_drag()
         marquee = self._marquee_gesture
-        if not (stroke or stamp or marquee):
+        if not (stroke or stamp or pieces or marquee):
             return
         self._canvas.cancel_drag()
         self._clear_stroke()

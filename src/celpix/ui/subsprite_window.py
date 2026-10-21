@@ -23,13 +23,17 @@ its panel, here between this window and :mod:`celpix.ui.subsprite_panel`.
 
 **Presentation only.** It is handed a composed sheet, the records it covers and
 the one the canvas picked; it never reads the model
-(:mod:`celpix.ui.main_window.subsprites`).
+(:mod:`celpix.ui.main_window.subsprites`). A click and a drag on a square are
+forwarded as the panel reports them (:attr:`SubspriteWindow.square_clicked`,
+:attr:`SubspriteWindow.square_dragged`), for the window side to answer — and so
+is the one setting that changes what a click means, *Select all occurrences*,
+which the inventory reading offers on the sheet's context menu.
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QImage
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QAction, QImage
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
@@ -68,10 +72,32 @@ DEFAULT_COLUMNS = 8
 class SubspriteWindow(ToolWindow):
     """Floating sheet of one sprite map's subsprite records."""
 
+    # The panel's two reports, forwarded (:class:`~celpix.ui.subsprite_panel.
+    # SubspritePanel`): (frame, subsprite, Qt.KeyboardModifiers) for a press on
+    # a square, (from, to) records for a drag released over another.
+    square_clicked = Signal(int, int, object)
+    square_dragged = Signal(object, object)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent, "Subsprites", "layout/subsprite-window", (420, 480))
 
         self._panel = SubspritePanel()
+        self._panel.square_clicked.connect(self.square_clicked)
+        self._panel.square_dragged.connect(self.square_dragged)
+        # Under the inventory a square stands for every record drawing that
+        # piece, and this turns a click on it into a pick of all of them — one
+        # piece's row or flip corrected in every frame at once. Checkable
+        # rather than a modifier: a click already spends Ctrl and Shift on the
+        # list's toggle and span.
+        self._all_occurrences = QAction("Select All Occurrences", self)
+        self._all_occurrences.setCheckable(True)
+        self._all_occurrences.setEnabled(False)
+        self._all_occurrences.setToolTip(
+            "A click picks every record drawing that piece\n"
+            "Offered with Frames off, where a square is several"
+        )
+        self._panel.addAction(self._all_occurrences)
+        self._panel.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
         self._columns = QSpinBox()
         self._columns.setRange(*COLUMN_RANGE)
         self._columns.setValue(DEFAULT_COLUMNS)
@@ -149,6 +175,11 @@ class SubspriteWindow(ToolWindow):
         """Whether the next sheet is the file's listing or its inventory."""
         return self._frames.isChecked()
 
+    def all_occurrences(self) -> bool:
+        """Whether a click on an inventory square picks every record drawing
+        it — never under the listing, where a square is one record."""
+        return not self.by_frame() and self._all_occurrences.isChecked()
+
     def records(self) -> list[Record]:
         """The records the sheet on show holds, one per square.
 
@@ -171,6 +202,7 @@ class SubspriteWindow(ToolWindow):
         # to turn on — and a tick that does nothing is worse than one that is
         # visibly not this mode's.
         self._numbers.setEnabled(on)
+        self._all_occurrences.setEnabled(not on)
         self._apply_captions()
         self.refresh_requested.emit()
 

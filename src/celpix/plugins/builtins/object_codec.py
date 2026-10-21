@@ -42,6 +42,8 @@ is stated once, here, rather than split between a preset table and a resolver.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import replace
 from typing import Literal
 
 from celpix.core.context import (
@@ -51,9 +53,16 @@ from celpix.core.context import (
     KEY_TILEMAP_SUBSPRITES_PER_FRAME,
     PipelineContext,
 )
-from celpix.core.sprite import DEFAULT_SUBSPRITE_TILES, Frame, Subsprite
-from celpix.core.tilemap import Cell
+from celpix.core.sprite import (
+    DEFAULT_SUBSPRITE_TILES,
+    Frame,
+    SizeChoice,
+    Subsprite,
+    SubspriteLimits,
+)
+from celpix.core.tilemap import Cell, CellOp
 from celpix.plugins._params import byte_order
+from celpix.plugins.builtins._cell_answers import mirror
 from celpix.plugins.formats import FormatInfo
 
 OBJECT_FORMAT = "format.tilemap.scgcad-object"
@@ -176,6 +185,17 @@ class _SubspriteCodec:
     per_frame = SUBSPRITES_PER_FRAME
     tile_pair = DEFAULT_SUBSPRITE_TILES
 
+    #: Where the record fields with no :class:`Cell` attribute sit in ``flags``,
+    #: for :meth:`place_subsprite` — the inverse of each ``_subsprite``. The
+    #: offsets are two's-complement fields ``_offset_bits`` wide; ``_drawn_bit``
+    #: is None for a format with no drawn bit. Stated per subclass beside the
+    #: layout comment that justifies them.
+    _x_shift: int
+    _y_shift: int
+    _offset_bits: int
+    _large_bit: int
+    _drawn_bit: int | None
+
     def bytes_per_cell(self) -> int:
         return RECORD
 
@@ -217,14 +237,106 @@ class _SubspriteCodec:
         return [
             tuple(
                 sub
-                for cell in cells[at : at + per_frame]
-                if (sub := self._subsprite(cell, pair)) is not None
+                for j, cell in enumerate(cells[at : at + per_frame])
+                if (sub := self._subsprite(cell, pair, at + j)) is not None
             )
             for at in range(0, len(cells), per_frame)
         ]
 
+    def subsprite_limits(self, ctx: PipelineContext) -> SubspriteLimits:
+        """Slots: a fixed stride per frame, a drawn bit, signed-byte offsets.
+
+        ``frames`` is left None because the stride is the file's and not this
+        format's: the same payload is 32 frames of 64 or 64 of 128
+        (:func:`subsprites_per_frame`), so the count is ``len(cells) //
+        per_frame`` under whichever stride the container stated.
+        """
+        reach = self._offset_range()
+        return SubspriteLimits(
+            structure="slots",
+            x_range=reach,
+            y_range=reach,
+            size=("small", "large"),
+            per_frame=subsprites_per_frame(self.per_frame, ctx),
+            frames=None,
+        )
+
+    def place_subsprite(
+        self,
+        cell: Cell,
+        ctx: PipelineContext,
+        *,
+        x: int | None = None,
+        y: int | None = None,
+        size: SizeChoice | None = None,
+        drawn: bool | None = None,
+    ) -> Cell:
+        """``cell`` with the named fields written into ``flags``, nothing else.
+
+        Every other bit of ``flags`` is kept verbatim — the group byte, the
+        transfer record's byte-0 spares, the pattern record's attribute bit 0 —
+        because those are bits nothing documents, and keeping them is the one
+        policy that cannot be wrong about them. All values are checked before
+        any is written, so a refusal leaves no half-placed cell behind.
+        """
+        reach = self._offset_range()
+        for value in (x, y):
+            if value is not None and value not in reach:
+                raise ValueError(
+                    f"an offset of {value} does not fit; offsets here run "
+                    f"{reach.start}..{reach.stop - 1}"
+                )
+        large = _large(size)
+        flags = cell.flags
+        if x is not None:
+            flags = _put(flags, self._x_shift, self._offset_bits, x)
+        if y is not None:
+            flags = _put(flags, self._y_shift, self._offset_bits, y)
+        if large is not None:
+            flags = _put(flags, self._large_bit, 1, int(large))
+        # A format with no drawn bit draws every record it holds, so there is
+        # nothing for ``drawn`` to write and the contract has it ignored.
+        if drawn is not None and self._drawn_bit is not None:
+            flags = _put(flags, self._drawn_bit, 1, int(drawn))
+        return cell if flags == cell.flags else replace(cell, flags=flags)
+
+    def palette_row_limit(self) -> int:
+        """The attribute bits' 3-bit palette row, in all three records."""
+        return 0x7
+
+    def cell_fields(self) -> dict[str, int]:
+        """Every Cell field these records store, each at its full width.
+
+        Declared outright rather than assembled from the other probes because
+        an **add** depends on it: a new piece is the held record laid whole
+        into a free slot, and the host fits every field the format has not
+        declared to the cell already at that position — which under ``slots``
+        is the residue of whatever sat there last. A row or a priority left
+        undeclared would then come from the residue instead of the template.
+        """
+        return {
+            "index": self.index_limit() or 0,
+            "palette_row": self.palette_row_limit(),
+            "priority": 0x3,
+            "flip_h": 1,
+            "flip_v": 1,
+        }
+
+    def transform_cell(self, cell: Cell, op: CellOp) -> Cell | None:
+        """Both mirrors, and no turn — the attribute bits have no rotation bit.
+
+        A piece mirrors in place: its offset is where the piece sits, not where
+        its mirror image would, so flipping one leaves the frame's layout as
+        the file wrote it.
+        """
+        return mirror(cell, op)
+
+    def _offset_range(self) -> range:
+        half = 1 << (self._offset_bits - 1)
+        return range(-half, half)
+
     @staticmethod
-    def _subsprite(cell: Cell, pair: tuple[int, int]) -> Subsprite | None:
+    def _subsprite(cell: Cell, pair: tuple[int, int], record: int) -> Subsprite | None:
         raise NotImplementedError
 
     @staticmethod
@@ -245,6 +357,13 @@ class ObjectCodec(_SubspriteCodec):
     #: build that stores the attribute word the other way round, and the
     #: container reads that out of the file's own build marker (:func:`_endian`).
     endian = "big"
+
+    # ``flags`` is bytes 0-3 big-endian: byte 0 at >>24, then group, Y, X.
+    _x_shift = 0
+    _y_shift = 8
+    _offset_bits = 8
+    _large_bit = 24  # byte 0 bit 0
+    _drawn_bit = 31  # byte 0 bit 7
 
     def decode(self, data: bytes, ctx: PipelineContext) -> list[Cell]:
         order = _endian(self.endian, ctx)
@@ -279,8 +398,12 @@ class ObjectCodec(_SubspriteCodec):
             out += attr.to_bytes(2, order)
         return bytes(out)
 
+    def index_limit(self) -> int | None:
+        """The console attribute word's 9-bit tile number."""
+        return 0x1FF
+
     @staticmethod
-    def _subsprite(cell: Cell, pair: tuple[int, int]) -> Subsprite | None:
+    def _subsprite(cell: Cell, pair: tuple[int, int], record: int) -> Subsprite | None:
         """One decoded subsprite, or None when this slot says it is not drawn."""
         flags = cell.flags
         if not (flags >> 24) & _DRAWN:
@@ -297,6 +420,7 @@ class ObjectCodec(_SubspriteCodec):
             across=side,
             down=side,
             group=(flags >> 16) & 0xFF,
+            record=record,
         )
 
 
@@ -348,6 +472,12 @@ class ObzCodec(_SubspriteCodec):
         declares=_SPRITE_DECLARES,
     )
 
+    _x_shift = _OBZ_X
+    _y_shift = _OBZ_Y
+    _offset_bits = 8
+    _large_bit = _OBZ_LARGE
+    _drawn_bit = _OBZ_DRAWN
+
     def decode(self, data: bytes, ctx: PipelineContext) -> list[Cell]:
         cells: list[Cell] = []
         for at in range(0, len(data) - RECORD + 1, RECORD):
@@ -378,8 +508,12 @@ class ObzCodec(_SubspriteCodec):
             out += word.to_bytes(RECORD, "big")
         return bytes(out)
 
+    def index_limit(self) -> int | None:
+        """The record's 12-bit tile number, wider than a console sprite's 9."""
+        return 0xFFF
+
     @staticmethod
-    def _subsprite(cell: Cell, pair: tuple[int, int]) -> Subsprite | None:
+    def _subsprite(cell: Cell, pair: tuple[int, int], record: int) -> Subsprite | None:
         flags = cell.flags
         if not (flags >> _OBZ_DRAWN) & 1:
             return None
@@ -395,6 +529,7 @@ class ObzCodec(_SubspriteCodec):
             across=side,
             down=side,
             group=flags & 0xFF,
+            record=record,
         )
 
 
@@ -427,6 +562,17 @@ _SPR_LARGE = 1  # the size byte is `size << 1`, so the bit is one up
 # reader that recomputes it corrupts every one of them
 # (``docs/graphics-formats-reference/ys-sprite-patterns.md`` §3).
 _SPR_MODELLED = (0xFFFF << _SPR_INDEX) | (0x7 << _SPR_PALETTE) | (0xF << _SPR_PRIORITY)
+_SPR_WORD = (1 << (8 * SPR_RECORD)) - 1  # the record itself, in `flags`
+# Above the record: which frame the cell belongs to, stored **plus one** so that
+# 0 means "membership unknown" — the cells of bytes that reached this format
+# through some other container, which counted nothing. The frame boundaries are
+# file structure the container takes out (:class:`SprCodec`), and kept only on
+# the context they could not follow a cell an edit moved, nor be restored by an
+# undo that snapshots the cells alone; stamped on the cells they travel with
+# them (``docs/design/sprite-map.md`` §9.3). Never written: :meth:`encode`
+# masks to the record.
+_SPR_FRAME_SHIFT = 64
+SPR_FRAMES = 32  # every pattern file has exactly this many, empty ones included
 
 
 class SprCodec(_SubspriteCodec):
@@ -453,13 +599,31 @@ class SprCodec(_SubspriteCodec):
         declares=_SPRITE_DECLARES,
     )
 
+    _x_shift = _SPR_X
+    _y_shift = _SPR_Y
+    _offset_bits = 16
+    _large_bit = _SPR_LARGE
+    _drawn_bit = None  # a record that is present is drawn
+
     def bytes_per_cell(self) -> int:
         return SPR_RECORD
 
     def decode(self, data: bytes, ctx: PipelineContext) -> list[Cell]:
+        """The records as cells, each stamped with its frame where sizes say.
+
+        The stamp is what lets the frames survive an edit that moves a cell
+        between them (:data:`_SPR_FRAME_SHIFT`); without published sizes there
+        is nothing to stamp and the cells stay "membership unknown".
+        """
+        count = len(data) // SPR_RECORD
+        sizes = ctx.get(KEY_TILEMAP_FRAME_SIZES)
+        member = _membership_from_sizes(sizes, count) if sizes else None
         cells: list[Cell] = []
-        for at in range(0, len(data) - SPR_RECORD + 1, SPR_RECORD):
+        for at in range(0, count * SPR_RECORD, SPR_RECORD):
             word = int.from_bytes(data[at : at + SPR_RECORD], "big")
+            flags = word & ~_SPR_MODELLED
+            if member is not None:
+                flags = _stamp_frame(flags, member[at // SPR_RECORD])
             cells.append(
                 Cell(
                     index=(word >> _SPR_INDEX) & 0xFFFF,
@@ -467,16 +631,33 @@ class SprCodec(_SubspriteCodec):
                     priority=(word >> _SPR_PRIORITY) & 0x3,
                     flip_h=bool((word >> _SPR_FLIP_H) & 1),
                     flip_v=bool((word >> _SPR_FLIP_V) & 1),
-                    flags=word & ~_SPR_MODELLED,
+                    flags=flags,
                 )
             )
         return cells
 
     def encode(self, cells: list[Cell], ctx: PipelineContext) -> bytes:
+        """The records, and — as a side effect — the frame sizes they spell.
+
+        The sizes are republished onto ``ctx`` because the container's write
+        reads them from there, not from these bytes (a count byte is not in
+        them), and this ``ctx`` is the document's own ``tilemap_ctx``. Left as
+        the read published them, a save after an edit that moved a cell to
+        another frame would cut the file at the *old* boundaries. Only when
+        every cell carries its frame: a partial stamp is not a statement.
+
+        The cells must be in frame order, which is the file's order —
+        :meth:`decode` and :meth:`assign_frames` both leave them so.
+        """
+        members = _memberships(cells)
+        if members is not None:
+            ctx.set(KEY_TILEMAP_FRAME_SIZES, _sizes_of(members))
         out = bytearray()
         for cell in cells:
             word = (
-                (cell.flags & ~_SPR_MODELLED)
+                # Masked to the record: the frame stamp above it is ours, not the
+                # file's, and would overflow the eight bytes besides.
+                (cell.flags & _SPR_WORD & ~_SPR_MODELLED)
                 | ((cell.index & 0xFFFF) << _SPR_INDEX)
                 | ((cell.palette_row & 0x7) << _SPR_PALETTE)
                 | ((cell.priority & 0x3) << _SPR_PRIORITY)
@@ -490,12 +671,67 @@ class SprCodec(_SubspriteCodec):
         """The tile number's own width — two whole bytes of it."""
         return 0xFFFF
 
+    def subsprite_limits(self, ctx: PipelineContext) -> SubspriteLimits:
+        """Counted: 32 frames, each a count byte's worth, signed-word offsets."""
+        reach = self._offset_range()
+        return SubspriteLimits(
+            structure="counted",
+            x_range=reach,
+            y_range=reach,
+            size=("small", "large"),
+            per_frame=0xFF,
+            frames=SPR_FRAMES,
+        )
+
+    def assign_frames(
+        self, cells: list[Cell], frames: Sequence[int], ctx: PipelineContext
+    ) -> list[Cell]:
+        """``cells`` restamped so cell *i* is in ``frames[i]``, in frame order.
+
+        Sorted **stably** by frame because the file is in frame order — a frame
+        is a count followed by that many records — while the order within a
+        frame is draw order and is the caller's. The sizes are republished for
+        the reason :meth:`encode` gives, and a frame nobody names is published
+        as a count of 0, which is an ordinary empty frame here.
+
+        Refused rather than clamped: a frame outside the 32 the file has, and a
+        frame over what its count byte holds — the container would refuse the
+        latter at save, which is too late to say which edit did it.
+        """
+        if len(frames) != len(cells):
+            raise ValueError(f"{len(frames)} frame numbers for {len(cells)} subsprites")
+        for frame in frames:
+            if not 0 <= frame < SPR_FRAMES:
+                raise ValueError(
+                    f"frame {frame} does not exist; frames here run 0..{SPR_FRAMES - 1}"
+                )
+        order = sorted(range(len(cells)), key=lambda i: frames[i])
+        sizes = _sizes_of([frames[i] for i in order])
+        for frame, size in enumerate(sizes):
+            if size > 0xFF:
+                raise ValueError(
+                    f"frame {frame} would hold {size} subsprites; its count is "
+                    "one byte, so a frame holds at most 255"
+                )
+        ctx.set(KEY_TILEMAP_FRAME_SIZES, sizes)
+        return [
+            replace(cells[i], flags=_stamp_frame(cells[i].flags, frames[i]))
+            for i in order
+        ]
+
     def frames(self, cells: list[Cell], ctx: PipelineContext) -> list[Frame]:
         """The cells cut into frames at the boundaries the file counted.
 
         The counts are the file's, so a frame here is however many subsprites the
         artist put in it — there are no empty slots to drop, which is why nothing
         below tests a drawn bit.
+
+        **The cells' own frame stamps win over the context's sizes.** A re-read
+        republishes the sizes from the file while live cells may have moved
+        between frames, so the stamp is the newer statement
+        (``docs/design/sprite-map.md`` §9.3). Grouped into exactly the
+        file's 32 frames, an unnamed one empty; a stamp past them extends the
+        list rather than being dropped, so no record goes undrawn.
 
         **Falls back to fixed slots when nothing published counts**, which happens
         when this format is chosen by hand for bytes that came through another
@@ -504,21 +740,32 @@ class SprCodec(_SubspriteCodec):
         A short count list stops early and a long one runs out of cells, both
         without raising: a truncated file should draw the frames it has.
         """
+        pair = subsprite_tiles(self.tile_pair, ctx)
+        members = _memberships(cells)
+        if members is not None:
+            grouped: list[list[Subsprite]] = [
+                [] for _ in range(max(SPR_FRAMES, max(members) + 1))
+            ]
+            for record, (cell, frame) in enumerate(zip(cells, members, strict=True)):
+                grouped[frame].append(self._subsprite(cell, pair, record))
+            return [tuple(frame) for frame in grouped]
         sizes = ctx.get(KEY_TILEMAP_FRAME_SIZES)
         if not sizes:
             return super().frames(cells, ctx)
-        pair = subsprite_tiles(self.tile_pair, ctx)
         out: list[Frame] = []
         at = 0
         for size in sizes:
             out.append(
-                tuple(self._subsprite(cell, pair) for cell in cells[at : at + size])
+                tuple(
+                    self._subsprite(cell, pair, at + j)
+                    for j, cell in enumerate(cells[at : at + size])
+                )
             )
             at += size
         return out
 
     @staticmethod
-    def _subsprite(cell: Cell, pair: tuple[int, int]) -> Subsprite:
+    def _subsprite(cell: Cell, pair: tuple[int, int], record: int) -> Subsprite:
         """One decoded subsprite — always one: the format has no undrawn slot.
 
         No group byte either, so that field of the model stays 0 rather than
@@ -536,7 +783,70 @@ class SprCodec(_SubspriteCodec):
             flip_v=cell.flip_v,
             across=side,
             down=side,
+            record=record,
         )
+
+
+def _membership_from_sizes(sizes: Sequence[int], count: int) -> list[int]:
+    """The frame each of ``count`` records falls in, cut where ``sizes`` cut.
+
+    Records past what the sizes account for join the last frame, as the
+    container's write files them (:meth:`~.ys_spr.SprContainer.write`), so a
+    stamp never disagrees with where a save would put the record.
+    """
+    out: list[int] = []
+    for frame, size in enumerate(sizes):
+        out += [frame] * max(0, int(size))
+    del out[count:]
+    out += [max(len(sizes), SPR_FRAMES) - 1] * (count - len(out))
+    return out
+
+
+def _stamp_frame(flags: int, frame: int) -> int:
+    return (flags & _SPR_WORD) | ((frame + 1) << _SPR_FRAME_SHIFT)
+
+
+def _memberships(cells: list[Cell]) -> list[int] | None:
+    """Each cell's frame, or None unless **every** cell carries one.
+
+    None for no cells as well: an empty list states no frames, and the
+    context's sizes — which the container's write clamps to the records there
+    are — are then the better answer.
+    """
+    members = [(cell.flags >> _SPR_FRAME_SHIFT) - 1 for cell in cells]
+    if not members or min(members) < 0:
+        return None
+    return members
+
+
+def _sizes_of(members: Sequence[int]) -> tuple[int, ...]:
+    """The frame sizes ``members`` spell: at least the file's 32, gaps as 0."""
+    counts = [0] * max(SPR_FRAMES, max(members, default=-1) + 1)
+    for frame in members:
+        counts[frame] += 1
+    return tuple(counts)
+
+
+def _large(size: SizeChoice | None) -> bool | None:
+    """A size choice as the size bit it writes; None leaves the bit alone."""
+    if size is None:
+        return None
+    if size == "small" or size == "large":
+        return size == "large"
+    raise ValueError(
+        f"size {size!r} is not one this record holds; it has a size bit, "
+        "so the choices are small and large"
+    )
+
+
+def _put(flags: int, shift: int, width: int, value: int) -> int:
+    """``flags`` with the ``width``-bit field at ``shift`` set to ``value``.
+
+    ``value`` may be negative: masking to the width is its two's complement,
+    which is how the records store a signed offset.
+    """
+    mask = (1 << width) - 1
+    return (flags & ~(mask << shift)) | ((value & mask) << shift)
 
 
 def _signed(value: int) -> int:

@@ -156,6 +156,10 @@ class SelectionMixin(_Host):
         # reads the menu bar. Hidden off a tilemap rather than greyed - a mode
         # for placing cells is not a feature switched off on a pixel document.
         menu.addAction(self._toggle_stamp_action)
+        # The rows the same tool grows on a sprite map - reorder, duplicate,
+        # mirror about the origin - listed here so the F1 guide documents their
+        # keys by the menu walk (:mod:`~celpix.ui.main_window.sprite_edit`).
+        self._build_subsprite_actions(menu)
         # Enabled state depends on the clipboard's contents, which any other
         # program can change while we sit idle - so track the signal rather than
         # only recomputing when the menu opens.
@@ -370,42 +374,62 @@ class SelectionMixin(_Host):
         # thing in each mode and has to be asked of the mode rather than of the
         # document alone.
         #
-        # Tile mode blanks *cells*, and a tilemap whose cells are not what is on
-        # screen has none to blank: a sprite object's are subsprites placed at
-        # signed pixel offsets, so there is none under the cursor
-        # (``Document.cells_editable``).
+        # Tile mode blanks *cells*, and a sprite map whose codec declared no
+        # record it can write has none to blank (``Document.cells_editable``).
         #
-        # Pixel mode blanks *pixels*, and that same object has them — its pieces
-        # draw a bank's tiles exactly as a grid map's cells do
-        # (``docs/design/sprite-map.md`` §7), which is the question
-        # :meth:`_pixel_edit_available` already answers for the brush. Asking the
-        # cells here offered the brush and refused to take back what it laid down.
+        # Pixel mode blanks *pixels*, and a sprite map has them whether or not
+        # its records are writable — its pieces draw a bank's tiles exactly as a
+        # grid map's cells do (``docs/design/sprite-map.md`` §7), which is the
+        # question :meth:`_pixel_edit_available` already answers for the brush.
+        # Asking the cells here offered the brush and refused to take back what
+        # it laid down.
         editable = (
             self._pixel_edit_available()
             if self._edit_mode is EditMode.PIXEL
             else not (has_doc and self._doc.is_tilemap) or self._doc.cells_editable
         )
-        for action in (self._cut_action, self._clear_action):
-            action.setEnabled(has_doc and target is not None and editable)
-        # Copy is not one of them, because it is a **read**: every kind on screen
-        # has something well-defined to lift, and where the cells are not it, the
-        # picture is - a sprite object copies the pixels of its sheet
-        # (:meth:`~...tilemap_edit.TilemapEditMixin._copy_sprite_pixels`).
-        self._copy_action.setEnabled(has_doc and target is not None)
-        # A tilemap pastes *cells* from its own in-app buffer, so the system
-        # clipboard's contents say nothing about whether a paste here would do
-        # anything — but only in tile mode. In pixel mode the same map pastes
-        # pixels through :meth:`~...pixel_edit.PixelEditMixin._pixel_paste`, which
-        # reads the system clipboard exactly as a pixel document's paste does, so
-        # asking the cell buffer there greys out the only paste on offer.
-        cells = (
-            has_doc and self._doc.is_tilemap and self._edit_mode is not EditMode.PIXEL
+        sprite = (
+            has_doc and self._doc.is_sprite and self._edit_mode is not EditMode.PIXEL
         )
-        self._paste_action.setEnabled(
-            has_doc
-            and editable
-            and (self._has_cell_clipboard() if cells else clipboard.has_content())
-        )
+        if sprite:
+            # A sprite map in tile mode has two selections and the verbs split
+            # between them (``docs/design/sprite-map.md`` §10.1). Outside Edit
+            # Subsprites the white tile selection is squares of the drawn sheet:
+            # Copy lifts their pixels, and Cut, Clear and Paste have no record
+            # to write, so they wait for the tool. Inside it the verbs mean
+            # **records** — the picked pieces, through the in-app cell buffer —
+            # so Copy, Cut and Clear need a pick and Paste needs a buffer.
+            picked = bool(self._selected_cells())
+            armed = self._stamping and editable
+            self._cut_action.setEnabled(armed and picked)
+            self._clear_action.setEnabled(armed and picked)
+            self._copy_action.setEnabled(
+                picked if self._stamping else target is not None
+            )
+            self._paste_action.setEnabled(armed and self._has_cell_clipboard())
+        else:
+            for action in (self._cut_action, self._clear_action):
+                action.setEnabled(has_doc and target is not None and editable)
+            # Copy is not one of them, because it is a **read**: every kind on
+            # screen has something well-defined to lift.
+            self._copy_action.setEnabled(has_doc and target is not None)
+            # A tilemap pastes *cells* from its own in-app buffer, so the system
+            # clipboard's contents say nothing about whether a paste here would
+            # do anything — but only in tile mode. In pixel mode the same map
+            # pastes pixels through
+            # :meth:`~...pixel_edit.PixelEditMixin._pixel_paste`, which reads the
+            # system clipboard exactly as a pixel document's paste does, so
+            # asking the cell buffer there greys out the only paste on offer.
+            cells = (
+                has_doc
+                and self._doc.is_tilemap
+                and self._edit_mode is not EditMode.PIXEL
+            )
+            self._paste_action.setEnabled(
+                has_doc
+                and editable
+                and (self._has_cell_clipboard() if cells else clipboard.has_content())
+            )
         # An import needs no selection: with none, it lands at the view's start.
         # The capability is asked here rather than left to the gating pass
         # because this method runs on every selection change and that pass does

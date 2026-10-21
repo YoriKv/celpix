@@ -79,7 +79,7 @@ def test_clicking_a_sprite_picks_the_subsprite_and_rings_the_tile_it_names(
         canvas, Qt.MouseButton.LeftButton, pos=QPoint(int(26 * zoom), int(7 * zoom))
     )
     assert window._picked_subsprite == (0, 1)
-    assert canvas._pick_outline == QRect(24, 5, 8, 8)
+    assert canvas._pick_outline == [QRect(24, 5, 8, 8)]
     assert panel._marked == 2  # the tile that record draws
     assert "subsprite 1" in window.statusBar().currentMessage()
     # ...and the palette grid rings the row it draws in, which a record states
@@ -1243,10 +1243,11 @@ def test_a_format_with_no_flip_bit_disables_the_flip_buttons(qtbot, tmp_path) ->
 
 
 def test_a_view_only_map_disables_the_cell_clipboard(qtbot, tmp_path) -> None:
-    """A sprite object's cells are parts at pixel offsets, so there is no cell
-    under the cursor to *write* - cut, clear and paste all go, even with cells in
-    the buffer from an editable map. Copy stays, because it is a read and the
-    picture under the selection is well defined even where the cells are not."""
+    """Outside Edit Subsprites a sprite map's tile selection is squares of the
+    drawn sheet, which name no record - cut, clear and paste all wait for the
+    tool, even with cells in the buffer, and the transforms wait for a pick.
+    Copy stays, because it is a read and the picture is well defined. A map
+    whose codec declares no limits has no record to point the Cell spin at."""
     from celpix.core.tilemap import Cell, CellGrid
 
     window = MainWindow()
@@ -1261,8 +1262,13 @@ def test_a_view_only_map_disables_the_cell_clipboard(qtbot, tmp_path) -> None:
     assert not window._paste_action.isEnabled()
     assert window._copy_action.isEnabled()
     assert not window._tile_group.flip_h.isEnabled()
-    # ...and the reference spin has nothing to point at either.
+    assert not window._cell_index.isHidden()  # an editable map's pick is settable
+
+    # A codec that declared nothing leaves the map view-only: no reference spin.
+    window._doc.subsprite_limits = None
+    window._sync_selection_actions()
     assert window._cell_index.isHidden()
+    assert not window._paste_action.isEnabled()
 
 
 def test_the_tile_readout_counts_only_entries_the_stamps_read(qtbot, tmp_path) -> None:
@@ -2917,8 +2923,9 @@ def test_the_pixel_clipboard_is_offered_on_a_sprite_object(qtbot, tmp_path) -> N
     editable as a grid map's (§8.5). The brush was offered and taking back what it
     laid down was not.
 
-    Tile mode is the other half of the same rule: there the cells really are what
-    a Cut would blank, so the object still refuses.
+    Tile mode is the other half of the same rule: outside Edit Subsprites its
+    selection is squares of the sheet, which no record write can take, so the
+    object refuses there.
     """
     from PySide6.QtCore import QRect
 
@@ -2942,7 +2949,7 @@ def test_the_pixel_clipboard_is_offered_on_a_sprite_object(qtbot, tmp_path) -> N
     window._undo_stack.undo()
     assert [_bank_tile(window, bank, 2).get(x, 0) for x in range(8)] == before
 
-    # Tile mode asks the cell question, and an object has no cell to blank.
+    # Tile mode outside the tool selects sheet squares, which name no record.
     window._set_edit_mode(EditMode.TILE)
     window._select_tiles(0, 0)
     window._sync_edit_actions()

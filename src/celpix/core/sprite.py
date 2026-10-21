@@ -24,7 +24,8 @@ Qt-free, like the rest of ``core``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Literal
 
 from celpix.core.tilemap import VRAM_ROW_STRIDE, tile_run
 
@@ -60,6 +61,18 @@ class Subsprite:
     ``group`` is the authoring tool's own byte and means nothing here. It is
     carried for the reason every unmodelled field is — a field dropped at decode
     time is a field silently zeroed on the next save.
+
+    ``record`` is the piece's **identity**: the index into the document's cell
+    list of the cell it was decoded from, which is what an edit to the piece
+    writes to. ``(frame, k)`` into the drawn frames cannot serve — a slot format
+    drops its undrawn slots on the way to a frame, so *k* is "the k-th drawn
+    slot", and an add, a remove or a reorder renumbers it — where a cell index
+    names the record itself across every such change. ``None`` for a piece
+    that came from no cell at all: a sprite *table* reads its pieces out of a
+    region input, and such a piece is not editable
+    (``docs/design/sprite-map.md`` §8.1). Excluded from comparison so that two
+    pieces drawing the same thing still compare equal, which is what the
+    inventory's keying and every existing equality test rely on.
     """
 
     x: int = 0
@@ -73,6 +86,7 @@ class Subsprite:
     down: int = 1
     column_major: bool = False
     group: int = 0
+    record: int | None = field(default=None, compare=False)
 
     def size(self) -> tuple[int, int]:
         """This subsprite's size in tiles, never smaller than one either way."""
@@ -108,6 +122,68 @@ class Subsprite:
 # One drawing of the object: subsprites in file order, which is front to back —
 # subsprite 0 is on top, so a renderer walks the run backwards.
 Frame = tuple[Subsprite, ...]
+
+# How a size is *stated* to a codec's inverse, in the record's own terms and
+# never as a shape: ``"small"`` / ``"large"`` where the record holds a size
+# **bit** — a bit resolves against a pair the file does not hold, so a 2x2 under
+# pair (2, 2) is both answers and the bit is the only thing that can be written
+# back honestly — and an ``(across, down)`` rectangle where the record states
+# one, by a nibble, by a code indexing the preset's ``sizes``, or outright.
+SizeChoice = str | tuple[int, int]
+
+# How a format lays its records out, which is what decides what a structural
+# edit — add a piece, remove one, reorder them — can *mean* there
+# (``docs/design/sprite-map.md`` §8.4):
+#
+#   slots    a fixed stride of slots per frame with a drawn bit; an add sets
+#            the bit on a free slot and a remove clears it; the length never
+#            changes (S-CG-CAD OBJ/OBX and OBZ)
+#   counted  each frame counts its records in the file's structure; an add
+#            inserts a cell and the count grows; the length changes (SPR)
+#   headed   each frame opens with a header carrying its count, so a frame can
+#            never be left empty; the length changes (sprite-record with a
+#            frame_header)
+#   run      one frame, a bare run whose count lives outside the slice; an
+#            insert changes the length and nothing updates the count
+#            (md-sprite, header-less sprite-record)
+#   table    the records live in a region another entry owns; no structural
+#            edit at all (sprite-table)
+StructureKind = Literal["slots", "counted", "headed", "run", "table"]
+
+
+@dataclass(frozen=True, slots=True)
+class SubspriteLimits:
+    """What a codec's inverse can write, in the record's own terms.
+
+    A codec that can place a piece declares this
+    (:meth:`~celpix.plugins.base.TilemapCodecPlugin.subsprite_limits`), and the
+    host reads it rather than the record layout: the ranges bound the spins and
+    clamp a drag, the size choices are what the Size control offers, and the
+    structure kind is what the record ops dispatch on. The host never learns
+    where byte 0 bit 7 lives.
+
+    ``x_range`` / ``y_range`` are the offsets the field holds, **signed at the
+    field's own width** — ``range(-128, 128)`` for a byte, ``range(-32768,
+    32768)`` for a word. A drag that would carry any piece outside them is
+    refused whole rather than pinning one piece at the edge.
+
+    ``size`` is every :data:`SizeChoice` the record can spell, or ``None`` where
+    the preset fixes the size and the record holds none.
+
+    ``structure`` is the :data:`StructureKind`. ``per_frame`` is the slot stride
+    under ``slots`` and the count ceiling under ``counted`` (255 for a count
+    byte); ``None`` elsewhere. ``frames`` is how many frames the file holds
+    where the format fixes it (32 or 64 slots of them), ``None`` where the
+    cells decide — a headed run has as many frames as it has headers, a bare run
+    exactly one.
+    """
+
+    structure: StructureKind
+    x_range: range
+    y_range: range
+    size: tuple[SizeChoice, ...] | None = None
+    per_frame: int | None = None
+    frames: int | None = None
 
 
 def drawn_frames(frames: list[Frame]) -> list[Frame]:

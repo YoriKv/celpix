@@ -39,6 +39,7 @@ from celpix.core.capabilities import ContentKind
 from celpix.core.context import (
     KEY_PIXEL_ASPECT,
     KEY_TILE_PALETTE_ROWS,
+    KEY_TILEMAP_FRAME_SIZES,
 )
 from celpix.core.document import Document
 from celpix.core.errors import PipelineError
@@ -203,7 +204,12 @@ class SessionMixin(_Host):
             self._set_edit_mode(EditMode.TILE)
 
     def _load_entry(
-        self, entry: Entry, *, quiet: bool = False, live: bytes | None = None
+        self,
+        entry: Entry,
+        *,
+        quiet: bool = False,
+        live: bytes | None = None,
+        frame_sizes: tuple[int, ...] | None = None,
     ) -> bool:
         """Load ``entry``'s document through the pipeline; False on failure.
 
@@ -222,7 +228,10 @@ class SessionMixin(_Host):
         about to replace them, and means nothing on the pixel path — a pixel
         entry is never re-read out from under its edits, and a bound map's tiles
         come from the entry that owns them
-        (:meth:`~...bindings.BindingsMixin._live_bound_tiles`)."""
+        (:meth:`~...bindings.BindingsMixin._live_bound_tiles`). ``frame_sizes``
+        travels with it: the frame counts those bytes were framed by, for a
+        format that counts its frames
+        (:func:`~celpix.pipeline.pipeline.load_tilemap_data`)."""
         if entry.kind is EntryKind.PALETTE:
             # A palette file's document is its colours and its swatches at once,
             # built by the one loader every route to it shares
@@ -230,7 +239,10 @@ class SessionMixin(_Host):
             return self._load_palette_entry(entry, quiet=quiet)
         length = entry.slice_length
         loaded = self._attempt_load(
-            entry, lambda: self._read_entry(entry, quiet=quiet, live=live)
+            entry,
+            lambda: self._read_entry(
+                entry, quiet=quiet, live=live, frame_sizes=frame_sizes
+            ),
         )
         if entry.slice_length != length:
             # A slice matching its parent's size was re-measured by the read —
@@ -253,7 +265,12 @@ class SessionMixin(_Host):
         return True
 
     def _read_entry(
-        self, entry: Entry, *, quiet: bool = False, live: bytes | None = None
+        self,
+        entry: Entry,
+        *,
+        quiet: bool = False,
+        live: bytes | None = None,
+        frame_sizes: tuple[int, ...] | None = None,
     ) -> bool:
         """The body of :meth:`_load_entry` for a pixel or tilemap entry.
 
@@ -277,7 +294,9 @@ class SessionMixin(_Host):
             entry.session = self._seed_session(entry)
         session = entry.session
         if entry.content_kind is ContentKind.TILEMAP:
-            loaded = self._load_tilemap_entry(entry, quiet=quiet, live=live)
+            loaded = self._load_tilemap_entry(
+                entry, quiet=quiet, live=live, frame_sizes=frame_sizes
+            )
             if loaded and not quiet:
                 self._warn_entry_faults(entry)
             return loaded
@@ -360,7 +379,12 @@ class SessionMixin(_Host):
         )
 
     def _load_tilemap_entry(
-        self, entry: Entry, *, quiet: bool = False, live: bytes | None = None
+        self,
+        entry: Entry,
+        *,
+        quiet: bool = False,
+        live: bytes | None = None,
+        frame_sizes: tuple[int, ...] | None = None,
     ) -> bool:
         """Load a tilemap entry: its own cells, plus whatever tiles it is bound to.
 
@@ -376,7 +400,8 @@ class SessionMixin(_Host):
         cell draws blank until it is pointed at a source.
 
         ``live`` is the entry's unsaved cell bytes, decoded in place of the
-        file's where a re-read would otherwise discard them
+        file's where a re-read would otherwise discard them, and ``frame_sizes``
+        the frame counts they were framed by
         (:func:`~celpix.pipeline.pipeline.load_tilemap_data`).
         """
         session = entry.session
@@ -391,7 +416,11 @@ class SessionMixin(_Host):
             return self._fail_outside_parent(entry, quiet=quiet)
         try:
             loaded = pipeline.load_tilemap_data(
-                cfg, self._registry, live, size_pair=entry.sprite_size_pair
+                cfg,
+                self._registry,
+                live,
+                size_pair=entry.sprite_size_pair,
+                frame_sizes=frame_sizes,
             )
         except (PipelineError, OSError) as exc:
             return self._fail_load(entry, exc, quiet=quiet)
@@ -513,8 +542,18 @@ class SessionMixin(_Host):
         itself. ``live`` is the cell buffer the read decodes instead of the
         file's (:meth:`_unsaved_cells`); callers that want the file's own bytes
         pass None. A caller needing the old document reads ``entry.doc`` first.
+
+        With ``live``, the old document's **frame sizes** go too, for a format
+        that counts its frames (:data:`~celpix.core.context.
+        KEY_TILEMAP_FRAME_SIZES`): the container re-reads the file's counts, and
+        a buffer an edit added a record to or took one from is framed by the
+        counts the edit left — the size-pair change, the rebind and the disk
+        merge all arrive here.
         """
         previous = entry.doc
+        frame_sizes = None
+        if live is not None and previous is not None and previous.is_tilemap:
+            frame_sizes = previous.tilemap_ctx.get(KEY_TILEMAP_FRAME_SIZES)
         pending_palette, pending_view = entry.pending_palette, entry.pending_view
         if seed_pending:
             if pending_palette is None:
@@ -528,7 +567,7 @@ class SessionMixin(_Host):
         # would recompute the pending palette off the old document and overwrite
         # one a jump has just installed.
         entry.doc = None
-        if self._load_entry(entry, quiet=quiet, live=live):
+        if self._load_entry(entry, quiet=quiet, live=live, frame_sizes=frame_sizes):
             return True
         self._restore_document(entry, previous)
         if seed_pending:
@@ -953,8 +992,10 @@ class SessionMixin(_Host):
         self._clear_pixel_selection()
         # No render runs on the way out of a document, so the sprite object's
         # pick has to be dropped here as well as in the refresh — an outline left
-        # behind would sit over whatever is shown next.
-        self._set_picked_subsprite(None)
+        # behind would sit over whatever is shown next — and its origin marks
+        # with it.
+        self._set_picked_records([])
+        self._sync_origin_marks()
         self._sync_selection_actions()
         # Called after _doc is cleared, so it settles on "unavailable": the tool
         # disarms and both its switches grey out. They need saying explicitly

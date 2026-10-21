@@ -65,6 +65,8 @@ from celpix.ui.composite_dialog import CompositeParams
 from celpix.ui.container_dialog import ContainerEdit
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from celpix.core.document import ViewOptions
     from celpix.project.workspace import EntrySession
     from celpix.ui.main_window import MainWindow
@@ -618,6 +620,10 @@ class TilemapCellsCommand(_InPlaceCommand):
     the file carries the unsaved state too. Its revision rides in each half of
     the state beside the map's own, exactly as :class:`PixelEditCommand` carries
     its owners', so an undo hands the file back the state it was in before.
+
+    ``pick`` is a sprite map's, and the caret's counterpart there: the picked
+    records each half of the step leaves picked, so an undo of a move puts the
+    outline back on the piece it moved (``docs/design/sprite-map.md`` §11).
     """
 
     def __init__(
@@ -630,11 +636,13 @@ class TilemapCellsCommand(_InPlaceCommand):
         *,
         run: int | None = None,
         caret: tuple[int, int] | None = None,
+        pick: tuple[Sequence[int], Sequence[int]] | None = None,
     ) -> None:
         # The state is the cells *paired with* the data-pathway revision they leave
         # the entry at, so an undo hands back the exact unsaved-state it had before,
         # and with the text caret that belongs to that side of the edit — then the
-        # other entries the edit lands in (a slice's parent file) with theirs.
+        # other entries the edit lands in (a slice's parent file) with theirs, and
+        # last the sprite pick that side leaves (None: the step carries none).
         owners = window._pixel_edit_owners(entry, [])
         moved = after != before
         after_revision = (
@@ -649,6 +657,7 @@ class TilemapCellsCommand(_InPlaceCommand):
                 entry.pixel_revision,
                 caret[0] if caret else None,
                 tuple((owner, owner.pixel_revision) for owner in owners),
+                tuple(pick[0]) if pick else None,
             ),
             (
                 after,
@@ -658,6 +667,7 @@ class TilemapCellsCommand(_InPlaceCommand):
                     (owner, after_revision if moved else owner.pixel_revision)
                     for owner in owners
                 ),
+                tuple(pick[1]) if pick else None,
             ),
         )
         self._merge_run = run
@@ -686,6 +696,7 @@ class TilemapCellsCommand(_InPlaceCommand):
                 self._before[1],
                 self._after[2],
                 self._before[3],
+                self._after[4],
             )
             self._window._workspace.set_pixel_revision(self._entry, self._before[1])
             for owner, revision in self._before[3]:
@@ -698,11 +709,20 @@ class TilemapCellsCommand(_InPlaceCommand):
         return True
 
     def _apply(
-        self, state: tuple[list, int, int | None, tuple[tuple[Entry, int], ...]]
+        self,
+        state: tuple[
+            list,
+            int,
+            int | None,
+            tuple[tuple[Entry, int], ...],
+            tuple[int, ...] | None,
+        ],
     ) -> None:
-        cells, revision, caret, owners = state
+        cells, revision, caret, owners, pick = state
         self._window._set_cells(self._entry, cells, revision, owners)
         self._window._restore_text_caret(self._entry, caret)
+        if pick is not None:
+            self._window._restore_record_pick(self._entry, pick)
 
 
 @dataclass(frozen=True)

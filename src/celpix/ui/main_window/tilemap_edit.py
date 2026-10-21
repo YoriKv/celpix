@@ -33,16 +33,24 @@ would need — the same trade
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from celpix.core import ceil_div
 from celpix.core.arrangement import BlockLayout, compose_window, split_grid
 from celpix.core.capabilities import Capability, ContentKind
+from celpix.core.context import KEY_TILEMAP_SUBSPRITE_TILES
 from celpix.core.document import Document
 from celpix.core.errors import PipelineError
 from celpix.core.notices import Notice, notices
+from celpix.core.sprite import (
+    DEFAULT_SUBSPRITE_TILES,
+    SizeChoice,
+    Subsprite,
+    SubspriteLimits,
+)
+from celpix.core.sprite_edit import reflect_group
 from celpix.core.tilemap import Cell, CellGrid, CellOp
 from celpix.pipeline import pipeline
 from celpix.project.workspace import Entry, EntryKind
@@ -164,11 +172,22 @@ class TilemapEditMixin(_Host):
         direction: several drawn positions share one entry, so a selection over a
         stamp would otherwise name it once per position — and an operation that
         *toggles* rather than sets would cancel itself out on the second visit.
+
+        On a **sprite map** the picked pieces *are* the selection: the answer is
+        their records (:mod:`~celpix.ui.main_window.sprite_select`), in pick
+        order, so the property row, the pin gesture, the Cell spin and the
+        transforms act on them through the paths they already have
+        (``docs/design/sprite-map.md`` §10.1). The sheet tiles under the
+        press are a picture's squares, not cells, and name no record.
         """
         doc = self._doc
         if doc is None or not doc.is_tilemap:
             return []
         count = len(doc.cells or [])
+        if doc.is_sprite:
+            if self._picked_entry is not self._workspace.current:
+                return []
+            return [r for r in self._picked_records if 0 <= r < count]
         seen: dict[int, None] = {}
         for at in self._selected_positions():
             index = doc.cell_at(at)
@@ -402,9 +421,10 @@ class TilemapEditMixin(_Host):
         **Three levels, and they are three different questions**
         (``docs/design/tilemap-entry.md`` §4). ``STAMP`` is the **kind**'s: only a
         tilemap has a cell that names a tile. ``cells_editable`` is this
-        **file**'s: a sprite object's records are subsprites at pixel offsets, so
-        there is no cell under the cursor to set. The limit is the **format**'s: a
-        cell with no index field has no number to hold.
+        **file**'s: a sprite map whose codec declared no record it can write has
+        nothing to set, where an editable one's picked pieces are the selection
+        the spin points (:meth:`_selected_cells`). The limit is the **format**'s:
+        a cell with no index field has no number to hold.
 
         One predicate because there are two ways to ask it — the binding bar's
         Cell spin types the number and the Edit Tiles tool points at it
@@ -436,9 +456,9 @@ class TilemapEditMixin(_Host):
         The drawn row and the writable row are two different questions there, and
         only this one is about bytes this entry owns.
 
-        None too on a sprite object, whose records this path cannot reach at all
-        (:attr:`~celpix.core.document.Document.cells_editable`) — stated here so
-        the caller has one predicate rather than two.
+        None too on a view-only sprite map, whose records this path may not
+        write (:attr:`~celpix.core.document.Document.cells_editable`) — stated
+        here so the caller has one predicate rather than two.
         """
         doc = self._doc
         if doc is None or not doc.cells_editable:
@@ -501,6 +521,182 @@ class TilemapEditMixin(_Host):
             fields["ends_line"] = 1
         return fields
 
+    # -- a sprite map's record fields ----------------------------------------
+    def _subsprite_limits(self) -> SubspriteLimits | None:
+        """What this sprite map's records can hold, or None to write nothing.
+
+        None off a sprite map, and on one whose codec declared nothing — the
+        view-only answer (:attr:`~celpix.core.document.Document.cells_editable`).
+        Read off the document, where the load put it, rather than asked again:
+        the answer is partly the file's (a slot stride the container stated).
+        """
+        doc = self._doc
+        if doc is None or not doc.is_sprite:
+            return None
+        return doc.subsprite_limits
+
+    def _place_subsprite(self, cell: Cell, **fields: object) -> Cell:
+        """``cell`` with the record ``fields`` written by this entry's codec.
+
+        The codec's ``place_subsprite`` bound to the preset and the document's
+        context — the one way the host writes an offset, a size or the drawn
+        bit, since only the codec knows where they live in ``flags``
+        (:meth:`~celpix.plugins.base.TilemapCodecPlugin.place_subsprite`).
+        Raises ``ValueError`` for a value the field cannot hold, worded for the
+        status line, as the codec does. A codec that faults otherwise is
+        reported once and read as the same refusal: a broken plugin must not
+        leave half an edit behind.
+        """
+        doc = self._doc
+        found = self._tilemap_engine()
+        place = getattr(found[0], "place_subsprite", None) if found else None
+        if doc is None or place is None:
+            raise ValueError(f"{self._tilemap_format_name()} cannot place subsprites")
+        try:
+            return place(cell, found[1].params, doc.tilemap_ctx, **fields)
+        except ValueError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — a plugin fault, reported
+            self._codec_fault(found[1].id, "place_subsprite", exc)
+            raise ValueError(
+                f"{self._tilemap_format_name()} could not place the subsprite"
+            ) from exc
+
+    def _assign_frames(self, cells: list[Cell], frames: Sequence[int]) -> list[Cell]:
+        """``cells`` restamped so cell *i* is in ``frames[i]``, by the codec.
+
+        Unchanged where the codec has no frame marks to write (``slots`` and
+        ``run`` formats omit the method). Over a **copy** of the context: a
+        counted format publishes its frame sizes while restamping, and an op
+        refused after this call must not leave those on the document — the
+        encode that lands an accepted one republishes them from the cells.
+        """
+        doc = self._doc
+        found = self._tilemap_engine()
+        assign = getattr(found[0], "assign_frames", None) if found else None
+        if doc is None or assign is None:
+            return list(cells)
+        return assign(
+            list(cells), list(frames), found[1].params, doc.tilemap_ctx.copy()
+        )
+
+    def _subsprite_pair(self) -> tuple[int, int]:
+        """The ``(small, large)`` squares, in tiles, a size bit picks between.
+
+        The pair the frames were built with — the load publishes it on the
+        context — then the document's setting, then the default.
+        """
+        doc = self._doc
+        stated = doc.tilemap_ctx.get(KEY_TILEMAP_SUBSPRITE_TILES) if doc else None
+        for pair in (stated, doc.sprite_size_pair if doc else None):
+            try:
+                small, large = (int(side) for side in pair)
+            except (TypeError, ValueError):
+                continue
+            if small >= 1 and large >= 1:
+                return small, large
+        return DEFAULT_SUBSPRITE_TILES
+
+    def _size_choice_of(self, sub: Subsprite) -> SizeChoice | None:
+        """The size choice ``sub``'s shape spells under the limits, or None.
+
+        ``"small"`` / ``"large"`` where the record holds a size *bit*: the shape
+        is matched against the pair in force, small first, so under a pair
+        whose two sides agree the answer is ``"small"`` — the bit itself never
+        reaches a :class:`Subsprite`, and both choices draw the same then. An
+        ``(across, down)`` choice where the record states its rectangle. None
+        where the limits fix the size, or the shape is none of the choices.
+        """
+        limits = self._subsprite_limits()
+        if limits is None or not limits.size:
+            return None
+        shape = sub.size()
+        small, large = self._subsprite_pair()
+        for choice, side in (("small", small), ("large", large)):
+            if choice in limits.size and shape == (side, side):
+                return choice
+        return shape if shape in limits.size else None
+
+    def _size_caption(self, choice: SizeChoice) -> str:
+        """``choice`` as the Size control and the status line say it.
+
+        A bit is captioned with the shape it spells at the pair in force —
+        ``Small (1x1)`` — since the pair is the entry's setting and not the
+        file's; a rectangle is its own caption.
+        """
+        if isinstance(choice, str):
+            small, large = self._subsprite_pair()
+            side = small if choice == "small" else large
+            return f"{choice.capitalize()} ({side}x{side})"
+        return f"{choice[0]}x{choice[1]}"
+
+    def _place_subsprites(self, fields: dict[str, object], text: str) -> bool:
+        """Write record ``fields`` into every picked record — one undo step.
+
+        :meth:`_set_cell_property`'s shape for the fields a :class:`Cell` has
+        no attribute for (``x``, ``y``, ``size``, ``drawn``), written through
+        the codec (:meth:`_place_subsprite`). The offsets and the size go to
+        the **drawn** picked pieces only: an undrawn slot's content is residue
+        nothing shows, and a move written into it would surface the next time
+        the slot is drawn. ``drawn`` goes to every picked record, which is what
+        lets the box that cleared a slot put it back.
+
+        A value the field cannot hold is refused whole, with the codec's reason
+        on the status line, and nothing is pushed: one piece moved and the next
+        refused would change the selection's shape.
+        """
+        doc = self._doc
+        if doc is None or doc.cells is None or self._refuse_view_only():
+            return False
+        picked = self._selected_cells()
+        if "drawn" in fields:
+            targets = picked
+        else:
+            targets = [record for record, _sub in self._picked_subsprites()]
+        if not targets:
+            return False
+        cells = list(doc.cells)
+        try:
+            for at in targets:
+                cells[at] = self._place_subsprite(cells[at], **fields)
+        except ValueError as exc:
+            reason = str(exc)
+            self.statusBar().showMessage(
+                f"{reason[:1].upper()}{reason[1:]} - nothing changed."
+            )
+            return False
+        if not self._apply_cells(cells, text, pick=(picked, picked)):
+            return False
+        many = counted(len(targets), "subsprite")
+        if "drawn" in fields:
+            said = "on" if fields["drawn"] else "off"
+            shown = f"Turned drawn {said} for {many}"
+        elif "size" in fields:
+            shown = f"Set size to {self._size_caption(fields['size'])} for {many}"
+        elif "x" in fields and "y" in fields:
+            shown = f"Moved {many} to ({fields['x']:+d}, {fields['y']:+d})"
+        else:
+            axis = "x" if "x" in fields else "y"
+            shown = f"Moved {many} to {axis} = {fields[axis]:+d}"
+        self.statusBar().showMessage(f"{shown}.")
+        return True
+
+    def _pick_carried(self) -> tuple[list[int], list[int]] | None:
+        """The pick an edit of the selected cells carries through its undo
+        step: a sprite map's records, unchanged by the edit; None on a grid,
+        whose selection is not the step's to restore."""
+        doc = self._doc
+        if doc is None or not doc.is_sprite:
+            return None
+        picked = self._selected_cells()
+        return picked, list(picked)
+
+    def _selected_noun(self) -> str:
+        """What one selected cell is called in a status sentence: a sprite
+        map's are its picked pieces."""
+        doc = self._doc
+        return "subsprite" if doc is not None and doc.is_sprite else "cell"
+
     def _set_cell_property(self, field: str, value: bool | int) -> None:
         """Write one attribute into every selected cell — one undoable step.
 
@@ -534,7 +730,7 @@ class TilemapEditMixin(_Host):
         cells = list(doc.cells)
         for at in indices:
             cells[at] = replace(cells[at], **{field: value})
-        if self._apply_cells(cells, f"set cell {label}"):
+        if self._apply_cells(cells, f"set cell {label}", pick=self._pick_carried()):
             if field in _BOOL_FIELDS:
                 said = "on" if value else "off"
                 shown = f"Turned {label} {said}"
@@ -543,7 +739,7 @@ class TilemapEditMixin(_Host):
             else:
                 shown = f"Set {label} to {value}"
             self.statusBar().showMessage(
-                f"{shown} for {counted(len(indices), 'cell')}."
+                f"{shown} for {counted(len(indices), self._selected_noun())}."
             )
 
     def _assign_cell_palette_row(self) -> None:
@@ -592,8 +788,9 @@ class TilemapEditMixin(_Host):
         cells = list(doc.cells)
         for at in spread:
             cells[at] = replace(cells[at], palette_row=row)
-        if self._apply_cells(cells, "set cell palette row"):
+        if self._apply_cells(cells, "set cell palette row", pick=self._pick_carried()):
             shown = self._drawn_palette_row(row)
+            noun = self._selected_noun()
             note = ""
             # `picked` has no repeats of its own and every cell of it is in its
             # own group, so a difference here is the grouping and nothing else.
@@ -604,7 +801,7 @@ class TilemapEditMixin(_Host):
                     f" so {counted(len(spread) - len(picked), 'more cell')} changed."
                 )
             self.statusBar().showMessage(
-                f"Set {counted(len(spread), 'cell')} to palette row {shown}.{note}"
+                f"Set {counted(len(spread), noun)} to palette row {shown}.{note}"
             )
 
     def _set_cell_index(self, value: int) -> None:
@@ -637,10 +834,11 @@ class TilemapEditMixin(_Host):
         cells = list(doc.cells)
         for at in indices:
             cells[at] = replace(cells[at], index=value)
-        if self._apply_cells(cells, "set cell reference"):
+        if self._apply_cells(cells, "set cell reference", pick=self._pick_carried()):
             what = "stamp" if doc.is_indirect else "tile"
             self.statusBar().showMessage(
-                f"Pointed {counted(len(indices), 'cell')} at {what} ${value:X}."
+                f"Pointed {counted(len(indices), self._selected_noun())} at {what}"
+                f" ${value:X}."
             )
 
     def _selected_cell_index(self) -> int:
@@ -665,11 +863,20 @@ class TilemapEditMixin(_Host):
         if apply is None:
             self._refuse_transform(op)
             return
+        if doc.is_sprite:
+            # The drawn pieces only: an undrawn slot's bits are residue, and a
+            # flip toggled into one would surface when the slot is next drawn.
+            drawn = {record for record, _sub in self._picked_subsprites()}
+            indices = [at for at in indices if at in drawn]
         cells = list(doc.cells)
         for index in indices:
             cells[index] = apply(cells[index])
-        if self._apply_cells(cells, f"{op.verb} cells"):
-            self.statusBar().showMessage(f"{op.past} {counted(len(indices), 'cell')}.")
+        if indices and self._apply_cells(
+            cells, f"{op.verb} cells", pick=self._pick_carried()
+        ):
+            self.statusBar().showMessage(
+                f"{op.past} {counted(len(indices), self._selected_noun())}."
+            )
 
     def _transform_cell_selection(self, op) -> None:  # noqa: ANN001 — a TransformOp
         """Transform the selected rectangle: reorder the cells **and** transform each.
@@ -678,8 +885,15 @@ class TilemapEditMixin(_Host):
         rectangle transform so the two cannot disagree about direction; the
         per-cell half goes through the format, and a format that cannot do it
         stops the whole selection rather than leaving it reordered but unturned.
+
+        On a **sprite map** there is no rectangle of cells to permute, and the
+        picked pieces are mirrored as one picture instead
+        (:meth:`_mirror_subsprites`).
         """
         doc = self._doc
+        if doc is not None and doc.is_sprite:
+            self._mirror_subsprites(op)
+            return
         rect = self._cell_rect()
         if doc is None or doc.cells is None or rect is None:
             return
@@ -716,6 +930,56 @@ class TilemapEditMixin(_Host):
                     moved += 1
         if moved and self._apply_cells(cells, f"{op.verb} cell selection"):
             self.statusBar().showMessage(f"{op.past} the {cols}x{rows} cell selection.")
+
+    def _mirror_subsprites(self, op) -> None:  # noqa: ANN001 — a TransformOp
+        """The Block group on a sprite map: the picked pieces mirrored as one picture.
+
+        Two halves, as on a grid: each piece's own flip bit toggled through the
+        format (:meth:`_cell_transform`), and each piece moved to where the
+        mirror puts it — reflected about the pick's own box, so the box maps
+        onto itself (:func:`~celpix.core.sprite_edit.reflect_group`). The
+        reflection is per piece, ``x' = left + right - x - w`` with ``w`` its
+        own width, because reflecting left edges alone is exact only when every
+        piece is one size and puts a mixed frame's small piece a tile off
+        (``docs/design/sprite-map.md`` §10.2).
+
+        Flips only: a quarter turn of a group of pieces at pixel offsets is no
+        record's bit to set, and the format refuses it as it does on a grid.
+        A piece the mirror would carry outside the offset range stops the whole
+        group, with the range said, rather than one piece pinned at the edge.
+        """
+        doc = self._doc
+        pieces = self._picked_subsprites()
+        if doc is None or doc.cells is None or not pieces or self._refuse_view_only():
+            return
+        if op.cell_op not in (CellOp.FLIP_H, CellOp.FLIP_V):
+            self._refuse_transform(op)
+            return
+        apply = self._cell_transform(op)
+        if apply is None:
+            self._refuse_transform(op)
+            return
+        placed = reflect_group(
+            [sub for _record, sub in pieces],
+            doc.tile_width,
+            doc.tile_height,
+            horizontal=op.cell_op is CellOp.FLIP_H,
+        )
+        cells = list(doc.cells)
+        try:
+            for (record, _sub), (x, y) in zip(pieces, placed, strict=True):
+                cells[record] = self._place_subsprite(apply(cells[record]), x=x, y=y)
+        except ValueError as exc:
+            reason = str(exc)
+            self.statusBar().showMessage(
+                f"{reason[:1].upper()}{reason[1:]} - nothing changed."
+            )
+            return
+        picked = self._selected_cells()
+        if self._apply_cells(cells, f"{op.verb} subsprites", pick=(picked, picked)):
+            self.statusBar().showMessage(
+                f"{op.past} {counted(len(pieces), 'subsprite')} as one picture."
+            )
 
     # -- placed units --------------------------------------------------------
     def _lift_cell_rect(
@@ -801,6 +1065,13 @@ class TilemapEditMixin(_Host):
         """
         doc = self._doc
         if doc is not None and doc.is_sprite:
+            # Inside Edit Subsprites the four verbs mean *records*, through the
+            # in-app cell buffer, for the reason pixel mode re-aims them: a
+            # record is an index into a bank the receiving program has never
+            # heard of (``docs/design/sprite-map.md`` §10.1). Outside the tool a
+            # copy is still the picture.
+            if self._stamping:
+                return self._copy_subsprites()
             return self._copy_sprite_pixels()
         if doc is None or doc.cells is None or self._refuse_view_only():
             return False
@@ -872,12 +1143,32 @@ class TilemapEditMixin(_Host):
         return True
 
     def _cut_cells(self) -> None:
-        # Up front, so a sprite object refuses here rather than copying its pixels
-        # and then discovering there is nothing to blank behind them.
-        if self._refuse_view_only():
+        # Up front, so a view-only map refuses here rather than copying its
+        # pixels and then discovering there is nothing to blank behind them.
+        if self._refuse_view_only() or self._refuse_outside_subsprite_tool("cut"):
+            return
+        if self._doc is not None and self._doc.is_sprite:
+            self._cut_subsprites()
             return
         if self._copy_cells():
             self._clear_cells("cut cells")
+
+    def _refuse_outside_subsprite_tool(self, verb: str) -> bool:
+        """True, with the reason on the status bar, for a record verb asked of
+        a sprite map while Edit Subsprites is not armed.
+
+        Outside the tool a sprite map's tile selection is sheet tiles, which is
+        what pixel Copy lifts and nothing a cut, clear or paste could write back:
+        the records are reached through the tool, where the picked pieces are
+        the selection (``docs/design/sprite-map.md`` §10.1).
+        """
+        doc = self._doc
+        if doc is None or not doc.is_sprite or self._stamping:
+            return False
+        self.statusBar().showMessage(
+            f"Arm Edit Subsprites (T) to {verb} pieces of a sprite map."
+        )
+        return True
 
     def _clear_cells(self, text: str = "clear cells") -> None:
         """Blank the selected cells — index 0, no attributes, and where the
@@ -893,6 +1184,10 @@ class TilemapEditMixin(_Host):
         """
         doc = self._doc
         if doc is None or doc.cells is None or self._refuse_view_only():
+            return
+        if doc.is_sprite:
+            if not self._refuse_outside_subsprite_tool("clear"):
+                self._clear_subsprites()
             return
         indices = self._selected_cells()
         if not indices:
@@ -933,6 +1228,10 @@ class TilemapEditMixin(_Host):
         if doc is None or doc.cells is None or copied is None or not len(copied):
             self.statusBar().showMessage("No cells copied yet.")
             return
+        if doc.is_sprite:
+            if not self._refuse_outside_subsprite_tool("paste"):
+                self._paste_subsprites()
+            return
         # The anchor is where the selection is *drawn*, not which cell of the file
         # it holds: a paste lays a rectangle over the picture, and on an assembled
         # map those are different numbers (:meth:`_selected_positions`).
@@ -965,6 +1264,7 @@ class TilemapEditMixin(_Host):
         *,
         run: int | None = None,
         caret: tuple[int, int] | None = None,
+        pick: tuple[Sequence[int], Sequence[int]] | None = None,
     ) -> bool:
         """Push ``cells`` as one undoable edit; False when nothing changed.
 
@@ -983,11 +1283,19 @@ class TilemapEditMixin(_Host):
         should answer; there is nothing equivalent for a flip or a paste, which
         is why the guard stays for everything that names no caret.
 
-        Refused outright only on a sprite object, whose cells are subsprites placed at
-        pixel offsets rather than positions in a grid
-        (:attr:`~celpix.core.document.Document.cells_editable`). A chained map does
-        land here: its cells are coordinates, and writing one restamps that
-        position.
+        ``pick`` is a sprite map's: the picked records before and after the
+        edit, which each half of the step puts back (:meth:`_restore_record_pick`)
+        — an undo of a move leaves the outline on the piece it moved. It does not
+        lift the guard: a pick is not an edit.
+
+        Refused outright only on a sprite map whose codec declared nothing its
+        inverse can write (:attr:`~celpix.core.document.Document.cells_editable`).
+        A chained map does land here: its cells are coordinates, and writing one
+        restamps that position. So does an editable sprite map, whose new cells
+        are **framed before the push** (:func:`~celpix.pipeline.pipeline.
+        sprite_frames_of`) — the sheet limit refuses an offset the picture cannot
+        hold where it is typed, with the reason on the status bar, rather than
+        landing an edit the next load of the entry would fail on.
 
         **Row groups are settled before the guard**, not after, so a paste whose
         only difference from what is there is a row the format cannot store is
@@ -1023,12 +1331,48 @@ class TilemapEditMixin(_Host):
         if refused is not None:
             self.statusBar().showMessage(refused)
             return False
+        if doc.is_sprite and doc.tilemap_config is not None:
+            # Over a copy of the context, encoded first: that is the order
+            # `_set_cells` runs in, and a count format's encode is what states
+            # the frame sizes these cells are framed by. A trial must also leave
+            # no notice of its own behind on the document.
+            trial = doc.tilemap_ctx.copy()
+            preset = doc.tilemap_config.interpret_preset_id
+            try:
+                pipeline.encode_cells(cells, preset, self._registry, trial)
+                pipeline.sprite_frames_of(cells, preset, self._registry, trial)
+            except KeyError:
+                pass  # no codec to ask; the save is where that is reported
+            except PipelineError as exc:
+                self.statusBar().showMessage(str(exc))
+                return False
         self._push_command(
             TilemapCellsCommand(
-                self, entry, text, list(doc.cells), cells, run=run, caret=caret
+                self,
+                entry,
+                text,
+                list(doc.cells),
+                cells,
+                run=run,
+                caret=caret,
+                pick=pick,
             )
         )
         return True
+
+    def _restore_record_pick(self, entry: Entry, records: Sequence[int]) -> None:
+        """Put a sprite map's pick where an undo step says it belongs.
+
+        The command's half of the pick travelling with the edit
+        (:class:`~celpix.ui.undo_commands.TilemapCellsCommand`), called after
+        the cells have landed so the records index the list that is now there.
+        Only where the step is visible: the command applies in place, as the
+        stamp's does, and the pick of an object nobody is looking at is no pick
+        of this window's.
+        """
+        doc = self._doc
+        if entry is self._workspace.current and doc is not None and doc.is_sprite:
+            self._set_picked_records(records)
 
     @staticmethod
     def _fit_cells(
@@ -1057,11 +1401,11 @@ class TilemapEditMixin(_Host):
     def _refuse_view_only(self) -> bool:
         """True — with the reason on the status bar — when cells cannot be edited.
 
-        Only a **sprite object** reaches this: a canvas position there resolves to
-        a *subsprite* through an overlap order rather than to a cell through a grid,
-        so
-        there is no cell under the cursor for an edit to change
-        (:attr:`~celpix.core.document.Document.cells_editable`). A chained map is
+        Only a **sprite map whose codec declared no limits** reaches this: its
+        records have no field the host has been told it may write
+        (:attr:`~celpix.core.document.Document.cells_editable`). A mapping table
+        is the shipped case — the table's cells are offset words, and the pieces
+        they name live in a Frames region another entry owns. A chained map is
         editable — a cell edit restamps it — and what its own format cannot express
         is refused per operation by the codec instead (:meth:`_cell_transform`,
         :meth:`_cell_index_limit`), which is a narrower answer than a whole
@@ -1077,7 +1421,9 @@ class TilemapEditMixin(_Host):
         if doc is None or not doc.is_tilemap or doc.cells_editable:
             return False
         self.statusBar().showMessage(
-            "A sprite object is view-only - edit the tiles it draws from."
+            "This sprite map is view-only - its format declares no piece it can "
+            "write back (a table's pieces live in a region another entry owns). "
+            "Edit the tiles it draws from."
         )
         return True
 
@@ -1101,7 +1447,10 @@ class TilemapEditMixin(_Host):
         Both directions of the chain are settled here, which is what makes a
         restamp show up: this document re-resolves its own new coordinates, and
         anything drawing *through* it is re-pointed at the cells it now has
-        (:meth:`~...bindings.BindingsMixin._rechain_dependents`).
+        (:meth:`~...bindings.BindingsMixin._rechain_dependents`). A sprite map's
+        frames are rebuilt from the new cells the same way
+        (:func:`~celpix.pipeline.pipeline.sprite_frames`): they are a function of
+        the cells, so the picture follows every edit, undo and redo alike.
 
         **An entry with no document is read first.** The command applies in
         place, so it can land on a map whose cache a write of another entry on the
@@ -1118,6 +1467,19 @@ class TilemapEditMixin(_Host):
         entry.doc.cells = list(cells)
         entry.doc.resolve()
         self._reencode_cells(entry.doc)
+        if entry.doc.is_sprite:
+            # After the encode, which is what republishes a count format's frame
+            # sizes; a picture built from the old cells would show the edit's
+            # bytes under the old drawing. The trial in `_apply_cells` has
+            # already framed these cells, so a failure here is an undo onto a
+            # state whose context has since moved — said, and the old picture
+            # kept rather than none.
+            try:
+                entry.doc.sprite_frames = pipeline.sprite_frames(
+                    entry.doc, self._registry
+                )
+            except (KeyError, PipelineError) as exc:
+                self.statusBar().showMessage(str(exc))
         if entry.kind is EntryKind.SLICE:
             # A map carved from a file is a window of its buffer like any slice,
             # so the file owes it a fold — recorded in *both* directions, since an
@@ -1158,10 +1520,15 @@ class TilemapEditMixin(_Host):
         needing their own answer, and costs one encode per committed edit: the
         same order as the whole-list snapshot the undo command already takes.
 
-        **Spliced, not replaced.** A decode drops a trailing partial cell — a file
-        need not hold a whole number of them — so the re-encode can be shorter
-        than the buffer it came from, and anything past the last cell stays as it
-        was read. The save splices the same tail back before it packs
+        **Spliced at the extent, not replaced.** A decode drops a trailing
+        partial cell — a file need not hold a whole number of them — so the
+        buffer can run past what the cells encode to, and that tail stays as it
+        was read. Where the tail starts is the document's
+        :attr:`~celpix.core.document.Document.tilemap_extent`, the length the
+        cells encoded to last time, and this moves it to the length just
+        encoded: an edit that removes a record shortens the encoding, and a tail
+        cut at the new length would put the removed record's bytes straight back.
+        The save splices by the same rule before it packs
         (``pipeline._tilemap_region``).
 
         A format that cannot encode what is now in the cells leaves the buffer
@@ -1182,4 +1549,5 @@ class TilemapEditMixin(_Host):
             )
         except (KeyError, PipelineError):
             return
-        doc.tilemap_data = data + doc.tilemap_data[len(data) :]
+        doc.tilemap_data = doc.spliced_cells(data)
+        doc.tilemap_extent = len(data)

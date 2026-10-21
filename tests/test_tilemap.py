@@ -1460,9 +1460,9 @@ def test_the_subsprite_sheet_can_collapse_the_repeats_to_the_art_behind_them() -
 
 
 def test_a_sprite_object_is_view_only() -> None:
-    """A canvas position resolves to a *subsprite* through an overlap order rather
-    than to a cell through a grid, so what an edit would change is not settled
-    (``docs/design/sprite-map.md`` §8)."""
+    """A sprite document whose codec declares no inverse - no ``subsprite_limits`` -
+    has nothing an edit could write, so it reads view-only
+    (``docs/design/sprite-map.md`` §8.3)."""
     from celpix.core.sprite import Subsprite
 
     doc = _sprite_doc([Cell(index=1)], [(Subsprite(index=1),)])
@@ -4187,10 +4187,12 @@ def test_frames_are_cut_where_the_file_counted_them_not_at_a_fixed_stride() -> N
     assert frames[2][0].index == 9
 
     # With no counts published, the fallback slots the records at the fixed stride
-    # the other two sprite records use rather than inventing a third rule.
+    # the other two sprite records use rather than inventing a third rule. Decoded
+    # under that bare context too: cells decoded under counts carry their frame.
     bare = PipelineContext()
     bare.set(KEY_TILEMAP_SUBSPRITES_PER_FRAME, 2)
-    assert [len(f) for f in codec.frames(cells, bare)] == [2, 1]
+    unframed = codec.decode(codec.encode(cells, PipelineContext()), bare)
+    assert [len(f) for f in codec.frames(unframed, bare)] == [2, 1]
 
 
 def test_a_pattern_saved_to_a_new_path_keeps_its_frame_boundaries() -> None:

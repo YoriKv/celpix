@@ -69,7 +69,7 @@ A failed check skips that registration only and is listed as a load issue.
 | `IndexGrid` | `celpix.core.index_grid` |
 | `Palette`, `MISSING_COLOR` | `celpix.core.palette` |
 | `Cell`, `CellOp` | `celpix.core.tilemap` |
-| `Subsprite`, `Frame` | `celpix.core.sprite` |
+| `Subsprite`, `Frame`, `SubspriteLimits`, `SizeChoice`, `StructureKind` | `celpix.core.sprite` |
 | `warn`, `inform` | `celpix.core.notices` |
 
 ## 2. Containers
@@ -460,7 +460,10 @@ geometry) have no effect as declarations.
 | `cell_widths` | no | `cell_widths(cells: list[Cell]) -> list[int] \| None` | Byte width of each cell | Mixed-width text. Omitted or `None`: every cell is `bytes_per_cell()` |
 | `line_bytes` | no | `line_bytes() -> int` | Fixed record length per line | Name tables. Omitted: `0` |
 | `size_pair` | no | `size_pair() -> tuple[int, int]` | The two part sizes a size bit selects, in tiles | Sprite formats only |
-| `frames` | no | `frames(cells: list[Cell], ctx) -> list[Frame]` | The parts grouped into frames | Sprite formats only. Runs as part of the read: a raise fails it |
+| `frames` | no | `frames(cells: list[Cell], ctx) -> list[Frame]` | The parts grouped into frames | Sprite formats only. Runs as part of the read and after every edit: a raise fails it. Set each part's `record` to the index of its cell, or the part cannot be picked or edited |
+| `subsprite_limits` | no | `subsprite_limits(ctx) -> SubspriteLimits` | What the records can hold | Sprite formats only. Asked once, at load. Omitted: the sprite map is view-only and its file read-only |
+| `place_subsprite` | no | `place_subsprite(cell: Cell, ctx, *, x=None, y=None, size=None, drawn=None) -> Cell` | `cell` with the named fields written into `flags`, every other bit kept | Needed with `subsprite_limits`. `None` leaves a field alone. `size` is one of the limits' `size`; `drawn` matters under `"slots"` only. Raise `ValueError` naming the range for a value that does not fit; never clamp. Re-derive a field that depends on these |
+| `assign_frames` | no | `assign_frames(cells: list[Cell], frames: Sequence[int], ctx) -> list[Cell]` | `cells` restructured so cell *i* is in frame `frames[i]` | `"counted"` and `"headed"` structures only, where frame membership is stored in the cells. Keep the length; keep the order within a frame. Raise `ValueError` to refuse |
 
 - An optional method that raises, or answers in the wrong shape, is read as absent and recorded as a warning. `settle_cells` and `cell_widths` are then not called again for that document.
 
@@ -470,8 +473,11 @@ geometry) have no effect as declarations.
 |---|---|---|
 | `Cell` | `celpix.core.tilemap` | Frozen dataclass: `index` (0), `palette_row` (0), `priority` (0), `flip_h` (False), `flip_v` (False), `visible` (True), `ends_line` (False), `flags` (0). `index` is the file's own number, before any tile-source base. `priority` and `flags` are stored, never rendered; `flags` holds bits celPix has no field for. `.flipped_h()`, `.flipped_v()`; other changes via `dataclasses.replace` |
 | `CellOp` | `celpix.core.tilemap` | `FLIP_H`, `FLIP_V`, `ROTATE_CW`, `ROTATE_CCW` |
-| `Subsprite` | `celpix.core.sprite` | Frozen dataclass: `x`, `y` (signed pixel offsets), `index`, `palette_row`, `priority`, `flip_h`, `flip_v`, `across`, `down` (tiles, default 1), `column_major`, `group` |
+| `Subsprite` | `celpix.core.sprite` | Frozen dataclass: `x`, `y` (signed pixel offsets), `index`, `palette_row`, `priority`, `flip_h`, `flip_v`, `across`, `down` (tiles, default 1), `column_major`, `group`, `record` (index of the cell it came from; `None`: not editable; not compared) |
 | `Frame` | `celpix.core.sprite` | `tuple[Subsprite, ...]`, front to back: subsprite 0 is on top |
+| `SubspriteLimits` | `celpix.core.sprite` | Frozen dataclass: `structure` (`StructureKind`), `x_range`, `y_range` (`range`, signed at the field's width), `size` (tuple of `SizeChoice`, or `None`: size fixed), `per_frame` (slot stride under `"slots"`, count ceiling under `"counted"`/`"headed"`, else `None`), `frames` (frame count where the format fixes it, else `None`) |
+| `SizeChoice` | `celpix.core.sprite` | `"small"` / `"large"` for a size bit; `(across, down)` in tiles for a stated rectangle |
+| `StructureKind` | `celpix.core.sprite` | `"slots"`: fixed slots per frame with a drawn bit; add sets it, remove clears it. `"counted"`: each frame counts its records; add inserts. `"headed"`: each frame opens with a header; a frame's last record cannot be removed. `"run"`: one frame. `"table"`: no structural edit |
 
 Sprite maps in the app: [Sprites](Sprites).
 

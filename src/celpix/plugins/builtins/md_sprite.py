@@ -39,12 +39,13 @@ past the header and its own length says how many records there are.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.notices import warn
-from celpix.core.sprite import Frame, Subsprite
+from celpix.core.sprite import Frame, SizeChoice, Subsprite, SubspriteLimits
 from celpix.core.tilemap import Cell, CellOp
 from celpix.plugins._params import byte_order, flag, one_of
 from celpix.plugins.base import PluginInfo
@@ -127,6 +128,28 @@ def _mirror_of(cell: Cell) -> int:
 
 def _across(cell: Cell) -> int:
     return (_size_of(cell) >> 2 & 3) + 1
+
+
+def _down(cell: Cell) -> int:
+    return (_size_of(cell) & 3) + 1
+
+
+# Every rectangle the size nibble spells, in nibble order: the code is
+# ``(across - 1) << 2 | (down - 1)``, so across is the outer loop.
+_SIZES: tuple[tuple[int, int], ...] = tuple(
+    (across, down) for across in range(1, 5) for down in range(1, 5)
+)
+# A signed byte: the y field, and the mirror field that x and the width bound.
+_S8 = range(-128, 128)
+
+
+def _x_range(x_bytes: int) -> range:
+    half = 1 << (x_bytes * 8 - 1)
+    return range(-half, half)
+
+
+def _span(r: range) -> str:
+    return f"{r.start}..{r.stop - 1}"
 
 
 class MdSpriteCodec:
@@ -250,12 +273,91 @@ class MdSpriteCodec:
                     flip_h=cell.flip_h,
                     flip_v=cell.flip_v,
                     across=_across(cell),
-                    down=(_size_of(cell) & 3) + 1,
+                    down=_down(cell),
                     column_major=True,
+                    record=i,
                 )
-                for cell in cells
+                for i, cell in enumerate(cells)
             )
         ]
+
+    def subsprite_limits(
+        self, params: dict[str, Any], ctx: PipelineContext
+    ) -> SubspriteLimits:
+        """A bare run of records: y a byte, x at ``x_bytes``, any of the 16
+        rectangles the size nibble spells. One frame, and no count to bound it —
+        the count word sits outside the slice (module docstring)."""
+        x_bytes, _mirror, _order = _layout(params)
+        return SubspriteLimits(
+            structure="run",
+            x_range=_x_range(x_bytes),
+            y_range=_S8,
+            size=_SIZES,
+            per_frame=None,
+            frames=1,
+        )
+
+    def place_subsprite(
+        self,
+        cell: Cell,
+        params: dict[str, Any],
+        ctx: PipelineContext,
+        *,
+        x: int | None = None,
+        y: int | None = None,
+        size: SizeChoice | None = None,
+        drawn: bool | None = None,
+    ) -> Cell:
+        """``cell`` with its y, size nibble and x written, and the mirror kept true.
+
+        The mirror field is **re-derived** here, as ``-(x + across * 8)``,
+        whenever x or the size is written — and :meth:`transform_cell`
+        deliberately leaves it alone. The difference is which inputs change: the
+        game never computes a mirrored position, it reads this field when the
+        object faces the other way (``docs/design/sprite-map.md`` §13.2), so
+        a piece moved or resized with a stale mirror jumps when the object turns
+        round, and :func:`mirrors_x` fires the dialect warning on every rebuild.
+        A flip of one piece changes neither x nor the width, so the stored
+        mirror is still whatever the file wrote and is kept as it was.
+
+        A mirror the field cannot hold is refused like an offset: a byte holds
+        -128..127, so x and the width together are bounded by it, and a wrapped
+        mirror would be the same stale value the reader warns about. ``drawn``
+        is ignored — a record that is present is drawn.
+        """
+        x_bytes, has_mirror, _order = _layout(params)
+        flags = cell.flags
+        if y is not None:
+            if y not in _S8:
+                raise ValueError(f"y offsets here run {_span(_S8)}, not {y}")
+            flags = flags & ~(0xFF << 32) | (y & 0xFF) << 32
+        if x is not None:
+            limit = _x_range(x_bytes)
+            if x not in limit:
+                raise ValueError(f"x offsets here run {_span(limit)}, not {x}")
+            # Sixteen bits whatever x_bytes is, sign-extended as decode does.
+            flags = flags & ~(0xFFFF << 8) | (x & 0xFFFF) << 8
+        if size is not None:
+            if (
+                not isinstance(size, tuple)
+                or len(size) != 2
+                or not all(type(n) is int and 1 <= n <= 4 for n in size)
+            ):
+                raise ValueError(f"a piece here is 1..4 tiles each way, not {size!r}")
+            across, down = size
+            # Only the nibble is the size; the byte's high bits are carried.
+            nibble = (across - 1) << 2 | (down - 1)
+            flags = flags & ~(0x0F << 24) | nibble << 24
+        placed = replace(cell, flags=flags)
+        if has_mirror and (x is not None or size is not None):
+            mirrored = -(_x_of(placed) + _across(placed) * 8)
+            if mirrored not in _S8:
+                raise ValueError(
+                    f"the mirrored x, -(x + width * 8) = {mirrored}, must run "
+                    f"{_span(_S8)} to fit its byte"
+                )
+            placed = replace(placed, flags=flags & ~0xFF | (mirrored & 0xFF))
+        return placed
 
     def index_limit(self, params: dict[str, Any]) -> int:
         return _INDEX
@@ -272,6 +374,8 @@ class MdSpriteCodec:
         offset this piece takes when the *whole object* is drawn flipped, so it
         belongs to the object's layout rather than to this subsprite's own bits.
         Flipping one piece in place leaves the mirrored layout as the file wrote
-        it, which is the answer that loses nothing.
+        it, which is the answer that loses nothing — a flip moves neither of the
+        two inputs the mirror derives from, which :meth:`place_subsprite` does
+        and so re-derives it.
         """
         return mirror(cell, op)

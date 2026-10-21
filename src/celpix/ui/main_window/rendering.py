@@ -1242,6 +1242,9 @@ class RenderingMixin(_Host):
             self._canvas.set_stamp_unit(*self._doc.stamp_tiles)
         else:
             self._canvas.set_stamp_unit(0, 0)
+        # And on a sprite map no slot names a piece at all, so the stamp's
+        # gestures report pixels there (``sprite-map.md`` §10.1).
+        self._canvas.set_stamp_in_pixels(self._doc.is_sprite)
         self._canvas.set_filled_tiles(filled)
         # The labels are their own switch: a row can be shown without the
         # recolour and either without the other (`palette_regions.py`). One

@@ -29,6 +29,7 @@ from celpix.core.context import (
 from celpix.core.errors import Stage
 from celpix.core.index_grid import IndexGrid
 from celpix.core.palette import Palette
+from celpix.core.sprite import SizeChoice, SubspriteLimits
 from celpix.core.tilemap import Cell, CellOp
 from celpix.plugins.aliases import current_params
 
@@ -1379,6 +1380,96 @@ class TilemapCodecPlugin(Plugin, Protocol):
         A plugin that omits this method has no records, which is every format
         whose lines end on a code or on a bit: a line there is as long as its
         text, and only the region's length is fixed.
+        """
+        ...
+
+    # -- the sprite half: a codec whose cells are subsprites --------------------
+    #
+    # ``frames(cells, params, ctx)`` is the optional method that makes a codec a
+    # sprite codec: the cells regrouped into frames of
+    # :class:`~celpix.core.sprite.Subsprite`, each stamped with the index of the
+    # cell it came from (``Subsprite.record``). ``size_pair(params)`` beside it
+    # is the two squares a size *bit* picks between, for a format that has one.
+    # The three below are the **inverse** — what lets a piece be edited — and a
+    # sprite codec that omits them is read view-only, exactly as a grid codec
+    # that omits ``index_limit`` is (``docs/design/sprite-map.md`` §8.3).
+
+    def subsprite_limits(
+        self, params: dict[str, Any], ctx: PipelineContext
+    ) -> SubspriteLimits:
+        """What this format's records can hold, in their own terms.
+
+        Optional, and the whole declaration of editability for a sprite codec:
+        a codec that answers has its pieces editable through the canvas and
+        the property row, and one that stays quiet is view-only. The ranges
+        bound the controls and clamp a drag, the size choices are what the
+        Size control offers, and the structure kind is what the record ops
+        dispatch on (:class:`~celpix.core.sprite.SubspriteLimits`,
+        :mod:`celpix.core.sprite_edit`).
+
+        Asked with the context because two of the answers are the *file's*: a
+        slot stride the container stated, a frame count a form decides.
+
+        A plugin that omits this method has its pieces left alone, which is
+        the safe direction: a codec never asked where its offsets live must
+        not have a drag write into them.
+        """
+        ...
+
+    def place_subsprite(
+        self,
+        cell: Cell,
+        params: dict[str, Any],
+        ctx: PipelineContext,
+        *,
+        x: int | None = None,
+        y: int | None = None,
+        size: SizeChoice | None = None,
+        drawn: bool | None = None,
+    ) -> Cell:
+        """``cell`` with the named record fields written, every other bit kept.
+
+        The inverse of :meth:`frames` for the fields a :class:`Cell` has no
+        attribute for — the offsets, the size and the drawn bit all live in
+        ``flags`` on the format's own terms, and only the codec knows where.
+        ``None`` leaves a field as it is, so a nudge writes two fields and a
+        size change one. ``size`` is a :data:`~celpix.core.sprite.SizeChoice`
+        from :meth:`subsprite_limits`; ``drawn`` is meaningful only under the
+        ``slots`` structure and ignored elsewhere.
+
+        **Raises** ``ValueError`` naming the range for a value the field cannot
+        hold — ``offsets here run -128..127`` — which the host puts on the
+        status line; it never clamps silently, because a clamped piece is a
+        piece somewhere the user did not put it. A format with a field that
+        *derives* from these (the Mega Drive record's mirrored X) re-derives
+        it here, so a piece moved by the canvas stays consistent with the
+        invariant its reader checks.
+        """
+        ...
+
+    def assign_frames(
+        self,
+        cells: list[Cell],
+        frames: Sequence[int],
+        params: dict[str, Any],
+        ctx: PipelineContext,
+    ) -> list[Cell]:
+        """``cells`` restructured so that cell *i* belongs to frame ``frames[i]``.
+
+        Optional, and needed only by a structure whose frame membership is
+        carried **in the cells** rather than by position — ``counted``, where
+        each cell is stamped with its frame, and ``headed``, where a frame's
+        header rides on its first cell and has to move when that cell is
+        inserted before, removed or reordered. The record ops compute the new
+        order and the frame each cell lands in, then hand both here, so the
+        ops never learn how a format marks a frame
+        (:mod:`celpix.core.sprite_edit`). A ``slots`` or ``run`` format has no
+        such mark and omits this.
+
+        ``frames`` is one frame number per cell, in order, and may name a
+        frame no cell named before (a frame being populated) or leave one
+        unnamed (a frame being emptied) — under ``counted`` an empty frame is
+        a gap in the numbering, which ``encode`` publishes as a count of 0.
         """
         ...
 

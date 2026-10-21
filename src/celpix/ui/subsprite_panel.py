@@ -23,12 +23,16 @@ is the **first** of the several records drawing one piece, which changes nothing
 here — a square still holds one pair, and which pair a pick belongs to is settled
 before it arrives (:mod:`celpix.ui.main_window.subsprites`).
 
-**One ring, and it is not a selection.** The canvas is what picks a subsprite
-here; a square is a thing to *find*, not a thing to choose, so nothing in this
-panel selects. The ring marks the record the canvas picked, and it is drawn in
-the grid's structural blue for the reason the canvas outline and the tile source
-panel's marker are — white is where the user pointed, blue is what that resolved
-to.
+**One ring, and a square is addressable.** The ring marks the record the
+canvas picked, and it is drawn in the grid's structural blue for the reason the
+canvas outline and the tile source panel's marker are — white is where the user
+pointed, blue is what that resolved to. A left press on a square **reports**
+it (:attr:`SubspritePanel.square_clicked`), with the modifiers held, and a left
+drag released over another square reports the pair
+(:attr:`SubspritePanel.square_dragged`): the panel resolves no record and
+changes no pick, since what a click picks and what a drag means are questions
+about the model (``docs/design/sprite-map.md`` §10.4). So the ring moves
+when the window side answers, through the same path a canvas pick takes.
 
 It rings the **piece**, not the square it was laid in. The two are the same
 rectangle on an object whose subsprites are all one size, and on one that mixes
@@ -62,7 +66,7 @@ from PySide6.QtWidgets import QWidget
 from celpix.ui.panzoom import PanOnlyMouse
 from celpix.ui.sheet_surface import SheetSurface
 from celpix.ui.theme import GRID_FINE_COLOR
-from celpix.ui.widgets import paint_mark_ring
+from celpix.ui.widgets import grid_slot_at, paint_mark_ring
 
 #: One record, as the sheet addresses it: ``(frame, subsprite)``.
 Record = tuple[int, int]
@@ -76,6 +80,11 @@ class SubspritePanel(PanOnlyMouse, SheetSurface):
 
     zoom_requested = Signal(int, object)  # steps, QPointF cursor pos (widget)
     pan_requested = Signal(int, int)  # dx, dy
+    # A left press on a square: (frame, subsprite) and the Qt.KeyboardModifiers
+    # held, which say whether it picks, toggles or spans.
+    square_clicked = Signal(int, int, object)
+    # A left drag released over a different square: (from, to) records.
+    square_dragged = Signal(object, object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -83,6 +92,9 @@ class SubspritePanel(PanOnlyMouse, SheetSurface):
         self._boxes: Sequence[Box] = ()
         self._marked: Record | None = None
         self._captions = True
+        # The square a left press landed on, until its release: what a drag
+        # carries. None with no press, or a press on no square.
+        self._pressed: Record | None = None
         # Focusable although nothing here is picked with the keyboard: the window
         # puts the focus on the sheet when it opens, and its Cols keys yield to a
         # focused spin box — so a sheet that could not hold focus would leave the
@@ -120,6 +132,9 @@ class SubspritePanel(PanOnlyMouse, SheetSurface):
         self._columns = max(1, columns)
         if self._marked is not None and self._marked not in self._records:
             self._marked = None
+        # A press across a recompose names a square of the old sheet, which on
+        # this one may be a different piece: the drag it started is dropped.
+        self._pressed = None
         self._update_size()
 
     def records(self) -> Sequence[Record]:
@@ -146,6 +161,52 @@ class SubspritePanel(PanOnlyMouse, SheetSurface):
     def clear(self) -> None:
         """Show nothing — no document, or one that is not a sprite map."""
         self.set_sheet(QImage(), (), (), self._cell_px, self._columns)
+
+    # -- the mouse -----------------------------------------------------------
+    def _record_at(self, x_px: float, y_px: float) -> Record | None:
+        """The record of the square under a widget position, or None."""
+        cell_w, cell_h = self._cell_px
+        slot = grid_slot_at(
+            x_px,
+            y_px,
+            (cell_w * self._zoom_x, cell_h * self._zoom_y),
+            self._columns,
+            len(self._records),
+        )
+        return None if slot is None else self._records[slot]
+
+    def mousePressEvent(self, event) -> None:  # noqa: ANN001 — Qt override
+        """A left press on a square reports it; an armed pan wins first."""
+        if self._pan_press(event):
+            return
+        if event.button() == Qt.MouseButton.LeftButton:
+            pos = event.position()
+            record = self._record_at(pos.x(), pos.y())
+            self._pressed = record
+            if record is not None:
+                self.square_clicked.emit(record[0], record[1], event.modifiers())
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: ANN001 — Qt override
+        """A left release over another square than the press reports the drag.
+
+        Told apart on release, not on the first move: a press that wanders and
+        comes back to its square is a click, and reordering on the way past
+        each square would push a step per square crossed.
+        """
+        if self._pan_release(event):
+            return
+        if event.button() == Qt.MouseButton.LeftButton:
+            pressed, self._pressed = self._pressed, None
+            pos = event.position()
+            target = self._record_at(pos.x(), pos.y())
+            if pressed is not None and target is not None and target != pressed:
+                self.square_dragged.emit(pressed, target)
+                event.accept()
+                return
+        super().mouseReleaseEvent(event)
 
     # -- geometry ------------------------------------------------------------
     def _piece_rect(self, slot: int) -> QRect:

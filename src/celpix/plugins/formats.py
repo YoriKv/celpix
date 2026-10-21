@@ -132,8 +132,10 @@ class TilemapFormat(Protocol):
     ``settle_cells(cells, inputs)`` for a format that declares inputs),
     ``has_line_flag()``, ``has_visibility()``, ``cell_fields()``,
     ``cell_widths(cells)``, ``line_bytes()`` and ``counts_records()`` — plus
-    the two a ``layout = "sprite"`` format adds, ``size_pair()`` and
-    ``frames(cells, ctx)``, which have no place on a grid.
+    the five a ``layout = "sprite"`` format adds, ``size_pair()`` and
+    ``frames(cells, ctx)``, and the inverse's ``subsprite_limits(ctx)``,
+    ``place_subsprite(cell, ctx, *, x, y, size, drawn)`` and
+    ``assign_frames(cells, frames, ctx)``, none of which has a place on a grid.
     A format answering ``counts_records`` True has the record keys read off its
     ``declares`` like an engine's off its preset
     (:data:`~celpix.core.tilemap.RECORD_KEYS`).
@@ -176,8 +178,26 @@ def _params_second(impl: Any) -> Any:
     second is ever ``params``.
     """
 
-    def call(first: Any, params: dict[str, Any], *rest: Any) -> Any:
-        return impl(first, *rest)
+    def call(first: Any, params: dict[str, Any], *rest: Any, **named: Any) -> Any:
+        return impl(first, *rest, **named)
+
+    return call
+
+
+def _params_first(impl: Any) -> Any:
+    """The same for ``subsprite_limits(params, ctx)``, where ``params`` leads."""
+
+    def call(params: dict[str, Any], *rest: Any) -> Any:
+        return impl(*rest)
+
+    return call
+
+
+def _params_third(impl: Any) -> Any:
+    """The same for ``assign_frames(cells, frames, params, ctx)``."""
+
+    def call(first: Any, second: Any, params: dict[str, Any], *rest: Any) -> Any:
+        return impl(first, second, *rest)
 
     return call
 
@@ -207,6 +227,9 @@ _OPTIONAL: dict[Stage, dict[str, Any]] = {
         "counts_records": _params_last,
         "size_pair": _params_last,
         "frames": _params_second,
+        "subsprite_limits": _params_first,
+        "place_subsprite": _params_second,
+        "assign_frames": _params_third,
     },
 }
 

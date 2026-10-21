@@ -17,6 +17,9 @@ gesture's unit is the whole stamp: the sweep grows out to the stamp lattice and
 the brush holds one entry per stamp (:meth:`StampToolMixin._on_stamp_area_picked`).
 It is offered only on a
 tilemap, because only a tilemap has cells that name tiles (`Capability.STAMP`).
+On a **sprite map** whose codec declares what its records hold, the same tool
+reads as *Edit Subsprites*: the canvas reports its gestures in pixels there and
+:mod:`~celpix.ui.main_window.sprite_edit` reads them on pieces.
 
 **What is held is previewed on the canvas.** The held tiles are rendered in the
 colours they would land in and shown over the hovered cell — the pixel pen's
@@ -75,6 +78,21 @@ STAMP_TIP = (
 # the Cell spin, said in the place the user is reaching for.
 STAMP_BLOCKED_TIP = (
     "Edit Tiles (T)\nUnavailable: this format's cells store no tile index"
+)
+# The same tool on a sprite map, where it moves and adds pieces
+# (:mod:`~celpix.ui.main_window.sprite_edit`) - named for what it edits there,
+# as the transform bar's groups keep their captions under another tool.
+SPRITE_TOOL_TEXT = "Toggle Edit Subsprites Mode"
+SPRITE_TOOL_ICON_TEXT = "Edit Subsprites"
+STAMP_TEXT = "Toggle Edit Tiles Mode"
+STAMP_ICON_TEXT = "Edit Tiles"
+SPRITE_STAMP_TIP = (
+    "Edit Subsprites (T): drag a piece to move it, click to add the held\n"
+    "piece; right-click picks a piece, right-drag selects pieces"
+)
+SPRITE_STAMP_BLOCKED_TIP = (
+    "Edit Subsprites (T)\nUnavailable: this sprite map's format declares\n"
+    "no piece it can write back"
 )
 
 
@@ -149,8 +167,8 @@ class StampToolMixin(_Host):
         # rows it sits with carry none either, so it reads as one of that group.
         self._stamp_action, self._toggle_stamp_action = modal_tool_actions(
             self,
-            "Toggle Edit Tiles Mode",
-            "Edit Tiles",
+            STAMP_TEXT,
+            STAMP_ICON_TEXT,
             "T",
             STAMP_TIP,
             self._set_stamping,
@@ -176,6 +194,9 @@ class StampToolMixin(_Host):
         the two gestures set one field, and one being offered while the other was
         refused would describe two different documents.
         """
+        # True on a sprite map whose codec declares what its records hold, and
+        # there the tool reads as Edit Subsprites: the gestures arrive in pixels
+        # and the SpriteEditMixin answers them, not the slot handlers below.
         return self._cell_reference_settable()
 
     def _toggle_stamping(self) -> None:
@@ -202,6 +223,9 @@ class StampToolMixin(_Host):
         """
         if self._stamping == on:
             return
+        # A tool change ends a run of arrow nudges on a sprite map, so the next
+        # nudge is a step of its own (:mod:`~celpix.ui.main_window.sprite_edit`).
+        self._end_nudge_run()
         if on:
             # Both read their own flag, still False/TILE here, so the disarms
             # inside cannot bounce back off this one.
@@ -239,13 +263,27 @@ class StampToolMixin(_Host):
         blocked = (
             self._doc is not None and self._can(Capability.STAMP) and not available
         )
+        sprite = self._doc is not None and self._doc.is_sprite
+        if sprite:
+            tip = SPRITE_STAMP_BLOCKED_TIP if blocked else SPRITE_STAMP_TIP
+        else:
+            tip = STAMP_BLOCKED_TIP if blocked else STAMP_TIP
+        text = SPRITE_TOOL_TEXT if sprite else STAMP_TEXT
+        for action in (self._stamp_action, self._toggle_stamp_action):
+            if action.text() != text:
+                action.setText(text)
+        self._stamp_action.setIconText(
+            SPRITE_TOOL_ICON_TEXT if sprite else STAMP_ICON_TEXT
+        )
         sync_modal_tool(
             self._stamp_action,
             self._toggle_stamp_action,
             armed=self._stamping,
             available=available,
-            tip=STAMP_BLOCKED_TIP if blocked else STAMP_TIP,
+            tip=tip,
         )
+        # The rows the tool grows on a sprite map follow the same pass.
+        self._sync_subsprite_actions()
         # The preview follows everything this pass follows — arming, the entry,
         # the format — plus the render inputs the refresh brings it here for: a
         # palette edit or a Palette Row move recolours what the held tiles would land
@@ -293,6 +331,10 @@ class StampToolMixin(_Host):
         return held if held in span else None
 
     def _on_stamp_pressed(self, slot: int, button) -> None:  # noqa: ANN001 — Qt button
+        # A sprite map's gestures arrive in pixels (`stamp_pixel_*`); a slot
+        # names no piece there, so a slot report is nothing to act on.
+        if self._doc is not None and self._doc.is_sprite:
+            return
         if button == Qt.MouseButton.RightButton:
             self._pick_tile_at(slot)
             return
@@ -309,6 +351,8 @@ class StampToolMixin(_Host):
         self._stamp_into(slot, held)
 
     def _on_stamp_moved(self, slot: int) -> None:
+        if self._doc is not None and self._doc.is_sprite:
+            return
         held = self._held_tile_id()
         if held is not None and self._stamp_cells is not None:
             self._stamp_into(slot, held)
@@ -644,7 +688,7 @@ class StampToolMixin(_Host):
         one unit as the single-cell ``stamp_pressed`` it is.
         """
         doc = self._doc
-        if doc is None or doc.cells is None:
+        if doc is None or doc.cells is None or doc.is_sprite:
             return
         width = self._cells_per_row()
         a, b = anchor // doc.tiles_per_cell, far // doc.tiles_per_cell
@@ -679,6 +723,10 @@ class StampToolMixin(_Host):
         every step re-enters.
         """
         if self._stamp_cells is not None:
+            return
+        if self._doc is not None and self._doc.is_sprite:
+            # The held piece's ghost, anchored on a pixel rather than a cell.
+            self._sync_subsprite_preview()
             return
         if not self._stamping or self._doc is None:
             self._canvas.set_stamp_preview(None)
@@ -782,6 +830,8 @@ class StampToolMixin(_Host):
         format, whose landing keeps the target's row.
         """
         doc = self._doc
+        if doc is not None and doc.is_sprite:
+            return
         anchor = None
         if slot is not None and doc is not None:
             # Snapped to the unit lattice the ghost is painted on — a plain

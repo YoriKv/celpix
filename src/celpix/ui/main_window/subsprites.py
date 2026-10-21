@@ -26,12 +26,24 @@ listing, one square per record, or its inventory, one per distinct piece — and
 that choice reaches the ring as well as the picture: with the repetition taken
 out, "which square is the pick in" stops being a lookup and becomes a question
 about the art (:meth:`~SubspritesMixin._subsprite_square`).
+
+**The squares are addressable** (``docs/design/sprite-map.md`` §10.4): every
+editor surveyed splits the work as *the canvas moves; the list holds the
+structure*, and this window is the list. A click picks, with the Files pane's
+Ctrl and Shift, so a piece covered on the canvas is reachable by its square
+(:meth:`~SubspritesMixin._on_subsprite_square_clicked`); a drag reorders within
+a frame or moves to another (:meth:`~SubspritesMixin._on_subsprite_square_dragged`).
+A click picks on a view-only map too — the pick is a reading — where a drag,
+which writes, is refused with the reason.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from PySide6.QtCore import Qt
+
+from celpix.core.sprite_edit import move_subsprite, reorder_subsprite
 from celpix.pipeline import pipeline
 from celpix.ui.widgets import Badge, counted
 
@@ -51,6 +63,11 @@ class SubspritesMixin(_Host):
     standalone object: it reads the window's own widgets and its single live
     ``_doc``. See the package docstring for why these are mixins.
     """
+
+    def _connect_subsprite_sheet(self) -> None:
+        """Wire the window's square reports (called once the window exists)."""
+        self._subsprites.square_clicked.connect(self._on_subsprite_square_clicked)
+        self._subsprites.square_dragged.connect(self._on_subsprite_square_dragged)
 
     def _subsprites_available(self) -> bool:
         """Whether this document has subsprites worth opening a sheet on.
@@ -214,3 +231,140 @@ class SubspritesMixin(_Host):
             ),
             None,
         )
+
+    # -- the squares, addressed ----------------------------------------------
+    def _square_piece(self, frame: int, sub: int):  # noqa: ANN202 — a Subsprite
+        """The piece a square names in the shown frames, or None.
+
+        Bounds-checked: an open sheet's records trail an entry switch until its
+        coalesced refresh lands, and may name a square this object has not got.
+        """
+        doc = self._doc
+        if doc is None or not doc.is_sprite:
+            return None
+        frames = doc.shown_frames
+        if not (0 <= frame < len(frames) and 0 <= sub < len(frames[frame])):
+            return None
+        return frames[frame][sub]
+
+    def _on_subsprite_square_clicked(
+        self, frame: int, sub: int, modifiers: Qt.KeyboardModifier
+    ) -> None:
+        """A press on a square: pick its record, with the Files pane's keys.
+
+        Plain picks the one record; Ctrl toggles it in or out; Shift spans from
+        the anchor in that frame's draw order — the canvas pick's own reading
+        (:meth:`~...sprite_select.SpriteSelectMixin._on_pixel_picked`), so a
+        piece covered on the canvas is reached by its square on the same
+        terms. Under the inventory a square already *is* the first occurrence,
+        so a click picks that; with *Select All Occurrences* on it picks every
+        record whose art matches (:func:`~celpix.pipeline.pipeline.
+        subsprite_key`), the clicked one last so it is the primary.
+        """
+        piece = self._square_piece(frame, sub)
+        if piece is None:
+            return
+        record = piece.record
+        if record is None:
+            self.statusBar().showMessage(
+                "This piece comes from no record - a table's pieces are not "
+                "editable here."
+            )
+            return
+        if self._subsprites.all_occurrences():
+            key = pipeline.subsprite_key(piece)
+            same = [
+                other.record
+                for drawn in self._doc.shown_frames
+                for other in drawn
+                if other.record is not None
+                and other.record != record
+                and pipeline.subsprite_key(other) == key
+            ]
+            self._set_picked_records([*same, record])
+            return
+        if modifiers & Qt.KeyboardModifier.ControlModifier:
+            picked = [r for r in self._picked_records if r != record]
+            if len(picked) == len(self._picked_records):
+                picked.append(record)
+            self._set_picked_records(picked, anchor=record)
+        elif modifiers & Qt.KeyboardModifier.ShiftModifier:
+            self._set_picked_records(
+                self._spanned_records((frame, sub)), anchor=self._pick_anchor
+            )
+        else:
+            self._set_picked_records([record])
+        # Neither cycles a stack: the next canvas press starts at the front.
+        self._pick_tile, self._pick_depth = None, 0
+
+    def _on_subsprite_square_dragged(
+        self, source: tuple[int, int], target: tuple[int, int]
+    ) -> None:
+        """A drag between squares: reorder within a frame, or move to another.
+
+        The listing's alone — under the inventory a square is several records
+        and a position in no frame. Within a frame the piece takes the target's
+        place in draw order (:func:`~celpix.core.sprite_edit.reorder_subsprite`,
+        the step Alt+Up/Down pushes); onto another frame's square it joins the
+        back of that frame (:func:`~celpix.core.sprite_edit.move_subsprite`).
+        Either is one step that keeps the piece picked, and a format that
+        cannot spell it says why on the status line.
+        """
+        doc = self._doc
+        if doc is None or not doc.is_sprite or doc.cells is None:
+            return
+        if not self._subsprites.by_frame():
+            self.statusBar().showMessage(
+                "Turn Frames on to reorder - a square here stands for several records."
+            )
+            return
+        limits = self._subsprite_limits()
+        if limits is None:
+            self._refuse_view_only()
+            return
+        piece = self._square_piece(*source)
+        if piece is None or self._square_piece(*target) is None:
+            return
+        record = piece.record
+        if record is None:
+            return
+        frames = doc.sprite_frames or []
+        before = self._selected_cells()
+        try:
+            if source[0] == target[0]:
+                cells = reorder_subsprite(
+                    doc.cells,
+                    frames,
+                    limits,
+                    record,
+                    target[1],
+                    assign=self._assign_frames,
+                )
+                # The frame's pieces are permuted among the indices it already
+                # holds, so the moved one lands on the target's place among them.
+                held = sorted(
+                    sub.record for sub in frames[source[0]] if sub.record is not None
+                )
+                moved = held[min(target[1], len(held) - 1)]
+                said = f"Moved subsprite {source[1]} to place {target[1]}"
+                said += f" in frame {source[0]}."
+            else:
+                cells, moved = move_subsprite(
+                    doc.cells,
+                    frames,
+                    limits,
+                    record,
+                    target[0],
+                    place=self._place_subsprite,
+                    assign=self._assign_frames,
+                )
+                said = f"Moved subsprite {source[1]} of frame {source[0]} to frame"
+                said += f" {target[0]}."
+        except ValueError as exc:
+            reason = str(exc)
+            self.statusBar().showMessage(
+                f"{reason[:1].upper()}{reason[1:]} - nothing changed."
+            )
+            return
+        if self._apply_cells(cells, "reorder subsprites", pick=(before, [moved])):
+            self.statusBar().showMessage(said)

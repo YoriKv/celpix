@@ -99,19 +99,33 @@ header's other bytes are carried with the frame's first piece, and the count is
 rewritten from the frame on a save. ``column_major`` says a piece's tiles run
 down each column before the next, as a Mega Drive sprite's do.
 
-Sprite objects are drawn read-only by the canvas, so what an encode meets is
-the cells decode produced; it is the exact inverse all the same.
+**Editing.** The pieces are editable: :meth:`SpriteRecordCodec.place_subsprite`
+writes a piece's offsets and size into its record's own bits, and
+:meth:`~SpriteRecordCodec.assign_frames` moves the frame headers when the record
+ops reorder, insert or remove pieces (``docs/design/sprite-map.md`` §8). So
+what an encode meets is not only what decode produced — but every field a piece
+does not model is still carried, and the encode is the exact inverse of
+whatever the cells now hold.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import replace
+from itertools import pairwise
 from typing import Any
 
 from celpix.core.address import format_hex
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.notices import warn
-from celpix.core.sprite import DEFAULT_SUBSPRITE_TILES, Frame, Subsprite
+from celpix.core.sprite import (
+    DEFAULT_SUBSPRITE_TILES,
+    Frame,
+    SizeChoice,
+    Subsprite,
+    SubspriteLimits,
+)
 from celpix.core.tilemap import Cell, CellOp
 from celpix.plugins._params import byte_order, flag, integer
 from celpix.plugins.base import PluginInfo
@@ -379,6 +393,113 @@ class RecordLayout:
         """Whether the record's s code is past the end of ``sizes``."""
         return self.sizes is not None and self.part(record, "size") >= len(self.sizes)
 
+    def _width(self, part: str) -> int:
+        return sum(w for _s, w in self._placement(part)[1])
+
+    def _placed(self, part: str) -> bool:
+        return any(part in placed for _n, _a, _w, _s, placed in self.fields)
+
+    def axis_range(self, axis: str) -> range:
+        """The offsets the record can hold on ``axis`` (``x`` or ``y``).
+
+        Read from wherever :meth:`offset` reads the axis: its bits, signed at
+        their own width where the field's type is signed (``sxxx xxxx`` on an
+        ``s8`` is -64..63) and unsigned otherwise; else the whole field named
+        for it, at its type's range. A record with neither draws every piece at
+        0 on that axis, and ``range(0, 1)`` says so — a piece there cannot move,
+        because there is no bit to move it with.
+        """
+        for _name, _at, _width, signed, placed in self.fields:
+            if axis in placed:
+                return _int_range(self._width(axis), signed)
+        for name, _at, width, signed, _placed in self.fields:
+            if name == axis:
+                return _int_range(width * 8, signed)
+        return range(0, 1)
+
+    def with_axis(self, record: bytes, axis: str, value: int) -> bytes:
+        """``record`` with its ``axis`` offset set to ``value``, written where
+        :meth:`offset` reads it. Raises naming the range for a value the field
+        cannot hold."""
+        limit = self.axis_range(axis)
+        if value not in limit:
+            if len(limit) == 1:
+                raise ValueError(
+                    f"this record has no {axis} field, so its pieces sit at {axis} = 0"
+                )
+            raise ValueError(f"{axis} offsets here run {_span(limit)}, not {value}")
+        if self._placed(axis):
+            # Two's complement at the bits' own width; the range check above
+            # has already said the value fits them.
+            bits = self._width(axis)
+            return self.with_parts(record, {axis: value & ((1 << bits) - 1)})
+        if any(name == axis for name, _a, _w, _s, _p in self.fields):
+            return self.with_field(record, axis, value)
+        return record
+
+    def with_field(self, record: bytes, name: str, value: int) -> bytes:
+        """``record`` with the whole field ``name`` set to ``value``, signed or
+        unsigned per its type, in the layout's byte order — the writer for a
+        field that places no bits of its own (``nes-oam``'s ``x`` and ``y``).
+        Raises for a value its type cannot hold."""
+        for field, at, width, signed, _placed in self.fields:
+            if field != name:
+                continue
+            limit = _int_range(width * 8, signed)
+            if value not in limit:
+                raise ValueError(f"field {name!r} holds {_span(limit)}, not {value}")
+            out = bytearray(record)
+            out[at : at + width] = value.to_bytes(width, self.order, signed=signed)
+            return bytes(out)
+        raise KeyError(name)
+
+    def size_choices(self) -> tuple[SizeChoice, ...] | None:
+        """Every size the record can spell, in its own terms (``SizeChoice``):
+        each ``(across, down)`` its c/r bits reach, the entries of ``sizes``,
+        ``small``/``large`` for a lone s bit, or None where ``subsprite_tiles``
+        fixes it."""
+        if self.sized:
+            return tuple(
+                (across, down)
+                for across in self._extent("columns", self.tiles[0])
+                for down in self._extent("rows", self.tiles[1])
+            )
+        if self.sizes is not None:
+            return self.sizes
+        if self.coded:
+            return ("small", "large")
+        return None
+
+    def _extent(self, part: str, fixed: int) -> range:
+        """The tile counts a c or r field spells, or the fixed one where the
+        record places only the other of the two."""
+        if self._placed(part):
+            return range(1, (1 << self._width(part)) + 1)
+        return range(fixed, fixed + 1)
+
+    def with_size(self, record: bytes, size: SizeChoice) -> bytes:
+        """``record`` with its size bits spelling ``size``, one of
+        :meth:`size_choices`. Raises for a size the record cannot spell."""
+        choices = self.size_choices()
+        if choices is None:
+            raise ValueError(
+                "this preset fixes every piece's size; the record holds none"
+            )
+        if size not in choices:
+            spelled = ", ".join(
+                c if isinstance(c, str) else f"{c[0]}x{c[1]}" for c in choices
+            )
+            raise ValueError(f"a piece here is one of {spelled}, not {size!r}")
+        if self.sized:
+            across, down = size  # type: ignore[misc]
+            parts = {"columns": across - 1, "rows": down - 1}
+            return self.with_parts(
+                record, {p: v for p, v in parts.items() if self._placed(p)}
+            )
+        # A size bit or a code: the index of the choice is what the s bits hold
+        # — 0 small, 1 large; or the first entry of `sizes` it matches.
+        return self.with_parts(record, {"size": choices.index(size)})
+
     def with_parts(self, record: bytes, parts: dict[str, int]) -> bytes:
         """``record`` with the named bit fields replaced, every other bit kept."""
         out = bytearray(record)
@@ -395,6 +516,17 @@ class RecordLayout:
                 word = (word & ~mask) | scatter(parts[p], chunks, sw)
             out[at : at + width] = word.to_bytes(width, self.order)
         return bytes(out)
+
+
+def _int_range(bits: int, signed: bool) -> range:
+    if signed:
+        half = 1 << (bits - 1)
+        return range(-half, half)
+    return range(0, 1 << bits)
+
+
+def _span(r: range) -> str:
+    return f"{r.start}..{r.stop - 1}"
 
 
 def _cell(layout: RecordLayout, record: bytes, header: bytes | None) -> Cell:
@@ -448,8 +580,17 @@ def warn_unsized(
     )
 
 
-def subsprite(layout: RecordLayout, record: bytes, pair: tuple[int, int]) -> Subsprite:
-    """The piece one record draws, a lone size bit resolved against ``pair``."""
+def subsprite(
+    layout: RecordLayout,
+    record: bytes,
+    pair: tuple[int, int],
+    at: int | None = None,
+) -> Subsprite:
+    """The piece one record draws, a lone size bit resolved against ``pair``.
+
+    ``at`` is the index of the cell the record came from, stamped as the piece's
+    ``record``; a sprite table's pieces come from a region input and have none.
+    """
     across, down = layout.shape(record, pair)
     return Subsprite(
         x=layout.offset(record, "x"),
@@ -462,6 +603,7 @@ def subsprite(layout: RecordLayout, record: bytes, pair: tuple[int, int]) -> Sub
         across=across,
         down=down,
         column_major=layout.column_major,
+        record=at,
     )
 
 
@@ -576,13 +718,134 @@ class SpriteRecordCodec:
         pair = frame_pair(layout, ctx)
         out: list[Frame] = []
         unsized = 0
+        at = 0  # the running cell index, which _group's frames partition in order
         for frame in _group(cells, layout.header is not None):
             # _record lays the cell's own fields back into its bytes, so the
             # piece read from them is the cell's, edits included
             records = [_record(layout, cell) for cell in frame]
             unsized += sum(layout.unsized(r) for r in records)
-            out.append(tuple(subsprite(layout, r, pair) for r in records))
+            out.append(
+                tuple(subsprite(layout, r, pair, at + j) for j, r in enumerate(records))
+            )
+            at += len(frame)
         warn_unsized(ctx, unsized, layout, SPRITE_RECORD_ENGINE)
+        return out
+
+    def subsprite_limits(
+        self, params: dict[str, Any], ctx: PipelineContext
+    ) -> SubspriteLimits:
+        """``headed`` with a frame header, else one ``run``; the offsets and
+        sizes are whatever the preset's fields can hold (:class:`RecordLayout`).
+
+        Under ``headed`` the frame count is the cells' (one per header) and a
+        frame's ceiling is what its count field holds.
+        """
+        layout = RecordLayout(params)
+        if layout.header is None:
+            structure, per_frame, frames = "run", None, 1
+        else:
+            _length, _count_at, count_width = layout.header
+            structure, per_frame, frames = "headed", 2 ** (count_width * 8) - 1, None
+        return SubspriteLimits(
+            structure=structure,
+            x_range=layout.axis_range("x"),
+            y_range=layout.axis_range("y"),
+            size=layout.size_choices(),
+            per_frame=per_frame,
+            frames=frames,
+        )
+
+    def place_subsprite(
+        self,
+        cell: Cell,
+        params: dict[str, Any],
+        ctx: PipelineContext,
+        *,
+        x: int | None = None,
+        y: int | None = None,
+        size: SizeChoice | None = None,
+        drawn: bool | None = None,
+    ) -> Cell:
+        """``cell`` with its offsets and size written into the stored record.
+
+        Only ``flags`` changes, and in it only the bits written: the Cell's own
+        fields (tile, row, priority, flips) are already the Cell's and are laid
+        in at encode, and every carried byte, unclaimed bit and the frame header
+        above the record stay as they were. ``drawn`` is ignored — a record that
+        is present is drawn.
+
+        A mirror field such a record carries is carried here too, and goes stale
+        on a move: this engine knows no field's *meaning* beyond its letters, so
+        it cannot re-derive one (``docs/design/sprite-map.md`` §13.2).
+        """
+        layout = RecordLayout(params)
+        mask = (1 << _HEADER_SHIFT) - 1
+        # The stored bytes, not _record's: the Cell's fields need not be laid in
+        # for an offset to be written, and leaving them out keeps every bit this
+        # call was not asked about exactly as it is.
+        record = (cell.flags & mask).to_bytes(layout.size, "big")
+        if x is not None:
+            record = layout.with_axis(record, "x", x)
+        if y is not None:
+            record = layout.with_axis(record, "y", y)
+        if size is not None:
+            record = layout.with_size(record, size)
+        flags = cell.flags & ~mask | int.from_bytes(record, "big")
+        return cell if flags == cell.flags else replace(cell, flags=flags)
+
+    def assign_frames(
+        self,
+        cells: list[Cell],
+        frames: Sequence[int],
+        params: dict[str, Any],
+        ctx: PipelineContext,
+    ) -> list[Cell]:
+        """``cells`` with the frame headers on the first cell of each frame.
+
+        A headed frame is positional — it is wherever its header is in the run —
+        so the frame numbers must not decrease. Each frame keeps the header
+        payload of the first of its cells that already bears one; a frame none
+        of whose cells does (one being populated) opens with a zero header,
+        which is exactly a count-only one, since encode rewrites the count. A
+        number named by no cell is a frame emptied, and simply goes.
+
+        A header-less run has no marks to move, so its cells come back as given.
+        """
+        layout = RecordLayout(params)
+        if layout.header is None:
+            return list(cells)
+        if len(frames) != len(cells):
+            raise ValueError(
+                f"{len(cells)} cells need one frame number each, not {len(frames)}"
+            )
+        for before, after in pairwise(frames):
+            if after < before:
+                raise ValueError(
+                    "a headed frame is wherever its header sits in the run, so "
+                    f"frame numbers cannot run backwards ({before} then {after})"
+                )
+        record_mask = (1 << _HEADER_SHIFT) - 1
+        out: list[Cell] = []
+        start = 0
+        while start < len(cells):
+            end = start
+            while end < len(cells) and frames[end] == frames[start]:
+                end += 1
+            group = cells[start:end]
+            payload = next(
+                (
+                    c.flags >> _HEADER_SHIFT >> 1
+                    for c in group
+                    if c.flags >> _HEADER_SHIFT & 1
+                ),
+                0,
+            )
+            for j, cell in enumerate(group):
+                flags = cell.flags & record_mask
+                if j == 0:
+                    flags |= (1 | payload << 1) << _HEADER_SHIFT
+                out.append(cell if flags == cell.flags else replace(cell, flags=flags))
+            start = end
         return out
 
     def size_pair(self, params: dict[str, Any]) -> tuple[int, int]:

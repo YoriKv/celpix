@@ -47,7 +47,7 @@ from celpix.core.context import (
 from celpix.core.font import FontAlphabet, Text
 from celpix.core.palette import Palette, palette_row_count
 from celpix.core.paletteregions import PaletteRegions
-from celpix.core.sprite import DEFAULT_SUBSPRITE_TILES, drawn_frames
+from celpix.core.sprite import DEFAULT_SUBSPRITE_TILES, SubspriteLimits, drawn_frames
 from celpix.core.textfit import TextFit, fit_text
 from celpix.core.tilemap import (
     NO_CELL,
@@ -369,6 +369,16 @@ class Document:
     # writes and what the hex dump shows under a tilemap — the save path itself
     # re-encodes from the cells rather than reading this.
     tilemap_data: bytes = b""
+    # How many bytes of ``tilemap_data`` the cells are the encoding **of** —
+    # measured at load as the length of their own encoding, and moved to the
+    # length of each re-encode after it. Everything past it is the tail a decode
+    # never consumed (a trailing partial cell), which every splice keeps and
+    # nothing else (:meth:`spliced_cells`). Not inferable from the cell count: a
+    # frame header or a count byte is a byte the cells hold, and once an edit has
+    # removed a record the old buffer runs past the new encoding by exactly that
+    # record. None on a document built without a load, which has no measure and
+    # splices at the new encoding's own length.
+    tilemap_extent: int | None = None
     # Byte size of one cell under the tilemap codec, which is what turns a cell
     # index into a position in the bytes above (the hex highlight). The codec's
     # answer, recorded at load beside the two geometry fields below it.
@@ -467,8 +477,14 @@ class Document:
     # pixel offsets are not tile-aligned, so no cell grid can hold them and the
     # view draws frames of freely placed subsprites (:mod:`celpix.core.sprite`).
     # ``cells`` still holds the file's own records, so the save path is unchanged
-    # and a write puts back exactly what was read.
+    # and a write puts back exactly what was read. Rebuilt from the cells by every
+    # cell edit (:func:`~celpix.pipeline.pipeline.sprite_frames`).
     sprite_frames: list[tuple] | None = None
+    # What the sprite codec's inverse can write
+    # (:meth:`~celpix.plugins.base.TilemapCodecPlugin.subsprite_limits`), and so
+    # whether this sprite map is editable at all (:attr:`cells_editable`). None
+    # for a sprite map whose format declared none, and for every grid map.
+    subsprite_limits: SubspriteLimits | None = None
     # A sprite map's two subsprite sizes, **in tiles** (see
     # :data:`~celpix.core.sprite.DEFAULT_SUBSPRITE_TILES`): each size bit picks
     # one of the two, and no sprite file records the pair.
@@ -875,13 +891,29 @@ class Document:
         (:meth:`~celpix.plugins.base.TilemapCodecPlugin.transform_cell`,
         :meth:`~celpix.plugins.base.TilemapCodecPlugin.index_limit`).
 
-        False only for a **sprite object**, where a canvas position resolves to a
-        *subsprite* through an overlap order rather than to a cell through a grid,
-        so there is no cell under the cursor to change
-        (``docs/design/sprite-map.md`` §6). It is not read-only on disk,
-        so the distinction is about the gesture, not the file.
+        A **sprite map** qualifies where its codec declared what its records can
+        hold (:attr:`subsprite_limits`): an edit there is still a cell edit — a
+        piece names its record (``Subsprite.record``), and the codec's inverse
+        writes the offsets and the size into it — so the cells change and the
+        frames are rebuilt from them (``docs/design/sprite-map.md`` §8.2).
+        False for a sprite map whose codec declared nothing, which is a mapping
+        table's case — its pieces live in a region another entry owns — and any
+        format that never said where its offsets live: a drag there has no field
+        it may write.
         """
-        return self.is_tilemap and not self.is_sprite
+        return self.is_tilemap and (
+            not self.is_sprite or self.subsprite_limits is not None
+        )
+
+    def spliced_cells(self, encoded: bytes) -> bytes:
+        """``encoded`` — the cells' fresh encoding — followed by the tail of
+        :attr:`tilemap_data` past :attr:`tilemap_extent`.
+
+        The one splice rule, shared by a cell edit and a save so the buffer
+        under the map and the file cannot disagree about where the cells end.
+        """
+        end = len(encoded) if self.tilemap_extent is None else self.tilemap_extent
+        return encoded + self.tilemap_data[end:]
 
     @property
     def drawn_cells(self) -> list[Cell]:

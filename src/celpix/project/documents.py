@@ -644,6 +644,7 @@ def chained_document(
         tilemap_config=cfg,
         tilemap_ctx=loaded.ctx,
         tilemap_data=loaded.data,
+        tilemap_extent=loaded.extent,
         tilemap_base_bytes=loaded.disk,
         cell_bytes=loaded.cell_bytes,
         cell_tiles=through.cell_tiles,
@@ -732,11 +733,19 @@ def tilemap_document(
         palette_config=placeholder_palette_config(entry.session.palette_preset_id),
         pixel_ctx=tiles.ctx,
         cells=loaded.cells,
-        # View-only where the cells are subsprites, for the same reason a stamp
-        # layout is: what a canvas gesture would edit is not settled.
-        tilemap_config=(replace(cfg, write_enabled=False) if loaded.frames else cfg),
+        # View-only where the cells are subsprites and the codec declared nothing
+        # its inverse can write: a save is then a write nobody could have made
+        # through the canvas. Tested against None rather than for truth, because
+        # a sprite map with no frames at all — a table missing its Frames region —
+        # is still a sprite map.
+        tilemap_config=(
+            replace(cfg, write_enabled=False)
+            if loaded.frames is not None and loaded.limits is None
+            else cfg
+        ),
         tilemap_ctx=loaded.ctx,
         tilemap_data=loaded.data,
+        tilemap_extent=loaded.extent,
         tilemap_base_bytes=loaded.disk,
         cell_bytes=loaded.cell_bytes,
         cell_tiles=cell_tiles,
@@ -756,6 +765,7 @@ def tilemap_document(
             entry.tile_source.base_index if entry.tile_source is not None else 0
         ),
         sprite_frames=loaded.frames,
+        subsprite_limits=loaded.limits,
         # The pair the frames were **built at**, read back rather than re-derived.
         sprite_size_pair=loaded.size_pair,
         cells_carry_palette_rows=loaded.palette_rows,

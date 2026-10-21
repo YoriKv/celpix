@@ -131,6 +131,7 @@ from celpix.ui.main_window.selection import (
 )
 from celpix.ui.main_window.session import SessionMixin
 from celpix.ui.main_window.slices import SlicesMixin
+from celpix.ui.main_window.sprite_edit import SpriteEditMixin
 from celpix.ui.main_window.sprite_select import SpriteSelectMixin
 from celpix.ui.main_window.stamp_tool import StampToolMixin
 from celpix.ui.main_window.subsprites import SubspritesMixin
@@ -205,6 +206,7 @@ class MainWindow(
     CellPropsMixin,
     TileSourceDockMixin,
     StampToolMixin,
+    SpriteEditMixin,
     SpriteSelectMixin,
     CapabilitySyncMixin,
     RenderingMixin,
@@ -383,6 +385,8 @@ class MainWindow(
         # And the stamp tool, whose button the same toolbar builds and whose
         # armed flag _set_edit_mode reads on its way past.
         self._init_stamp()
+        # And its sprite reading, Edit Subsprites, whose Edit rows the menus build.
+        self._init_sprite_edit()
         # And the in-app cell clipboard, which the Edit actions' sync asks about.
         self._init_tilemap_edit()
         # And the pinned palette regions, for the same reason: _refresh_view asks
@@ -461,6 +465,7 @@ class MainWindow(
         self._canvas.rearrange_dropped.connect(self._on_rearrange_dropped)
         self._canvas.rearrange_cancelled.connect(self._on_rearrange_cancelled)
         self._connect_stamp_canvas()
+        self._connect_sprite_edit_canvas()
         # Right-click the canvas for the clipboard actions (the canvas selects
         # the tile under the cursor first, unless it is already in the run).
         self._canvas.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)

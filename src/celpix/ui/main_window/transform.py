@@ -565,6 +565,9 @@ class TransformMixin(_Host):
         if self._edit_mode is EditMode.PIXEL:
             self._sync_pixel_transform_actions()
             return
+        if self._doc is not None and self._doc.is_sprite:
+            self._sync_sprite_transform_actions()
+            return
         if self._stamping:
             # Edit Tiles cleared the selection this pass reads, so while it is
             # armed the groups arm for the held stamp instead — the same
@@ -585,6 +588,24 @@ class TransformMixin(_Host):
         self._arm_transform_group(
             self._block_group, geom is not None, square_block and square_tiles, allows
         )
+
+    def _sync_sprite_transform_actions(self) -> None:
+        """Arm both groups for a sprite map's picked pieces, tool or no tool.
+
+        The pick is the selection there (``docs/design/sprite-map.md``
+        §10.1), so it is what both groups act on — the Tile group toggles each
+        piece's bit in place, the Block group mirrors the pick as one picture —
+        and one picked piece is enough for either: the Block group's "needs a
+        2D block" is about a grid's rectangle, and a group of pieces at pixel
+        offsets is mirrored about its own box whatever its shape. Rotation
+        stays the format's answer (:meth:`_transform_allowed`), and the Block
+        half never offers one: a quarter turn of pieces at pixel offsets is no
+        record's bit.
+        """
+        has = bool(self._selected_cells())
+        allows = self._transform_allowed
+        self._arm_transform_group(self._tile_group, has, self._square_tiles(), allows)
+        self._arm_transform_group(self._block_group, has, False, allows)
 
     def _transform_allowed(self, op: TransformOp) -> bool:
         """Whether this document can perform ``op`` at all, format included.
@@ -693,12 +714,14 @@ class TransformMixin(_Host):
         """
         if self._doc is None:
             return
-        if self._stamping:
+        sprite = self._doc.is_sprite
+        if self._stamping and not sprite:
             # No selection to act on while Edit Tiles is armed: each unit of
-            # the held stamp is transformed in place instead.
+            # the held stamp is transformed in place instead. A sprite map's
+            # pick *is* its selection, armed or not, so it goes on through.
             self._stamp_transform_tiles(op)
             return
-        if self._selected_tile is None:
+        if self._selected_tile is None and not sprite:
             return
         if (transform_cells := self._kind_handler(Gesture.TRANSFORM_TILES)) is not None:
             # Same button, different document: a cell's mirror is an attribute
@@ -722,9 +745,10 @@ class TransformMixin(_Host):
         """
         if self._doc is None:
             return
-        if self._stamping:
+        if self._stamping and not self._doc.is_sprite:
             # The block over a held stamp is the swept brush, mirrored whole —
-            # positions permuted and each record transformed.
+            # positions permuted and each record transformed. A sprite map's
+            # Block mirrors its pick instead, armed or not.
             self._stamp_transform_block(op)
             return
         if (transform_block := self._kind_handler(Gesture.TRANSFORM_BLOCK)) is not None:
