@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.2.15 - unreleased
+## v1.2.15 - 2026-10-22
 
 - Added the N64 TLUT palette presets: RGBA16 (RGBA5551 big-endian) and IA16 (intensity+alpha, big-endian)
 - Don't show edits that a compression refused
