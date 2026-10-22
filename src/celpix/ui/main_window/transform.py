@@ -600,12 +600,15 @@ class TransformMixin(_Host):
         offsets is mirrored about its own box whatever its shape. Rotation
         stays the format's answer (:meth:`_transform_allowed`), and the Block
         half never offers one: a quarter turn of pieces at pixel offsets is no
-        record's bit.
+        record's bit. A fixed layout disarms the Block half: mirroring the pick
+        as one picture moves its pieces, and the drawing routine owns where
+        they sit.
         """
         has = bool(self._selected_cells())
         allows = self._transform_allowed
         self._arm_transform_group(self._tile_group, has, self._square_tiles(), allows)
-        self._arm_transform_group(self._block_group, has, False, allows)
+        block = has and not self._fixed_layout()
+        self._arm_transform_group(self._block_group, block, False, allows)
 
     def _transform_allowed(self, op: TransformOp) -> bool:
         """Whether this document can perform ``op`` at all, format included.

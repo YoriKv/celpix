@@ -636,6 +636,23 @@ def test_an_alphabet_edit_is_one_undo_step(qtbot, tmp_path) -> None:
     assert entry.doc.text.body == "[$82][$80][$81]"
 
 
+def test_an_alphabet_edit_undoes_on_the_fontmap_it_was_made_on(qtbot, tmp_path) -> None:
+    """The alphabet is the font's, but the row was settled against the string,
+    so an undo from elsewhere returns to the fontmap rather than to the font."""
+    window, bank, entry = _fontmap(qtbot, tmp_path, [2, 0, 1], chars="")
+    window._on_font_alphabet_edited(0, 0, 0, UPPER, (), "edit font alphabet")
+    assert entry.doc.text.body == "CAB"
+
+    window._activate_entry(bank)
+    window._undo_action.trigger()
+
+    assert window._workspace.current is entry
+    assert bank.font_chars == ""
+    assert window.statusBar().currentMessage() == (
+        f"Undid edit font alphabet in {entry.name}"
+    )
+
+
 def test_the_punctuation_comes_from_the_font_and_the_cell_format_states_none(
     qtbot, tmp_path
 ) -> None:

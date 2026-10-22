@@ -323,6 +323,7 @@ class ContainersMixin(_Host):
             # have run it in, so the re-read cannot push a step of its own.
             with self._undo_apply():
                 self._apply_container_edit(entry, after)
+            self._refresh_project_modified()  # no stack move follows to ask it
             return
         command = ContainerEditCommand(self, entry, before=before, after=after)
         if not released:

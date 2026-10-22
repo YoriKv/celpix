@@ -129,10 +129,14 @@ class SessionMixin(_Host):
             return
         self._capture_session()
         self._workspace.set_current(entry)  # -> _on_current_entry_changed
-        # Arm arrow-key navigation on the fresh view - but not when the list is
-        # itself being browsed with the arrow keys, or focus would be yanked
-        # away from the very keys the user is navigating with.
-        if not self._files_panel.is_key_navigating():
+        # Arm arrow-key navigation on the fresh view - unless Navigate ▸ Auto
+        # Focus View is off, or the list is itself being browsed with the arrow
+        # keys, or focus would be yanked away from the very keys the user is
+        # navigating with.
+        if (
+            self._auto_focus_view_action.isChecked()
+            and not self._files_panel.is_key_navigating()
+        ):
             self._canvas.setFocus()
         if fresh:
             self.statusBar().showMessage(self._loaded_message(entry))

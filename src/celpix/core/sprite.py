@@ -148,7 +148,12 @@ SizeChoice = str | tuple[int, int]
 #            (md-sprite, header-less sprite-record)
 #   table    the records live in a region another entry owns; no structural
 #            edit at all (sprite-table)
-StructureKind = Literal["slots", "counted", "headed", "run", "table"]
+#   fixed    each frame is a set number of tile references at slots whose
+#            positions the drawing routine fixes, not the record; a piece's
+#            tile and flips are editable, its offset, size and presence are not,
+#            so there is no structural *or* geometric edit (a pose table of six
+#            tile words drawn as a 2x3 grid)
+StructureKind = Literal["slots", "counted", "headed", "run", "table", "fixed"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,7 +170,9 @@ class SubspriteLimits:
     ``x_range`` / ``y_range`` are the offsets the field holds, **signed at the
     field's own width** — ``range(-128, 128)`` for a byte, ``range(-32768,
     32768)`` for a word. A drag that would carry any piece outside them is
-    refused whole rather than pinning one piece at the edge.
+    refused whole rather than pinning one piece at the edge. Under ``fixed``
+    both are ``range(0)``: the record holds no offset at all, and the empty
+    range says so rather than inventing one a spin could offer.
 
     ``size`` is every :data:`SizeChoice` the record can spell, or ``None`` where
     the preset fixes the size and the record holds none.
@@ -176,6 +183,11 @@ class SubspriteLimits:
     where the format fixes it (32 or 64 slots of them), ``None`` where the
     cells decide — a headed run has as many frames as it has headers, a bare run
     exactly one.
+
+    A ``fixed`` format answers ``SubspriteLimits(structure="fixed",
+    x_range=range(0), y_range=range(0))`` and leaves ``size``, ``per_frame``
+    and ``frames`` ``None``: the drawing routine owns every piece's place and
+    size and the frame's record count, so the record states none of them.
     """
 
     structure: StructureKind
@@ -184,6 +196,18 @@ class SubspriteLimits:
     size: tuple[SizeChoice, ...] | None = None
     per_frame: int | None = None
     frames: int | None = None
+
+
+def signed_range(bits: int) -> range:
+    """The values a two's-complement field ``bits`` wide holds — the form
+    :attr:`SubspriteLimits.x_range` states an offset field in."""
+    half = 1 << (bits - 1)
+    return range(-half, half)
+
+
+def range_text(r: range) -> str:
+    """``r`` as a refusal names it, both ends inclusive: ``-128..127``."""
+    return f"{r.start}..{r.stop - 1}"
 
 
 def drawn_frames(frames: list[Frame]) -> list[Frame]:

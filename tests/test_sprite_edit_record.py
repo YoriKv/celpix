@@ -278,3 +278,35 @@ def test_headed_assign_frames_moves_the_header_with_the_frame() -> None:
     run = {k: v for k, v in _HEADED.items() if k != "frame_header"}
     cells = engine.decode(raw, run, ctx)
     assert engine.assign_frames(cells, [0] * len(cells), run, ctx) == cells
+
+
+def test_a_headed_frame_keeps_its_header_when_its_front_record_goes() -> None:
+    """The header rides on a frame's front cell, so the ops stage the leaving
+    cell behind the rest of its frame before deleting or moving it: the frame
+    keeps its header bytes, and the frame a record moves into keeps its own."""
+    from celpix.core.sprite_edit import move_subsprite, remove_subsprites
+
+    engine, ctx = SpriteRecordCodec(), PipelineContext()
+    raw = (
+        b"\xaa\xbb\x02" + b"\x00\x00\x01" + b"\x08\x00\x02"
+        + b"\xcc\xdd\x01" + b"\x00\x08\x03"
+    )  # fmt: skip
+    cells = engine.decode(raw, _HEADED, ctx)
+    frames = engine.frames(cells, _HEADED, ctx)
+    limits = engine.subsprite_limits(_HEADED, ctx)
+    ops = {
+        "place": lambda cell, **kw: engine.place_subsprite(cell, _HEADED, ctx, **kw),
+        "assign": lambda c, f: engine.assign_frames(c, f, _HEADED, ctx),
+    }
+
+    removed = remove_subsprites(cells, frames, limits, [0], **ops)
+    assert engine.encode(removed, _HEADED, ctx) == (
+        b"\xaa\xbb\x01" + b"\x08\x00\x02" + b"\xcc\xdd\x01" + b"\x00\x08\x03"
+    )
+
+    moved, at = move_subsprite(cells, frames, limits, 0, 1, **ops)
+    assert at == 2
+    assert engine.encode(moved, _HEADED, ctx) == (
+        b"\xaa\xbb\x01" + b"\x08\x00\x02"
+        + b"\xcc\xdd\x02" + b"\x00\x08\x03" + b"\x00\x00\x01"
+    )  # fmt: skip

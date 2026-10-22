@@ -59,6 +59,8 @@ from celpix.core.sprite import (
     SizeChoice,
     Subsprite,
     SubspriteLimits,
+    range_text,
+    signed_range,
 )
 from celpix.core.tilemap import Cell, CellOp
 from celpix.plugins._params import byte_order
@@ -284,7 +286,7 @@ class _SubspriteCodec:
             if value is not None and value not in reach:
                 raise ValueError(
                     f"an offset of {value} does not fit; offsets here run "
-                    f"{reach.start}..{reach.stop - 1}"
+                    f"{range_text(reach)}"
                 )
         large = _large(size)
         flags = cell.flags
@@ -309,10 +311,10 @@ class _SubspriteCodec:
 
         Declared outright rather than assembled from the other probes because
         an **add** depends on it: a new piece is the held record laid whole
-        into a free slot, and the host fits every field the format has not
-        declared to the cell already at that position — which under ``slots``
-        is the residue of whatever sat there last. A row or a priority left
-        undeclared would then come from the residue instead of the template.
+        into a free slot, and the host fits a field the format has not
+        declared from another cell rather than from the record — the held
+        record and the brush are fitted against a blank one. A row or a
+        priority left undeclared would then be lost from the template.
         """
         return {
             "index": self.index_limit() or 0,
@@ -332,8 +334,7 @@ class _SubspriteCodec:
         return mirror(cell, op)
 
     def _offset_range(self) -> range:
-        half = 1 << (self._offset_bits - 1)
-        return range(-half, half)
+        return signed_range(self._offset_bits)
 
     @staticmethod
     def _subsprite(cell: Cell, pair: tuple[int, int], record: int) -> Subsprite | None:

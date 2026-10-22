@@ -12,11 +12,13 @@ and pixel/color edits — so a single Ctrl+Z always reverts the most recent
 action regardless of which surface made it. Two consequences shape the
 classes here:
 
-- **Document-scoped commands carry their entry and re-activate it** before
-  applying, so undoing a change made in another entry first switches the view
-  back to where that change happened. The two *editing* commands carry the
-  tile/pixel edit mode alongside it (``_ensure_edit_context``): the same bytes
-  are edited from either mode, and a step reverts where it was made.
+- **A step returns to the view it was made from**, whatever entry owns the
+  data it changed: each document-scoped command records the entry on screen
+  when it is built and re-activates it before applying, so undoing a change
+  made elsewhere first switches back to where the user was working. The two
+  *editing* commands carry the tile/pixel edit mode alongside it
+  (``_ensure_edit_context``): the same bytes are edited from either mode, and
+  a step reverts where it was made.
 - **Entry lifecycle is itself on the stack** (`AddEntryCommand` /
   `RemoveEntriesCommand`, which keep the removed `Entry` *objects*), so a
   command can never reference an entry that chronology hasn't restored yet.
@@ -55,7 +57,6 @@ from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.project.workspace import (
     Entry,
-    EntryKind,
     PaletteMode,
     PaletteSource,
     SliceParams,
@@ -123,7 +124,12 @@ class _StateCommand(QUndoCommand):
     window's re-entrancy guard. Stating it once is what keeps the two invariants
     from having to be re-remembered per command — the guard must wrap the apply
     (or an apply could push a second command), and a document-scoped change must
-    reach the entry it happened in before it lands.
+    reach the view it was made from before it lands.
+
+    That view is ``_made_in``, the entry on screen when the command is built:
+    construction and push are one gesture, so it is where the user was working.
+    ``entry`` is whose data the step changes, which is usually the same entry
+    and is not when the edit is made *through* one view onto another's data.
 
     Subclasses supply :meth:`_apply`, and pick their reach by subclassing
     :class:`_CurrentEntryCommand` or :class:`_InPlaceCommand` rather than by
@@ -138,6 +144,7 @@ class _StateCommand(QUndoCommand):
         super().__init__(text)
         self._window = window
         self._entry = entry
+        self._made_in: Entry | None = window._workspace.current
         self._before = before
         self._after = after
 
@@ -162,17 +169,25 @@ class _StateCommand(QUndoCommand):
 
 
 class _CurrentEntryCommand(_StateCommand):
-    """A change to the *document on screen*: undo returns to it first.
+    """A change made in a view: undo returns to that view first.
 
     The unified stack is chronological across entries, so a step made in another
     entry has to switch the view back before it can be reverted where it happened
-    (``docs/design/undo-redo.md``).
+    (``docs/design/undo-redo.md`` §2). Where it happened is the view it was made
+    from (``_made_in``), not the entry owning the data — the two differ for the
+    font alphabet, edited from a fontmap and owned by its font — and the owner is
+    the fallback only when that view is gone (:meth:`MainWindow._return_to`).
+
+    Most applies here act on the document on screen, which is sound only because
+    their push sites build them for the current entry, so the view reached *is*
+    the entry changed. A subclass whose ``_made_in`` can differ from ``_entry``
+    has to address ``_entry`` explicitly in its apply.
     """
 
     _entry: Entry  # a reaching command always has one
 
     def _reach(self) -> bool:
-        return self._window._ensure_current(self._entry)
+        return self._window._return_to(self._made_in, self._entry)
 
 
 class _InPlaceCommand(_StateCommand):
@@ -217,12 +232,13 @@ class _EditModeCommand(_StateCommand):
     with the command alongside the entry, and reaching the change means restoring
     both.
 
-    ``through`` splits the entry the change is *seen* in from the entry that owns
-    the bytes, which are usually one and are not when a pixel edit is made through
-    a **tilemap**: the gesture happens on the map, the bytes belong to the tile
-    bank it is bound to (``docs/design/tilemap-entry.md`` §8.1). Reaching the bank
-    would take the view off the picture the stroke was drawn on, and reverting the
-    stroke somewhere it cannot be seen is the thing this class exists to prevent.
+    ``through`` is the view the change was made from — ``_made_in`` unless the
+    push site names another — split from the entry that owns the bytes, which are
+    usually one and are not when a pixel edit is made through a **tilemap**: the
+    gesture happens on the map, the bytes belong to the tile bank it is bound to
+    (``docs/design/tilemap-entry.md`` §8.1). Reaching the bank would take the view
+    off the picture the stroke was drawn on, and reverting the stroke somewhere it
+    cannot be seen is the thing this class exists to prevent.
     """
 
     _entry: Entry  # a reaching command always has one
@@ -239,7 +255,9 @@ class _EditModeCommand(_StateCommand):
     ) -> None:
         super().__init__(window, entry, text, before, after)
         self._mode = window._edit_mode
-        self._through = through if through is not None else entry
+        if through is None:
+            through = self._made_in if self._made_in is not None else entry
+        self._through = through
 
     def _reach(self) -> bool:
         return self._window._ensure_edit_context(self._through, self._mode)
@@ -586,7 +604,7 @@ class TileRearrangementCommand(_CurrentEntryCommand):
         self._window._set_tile_rearrangement(state)
 
 
-class TilemapCellsCommand(_InPlaceCommand):
+class TilemapCellsCommand(_CurrentEntryCommand):
     """One edit to a tilemap's cells, as before/after lists.
 
     Unlike :class:`TileRearrangementCommand` this **is** an edit — the cells are
@@ -624,6 +642,11 @@ class TilemapCellsCommand(_InPlaceCommand):
     ``pick`` is a sprite map's, and the caret's counterpart there: the picked
     records each half of the step leaves picked, so an undo of a move puts the
     outline back on the piece it moved (``docs/design/sprite-map.md`` §11).
+
+    It **reaches** its map like every document-scoped command. The cells are a
+    picture as much as they are bytes, and a step landed on a map nobody is
+    looking at changes something the user cannot see — while the caret and the
+    pick it carries have nowhere to go but the window showing that map.
     """
 
     def __init__(
@@ -937,6 +960,13 @@ class ColorEditCommand(QUndoCommand):
     replaces an entry's document, and a captured one would take the undo onto a
     palette nothing shows while the owner's bytes moved without it.
 
+    The view it returns to is a different question with a different answer: the
+    entry on screen when the edit was made — the graphic being coloured, or the
+    palette entry itself opened as swatches — whoever owns the colour
+    (:meth:`MainWindow._return_to`). A file palette's owner is a PALETTE entry
+    the user may never have opened; going there would revert the colour on a
+    sheet of swatches rather than on the picture it was chosen against.
+
     Only the edited entry is captured, not the whole palette: consecutive edits to
     the *same* entry in the *same editor gesture* merge, so dragging a channel
     slider — which emits on every step — collapses into a single undo step rather
@@ -966,6 +996,9 @@ class ColorEditCommand(QUndoCommand):
         self._gesture = gesture
         self._window = window
         self._owner = owner
+        # The view the edit was made from, which an undo returns to; ``owner``
+        # is only where it lands. Constructed in the gesture that pushes it.
+        self._made_in: Entry | None = window._workspace.current
         self._index = index
         self._before = before
         self._after = after
@@ -999,6 +1032,7 @@ class ColorEditCommand(QUndoCommand):
         if (
             not isinstance(other, ColorEditCommand)
             or other._owner is not self._owner
+            or other._made_in is not self._made_in
             or other._index != self._index
             or other._pixel_owner is not self._pixel_owner
             or self._gesture is None
@@ -1029,15 +1063,13 @@ class ColorEditCommand(QUndoCommand):
         self, argb: int, revision: int, pixel_owners: tuple[tuple[Entry, int], ...]
     ) -> None:
         with self._window._undo_apply():
-            # A file-palette edit lands on the PALETTE entry's own document, which
-            # is shown by every graphic mirroring it and by the entry itself when
-            # opened, so it applies without switching the view; a graphic-owned
-            # edit first returns to the graphic it happened on, as every
-            # document-scoped command does.
+            # Back to the view the colour was chosen in, then onto the owner's
+            # document wherever that is: a file palette's lands on the PALETTE
+            # entry, which every graphic mirroring it then shows.
             if (
-                self._owner.kind is EntryKind.PALETTE
-                or self._window._ensure_current(self._owner)
-            ) and (doc := self._owner.doc) is not None:
+                self._window._return_to(self._made_in, self._owner)
+                and (doc := self._owner.doc) is not None
+            ):
                 self._window._apply_color_edit(
                     self._owner,
                     doc,
@@ -1220,15 +1252,16 @@ class RenameEntryCommand(_InPlaceCommand):
 FontAlphabetState = tuple[bool, int, int, int, str, tuple[Glyph, ...]]
 
 
-class FontAlphabetCommand(_InPlaceCommand):
+class FontAlphabetCommand(_CurrentEntryCommand):
     """What a **font entry**'s tiles spell, and which code each of them is.
 
-    In-place, and it is the one command here whose entry is not the one the
-    change is *seen* on: the alphabet belongs to the font, and what it changes is
-    every fontmap drawn through that font
-    (``docs/design/fontmap-entry.md`` §3). Yanking the view to the font — a sheet
-    of letters, on which a code means nothing at all — would move away from the
-    string the user is reading it against.
+    The one :class:`_CurrentEntryCommand` whose entry is not the one the change
+    is *seen* on: the alphabet belongs to the font, and what it changes is every
+    fontmap drawn through that font (``docs/design/fontmap-entry.md`` §3). So the
+    apply names the font, and the reach goes to the view the row was settled in —
+    the fontmap the user was reading it against, or the font itself when the
+    sheet was typed up on its own. Going to the font from a fontmap would revert
+    the row on a sheet of letters, on which a code means nothing at all.
 
     ``text`` is handed in rather than worked out here, because the editor is what
     knows which gesture produced the state: "paste 26 characters" and "edit font

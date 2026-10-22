@@ -623,7 +623,16 @@ def load_tilemap_data(
         lambda: engine.cell_tiles(preset.params),
         plugin=preset.id,
     )
-    extent = _decoded_extent(engine, preset.params, ctx, cells, cell_bytes)
+    widths = cell_widths(engine, preset.params, ctx=ctx, plugin=preset.id)
+    extent = _decoded_extent(
+        engine,
+        preset.params,
+        ctx,
+        cells,
+        cell_bytes,
+        read=len(data),
+        mixed_width=widths is not None,
+    )
     # The optional half of the protocol, and the only one an engine may lack: a
     # format whose cells are subsprites groups them into frames itself, because
     # what they *mean* — which frame, at what offset, how big — is the same
@@ -753,7 +762,7 @@ def load_tilemap_data(
         # than an answer, so it travels as a callable the model can apply per edit.
         cell_settler(engine, preset.params, ctx=ctx, plugin=preset.id),
         disk,
-        cell_widths(engine, preset.params, ctx=ctx, plugin=preset.id),
+        widths,
         probe(
             engine,
             "line_bytes",
@@ -857,21 +866,41 @@ def _decoded_extent(
     ctx: PipelineContext,
     cells: list[Cell],
     cell_bytes: int,
+    *,
+    read: int,
+    mixed_width: bool,
 ) -> int:
     """How many bytes ``cells`` were decoded from (:attr:`TilemapData.extent`).
 
-    Measured by encoding them rather than counted, because a count is only right
-    for a fixed-width run: a frame header, a count byte or a mixed-width letter
-    is a byte the cells hold that ``cell_bytes`` does not. Over a copy of the
-    context, so the measure publishes nothing the document then carries — a
-    count format's encode states its sizes, a codec may leave a notice. A codec
-    that cannot encode its own cells is read the fixed-width way instead; its
-    save asks again and reports.
+    Counted as ``len(cells) * cell_bytes`` where that count is **the whole
+    buffer** the decode was handed (``read`` bytes) and the format's widths
+    cannot differ, which is the ordinary grid map over its own slice; the
+    encode would be a whole second pass over the map on every load for a
+    number the multiplication already gives.
+
+    **Measured by encoding** everywhere else. An engine with ``frames`` (a
+    sprite codec, whose encoding may carry a frame header or a count byte the
+    cells hold beside their records) and a ``mixed_width`` one (an engine that
+    answers ``cell_widths`` with a list — mixed-width text, whose letters
+    ``cell_bytes`` does not size) always are. So is a grid whose count falls
+    short of the buffer: either a tail the decode left unread, which the
+    encode does not reach, or bytes the format stores outside its cells' stride
+    — an NES nametable's attribute plane, 64 bytes after 960 one-byte cells —
+    which a count would leave out of the extent, so a save would splice the
+    page in over too short a span and grow the file by them.
+
+    The encode runs over a copy of the context, so the measure publishes
+    nothing the document then carries — a count format's encode states its
+    sizes, a codec may leave a notice. A codec that cannot encode its own cells
+    is read the fixed-width way instead; its save asks again and reports.
     """
+    counted = len(cells) * cell_bytes
+    if counted == read and not (mixed_width or hasattr(engine, "frames")):
+        return counted
     try:
         return len(engine.encode(cells, params, ctx.copy()))
     except Exception:  # noqa: BLE001 — a measure must not fail the load
-        return len(cells) * cell_bytes
+        return counted
 
 
 def _check_declarations(

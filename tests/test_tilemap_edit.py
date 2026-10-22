@@ -660,9 +660,8 @@ def test_editing_the_panel_restamps_the_layout_drawing_through_it(
     # ...and the layout, still open, is drawing the stamp as it now is.
     assert layout.doc.drawn_cells[0] == Cell(index=6)
 
-    # Undo from the layout's own view: the command lands on the panel, and the
-    # layout has to be re-resolved and repainted even though it is not the entry
-    # the edit belongs to.
+    # Undo from the layout's view: the command returns to the panel it belongs
+    # to, and the layout, no longer on screen, still has to be re-resolved.
     window._activate_entry(layout)
     window._undo_stack.undo()
     assert layout.doc.drawn_cells[0] == Cell(index=1)
@@ -987,7 +986,8 @@ def test_editing_either_table_restamps_the_map_two_hops_up(qtbot, tmp_path) -> N
     """Each table replaces its cell list on an edit, and the field map holds a
     snapshot of both — the outer table's cells and, through it, the inner
     table's. So an edit to either re-points the chain at every depth above it,
-    and so does its undo, landed from the field map's own view."""
+    and so does its undo, made from the field map's view — which returns to the
+    table edited, and still has to leave the field map re-pointed."""
     window = MainWindow()
     qtbot.addWidget(window)
     _bank, inner, outer, field = _two_hop_chain(window, tmp_path)
@@ -999,7 +999,8 @@ def test_editing_either_table_restamps_the_map_two_hops_up(qtbot, tmp_path) -> N
     assert _drawn(field.doc) == _nested(b"\x00\x01", outer=edited)
     window._activate_entry(field)
     window._undo_stack.undo()
-    assert _drawn(window._doc) == _nested(b"\x00\x01")
+    assert window._workspace.current is outer
+    assert _drawn(field.doc) == _nested(b"\x00\x01")
 
     window._activate_entry(inner)
     window._set_linear_selection(0, 0)
@@ -1009,7 +1010,8 @@ def test_editing_either_table_restamps_the_map_two_hops_up(qtbot, tmp_path) -> N
     assert outer.doc.chain.source == inner.doc.cells  # the middle re-pointed too
     window._activate_entry(field)
     window._undo_stack.undo()
-    assert _drawn(window._doc) == _nested(b"\x00\x01")
+    assert window._workspace.current is inner
+    assert _drawn(field.doc) == _nested(b"\x00\x01")
 
 
 def test_painting_a_map_two_hops_up_lands_in_the_bank_and_every_view(
@@ -2818,6 +2820,8 @@ def test_painting_a_map_deposits_into_the_entry_it_borrows_tiles_from(
     # The map's borrowed copy is kept in step, so the picture agrees with the file.
     assert tilemap.doc.pixel_data == sliced.doc.pixel_data
 
+    # Undone from the bank itself, the entry whose bytes these are.
+    window._activate_entry(sliced)
     window._undo_stack.undo()
     assert _bank_tile(window, sliced, 2).get(0, 0) != 9
     assert not sliced.pixel_dirty and not rom.pixel_dirty
@@ -4398,10 +4402,10 @@ def test_a_banks_format_switch_reaches_the_maps_bound_to_it(qtbot, tmp_path) -> 
 
 
 def test_a_cell_undo_reads_a_map_whose_document_was_dropped(qtbot, tmp_path) -> None:
-    """The cell command applies in place, so it can land on a map whose document
-    a write of another entry on the same file dropped. It used to stamp the
-    revision and write no cells, leaving the row dirty over the saved bytes and the
-    edit it named nowhere."""
+    """A cell undo made from another entry can target a map whose document a
+    write of another entry on the same file dropped: the step has to land the
+    cells *and* the revision, or the row reads dirty over the saved bytes and the
+    edit it names is nowhere."""
     from dataclasses import replace
 
     window, rom, carved, _body = _map_carved_from_rom(qtbot, tmp_path)

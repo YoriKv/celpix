@@ -18,6 +18,15 @@ lays the held piece. The four clipboard verbs, Duplicate, the reorder rows and
 Mirror About Origin are record ops (:mod:`celpix.core.sprite_edit`), dispatched
 on the format's structure kind.
 
+**A fixed layout keeps only the cell fields.** Under the ``fixed`` structure
+kind (design §8.4) the drawing routine places every piece, so the canvas picks
+but never lifts, a click on empty sheet adds nothing, and every record op here
+refuses with :func:`~celpix.core.sprite_edit.fixed_refusal`, worded by whether
+the format has flips at all (:meth:`SpriteEditMixin._fixed_refusal`). What
+stays is what any tilemap cell has: the tile through the Cell spin, the flips
+(where the format has them) through the Tile group, the eyedropper's held
+record.
+
 **Every edit is a cell edit.** Each gesture computes a new cell list — the
 codec's inverse writes the offsets, the size and the drawn bit — and lands it
 through :meth:`~...tilemap_edit.TilemapEditMixin._apply_cells`, which carries
@@ -40,15 +49,16 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QRect, Qt
-from PySide6.QtGui import QImage, QKeySequence
+from PySide6.QtGui import QImage, QKeySequence, QUndoCommand
 from PySide6.QtWidgets import QApplication
 
 from celpix.core.errors import PipelineError
-from celpix.core.sprite import Subsprite
+from celpix.core.sprite import Subsprite, range_text
 from celpix.core.sprite_edit import (
     SpriteEditError,
     add_subsprite,
     fit_group_delta,
+    fixed_refusal,
     move_subsprite,
     record_positions,
     reflect_group,
@@ -90,6 +100,62 @@ _ONE_ACROSS = "Subsprites move between frames one at a time - pick one piece"
 # status line already: a record op's own (SpriteEditError), the codec's inverse
 # naming the range (ValueError), and a frame list that would not build.
 _REFUSALS = (SpriteEditError, ValueError, PipelineError)
+
+_MIRROR_H_TIP = (
+    "Flip the picked pieces and reflect their offsets\n"
+    "about the frame's origin: x' = -x - w"
+)
+_MIRROR_V_TIP = (
+    "Flip the picked pieces and reflect their offsets\n"
+    "about the frame's origin: y' = -y - h"
+)
+# Pivot 0 sends every piece to the other side of the origin, so on an axis whose
+# offsets cannot go negative (FF6's ending frames run 0..127) the row could
+# never land; it stays listed, disabled, and its tip says why.
+_MIRROR_UNSIGNED_TIP = (
+    "Offsets here cannot be negative, so nothing\ncan be mirrored about the origin"
+)
+
+
+# What the stamp is holding, whole: the tile, the record it was taken off, a
+# swept brush, and the property row's settings (a record pick disarms the
+# eraser in them). See _HeldPickCommand.
+HeldPick = tuple[int | None, Cell | None, CellGrid | None, dict]
+
+
+class _HeldPickCommand(QUndoCommand):
+    """The held stamp moving between two picks, as the half of an eyedrop's step
+    that is not Palette Row.
+
+    The held stamp is session state and takes no step of its own
+    (``docs/design/tilemap-entry.md``), but the sprite eyedrop also moves
+    Palette Row, which a save records and so pushes ``set palette row``. Undone
+    alone, that step put the row back and left the piece held — the ghost
+    then drawn in a row the user never sampled. This rides in the same macro
+    (:meth:`SpriteEditMixin._eyedrop_subsprite`) so one Ctrl+Z puts back both.
+
+    The pick has already landed when this is pushed (it is what decides the
+    row), so the first ``redo`` is a no-op, as Locate Missing Files' is. Not
+    entry-scoped: the held stamp survives an entry switch, so there is nowhere
+    to reach.
+    """
+
+    def __init__(self, window, before: HeldPick, after: HeldPick) -> None:  # noqa: ANN001
+        super().__init__("hold subsprite")
+        self._window = window
+        self._before, self._after = before, after
+        self._landed = True
+
+    def redo(self) -> None:
+        if self._landed:
+            self._landed = False
+            return
+        with self._window._undo_apply():
+            self._window._apply_held_pick(self._after)
+
+    def undo(self) -> None:
+        with self._window._undo_apply():
+            self._window._apply_held_pick(self._before)
 
 
 @dataclass
@@ -147,11 +213,13 @@ class SpriteEditMixin(_Host):
         # the buffer is still that copy, not one a grid map's copy replaced.
         self._subsprite_clip: tuple[CellGrid, tuple[tuple[int, int], ...]] | None = None
         # The ghost's last landing and what it rendered, so a hover that stays
-        # on one tile does not re-run the add it previews.
-        self._subsprite_ghost: tuple[tuple, tuple[QImage, tuple[int, int]] | None] = (
-            (),
-            None,
-        )
+        # on one tile does not re-run the add it previews — beside the document
+        # and the cell list it was rendered over, held rather than keyed by
+        # id(): a list an edit frees can be reallocated at the same address,
+        # and an id match would show the stale ghost.
+        self._subsprite_ghost: tuple[
+            tuple, object, object, tuple[QImage, tuple[int, int]] | None
+        ] = ((), None, None, None)
         self._subsprite_actions: tuple = ()
 
     def _connect_sprite_edit_canvas(self) -> None:
@@ -217,16 +285,14 @@ class SpriteEditMixin(_Host):
                 "Mirror Frame About Origin Horizontally",
                 None,
                 lambda: self._mirror_about_origin(horizontal=True),
-                "Flip the picked pieces and reflect their offsets\n"
-                "about the frame's origin: x' = -x - w",
+                _MIRROR_H_TIP,
             ),
             (
                 "_subsprite_mirror_v_action",
                 "Mirror Frame About Origin Vertically",
                 None,
                 lambda: self._mirror_about_origin(horizontal=False),
-                "Flip the picked pieces and reflect their offsets\n"
-                "about the frame's origin: y' = -y - h",
+                _MIRROR_V_TIP,
             ),
         )
         menu.addSeparator()
@@ -251,18 +317,71 @@ class SpriteEditMixin(_Host):
         menu.aboutToShow.connect(self._sync_subsprite_actions)
 
     def _sync_subsprite_actions(self) -> None:
-        """Show the rows on a sprite map; enable them armed, with a pick."""
+        """Show the rows on a sprite map; enable them armed, with a pick.
+
+        Every row is a structural or geometric op, so a fixed layout keeps them
+        visible but disabled: the menu still says what the tool is, and the key
+        that would have fired one says why it did not (:meth:`_subsprite_key`).
+
+        A Mirror About Origin row also needs its axis to reach below zero: the
+        pivot is the origin, so on unsigned offsets every mirrored piece lands
+        negative and the row could only refuse.
+        """
         doc = self._doc
         on_sprite = doc is not None and doc.is_sprite
-        live = on_sprite and self._stamping and bool(self._picked_subsprites())
+        live = (
+            on_sprite
+            and self._stamping
+            and not self._fixed_layout()
+            and bool(self._picked_subsprites())
+        )
         for action in self._subsprite_actions:
             action.setVisible(on_sprite)
             action.setEnabled(live)
+        limits = self._subsprite_limits()
+        for action, axis, tip in (
+            (self._subsprite_mirror_h_action, "x_range", _MIRROR_H_TIP),
+            (self._subsprite_mirror_v_action, "y_range", _MIRROR_V_TIP),
+        ):
+            # A fixed layout's empty ranges say nothing about sign; it is
+            # disabled above for its own reason, under the row's own tip.
+            unsigned = (
+                limits is not None
+                and limits.structure != "fixed"
+                and getattr(limits, axis).start >= 0
+            )
+            action.setEnabled(live and not unsigned)
+            action.setToolTip(_MIRROR_UNSIGNED_TIP if unsigned else tip)
 
     # -- asking the format ---------------------------------------------------
     def _sprite_tool_live(self) -> bool:
         doc = self._doc
         return self._stamping and doc is not None and doc.is_sprite
+
+    def _fixed_layout(self) -> bool:
+        """Whether this sprite map's pieces sit where the drawing routine puts
+        them — the ``fixed`` kind, editable in its cell fields alone."""
+        limits = self._subsprite_limits()
+        return limits is not None and limits.structure == "fixed"
+
+    def _cells_flip(self) -> bool:
+        """Whether this format's cells carry a flip bit at all
+        (:meth:`~...tilemap_edit.TilemapEditMixin._cell_fields`) — FF6's pose
+        tables carry none, and there no flip box or Tile group is offered, so
+        the fixed layout's words must not promise one."""
+        fields = self._cell_fields()
+        return "flip_h" in fields or "flip_v" in fields
+
+    def _fixed_refusal(self) -> str:
+        """The fixed layout's refusal, in this format's terms."""
+        return fixed_refusal(flips=self._cells_flip())
+
+    def _refuse_fixed(self) -> bool:
+        """True, with the reason on the status bar, under a fixed layout."""
+        if not self._fixed_layout():
+            return False
+        self.statusBar().showMessage(self._fixed_refusal())
+        return True
 
     def _sprite_ops(self):  # noqa: ANN202 — (limits, place, assign) or None
         """Everything a record op needs, or None with the reason said.
@@ -406,6 +525,9 @@ class SpriteEditMixin(_Host):
         that is already picked, or the front one: a press over a stack whose
         second piece is picked means that piece, or a click there could never
         cycle past it — the press would re-pick the front one every time.
+
+        Under a fixed layout a press on a piece is a pick and nothing more,
+        and a press on empty sheet with a tile held says why nothing is added.
         """
         if not self._sprite_tool_live():
             return
@@ -424,12 +546,21 @@ class SpriteEditMixin(_Host):
             )
             if hit.piece.record is not None
         ]
+        fixed = self._fixed_layout()
+        if fixed and stack:
+            # Nothing to lift, so the press is the click it would otherwise
+            # become on release: the pick mixin's rule, modifiers and all.
+            self._on_pixel_picked(x, y, mods)
+            return
         if not stack:
             if self._held_tile_id() is not None:
-                self._add_held_subsprites(x, y, bool(mods & _CTRL))
+                if fixed:
+                    self.statusBar().showMessage(self._fixed_refusal())
+                else:
+                    self._add_held_subsprites(x, y, bool(mods & _CTRL))
             elif not mods & _CTRL:
                 # A toggle that misses changes nothing, as in a list.
-                self._set_picked_records([])
+                self._clear_pick_said()
             return
         picked = set(self._picked_records)
         hit = next((h for h in stack if h.piece.record in picked), None)
@@ -439,7 +570,7 @@ class SpriteEditMixin(_Host):
                 # A fresh pick, so a stale cycle anchor must not make the
                 # click that follows step past the piece just taken.
                 self._pick_tile, self._pick_depth = None, 0
-                self._set_picked_records([hit.piece.record])
+                self._set_picked_records([hit.piece.record], frame=hit.frame)
         sheet = self._sprite_sheet()
         if sheet is None:
             return
@@ -464,7 +595,7 @@ class SpriteEditMixin(_Host):
         """
         if drag.grab not in self._picked_records:
             self._pick_tile, self._pick_depth = None, 0
-            self._set_picked_records([drag.grab])
+            self._set_picked_records([drag.grab], frame=drag.frame)
         drawn = self._picked_subsprites()
         if not drawn:
             return False
@@ -528,10 +659,15 @@ class SpriteEditMixin(_Host):
         if mods & _CTRL:
             tile_w, tile_h = self._sprite_tile_size()
             dx, dy = tile_w * round(dx / tile_w), tile_h * round(dy / tile_h)
-        fx, fy = fit_group_delta(drag.pieces, dx, dy, limits)
-        drag.delta, drag.target = (fx, fy), target
         refusal = None
-        if target != drag.frame:
+        try:
+            fx, fy = fit_group_delta(drag.pieces, dx, dy, limits)
+        except SpriteEditError as exc:
+            # A piece already outside the range: no delta is a clamp of it, so
+            # the drop is refused with the piece named, not pinned in place.
+            fx, fy, refusal = 0, 0, self._refusal_text(exc)
+        drag.delta, drag.target = (fx, fy), target
+        if refusal is None and target != drag.frame:
             refusal = self._cross_frame_refusal(drag, target)
         drag.valid = refusal is None
         self._show_subsprite_drag(drag)
@@ -567,7 +703,7 @@ class SpriteEditMixin(_Host):
                     assign=assign,
                 )
             except _REFUSALS as exc:
-                drag.trials[target] = str(exc)
+                drag.trials[target] = self._refusal_text(exc)
         tried = drag.trials[target]
         return tried if isinstance(tried, str) else None
 
@@ -648,7 +784,7 @@ class SpriteEditMixin(_Host):
             for record, sub in zip(drag.records, drag.pieces, strict=True):
                 cells[record] = place(cells[record], x=sub.x + fx, y=sub.y + fy)
         except ValueError as exc:
-            self.statusBar().showMessage(str(exc))
+            self.statusBar().showMessage(self._refusal_text(exc))
             return
         if self._apply_cells(cells, "move subsprites", pick=(picked, picked)):
             self.statusBar().showMessage(
@@ -667,7 +803,7 @@ class SpriteEditMixin(_Host):
         try:
             cells[record] = place(cells[record], x=sub.x + fx, y=sub.y + fy)
         except ValueError as exc:
-            self.statusBar().showMessage(str(exc))
+            self.statusBar().showMessage(self._refusal_text(exc))
             return
         before = list(self._picked_records)
         if self._apply_cells(cells, "move subsprite", pick=(before, [record])):
@@ -706,6 +842,12 @@ class SpriteEditMixin(_Host):
         a cell (:meth:`~...stamp_tool.StampToolMixin._pick_tile_at`) — and its
         palette row into Palette Row, which is the row the held piece is shown
         and laid in.
+
+        Moving Palette Row is a step, as the grid eyedropper's is, and the hold
+        rides it (:class:`_HeldPickCommand`): an undo that put the row back but
+        kept the piece would leave a half of the gesture standing. A pick that
+        leaves the row where it was pushes nothing, the hold alone being session
+        state.
         """
         doc = self._doc
         hit = pipeline.sprite_hit(doc, self._registry, self._tilemap_columns(), x, y)
@@ -723,16 +865,65 @@ class SpriteEditMixin(_Host):
                 f"Tile ${cell.index:X} is not in the tile source - nothing picked."
             )
             return
-        self._set_source_tile(cell.index, cell)
         row = None
         if doc.cells_carry_palette_rows:
             row = self._drawn_palette_row(cell.palette_row)
-            self._palette_row.setValue(row)
+        spin = self._palette_row
+        moves = row is not None and (
+            max(spin.minimum(), min(row, spin.maximum())) != spin.value()
+        )
+        if not moves:
+            # Nothing a save records moves, so the hold is the session state it
+            # is everywhere else and takes no step.
+            self._set_source_tile(cell.index, cell)
+        else:
+            # Palette Row's step carries the hold with it (_HeldPickCommand).
+            before = self._held_pick()
+            self._undo_stack.beginMacro("pick subsprite")
+            try:
+                self._set_source_tile(cell.index, cell)
+                self._push_command(_HeldPickCommand(self, before, self._held_pick()))
+                spin.setValue(row)
+            finally:
+                self._undo_stack.endMacro()
         tail = "" if row is None else f", palette row {row}"
+        # A fixed layout adds nothing on a click, so the hint would mislead.
+        hint = "." if self._fixed_layout() else " - click empty sheet to add it."
         self.statusBar().showMessage(
             f"Holding subsprite {hit.subsprite} of frame {hit.frame} "
-            f"(tile ${cell.index:X}{tail}) - click empty sheet to add it."
+            f"(tile ${cell.index:X}{tail}){hint}"
         )
+
+    def _held_pick(self) -> HeldPick:
+        return (
+            self._source_tile_id,
+            self._source_cell,
+            self._stamp_brush,
+            dict(self._stamp_attrs),
+        )
+
+    def _apply_held_pick(self, state: HeldPick) -> None:
+        """Hold ``state`` again — one half of :class:`_HeldPickCommand`.
+
+        The fields :meth:`~...tile_source_dock.TileSourceDockMixin.
+        _set_source_tile` writes, set back whole rather than re-picked: a
+        re-pick would seed the row's settings from the record it displaces,
+        which is the gesture's side effect and not a state to return to.
+        """
+        tile_id, cell, brush, attrs = state
+        self._source_tile_id, self._source_cell = tile_id, cell
+        self._stamp_brush = brush
+        self._stamp_attrs.clear()
+        self._stamp_attrs.update(attrs)
+        self._tile_source_pushing = True
+        try:
+            if tile_id is None:
+                self._tile_source_panel.clear_selection()
+            else:
+                self._tile_source_panel.select_id(tile_id)
+        finally:
+            self._tile_source_pushing = False
+        self._after_pick_change()
 
     def _on_subsprite_area_picked(self, x0: int, y0: int, x1: int, y1: int) -> None:
         """A right drag: pick every piece whose box the band **touches**.
@@ -750,7 +941,7 @@ class SpriteEditMixin(_Host):
             return
         band = QRect(x0, y0, x1 - x0 + 1, y1 - y0 + 1)
         tile_w, tile_h = self._sprite_tile_size()
-        found = []
+        found, last = [], None
         for at, frame in enumerate(doc.shown_frames):
             ox, oy = self._slot_origin(sheet, at)
             for sub in frame:
@@ -759,8 +950,11 @@ class SpriteEditMixin(_Host):
                 wide, tall = sub.pixels(tile_w, tile_h)
                 if band.intersects(QRect(ox + sub.x, oy + sub.y, wide, tall)):
                     found.append(sub.record)
+                    last = at
         self._pick_tile, self._pick_depth = None, 0
-        self._set_picked_records(found)
+        # The primary is the last piece found, so its frame is the one the
+        # band picked it in (a record drawn in several frames is read there).
+        self._set_picked_records(found, frame=last)
         if not found:
             self.statusBar().showMessage("No subsprite under the band.")
 
@@ -828,7 +1022,7 @@ class SpriteEditMixin(_Host):
         try:
             cells, added = self._add_pieces(specs)
         except _REFUSALS as exc:
-            self.statusBar().showMessage(str(exc))
+            self.statusBar().showMessage(self._refusal_text(exc))
             return
         if self._apply_cells(cells, "add subsprite", pick=(before, added)):
             what = "subsprite" if len(added) == 1 else counted(len(added), "subsprite")
@@ -858,6 +1052,8 @@ class SpriteEditMixin(_Host):
             not self._sprite_tool_live()
             or hover is None
             or self._subsprite_drag is not None
+            # A click adds nothing there, so a ghost would promise a piece.
+            or self._fixed_layout()
         ):
             canvas.set_stamp_preview(None)
             return
@@ -869,11 +1065,11 @@ class SpriteEditMixin(_Host):
         ):
             canvas.set_stamp_preview(None)
             return
-        key = (landing, tuple(specs), id(doc), id(doc.cells))
-        cached_key, shown = self._subsprite_ghost
-        if cached_key != key:
+        key = (landing, tuple(specs))
+        cached_key, cached_doc, cached_cells, shown = self._subsprite_ghost
+        if cached_key != key or cached_doc is not doc or cached_cells is not doc.cells:
             shown = self._render_ghost(specs)
-            self._subsprite_ghost = (key, shown)
+            self._subsprite_ghost = (key, doc, doc.cells, shown)
         if shown is None:
             canvas.set_stamp_preview(None)
             return
@@ -938,7 +1134,7 @@ class SpriteEditMixin(_Host):
                 )
             if action.isEnabled():
                 action.trigger()
-            else:
+            elif not (self._picked_subsprites() and self._refuse_fixed()):
                 self.statusBar().showMessage(_NOTHING_PICKED)
             return True
         if ctrl and not (shift or alt) and key == Qt.Key.Key_D:
@@ -967,7 +1163,8 @@ class SpriteEditMixin(_Host):
 
         Refused **whole** where any piece would leave the range — a nudge is
         one exact step, and a shrunk one would land somewhere the key never
-        said (the drag clamps instead, being a gesture toward a point).
+        said (the drag clamps instead, being a gesture toward a point) — and
+        where a piece is outside it already, naming that piece.
         """
         drawn = self._picked_subsprites()
         ops = self._sprite_ops()
@@ -975,16 +1172,27 @@ class SpriteEditMixin(_Host):
             return
         limits, place, _assign = ops
         pieces = [sub for _, sub in drawn]
-        if fit_group_delta(pieces, dx, dy, limits) != (dx, dy):
+        try:
+            fitted = fit_group_delta(pieces, dx, dy, limits)
+        except SpriteEditError as exc:
+            self.statusBar().showMessage(self._refusal_text(exc))
+            return
+        if fitted != (dx, dy):
+            # Refused whole either way, so neither says "stopped": nothing
+            # moved. No room at all is the group already against the edge; some
+            # room is a step longer than what is left.
             reach = limits.x_range if dx else limits.y_range
-            self.statusBar().showMessage(f"{_range_text(reach)} - stopped at the edge")
+            why = (
+                "already at the edge" if fitted == (0, 0) else "the step would leave it"
+            )
+            self.statusBar().showMessage(f"{_range_text(reach)} - {why}")
             return
         cells = list(self._doc.cells)
         try:
             for record, sub in drawn:
                 cells[record] = place(cells[record], x=sub.x + dx, y=sub.y + dy)
         except ValueError as exc:
-            self.statusBar().showMessage(str(exc))
+            self.statusBar().showMessage(self._refusal_text(exc))
             return
         picked = list(self._picked_records)
         if self._apply_cells(
@@ -1023,6 +1231,10 @@ class SpriteEditMixin(_Host):
         return True
 
     def _cut_subsprites(self) -> None:
+        # Refused before the copy: a cut that filled the buffer and then
+        # removed nothing would be a Copy wearing the wrong message.
+        if self._refuse_fixed():
+            return
         if self._copy_subsprites():
             self._clear_subsprites("cut subsprites")
 
@@ -1052,7 +1264,7 @@ class SpriteEditMixin(_Host):
                 assign=assign,
             )
         except _REFUSALS as exc:
-            self.statusBar().showMessage(str(exc))
+            self.statusBar().showMessage(self._refusal_text(exc))
             return
         slots = limits.structure == "slots"
         if self._apply_cells(cells, text, pick=(before, before if slots else [])):
@@ -1090,7 +1302,7 @@ class SpriteEditMixin(_Host):
         try:
             cells, added = self._add_pieces(specs)
         except _REFUSALS as exc:
-            self.statusBar().showMessage(str(exc))
+            self.statusBar().showMessage(self._refusal_text(exc))
             return
         if self._apply_cells(cells, "paste subsprites", pick=(before, added)):
             self.statusBar().showMessage(
@@ -1113,7 +1325,8 @@ class SpriteEditMixin(_Host):
 
         The offset is shrunk as a group where the pick sits at the range's
         edge, the drag's rule, so a duplicate is never refused for where the
-        originals are — at worst the copies land on them.
+        originals are — at worst the copies land on them. A pick with a piece
+        already outside the range is refused, with that piece named.
         """
         if not self._sprite_tool_live():
             return
@@ -1122,7 +1335,11 @@ class SpriteEditMixin(_Host):
         if drawn is None or limits is None:
             return
         tile_w, tile_h = self._sprite_tile_size()
-        dx, dy = fit_group_delta([sub for _, sub in drawn], tile_w, tile_h, limits)
+        try:
+            dx, dy = fit_group_delta([sub for _, sub in drawn], tile_w, tile_h, limits)
+        except SpriteEditError as exc:
+            self.statusBar().showMessage(self._refusal_text(exc))
+            return
         positions = self._record_positions()
         doc = self._doc
         specs = [
@@ -1133,7 +1350,7 @@ class SpriteEditMixin(_Host):
         try:
             cells, added = self._add_pieces(specs)
         except _REFUSALS as exc:
-            self.statusBar().showMessage(str(exc))
+            self.statusBar().showMessage(self._refusal_text(exc))
             return
         if self._apply_cells(cells, "duplicate subsprites", pick=(before, added)):
             self.statusBar().showMessage(
@@ -1152,8 +1369,12 @@ class SpriteEditMixin(_Host):
         if not self._sprite_tool_live():
             return
         drawn = self._picked_or_refuse()
-        ops = self._sprite_ops() if drawn is not None else None
-        if drawn is None or ops is None:
+        # Ahead of the "already at the front" answer, which would read as if
+        # the order could move.
+        if drawn is None or self._refuse_fixed():
+            return
+        ops = self._sprite_ops()
+        if ops is None:
             return
         limits, _place, assign = ops
         doc = self._doc
@@ -1184,7 +1405,7 @@ class SpriteEditMixin(_Host):
                 list(doc.cells), frames, limits, primary, to, assign=assign
             )
         except _REFUSALS as exc:
-            self.statusBar().showMessage(str(exc))
+            self.statusBar().showMessage(self._refusal_text(exc))
             return
         if self._apply_cells(cells, "reorder subsprites", pick=(before, [order[to]])):
             self.statusBar().showMessage(
@@ -1204,7 +1425,11 @@ class SpriteEditMixin(_Host):
         if not self._sprite_tool_live():
             return
         drawn = self._picked_or_refuse()
-        ops = self._sprite_ops() if drawn is not None else None
+        # reflect_group takes no limits, so the kind is asked here: a mirror
+        # is a move, and a fixed layout has no offset to write it into.
+        if drawn is None or self._refuse_fixed():
+            return
+        ops = self._sprite_ops()
         found = self._tilemap_engine()
         if drawn is None or ops is None or found is None:
             return
@@ -1233,7 +1458,7 @@ class SpriteEditMixin(_Host):
             for (record, _sub), (x, y) in zip(drawn, moved, strict=True):
                 cells[record] = place(flip(cells[record], op, preset.params), x=x, y=y)
         except ValueError as exc:
-            self.statusBar().showMessage(str(exc))
+            self.statusBar().showMessage(self._refusal_text(exc))
             return
         picked = list(self._picked_records)
         if self._apply_cells(cells, "mirror subsprites", pick=(picked, picked)):
@@ -1246,4 +1471,4 @@ class SpriteEditMixin(_Host):
 
 
 def _range_text(reach: range) -> str:
-    return f"Offsets here run {reach.start}..{reach.stop - 1}"
+    return f"Offsets here run {range_text(reach)}"

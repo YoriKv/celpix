@@ -335,6 +335,11 @@ def prune_bindings(entry: Entry, registry: Registry) -> dict[str, Bindings]:
     no longer declares go too; a plugin this build lacks keeps every key, because
     nothing here can say which of them it still wants.
     """
+    # Most entries bind nothing, and neither the stage lookups nor the import
+    # below are free (PySide hooks every import, local ones included): over a
+    # project of thousands of slices, skipping both is a sixth of a save.
+    if not entry.inputs:
+        return {}
     from celpix.project.workspace import EntryKind  # noqa: PLC0415 — circular by nature
 
     kept: dict[str, Bindings] = {}

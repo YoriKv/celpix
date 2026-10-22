@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
-from os import listdir
+from os import getcwd, listdir
 from os.path import (
     abspath,
     basename,
@@ -100,6 +100,7 @@ __all__ = [
     "PROJECT_EXTENSION",
     "PROJECT_VERSION",
     "CopiedEntry",
+    "EntryDictMemo",
     "LoadedProject",
     "ProjectError",
     "entries_from_payload",
@@ -182,7 +183,10 @@ class LoadedProject:
 
 # -- saving ----------------------------------------------------------------
 def project_dict(
-    ws: Workspace, path: str, registry: Registry | None = None
+    ws: Workspace,
+    path: str,
+    registry: Registry | None = None,
+    memo: EntryDictMemo | None = None,
 ) -> dict[str, object]:
     """The version-stamped JSON body ``ws`` would be saved as at ``path``.
 
@@ -197,6 +201,11 @@ def project_dict(
     longer reads through, the keys a plugin no longer declares. Without one
     every binding is written, which is right for a caller with no registry to
     ask: nothing is lost, and the next save that has one tidies up.
+
+    ``memo`` lets a caller that asks again and again — the window, after every
+    edit — reuse the entries that have not changed since it last asked
+    (:class:`EntryDictMemo`). The entry dicts in the result may then be shared
+    with earlier results, so a caller must not mutate them.
     """
     base_dir = dirname(abspath(path))
     # Where each entry sits, by identity, for the two records that name another
@@ -205,12 +214,16 @@ def project_dict(
     # scan per binding makes that quadratic in the number of open entries -
     # which a project of a few hundred files feels as lag while typing.
     positions = {id(entry): i for i, entry in enumerate(ws.entries)}
+    if memo is None:
+        entries = [
+            _entry_dict(entry, base_dir, positions, registry) for entry in ws.entries
+        ]
+    else:
+        entries = memo.entry_dicts(ws.entries, base_dir, positions, registry)
     document: dict[str, object] = {
         "version": PROJECT_VERSION,
         "current": ws.entries.index(ws.current) if ws.current is not None else None,
-        "entries": [
-            _entry_dict(entry, base_dir, positions, registry) for entry in ws.entries
-        ],
+        "entries": entries,
     }
     # A view-only project setting: which pixel codecs the dropdown lists. Sorted
     # so the serialized form is stable (the UI diffs documents to spot unsaved
@@ -226,6 +239,86 @@ def project_dict(
     if ws.pixel_aspect is not None:
         document["pixel_aspect"] = list(ws.pixel_aspect)
     return document
+
+
+class EntryDictMemo:
+    """What :func:`_entry_dict` last answered for each entry, reused while the
+    entry is unchanged.
+
+    The window asks :func:`project_dict` after every edit to tell whether the
+    project still matches its file, and a project of thousands of slices spends
+    tens of milliseconds re-serialising entries the edit never touched. This
+    keeps each entry's dict against a **key that changes whenever anything the
+    dict is built from does**, so one ask rebuilds only what moved.
+
+    The key is the entry's own attributes, shallowly, plus — expanded field by
+    field, because they are mutable records changed in place — those of its
+    ``session`` and ``pending_view``. A shallow key is sound because everything
+    else the entry holds is either immutable (tuples, frozen records) or, like
+    ``inputs`` and a :class:`~celpix.project.workspace.PaletteSource`, replaced
+    rather than mutated (:func:`~celpix.project.inputs.with_bindings`); a change
+    that broke that rule would go unseen here. A false miss — a revision bump,
+    a selection moving — only costs a rebuild.
+
+    An entry with a **loaded document** is always rebuilt: its view, palette
+    config and custom colours live on the document and change in place under
+    every gesture, and there are only ever as many as the session has opened.
+
+    What the dicts share is checked once per ask and drops everything when it
+    differs: the folder paths are relative to, the working directory a relative
+    path resolves against, the registry bindings are pruned by, and every
+    entry's position — which a dict naming another entry writes, so an add,
+    remove or reorder rebuilds the lot.
+    """
+
+    def __init__(self) -> None:
+        self._shared: tuple[str, str, dict[int, int]] | None = None
+        self._registry: Registry | None = None
+        # id(entry) -> (the entry, its key, its dict). The entry is held so an id
+        # reused by a later object can never match a stale row.
+        self._dicts: dict[int, tuple[Entry, tuple[object, ...], dict[str, object]]]
+        self._dicts = {}
+
+    def clear(self) -> None:
+        """Forget everything — a closed project's entries are no longer held."""
+        self._shared = None
+        self._registry = None
+        self._dicts = {}
+
+    def entry_dicts(
+        self,
+        entries: list[Entry],
+        base_dir: str,
+        positions: dict[int, int],
+        registry: Registry | None,
+    ) -> list[dict[str, object]]:
+        shared = (base_dir, getcwd(), positions)
+        if shared != self._shared or registry is not self._registry:
+            self._shared = (base_dir, getcwd(), dict(positions))
+            self._registry = registry
+            self._dicts = {}
+        out: list[dict[str, object]] = []
+        for entry in entries:
+            if entry.doc is not None:
+                out.append(_entry_dict(entry, base_dir, positions, registry))
+                continue
+            key = _memo_key(entry)
+            row = self._dicts.get(id(entry))
+            if row is None or row[0] is not entry or row[1] != key:
+                row = (entry, key, _entry_dict(entry, base_dir, positions, registry))
+                self._dicts[id(entry)] = row
+            out.append(row[2])
+        return out
+
+
+def _memo_key(entry: Entry) -> tuple[object, ...]:
+    """Everything :func:`_entry_dict` reads off a document-less ``entry``."""
+    session, view = entry.session, entry.pending_view
+    return (
+        tuple(vars(entry).values()),
+        tuple(vars(session).values()) if session is not None else None,
+        tuple(vars(view).values()) if view is not None else None,
+    )
 
 
 def save_project(ws: Workspace, path: str, registry: Registry | None = None) -> None:

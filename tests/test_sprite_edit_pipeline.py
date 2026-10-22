@@ -261,3 +261,24 @@ def test_a_cell_edit_rebuilds_the_frames_and_moves_the_extent(qtbot, tmp_path) -
     assert doc.tilemap_data == encoded
     assert doc.tilemap_extent == len(encoded)
     assert [s.index for s in doc.sprite_frames[0]] == [5]
+
+
+def test_a_length_change_is_refused_through_a_bounded_slot(tmp_path) -> None:
+    """A slot is written as it is sized - a shorter payload leaves the old tail
+    standing, a second copy of the last record that a count outside the slice
+    still names - so an edit that would change the encoded length is refused
+    where it is made, and only there: an entry that is its file grows freely."""
+    from celpix.ui.main_window.tilemap_edit import TilemapEditMixin
+
+    _registry, load = _headless(tmp_path)
+    doc, _path = load(
+        "e.bin", _headed((0, 1), (8, 2), (16, 3)), _EditableHeaded.info.id
+    )
+    refuse = TilemapEditMixin._refuse_slot_length_change
+    shorter, same = _headed((0, 1), (8, 2)), _headed((0, 1), (8, 2), (16, 3))
+    assert refuse(doc, shorter) is None  # a whole file has no slot
+    cfg = doc.tilemap_config
+    doc.tilemap_config = replace(cfg, source=replace(cfg.source, length=7))
+    assert refuse(doc, same) is None
+    assert "7-byte slot" in refuse(doc, shorter)
+    assert refuse(doc, None) is None

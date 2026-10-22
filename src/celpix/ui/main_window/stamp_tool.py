@@ -87,8 +87,22 @@ SPRITE_TOOL_ICON_TEXT = "Edit Subsprites"
 STAMP_TEXT = "Toggle Edit Tiles Mode"
 STAMP_ICON_TEXT = "Edit Tiles"
 SPRITE_STAMP_TIP = (
-    "Edit Subsprites (T): drag a piece to move it, click to add the held\n"
-    "piece; right-click picks a piece, right-drag selects pieces"
+    "Edit Subsprites (T): drag a piece to move it,\n"
+    "click to add the held piece;\n"
+    "right-click picks a piece, right-drag selects pieces"
+)
+# A fixed layout (the ``fixed`` structure kind) moves and adds nothing, so the
+# tool's tip says what it does there instead of promising the drag — and names a
+# flip only where the format's cells have one (FF6's pose tables have none).
+SPRITE_STAMP_FIXED_TIP = (
+    "Edit Subsprites (T): click or right-drag picks pieces;\n"
+    "retile or flip them with the property row -\n"
+    "this format places them itself"
+)
+SPRITE_STAMP_FIXED_NO_FLIP_TIP = (
+    "Edit Subsprites (T): click or right-drag picks pieces;\n"
+    "retile them with the Cell spin -\n"
+    "this format places them itself"
 )
 SPRITE_STAMP_BLOCKED_TIP = (
     "Edit Subsprites (T)\nUnavailable: this sprite map's format declares\n"
@@ -265,7 +279,16 @@ class StampToolMixin(_Host):
         )
         sprite = self._doc is not None and self._doc.is_sprite
         if sprite:
-            tip = SPRITE_STAMP_BLOCKED_TIP if blocked else SPRITE_STAMP_TIP
+            if blocked:
+                tip = SPRITE_STAMP_BLOCKED_TIP
+            elif self._fixed_layout():
+                tip = (
+                    SPRITE_STAMP_FIXED_TIP
+                    if self._cells_flip()
+                    else SPRITE_STAMP_FIXED_NO_FLIP_TIP
+                )
+            else:
+                tip = SPRITE_STAMP_TIP
         else:
             tip = STAMP_BLOCKED_TIP if blocked else STAMP_TIP
         text = SPRITE_TOOL_TEXT if sprite else STAMP_TEXT

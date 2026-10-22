@@ -4491,6 +4491,41 @@ def test_ctrl_f_reaches_the_files_filter_from_the_canvas(qtbot, tmp_path) -> Non
     assert panel._filter.hasFocus()
 
 
+def test_auto_focus_view_decides_where_opening_an_entry_leaves_focus(
+    qtbot, tmp_path
+) -> None:
+    """On, opening an entry hands the keyboard to the view; off, focus stays put —
+    and the choice is app-wide, so the next window starts with it."""
+    a = tmp_path / "a.4bpp.sfc"
+    b = tmp_path / "b.4bpp.sfc"
+    a.write_bytes(_make_snes_file(tmp_path).read_bytes())
+    b.write_bytes(a.read_bytes())
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window._load_pixel(str(a))
+    window._load_pixel(str(b))
+    first, second = window._workspace.entries
+    filter_box = window._files_panel._filter
+
+    assert window._auto_focus_view_action.isChecked()  # the default
+    filter_box.setFocus()
+    qtbot.waitUntil(filter_box.hasFocus)
+    window._activate_entry(first)
+    qtbot.waitUntil(window._canvas.hasFocus)
+
+    window._auto_focus_view_action.setChecked(False)
+    filter_box.setFocus()
+    qtbot.waitUntil(filter_box.hasFocus)
+    window._activate_entry(second)
+    assert window._workspace.current is second
+    assert filter_box.hasFocus()
+
+    other = MainWindow()
+    qtbot.addWidget(other)
+    assert not other._auto_focus_view_action.isChecked()
+
+
 def test_a_slice_outside_the_parents_window_is_refused_rather_than_skipped(
     qtbot, tmp_path, captured_alerts
 ) -> None:

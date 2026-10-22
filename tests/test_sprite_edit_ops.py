@@ -15,12 +15,15 @@ import pytest
 
 from celpix.core.sprite import Frame, Subsprite, SubspriteLimits
 from celpix.core.sprite_edit import (
+    FIXED_REFUSAL,
     SpriteEditError,
     add_subsprite,
     fit_group_delta,
     frame_count,
     membership,
     move_subsprite,
+    record_places,
+    record_positions,
     reflect_group,
     remove_subsprites,
     reorder_subsprite,
@@ -370,7 +373,45 @@ def test_table_refuses_every_structural_op():
         remove_subsprites(cells, frames, TABLE, [0], place=place, assign=None)
 
 
+def test_fixed_refuses_every_structural_and_geometric_op():
+    # Two frames of two pieces at slots the drawing routine fixes: the cells
+    # are editable (frame_count still answers), but nothing moves or counts.
+    fixed = SubspriteLimits("fixed", range(0), range(0))
+    cells = [_cell(1), _cell(2), _cell(3), _cell(4)]
+    frames = [
+        (Subsprite(record=0), Subsprite(x=8, record=1)),
+        (Subsprite(record=2), Subsprite(x=8, record=3)),
+    ]
+    assert frame_count(cells, frames, fixed) == 2
+    refused = [
+        lambda: membership(cells, frames, fixed),
+        lambda: add_subsprite(
+            cells, frames, fixed, 0, _cell(9), x=0, y=0, place=place, assign=None
+        ),
+        lambda: remove_subsprites(cells, frames, fixed, [0], place=place, assign=None),
+        lambda: reorder_subsprite(cells, frames, fixed, 1, 0, assign=None),
+        lambda: move_subsprite(cells, frames, fixed, 0, 1, place=place, assign=None),
+        lambda: fit_group_delta(list(frames[0]), 1, 0, fixed),
+        lambda: fit_group_delta([], 0, 0, fixed),
+    ]
+    for op in refused:
+        with pytest.raises(SpriteEditError) as caught:
+            op()
+        assert str(caught.value) == FIXED_REFUSAL
+
+
 # --- geometry ----------------------------------------------------------------
+
+
+def test_a_record_drawn_twice_resolves_to_its_first_place():
+    """A ``fixed`` word drawn in two frames: one place answers with the first,
+    every place lists both, in draw order."""
+    frames = [
+        (Subsprite(0, 0, 1, record=0), Subsprite(8, 0, 2, record=1)),
+        (Subsprite(8, 0, 2, record=1), Subsprite(0, 0, 1, record=0)),
+    ]
+    assert record_positions(frames) == {0: (0, 0), 1: (0, 1)}
+    assert record_places(frames) == {0: [(0, 0), (1, 1)], 1: [(0, 1), (1, 0)]}
 
 
 def test_group_delta_is_shrunk_for_the_group_not_per_piece():
@@ -379,7 +420,8 @@ def test_group_delta_is_shrunk_for_the_group_not_per_piece():
     assert fit_group_delta(pieces, -20, 0, limits) == (-8, 0)
     assert fit_group_delta(pieces, 30, -5, limits) == (27, -5)
     outside = [*pieces, Subsprite(x=0, y=200)]
-    assert fit_group_delta(outside, 1, 0, limits) == (0, 0)
+    with pytest.raises(SpriteEditError, match=r"at \(\+0, \+200\) .*\(-128\.\.127\)$"):
+        fit_group_delta(outside, 1, 0, limits)
 
 
 def test_reflect_mixed_sizes_keeps_the_box_and_swaps_sides():

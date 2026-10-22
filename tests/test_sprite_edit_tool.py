@@ -175,20 +175,29 @@ def test_arrows_nudge_one_run_and_refuse_the_edge(qtbot, tmp_path) -> None:
     assert _xs(window) == [(16, 0), (127, 0)]
     _key(window, Qt.Key.Key_Right)
     assert _xs(window) == [(16, 0), (127, 0)]
-    assert _status(window) == "Offsets here run -128..127 - stopped at the edge"
+    # Nothing moved, so the line says where the group stands, not "stopped".
+    assert _status(window) == "Offsets here run -128..127 - already at the edge"
     assert window._doc.cells != cells  # the two tile steps landed
 
 
 def test_the_right_button_eyedrops_a_piece_and_bands_pick_touched_ones(
     qtbot, tmp_path
 ) -> None:
-    """A right click holds the piece's whole record and its row in Palette Row;
-    a band picks every piece whose box it touches, replacing the pick."""
+    """A right click holds the piece's whole record and its row in Palette Row,
+    as one step whose undo releases the piece along with the row; a band picks
+    every piece whose box it touches, replacing the pick."""
     window = _armed(qtbot, tmp_path, [[(0, 0, 1), (8, 0, 2, 3), (24, 8, 3)]])
     doc = window._doc
+    row, steps = window._palette_row.value(), window._undo_stack.count()
     window._canvas.stamp_pixel_pressed.emit(*_at(window, 0, 10, 2), _RIGHT)
     assert window._source_cell == doc.cells[1] and window._source_tile_id == 2
-    assert window._palette_row.value() == window._drawn_palette_row(3)
+    assert window._palette_row.value() == window._drawn_palette_row(3) != row
+    assert window._undo_stack.count() == steps + 1
+    window._undo_stack.undo()
+    assert window._source_tile_id is None and window._source_cell is None
+    assert window._palette_row.value() == row
+    window._undo_stack.redo()
+    assert window._source_cell == doc.cells[1]
 
     # From inside piece 1 to one pixel into piece 2's box: 0 is not touched.
     window._set_picked_records([0])
@@ -281,6 +290,42 @@ def test_mirror_about_origin_reflects_each_piece_by_its_own_width(
     assert "about the origin" in _status(window)
 
 
+def test_mirror_about_origin_is_off_on_an_axis_that_cannot_go_negative(
+    qtbot, tmp_path
+) -> None:
+    """Pivot 0 sends every piece below zero, so an unsigned axis (FF6's ending
+    frames: x 0..127) disables its row and says why; the signed one stays live."""
+    from dataclasses import replace
+
+    window = _armed(qtbot, tmp_path, [[(8, 0, 1)]])
+    window._set_picked_records([0])
+    limits = window._doc.subsprite_limits
+    window._doc.subsprite_limits = replace(limits, x_range=range(128))
+    window._sync_subsprite_actions()
+    across, down = window._subsprite_mirror_h_action, window._subsprite_mirror_v_action
+    assert across.isVisible() and not across.isEnabled()
+    assert "cannot be negative" in across.toolTip()
+    assert down.isEnabled() and "y' = -y - h" in down.toolTip()
+
+
+def test_a_pick_that_goes_away_takes_its_status_text_with_it(qtbot, tmp_path) -> None:
+    """A click on empty sheet and a Ctrl+click on the last picked piece both say
+    the pick is empty; switching entries drops the pick and its stale text."""
+    window = _armed(qtbot, tmp_path, [[(0, 0, 1), (8, 0, 2)]])
+    window._on_pixel_picked(*_at(window, 0, 2, 2), _PLAIN)
+    assert _status(window).startswith("Frame 0, subsprite 0")
+    window._on_pixel_picked(*_at(window, 0, 40, 40), _PLAIN)
+    assert window._picked_records == [] and _status(window) == "Nothing picked."
+
+    window._on_pixel_picked(*_at(window, 0, 2, 2), _PLAIN)
+    window._on_pixel_picked(*_at(window, 0, 2, 2), _CTRL)
+    assert window._picked_records == [] and _status(window) == "Nothing picked."
+
+    window._on_pixel_picked(*_at(window, 0, 2, 2), _PLAIN)
+    window._activate_entry(window._workspace.entries[0])
+    assert window._picked_records == [] and not _status(window).startswith("Frame")
+
+
 def test_a_drag_across_a_frame_boundary_moves_the_piece_there(qtbot, tmp_path) -> None:
     """Released over another frame's slot, the piece joins that frame at the
     same object position plus the delta, and stays picked."""
@@ -295,3 +340,67 @@ def test_a_drag_across_a_frame_boundary_moves_the_piece_there(qtbot, tmp_path) -
     assert [sub.index for sub in frames[0]] == [1]
     assert [(sub.index, sub.x) for sub in frames[1]] == [(3, 0), (2, 8)]
     assert window._picked_records == [65]
+
+
+def test_a_removed_record_keeps_the_fields_of_the_records_behind_it(
+    qtbot, tmp_path
+) -> None:
+    """A remove shifts every later record down an index, so the host's fit must
+    read each against itself: fitted against the cell that used to sit at its
+    index, every shifted record took that one's priority."""
+    from celpix.core.capabilities import ContentKind
+    from celpix.core.context import PipelineContext
+    from celpix.plugins.builtins.md_sprite import MdSpriteCodec
+
+    def record(x: int, tile: int, priority: int) -> bytes:
+        attr = priority << 15 | tile
+        return bytes((0, 0)) + attr.to_bytes(2, "big") + bytes((x, -(x + 8) & 0xFF))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    path = tmp_path / "object.bin"
+    path.write_bytes(record(0, 1, 1) + record(8, 2, 0) + record(16, 3, 1))
+    # Open-ended, so the entry is its file and has no slot to hold the length.
+    entry = window._workspace.add_slice(str(path), "object", 0, None)
+    entry.content_kind = ContentKind.TILEMAP
+    entry.tilemap_preset_id = "preset.tilemap.md-sprite"
+    entry.tile_source = TileSource(
+        mode=TileMode.ENTRY, entry=window._workspace.entries[0]
+    )
+    window._activate_entry(entry)
+    window._stamp_action.trigger()
+    assert window._stamping
+
+    window._set_picked_records([0])
+    window._clear_cells()
+    # The buffer the save writes, read back at the preset's defaults.
+    saved = MdSpriteCodec().decode(window._doc.tilemap_data, {}, PipelineContext())
+    assert [(c.index, c.priority) for c in saved] == [(2, 0), (3, 1)]
+
+
+def test_undo_and_redo_from_another_entry_return_to_the_map_and_say_so(
+    qtbot, tmp_path
+) -> None:
+    """A cell step is document-scoped like every other: undone or redone from
+    another entry, it switches back to the map first, so the change lands where
+    it can be seen — with the pick it carries — and the status line names the
+    entry it went to. A step on the entry already shown says what it said before."""
+    window = _armed(qtbot, tmp_path, [[(0, 0, 1), (8, 0, 2)]])
+    sprite, bank = window._workspace.current, window._workspace.entries[0]
+    window._set_picked_records([1])
+    assert _key(window, Qt.Key.Key_Right)
+    _key(window, Qt.Key.Key_Escape)  # ends the run
+    window._undo_action.trigger()
+    assert _xs(window)[1] == (8, 0) and not _status(window).startswith("Undid")
+
+    window._activate_entry(bank)
+    window._redo_action.trigger()
+    assert window._workspace.current is sprite
+    assert _xs(window)[1] == (9, 0) and window._picked_records == [1]
+    assert _status(window) == "Redid nudge subsprites in sprite.OBJ"
+
+    window._activate_entry(bank)
+    window._undo_action.trigger()
+    assert window._workspace.current is sprite and _xs(window)[1] == (8, 0)
+    assert _status(window) == "Undid nudge subsprites in sprite.OBJ"

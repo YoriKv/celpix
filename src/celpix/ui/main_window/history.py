@@ -37,10 +37,16 @@ from PySide6.QtWidgets import QApplication, QMenu
 
 from celpix.project.workspace import Entry
 from celpix.ui.file_list_panel import FILTER_KEY
+from celpix.ui.settings import load_bool_setting, save_bool_setting
 
 # Deep enough that a session's worth of hopping stays retraceable, bounded so a
 # long one doesn't pin every entry it ever showed. The oldest visit falls off.
 _TRAIL_LIMIT = 64
+
+# QSettings key for Navigate ▸ Auto Focus View. A local preference: whether a
+# click in the Files list should hand the keyboard to the view is about how the
+# person works, not about any project.
+AUTO_FOCUS_VIEW_KEY = "view/auto_focus_view"
 
 
 if TYPE_CHECKING:
@@ -120,6 +126,21 @@ class HistoryMixin(_Host):
         self._next_entry_action.setShortcut(QKeySequence("Ctrl+Shift+Down"))
         self._next_entry_action.setToolTip("Select the Files row below")
         self._next_entry_action.triggered.connect(lambda: self._files_panel.step_row(1))
+        # Whether opening an entry from the list moves focus to the view, so its
+        # keys work at once; off keeps focus in the list for keyboard browsing
+        # (and the filter, and whatever else had it). Mnemonic "s": every
+        # earlier letter is taken in the Navigate menu.
+        self._auto_focus_view_action = QAction("Auto Focu&s View", self)
+        self._auto_focus_view_action.setCheckable(True)
+        self._auto_focus_view_action.setChecked(
+            load_bool_setting(AUTO_FOCUS_VIEW_KEY, True)
+        )
+        self._auto_focus_view_action.setToolTip(
+            "Move keyboard focus to the view\nwhen an entry is opened"
+        )
+        self._auto_focus_view_action.toggled.connect(
+            lambda on: save_bool_setting(AUTO_FOCUS_VIEW_KEY, on)
+        )
         self._sync_history_actions()
 
     def _find_entry(self) -> None:
@@ -136,13 +157,15 @@ class HistoryMixin(_Host):
     # -- the actions ---------------------------------------------------------
     def _add_history_actions(self, menu: QMenu) -> None:
         """Put Back/Forward, Find and Previous/Next Entry at the head of ``menu``
-        (Navigate), then a separator — the five that move between entries rather
-        than within one."""
+        (Navigate) — the five that move between entries rather than within one —
+        then Auto Focus View, which decides where such a move leaves the keyboard,
+        and a separator."""
         menu.addAction(self._back_action)
         menu.addAction(self._forward_action)
         menu.addAction(self._find_entry_action)
         menu.addAction(self._previous_entry_action)
         menu.addAction(self._next_entry_action)
+        menu.addAction(self._auto_focus_view_action)
         menu.addSeparator()
 
     def _sync_history_actions(self) -> None:

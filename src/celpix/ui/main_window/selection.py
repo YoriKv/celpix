@@ -115,6 +115,16 @@ class SelectionMixin(_Host):
         undo = self._undo_stack.createUndoAction(self)
         undo.setShortcut(QKeySequence.StandardKey.Undo)  # Ctrl+Z
         redo = self._undo_stack.createRedoAction(self)
+        # The stack's own actions keep their self-updating label and enabled
+        # state, but trigger through the window instead of the stack, which is
+        # where a step that switched entries gets named on the status line
+        # (`_step_history`). The bare disconnect drops only the stack's slot:
+        # nothing else is connected yet.
+        undo.triggered.disconnect()
+        redo.triggered.disconnect()
+        undo.triggered.connect(self._undo_step)
+        redo.triggered.connect(self._redo_step)
+        self._undo_action, self._redo_action = undo, redo
         # The stack rewrites these labels to name the pending command ("Undo
         # Paste"), which reads as noise in the shortcut guide - pin the plain
         # name for it (see celpix.ui.help_dialogs).
@@ -399,14 +409,17 @@ class SelectionMixin(_Host):
             # to write, so they wait for the tool. Inside it the verbs mean
             # **records** — the picked pieces, through the in-app cell buffer —
             # so Copy, Cut and Clear need a pick and Paste needs a buffer.
+            # A fixed layout keeps Copy, a read, and loses the three that add
+            # or remove a piece: its record count is the drawing routine's.
             picked = bool(self._selected_cells())
             armed = self._stamping and editable
-            self._cut_action.setEnabled(armed and picked)
-            self._clear_action.setEnabled(armed and picked)
+            structural = armed and not self._fixed_layout()
+            self._cut_action.setEnabled(structural and picked)
+            self._clear_action.setEnabled(structural and picked)
             self._copy_action.setEnabled(
                 picked if self._stamping else target is not None
             )
-            self._paste_action.setEnabled(armed and self._has_cell_clipboard())
+            self._paste_action.setEnabled(structural and self._has_cell_clipboard())
         else:
             for action in (self._cut_action, self._clear_action):
                 action.setEnabled(has_doc and target is not None and editable)

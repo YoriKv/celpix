@@ -2,8 +2,10 @@
 
 ## v1.2.15 - unreleased
 
-- Sprite maps are editable: move, nudge, retile, flip, resize, add, remove, reorder and duplicate subsprites with the Edit Subsprites tool, the property row and the Subsprites window
-- The subsprite pick can hold several pieces, and each frame's origin is marked on the canvas
+- Navigate -> Auto Focus View to be able to toggle auto focus
+- Sprite editing functionality
+- Edits and undo on large projects sped up
+- Undo navigation (where the view jumps to on an undo) improved
 
 ## v1.2.14 - 2026-10-18
 

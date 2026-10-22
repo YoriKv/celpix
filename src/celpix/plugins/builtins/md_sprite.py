@@ -45,7 +45,14 @@ from typing import Any
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.notices import warn
-from celpix.core.sprite import Frame, SizeChoice, Subsprite, SubspriteLimits
+from celpix.core.sprite import (
+    Frame,
+    SizeChoice,
+    Subsprite,
+    SubspriteLimits,
+    range_text,
+    signed_range,
+)
 from celpix.core.tilemap import Cell, CellOp
 from celpix.plugins._params import byte_order, flag, one_of
 from celpix.plugins.base import PluginInfo
@@ -140,16 +147,7 @@ _SIZES: tuple[tuple[int, int], ...] = tuple(
     (across, down) for across in range(1, 5) for down in range(1, 5)
 )
 # A signed byte: the y field, and the mirror field that x and the width bound.
-_S8 = range(-128, 128)
-
-
-def _x_range(x_bytes: int) -> range:
-    half = 1 << (x_bytes * 8 - 1)
-    return range(-half, half)
-
-
-def _span(r: range) -> str:
-    return f"{r.start}..{r.stop - 1}"
+_S8 = signed_range(8)
 
 
 class MdSpriteCodec:
@@ -290,7 +288,7 @@ class MdSpriteCodec:
         x_bytes, _mirror, _order = _layout(params)
         return SubspriteLimits(
             structure="run",
-            x_range=_x_range(x_bytes),
+            x_range=signed_range(x_bytes * 8),
             y_range=_S8,
             size=_SIZES,
             per_frame=None,
@@ -329,12 +327,12 @@ class MdSpriteCodec:
         flags = cell.flags
         if y is not None:
             if y not in _S8:
-                raise ValueError(f"y offsets here run {_span(_S8)}, not {y}")
+                raise ValueError(f"y offsets here run {range_text(_S8)}, not {y}")
             flags = flags & ~(0xFF << 32) | (y & 0xFF) << 32
         if x is not None:
-            limit = _x_range(x_bytes)
+            limit = signed_range(x_bytes * 8)
             if x not in limit:
-                raise ValueError(f"x offsets here run {_span(limit)}, not {x}")
+                raise ValueError(f"x offsets here run {range_text(limit)}, not {x}")
             # Sixteen bits whatever x_bytes is, sign-extended as decode does.
             flags = flags & ~(0xFFFF << 8) | (x & 0xFFFF) << 8
         if size is not None:
@@ -354,7 +352,7 @@ class MdSpriteCodec:
             if mirrored not in _S8:
                 raise ValueError(
                     f"the mirrored x, -(x + width * 8) = {mirrored}, must run "
-                    f"{_span(_S8)} to fit its byte"
+                    f"{range_text(_S8)} to fit its byte"
                 )
             placed = replace(placed, flags=flags & ~0xFF | (mirrored & 0xFF))
         return placed
@@ -364,6 +362,25 @@ class MdSpriteCodec:
 
     def palette_row_limit(self, params: dict[str, Any]) -> int:
         return 3
+
+    def cell_fields(self, params: dict[str, Any]) -> dict[str, int]:
+        """Every Cell field the attribute word stores, each at its full width.
+
+        Declared outright rather than assembled from the other probes, which
+        never grant ``priority``: a field left undeclared is one the host does
+        not carry for this format. The property row offers no control for it,
+        and the fit (``fit_cell``) takes it from another cell rather than from
+        the record — the held record and the brush are fitted against a blank
+        one — so a piece laid from an eyedropped record would lose its
+        priority on the way down.
+        """
+        return {
+            "index": _INDEX,
+            "palette_row": 3,
+            "priority": 1,
+            "flip_h": 1,
+            "flip_v": 1,
+        }
 
     def transform_cell(
         self, cell: Cell, op: CellOp, params: dict[str, Any]

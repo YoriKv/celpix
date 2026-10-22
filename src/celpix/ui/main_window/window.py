@@ -80,6 +80,7 @@ from celpix.project.workspace import (
     entry_notices,
     load_failed,
     sorted_entries,
+    unavailable,
 )
 from celpix.ui.animation_overlay import AnimationOverlay
 from celpix.ui.canvas import CANVAS_BACKGROUND, Canvas
@@ -271,6 +272,9 @@ class MainWindow(
         # True while a command's undo/redo is applying state - push sites bail
         # on it, so an apply can never cascade into pushing a second command.
         self._applying_undo = False
+        # The entry the step being undone/redone switched the view to, set by
+        # `_ensure_current` and read back by `_step_history` to say so.
+        self._history_reached: Entry | None = None
         # The entries a fold is being made into right now, by identity. A fold
         # down a chain of nested slices may have to load a middle link to fold
         # into it, and that load settles its own chain on the way — which would
@@ -286,9 +290,15 @@ class MainWindow(
         # comparison can't drift, and it reads clean again when a change is
         # undone back to what is on disk. None while no project is open.
         self._saved_project: dict[str, object] | None = None
-        # Set while a command is being pushed, so the several refreshes one push
-        # sets off do not each re-answer a question with one answer per push
-        # (:meth:`_push_command`).
+        # What re-serializing it cost last time, kept so the next ask rebuilds
+        # only the entries that changed since (:class:`~celpix.project.
+        # projectfile.EntryDictMemo`) — the comparison above runs after every
+        # edit, and a project of thousands of slices would otherwise pay for all
+        # of them each time.
+        self._entry_dicts = projectfile.EntryDictMemo()
+        # Set while a command is being pushed or applied, so the several
+        # refreshes one step sets off do not each re-answer a question with one
+        # answer per step (:meth:`_push_command`, :meth:`_undo_apply`).
         self._defer_project_modified = False
         # Where the palette comes from (:class:`PaletteMode`). The dock's mode
         # dropdown is a view of this member, and the mode's own properties -
@@ -438,8 +448,8 @@ class MainWindow(
         # The text window is a `Qt.Tool` - a top-level window of its own - so the
         # Edit menu's window-context shortcuts do not reach it. Ctrl+Z there must
         # still be the session's one history, not a second one in the field.
-        self._text.undo_requested.connect(self._undo_stack.undo)
-        self._text.redo_requested.connect(self._undo_stack.redo)
+        self._text.undo_requested.connect(self._undo_step)
+        self._text.redo_requested.connect(self._redo_step)
         # The third tool window, and the one the other two are read against: a
         # fontmap opens the text beside the alphabet that decides what it says.
         self._font_alphabet = FontAlphabetWindow(self)
@@ -450,8 +460,8 @@ class MainWindow(
         self._font_alphabet.edited.connect(self._on_font_alphabet_edited)
         self._font_alphabet.dismissed.connect(self._on_font_alphabet_dismissed)
         self._font_alphabet.tile_selected.connect(self._on_font_alphabet_tile)
-        self._font_alphabet.undo_requested.connect(self._undo_stack.undo)
-        self._font_alphabet.redo_requested.connect(self._undo_stack.redo)
+        self._font_alphabet.undo_requested.connect(self._undo_step)
+        self._font_alphabet.redo_requested.connect(self._redo_step)
         self._init_sprite_select()
         self._canvas.slots_selected.connect(self._on_slots_selected)
         # After slots_selected, because the two report one press and this is the
@@ -712,8 +722,15 @@ class MainWindow(
 
         Applying pokes the same widgets and paths as user gestures; push sites
         bail while this is set, so an apply can never push a second command.
+
+        The unsaved marker is held back for the apply as it is for a push
+        (:meth:`_push_command`): the stack moves its index right after every
+        undo and redo, and that move asks once for the step as a whole. A caller
+        applying outside the stack has no such move to follow it, so it asks
+        for itself.
         """
         self._applying_undo = True
+        deferred, self._defer_project_modified = self._defer_project_modified, True
         try:
             # A drag still under the pointer previews on live state and records
             # only on release, so it is abandoned before the history moves
@@ -722,6 +739,7 @@ class MainWindow(
             yield
         finally:
             self._applying_undo = False
+            self._defer_project_modified = deferred
 
     def _push_command(self, command: QUndoCommand) -> None:
         """Push onto the session stack (push() runs the command's redo).
@@ -734,7 +752,7 @@ class MainWindow(
         The project's *unsaved* marker is a different question, and one push
         raises it several times over: the apply refreshes the view, and the push
         moves the stack index, and both are choke points
-        :meth:`_refresh_project_modified` hangs off. Answering it costs the whole
+        :meth:`_refresh_project_modified` hangs off. Answering it costs the
         project re-serialized (:meth:`_project_snapshot`), so it is answered once
         — after, where the answer is the same one every intermediate ask would
         have got.
@@ -755,7 +773,65 @@ class MainWindow(
         """
         if self._workspace.current is not entry:
             self._activate_entry(entry)
+            if self._workspace.current is entry:
+                self._history_reached = entry
         return self._workspace.current is entry
+
+    def _return_to(self, made_in: Entry | None, entry: Entry) -> bool:
+        """Reach the view a step was made from, else the entry it changed.
+
+        The rule every reaching command shares: a step returns to **where the
+        user was working** when it was made, whatever entry owns the data it
+        changed — a tile bank's bytes edited through a map, a palette file's
+        colour edited on a graphic, a font's alphabet typed against a string
+        (``docs/design/undo-redo.md`` §2). ``made_in`` is the entry that was on
+        screen at construction; ``entry`` is the one whose data the step lands
+        in, and is where it goes instead when ``made_in`` is unset, has left the
+        list, or would only open inert — a view that is gone must not strand
+        the step, so it reverts where the data is, still visibly.
+        """
+        if (
+            made_in is not None
+            and made_in is not entry
+            and made_in in self._workspace.entries
+            and not unavailable(made_in)
+            and self._ensure_current(made_in)
+        ):
+            return True
+        return self._ensure_current(entry)
+
+    def _undo_step(self) -> None:
+        self._step_history(redo=False)
+
+    def _redo_step(self) -> None:
+        self._step_history(redo=True)
+
+    def _step_history(self, *, redo: bool) -> None:
+        """Undo or redo one step for the user, naming the entry it went to.
+
+        One stack spans every entry, so the step on top was often made in
+        another view: it switches back there first (:meth:`_return_to`),
+        and a view that jumped with nothing said looks like a navigation bug
+        rather than the step landing where it was made. Only a *switch* is
+        named — a step on the entry already shown keeps whatever its apply
+        said. Every user-facing Undo/Redo comes through here rather than
+        straight to the stack, which is where the direction is still known:
+        the stack's index signal fires on a push as well, and a push is no
+        step the user took back.
+        """
+        stack = self._undo_stack
+        if not (stack.canRedo() if redo else stack.canUndo()):
+            return
+        text = stack.redoText() if redo else stack.undoText()
+        self._history_reached = None
+        if redo:
+            stack.redo()
+        else:
+            stack.undo()
+        reached, self._history_reached = self._history_reached, None
+        if reached is not None:
+            verb = "Redid" if redo else "Undid"
+            self.statusBar().showMessage(f"{verb} {text} in {reached.name}")
 
     def _ensure_edit_context(self, entry: Entry, mode: EditMode) -> bool:
         """Return to the entry *and* the edit mode an editing command was made in.
@@ -1048,8 +1124,9 @@ class MainWindow(
         (a view refresh, a selection change, an undo-stack move). A missed one
         only leaves the *marker* briefly stale - the prompts that matter re-ask
         :meth:`_project_is_dirty` at the moment they need the answer. That is
-        also what makes it safe for :meth:`_push_command` to hold the question
-        back over a push and ask it once at the end.
+        also what makes it safe for :meth:`_push_command` and
+        :meth:`_undo_apply` to hold the question back over a step and ask it once
+        at the end.
         """
         if self._defer_project_modified:
             return
@@ -1062,12 +1139,15 @@ class MainWindow(
         ``None`` with no project open. The live toolbar/view state is captured
         into the current entry first - it is part of what a save writes, so a
         comparison that skipped it would call an edited session clean.
+
+        Through the window's memo, so only the entries changed since the last ask
+        are serialized again; the save itself writes from a full serialization.
         """
         if self._project_path is None:
             return None
         self._capture_session()
         return projectfile.project_dict(
-            self._workspace, self._project_path, self._registry
+            self._workspace, self._project_path, self._registry, self._entry_dicts
         )
 
     def _project_is_dirty(self) -> bool:

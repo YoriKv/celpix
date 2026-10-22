@@ -99,6 +99,23 @@ header's other bytes are carried with the frame's first piece, and the count is
 rewritten from the frame on a save. ``column_major`` says a piece's tiles run
 down each column before the next, as a Mega Drive sprite's do.
 
+**Animation tables.** Many games keep, beside a run of frames, the tables that
+play them: fixed-size steps of ``(frame pointer, duration)``, each table ending
+at a step whose duration is a terminator. ``animation = { pointer = "u16",
+duration = "u8", hold = 0xFE, loop = 0xFF }`` reads them
+(:class:`AnimationLayout`) from the ``tables`` input, with the run's own address
+as the ``address`` input, and publishes one sequence per table
+(:func:`animation_sequences`). A pointer is the frame's address with only its
+low bits stored, so it replaces the low bits of ``address`` and the difference
+is the frame's offset in the run. ``hold`` ends a table on a step whose frame
+then stays up; ``loop`` ends one on a placeholder step that returns to the first
+without being drawn. A step naming a frame the run does not hold is kept, and a
+table naming none of the run's frames is another run's and is skipped. Because
+the tables find frames by address, **a frame's record count is fixed** under
+``animation``: :meth:`~SpriteRecordCodec.assign_frames` refuses an edit that
+would add, remove or move a piece between frames, as that would shift every
+later frame out from under the tables.
+
 **Editing.** The pieces are editable: :meth:`SpriteRecordCodec.place_subsprite`
 writes a piece's offsets and size into its record's own bits, and
 :meth:`~SpriteRecordCodec.assign_frames` moves the frame headers when the record
@@ -111,12 +128,13 @@ whatever the cells now hold.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from itertools import pairwise
-from typing import Any
+from typing import Any, Literal
 
+from celpix.core import animation as anim
 from celpix.core.address import format_hex
-from celpix.core.context import PipelineContext
+from celpix.core.context import KEY_INPUTS, KEY_TILEMAP_ANIMATIONS, PipelineContext
 from celpix.core.errors import Stage
 from celpix.core.notices import warn
 from celpix.core.sprite import (
@@ -125,10 +143,12 @@ from celpix.core.sprite import (
     SizeChoice,
     Subsprite,
     SubspriteLimits,
+    range_text,
+    signed_range,
 )
 from celpix.core.tilemap import Cell, CellOp
 from celpix.plugins._params import byte_order, flag, integer
-from celpix.plugins.base import PluginInfo
+from celpix.plugins.base import InputKind, InputSpec, PluginInfo
 from celpix.plugins.builtins._cell_answers import mirror
 from celpix.plugins.builtins._fields import parse_layout, resolve_legend
 from celpix.plugins.builtins._mask import gather, scatter
@@ -154,6 +174,14 @@ _LEGEND = {
 _SIGNED_PARTS = frozenset({"x", "y"})
 # A frame's first piece carries its header above the record, marked by this bit.
 _HEADER_SHIFT = 8 * 64
+# The frame of a step whose pointer names no frame of the run: kept, never
+# dropped (``docs/design/sprite-map.md`` §4).
+UNKNOWN_FRAME = 0xFFFF
+_FIXED_LENGTHS = (
+    "The animation tables name this run's frames by address, so each frame "
+    "keeps its record count - a subsprite can be moved or reordered within its "
+    "frame, not added, removed or moved to another frame"
+)
 
 
 class RecordLayout:
@@ -427,7 +455,9 @@ class RecordLayout:
                 raise ValueError(
                     f"this record has no {axis} field, so its pieces sit at {axis} = 0"
                 )
-            raise ValueError(f"{axis} offsets here run {_span(limit)}, not {value}")
+            raise ValueError(
+                f"{axis} offsets here run {range_text(limit)}, not {value}"
+            )
         if self._placed(axis):
             # Two's complement at the bits' own width; the range check above
             # has already said the value fits them.
@@ -447,7 +477,9 @@ class RecordLayout:
                 continue
             limit = _int_range(width * 8, signed)
             if value not in limit:
-                raise ValueError(f"field {name!r} holds {_span(limit)}, not {value}")
+                raise ValueError(
+                    f"field {name!r} holds {range_text(limit)}, not {value}"
+                )
             out = bytearray(record)
             out[at : at + width] = value.to_bytes(width, self.order, signed=signed)
             return bytes(out)
@@ -519,14 +551,7 @@ class RecordLayout:
 
 
 def _int_range(bits: int, signed: bool) -> range:
-    if signed:
-        half = 1 << (bits - 1)
-        return range(-half, half)
-    return range(0, 1 << bits)
-
-
-def _span(r: range) -> str:
-    return f"{r.start}..{r.stop - 1}"
+    return signed_range(bits) if signed else range(0, 1 << bits)
 
 
 def _cell(layout: RecordLayout, record: bytes, header: bytes | None) -> Cell:
@@ -633,6 +658,164 @@ def _group(cells: list[Cell], framed: bool) -> list[list[Cell]]:
     return frames
 
 
+def _header_count(layout: RecordLayout, payload: int) -> int:
+    """The piece count a frame header's stored bytes hold: the count the frame
+    was read with, since only encode rewrites it."""
+    length, count_at, count_width = layout.header  # type: ignore[misc]
+    header = payload.to_bytes(length, "big")
+    return int.from_bytes(header[count_at : count_at + count_width], layout.order)
+
+
+@dataclass(frozen=True)
+class AnimationLayout:
+    """A preset's ``animation`` block resolved once: the step's two fields.
+
+    A step is ``pointer`` bytes then ``duration`` bytes, both unsigned and in
+    the preset's ``endian``. ``hold`` and ``loop`` are the durations that end a
+    table, either or both absent.
+    """
+
+    pointer: int  # bytes
+    duration: int  # bytes
+    hold: int | None
+    loop: int | None
+    order: Literal["little", "big"]
+
+    def __init__(self, params: dict[str, Any]) -> None:
+        spec = params.get("animation")
+        if not isinstance(spec, dict):
+            raise ValueError(
+                "`animation` must be a table of pointer, duration, hold and loop; "
+                f"got {spec!r}"
+            )
+        # A misspelt `hold` would otherwise read as no terminator at all, and
+        # every table would run on into the next.
+        unknown = sorted(set(spec) - {"pointer", "duration", "hold", "loop"})
+        if unknown:
+            raise ValueError(
+                f"`animation` reads pointer, duration, hold and loop, not "
+                f"{', '.join(unknown)}"
+            )
+        if "pointer" not in spec:
+            raise ValueError(
+                "`animation` needs a `pointer` type - the width of a step's "
+                f"frame pointer, one of {', '.join(_UNSIGNED)}"
+            )
+        width = {}
+        for key, default in (("pointer", None), ("duration", "u8")):
+            kind = spec.get(key, default)
+            if kind not in _UNSIGNED:
+                raise ValueError(
+                    f"`animation.{key}` must be one of {', '.join(_UNSIGNED)}, "
+                    f"not {kind!r}"
+                )
+            width[key] = _TYPES[kind]
+        top = (1 << 8 * width["duration"]) - 1
+        ends = {
+            key: integer(spec, key, low=0, high=top) if key in spec else None
+            for key in ("hold", "loop")
+        }
+        if ends["hold"] is not None and ends["hold"] == ends["loop"]:
+            raise ValueError(
+                "`animation.hold` and `animation.loop` must differ - one value "
+                "cannot both hold a frame and return to the first step"
+            )
+        set_ = object.__setattr__  # frozen: fields are set once, here
+        set_(self, "pointer", width["pointer"])
+        set_(self, "duration", width["duration"])
+        set_(self, "hold", ends["hold"])
+        set_(self, "loop", ends["loop"])
+        set_(self, "order", byte_order(params, "endian", "big"))
+
+    @classmethod
+    def of(cls, params: dict[str, Any]) -> AnimationLayout | None:
+        """The preset's animation layout, or None where it states no block."""
+        return cls(params) if "animation" in params else None
+
+    @property
+    def step(self) -> int:
+        return self.pointer + self.duration
+
+    def tables(self, tables: bytes) -> list[list[tuple[int, int]]]:
+        """The region as tables of ``(pointer, duration)`` steps, each ending
+        at its hold or loop; a trailing table cut short is kept."""
+        ends = {d for d in (self.hold, self.loop) if d is not None}
+        out: list[list[tuple[int, int]]] = []
+        current: list[tuple[int, int]] = []
+        for at in range(0, len(tables) - self.step + 1, self.step):
+            mid = at + self.pointer
+            pointer = int.from_bytes(tables[at:mid], self.order)
+            duration = int.from_bytes(tables[mid : at + self.step], self.order)
+            current.append((pointer, duration))
+            if duration in ends:
+                out.append(current)
+                current = []
+        if current:
+            out.append(current)
+        return out
+
+
+_UNSIGNED = tuple(kind for kind in _TYPES if kind.startswith("u"))
+
+
+def frame_starts(data: bytes, layout: RecordLayout) -> dict[int, int]:
+    """Each frame's offset in the run -> its index, walked by the frame header.
+
+    Parallel arrays still make a frame ``header + count * record`` bytes, so
+    the walk is the same; without a header the run is one frame at 0.
+    """
+    if layout.header is None:
+        return {0: 0}
+    length, count_at, count_width = layout.header
+    starts: dict[int, int] = {}
+    at = 0
+    while at + length <= len(data):
+        starts[at] = len(starts)
+        count = int.from_bytes(
+            data[at + count_at : at + count_at + count_width], layout.order
+        )
+        at += length + count * layout.size
+    return starts
+
+
+def animation_sequences(
+    data: bytes, tables: bytes, address: int, params: dict[str, Any]
+) -> tuple[anim.Sequence, ...]:
+    """One sequence per table in ``tables`` that names a frame of the run
+    ``data``, which sits at ``address`` in the game's address space.
+
+    A step's pointer stores only the low bits of its frame's address, so it
+    replaces those bits of ``address``. A table ending at ``loop`` drops its
+    placeholder step and loops to 0 (a lone loop step stays, as there is
+    nothing else to play); one ending at ``hold`` loops to its last step, the
+    hold step keeping the raw duration the table states.
+    """
+    layout, steps_of = RecordLayout(params), AnimationLayout(params)
+    starts = frame_starts(data, layout)
+    mask = (1 << 8 * steps_of.pointer) - 1
+    base = address & ~mask
+    out: list[anim.Sequence] = []
+    for table in steps_of.tables(tables):
+        frames = [
+            starts.get((base | pointer) - address, UNKNOWN_FRAME)
+            for pointer, _duration in table
+        ]
+        if all(frame == UNKNOWN_FRAME for frame in frames):
+            continue  # another run's table: it names none of these frames
+        steps = tuple(
+            anim.Step(duration=duration, frame=frame)
+            for (_pointer, duration), frame in zip(table, frames, strict=True)
+        )
+        ends = table[-1][1]
+        if ends == steps_of.loop and len(steps) > 1:
+            out.append(anim.Sequence(steps[:-1], loop=0))
+        elif ends == steps_of.hold:
+            out.append(anim.Sequence(steps, loop=len(steps) - 1))
+        else:
+            out.append(anim.Sequence(steps))
+    return tuple(out)
+
+
 class SpriteRecordCodec:
     """The table-driven sprite record, on the tilemap codec surface."""
 
@@ -640,12 +823,56 @@ class SpriteRecordCodec:
         id=SPRITE_RECORD_ENGINE,
         name="Sprite record (fields stated by the preset)",
         stage=Stage.INTERPRET_TILEMAP,
+        # Offered only to a preset stating `animation`: every other record
+        # has no tables beside it, and would only clutter the Inputs window.
+        inputs=(
+            InputSpec(
+                "tables",
+                "Animation tables",
+                InputKind.REGION,
+                unit="byte",
+                when_param="animation",
+                tooltip=(
+                    "The run's animation tables, back to back:\n"
+                    "steps of (frame pointer, duration), each table\n"
+                    "ending at its hold or loop duration."
+                ),
+            ),
+            InputSpec(
+                "address",
+                "Run address",
+                InputKind.INTEGER,
+                maximum=0xFFFF_FFFF,
+                when_param="animation",
+                tooltip=(
+                    "The address of this entry's first byte in the\n"
+                    "game's address space. A step's pointer replaces\n"
+                    "its low bits, so pointer minus address is a\n"
+                    "frame's offset in the entry."
+                ),
+            ),
+        ),
     )
 
     def decode(
         self, data: bytes, params: dict[str, Any], ctx: PipelineContext
     ) -> list[Cell]:
         layout = RecordLayout(params)
+        cells = self._cells(data, layout)
+        if AnimationLayout.of(params) is not None:
+            inputs = ctx.get(KEY_INPUTS) or {}
+            tables, address = inputs.get("tables"), inputs.get("address")
+            # Unbound, the host says so itself (a degraded-input notice); the
+            # frames still draw, there is just nothing to play.
+            if isinstance(tables, bytes) and isinstance(address, int):
+                ctx.set(
+                    KEY_TILEMAP_ANIMATIONS,
+                    animation_sequences(data, tables, address, params),
+                )
+        return cells
+
+    @staticmethod
+    def _cells(data: bytes, layout: RecordLayout) -> list[Cell]:
         cells: list[Cell] = []
         at, size = 0, layout.size
         if layout.header is None:
@@ -810,10 +1037,20 @@ class SpriteRecordCodec:
         number named by no cell is a frame emptied, and simply goes.
 
         A header-less run has no marks to move, so its cells come back as given.
+
+        Under ``animation`` every frame must keep the record count it was read
+        with, the count its header still stores: the tables name frames by
+        address, so a frame that grew or shrank would move every later one out
+        from under them. A permutation within a frame passes; anything else
+        raises, worded for the status line. The check is on the stored count,
+        not on where the header marks sit, because a remove deletes from the
+        back of a frame whose marks were already restamped
+        (:func:`~celpix.core.sprite_edit.remove_subsprites`).
         """
         layout = RecordLayout(params)
         if layout.header is None:
             return list(cells)
+        fixed = AnimationLayout.of(params) is not None
         if len(frames) != len(cells):
             raise ValueError(
                 f"{len(cells)} cells need one frame number each, not {len(frames)}"
@@ -838,8 +1075,13 @@ class SpriteRecordCodec:
                     for c in group
                     if c.flags >> _HEADER_SHIFT & 1
                 ),
-                0,
+                None,
             )
+            if fixed and (
+                payload is None or _header_count(layout, payload) != len(group)
+            ):
+                raise ValueError(_FIXED_LENGTHS)
+            payload = payload or 0
             for j, cell in enumerate(group):
                 flags = cell.flags & record_mask
                 if j == 0:
@@ -863,6 +1105,31 @@ class SpriteRecordCodec:
     def palette_row_limit(self, params: dict[str, Any]) -> int:
         bits = RecordLayout(params).row_bits
         return (1 << bits) - 1 if bits else 0
+
+    def cell_fields(self, params: dict[str, Any]) -> dict[str, int]:
+        """Every Cell field the preset's letters place, each at its bit width.
+
+        Declared outright rather than assembled from the other probes, which
+        never grant ``priority``: a field left undeclared is one the host does
+        not carry for this format. The property row offers no control for it,
+        and the fit (``fit_cell``) takes it from another cell rather than from
+        the record — the held record and the brush are fitted against a blank
+        one — so a piece laid from an eyedropped record would lose its
+        priority on the way down. A letter the record does not place is
+        absent, since :func:`_record` drops it on the way out.
+        """
+        layout = RecordLayout(params)
+        fields: dict[str, int] = {}
+        if layout.index_bits:
+            fields["index"] = (1 << layout.index_bits) - 1
+        if layout.row_bits:
+            fields["palette_row"] = (1 << layout.row_bits) - 1
+        if layout._placed("priority"):
+            fields["priority"] = (1 << layout._width("priority")) - 1
+        for flip in ("flip_h", "flip_v"):
+            if layout._placed(flip):
+                fields[flip] = 1
+        return fields
 
     def transform_cell(
         self, cell: Cell, op: CellOp, params: dict[str, Any]

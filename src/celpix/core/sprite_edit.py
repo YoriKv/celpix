@@ -11,7 +11,13 @@ What an op *means* is the format's structure kind
 (:data:`~celpix.core.sprite.StructureKind`, design §8.4): "add" sets the drawn
 bit on a free slot in one format, inserts a cell in another, and is impossible
 in a third. Each function dispatches on the kind and refuses what the kind
-cannot spell, rather than approximating it.
+cannot spell, rather than approximating it. Under ``table`` nothing here
+applies, because the records are not the entry's to edit. Under ``fixed`` the
+records *are* editable, but only in their cell fields — the tile, and the
+flips where the format has them, which the host writes through the codec's
+``decode``/``encode`` and ``transform_cell`` like any tilemap cell — so every
+op here refuses, and so does :func:`fit_group_delta`: the drawing routine
+places each piece, and a delta has nothing to move.
 
 The functions never learn where a format keeps a field. The host binds the
 codec's ``place_subsprite`` and ``assign_frames`` and hands them in as
@@ -37,7 +43,13 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
-from celpix.core.sprite import Frame, SizeChoice, Subsprite, SubspriteLimits
+from celpix.core.sprite import (
+    Frame,
+    SizeChoice,
+    Subsprite,
+    SubspriteLimits,
+    range_text,
+)
 from celpix.core.tilemap import Cell
 
 # The host's binding of ``TilemapCodecPlugin.place_subsprite``:
@@ -55,7 +67,37 @@ class SpriteEditError(ValueError):
     """A record op the format cannot spell, worded for the status line."""
 
 
+class FixedLayoutError(SpriteEditError):
+    """The refusal every op raises under ``fixed``, as its own type so the host
+    can say it in the format's terms (:func:`fixed_refusal`) — the text here
+    is :data:`FIXED_REFUSAL`, which assumes the cells carry flips."""
+
+    def __init__(self) -> None:
+        super().__init__(FIXED_REFUSAL)
+
+
 _NOT_EDITABLE = "Frames here are not editable"
+
+
+def fixed_refusal(flips: bool) -> str:
+    """Why a ``fixed`` layout refuses a record op, naming what *can* change.
+
+    Distinct from ``_NOT_EDITABLE``: a fixed format's pieces are editable in
+    their cell fields, so the refusal names what is left rather than calling
+    the frame read-only. ``flips`` is whether the format's cells carry a flip
+    bit at all — a pose table of bare tile words has none, and naming a flip
+    there would promise a control the property row does not grow.
+    """
+    what = "tiles and flips" if flips else "tiles"
+    return (
+        f"Pieces here sit where the drawing routine puts them - "
+        f"only their {what} can change"
+    )
+
+
+# The ops below have no codec in hand to ask about flips, so they raise the
+# wording that names both; the host rewords a FixedLayoutError for its format.
+FIXED_REFUSAL = fixed_refusal(flips=True)
 _EMPTIES_FRAME = "A frame here holds at least one record - not removed"
 
 
@@ -70,7 +112,8 @@ def frame_count(
     Not ``len(frames)`` in general: a slot or counted format holds a fixed
     number of frames whether or not the codec's ``frames()`` reports the empty
     tail, and an add may populate any of them. A headed run has exactly the
-    frames it has headers for, and a bare run has one.
+    frames it has headers for, a bare run has one, and a fixed format has
+    the frames its codec draws.
     """
     kind = limits.structure
     if kind == "slots":
@@ -96,6 +139,8 @@ def membership(
     kind = limits.structure
     if kind == "table":
         raise SpriteEditError(_NOT_EDITABLE)
+    if kind == "fixed":
+        raise FixedLayoutError()
     if kind == "slots":
         stride = _stride(limits)
         return [at // stride for at in range(len(cells))]
@@ -118,12 +163,34 @@ def record_positions(frames: Sequence[Frame]) -> dict[int, tuple[int, int]]:
     Position 0 is the front: draw order is file order
     (:data:`~celpix.core.sprite.Frame`). Pieces with no record — a sprite
     table's — are left out, since nothing can address them.
+
+    A record drawn more than once — a ``fixed`` layout's word drawn as several
+    pieces, or a pose drawn again mirrored in a later frame — resolves to its
+    **first** place here, the one answer that does not move when a later frame
+    is added to the view. A host that knows where the record was picked prefers
+    that place (:func:`record_places`); the ops that take this are refused
+    under ``fixed``, and every other kind draws a record once.
     """
     found: dict[int, tuple[int, int]] = {}
     for number, frame in enumerate(frames):
         for position, sub in enumerate(frame):
             if sub.record is not None:
-                found[sub.record] = (number, position)
+                found.setdefault(sub.record, (number, position))
+    return found
+
+
+def record_places(frames: Sequence[Frame]) -> dict[int, list[tuple[int, int]]]:
+    """``record -> every (frame, position)`` it is drawn at, in draw order.
+
+    One place per record under every kind but ``fixed``, where a record is a
+    word the drawing routine may draw several times; what outlines a pick
+    marks all of them, since an edit to the word changes every one.
+    """
+    found: dict[int, list[tuple[int, int]]] = {}
+    for number, frame in enumerate(frames):
+        for position, sub in enumerate(frame):
+            if sub.record is not None:
+                found.setdefault(sub.record, []).append((number, position))
     return found
 
 
@@ -159,6 +226,8 @@ def add_subsprite(
     puts it elsewhere if that matters.
     """
     kind = limits.structure
+    if kind == "fixed":
+        raise FixedLayoutError()
     _check_frame(cells, frames, limits, frame)
     if kind == "slots":
         start, stop = _slot_range(cells, limits, frame)
@@ -200,10 +269,20 @@ def remove_subsprites(
     cells, and ``headed`` refuses the whole op if it would leave a frame with
     no record: a header count of 0 is a decode error, and dropping the frame
     would renumber every later one.
+
+    Under ``headed``, before the delete, the doomed cells are **demoted** to
+    the back of their frames and the frames assigned once (:func:`_demoted`).
+    ``assign`` takes a frame's header payload from a cell that bears it — the
+    front one, which a remove of the frame's front piece takes with it — so handed
+    the list with that cell already gone, it would open the frame with a bare
+    count and zero every other header byte (a frame's width and height, say).
+    Demoted first, the header lands on a surviving cell before anything goes.
     """
     kind = limits.structure
     if kind == "table":
         raise SpriteEditError(_NOT_EDITABLE)
+    if kind == "fixed":
+        raise FixedLayoutError()
     positions = record_positions(frames)
     doomed = set(records)
     for record in doomed:
@@ -221,8 +300,9 @@ def remove_subsprites(
         left = {number for at, number in enumerate(owner) if at not in doomed}
         if any(number not in left for number in set(owner)):
             raise SpriteEditError(_EMPTIES_FRAME)
-    keep = [at for at in range(len(cells)) if at not in doomed]
-    return _assigned([cells[at] for at in keep], [owner[at] for at in keep], assign)
+    staged, owner, source = _demoted(cells, owner, doomed, kind, assign)
+    keep = [at for at in range(len(staged)) if source[at] not in doomed]
+    return _assigned([staged[at] for at in keep], [owner[at] for at in keep], assign)
 
 
 def reorder_subsprite(
@@ -247,6 +327,8 @@ def reorder_subsprite(
     kind = limits.structure
     if kind == "table":
         raise SpriteEditError(_NOT_EDITABLE)
+    if kind == "fixed":
+        raise FixedLayoutError()
     positions = record_positions(frames)
     _check_record(positions, record, cells)
     number, position = positions[record]
@@ -281,10 +363,19 @@ def move_subsprite(
     target's first free slot; elsewhere the cell is spliced to the end of the
     target's run. A bare run has one frame to move within and a table no
     record to move, so both refuse.
+
+    Under ``headed`` the moved cell is **demoted** to the back of its own frame
+    and the frames assigned once before the splice (:func:`_demoted`), for the
+    reason
+    :func:`remove_subsprites` gives: a headed frame's header rides on its
+    front cell, and moving that cell out would otherwise take the header's
+    other bytes away from the frame they describe.
     """
     kind = limits.structure
     if kind in ("table", "run"):
         raise SpriteEditError(_NOT_EDITABLE)
+    if kind == "fixed":
+        raise FixedLayoutError()
     positions = record_positions(frames)
     _check_record(positions, record, cells)
     _check_frame(cells, frames, limits, frame)
@@ -310,9 +401,9 @@ def move_subsprite(
     held = owner.count(frame)
     if limits.per_frame is not None and held >= limits.per_frame:
         raise SpriteEditError(f"Frame {frame} is full ({held} of {limits.per_frame})")
-    out = list(cells)
-    moved = out.pop(record)
-    del owner[record]
+    out, owner, source = _demoted(cells, owner, {record}, kind, assign)
+    moved = out.pop(source.index(record))
+    del owner[source.index(record)]
     at = _run_end(owner, frame)
     out.insert(at, moved)
     owner.insert(at, frame)
@@ -330,20 +421,33 @@ def fit_group_delta(
     Shrunk **as a group** (design §10.2): one piece pinned at the edge while the
     rest kept moving would change the selection's shape, which is a silent
     edit to the picture. Each axis is shrunk on its own, so a drag along a wall
-    still slides along it. A piece already outside the range — a file read
-    with offsets the field could not have written, or a format that changed
-    under it — stops the group dead rather than being dragged further out or
-    snapped in. A caller that refuses a nudge whole compares the answer with
-    what it asked.
+    still slides along it. A caller that refuses a nudge whole compares the
+    answer with what it asked.
+
+    A piece already outside the range — a file read with offsets the field
+    could not have written, or a format that changed under it — raises
+    :class:`SpriteEditError` naming it, rather than being dragged further out
+    or snapped in. It is not a clamp: answered as ``(0, 0)`` it would read as
+    a group pinned at an edge no piece touched.
+
+    Under ``fixed`` it refuses before anything else, even for an empty group:
+    no record holds an offset, and every host path that moves pieces — drag,
+    nudge, duplicate, paste — asks here first, so this is the one place they
+    all learn why.
     """
+    if limits.structure == "fixed":
+        raise FixedLayoutError()
     if not pieces:
         return dx, dy
+    for sub in pieces:
+        for at, reach in ((sub.x, limits.x_range), (sub.y, limits.y_range)):
+            if at not in reach:
+                raise SpriteEditError(
+                    f"Subsprite at ({sub.x:+d}, {sub.y:+d}) is outside the "
+                    f"offsets this format holds ({range_text(reach)})"
+                )
     xs = [sub.x for sub in pieces]
     ys = [sub.y for sub in pieces]
-    if not all(x in limits.x_range for x in xs) or not all(
-        y in limits.y_range for y in ys
-    ):
-        return 0, 0
     return _fit(min(xs), max(xs), dx, limits.x_range), _fit(
         min(ys), max(ys), dy, limits.y_range
     )
@@ -442,6 +546,37 @@ def _run_end(owner: Sequence[int], frame: int) -> int:
         if number <= frame:
             at = index + 1
     return at
+
+
+def _demoted(
+    cells: Sequence[Cell],
+    owner: Sequence[int],
+    leaving: set[int],
+    kind: str,
+    assign: Assign | None,
+) -> tuple[list[Cell], list[int], list[int]]:
+    """Under ``headed``, ``cells`` with each of ``leaving`` moved to the back
+    of its frame's run, stably, and the frames assigned over that order.
+
+    Returns ``(cells, owner, source)``: the staged cells, the frame of each, and
+    the index each came from in ``cells``, by which a caller finds the leaving
+    cells again. The assign is the point — it is what puts a frame's header on
+    a cell that will still be there once the leaving ones are deleted or moved,
+    so the header's payload survives the op that follows.
+
+    Every other kind comes back as given, unassigned: only a headed frame keeps
+    a payload on one of its cells (a counted frame's marks are its number,
+    which the final assign restamps on every cell alike).
+    """
+    order = list(range(len(cells)))
+    if kind != "headed" or assign is None:
+        return list(cells), list(owner), order
+    # A headed run is in frame order already, so sorting by frame first leaves
+    # every run where it is; within one the leaving cells go behind the
+    # staying ones, each side in its own order.
+    order.sort(key=lambda at: (owner[at], at in leaving))
+    staged = assign([cells[at] for at in order], [owner[at] for at in order])
+    return staged, [owner[at] for at in order], order
 
 
 def _assigned(

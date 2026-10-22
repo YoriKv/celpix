@@ -143,8 +143,10 @@ class PipelineError(Exception):
     def summary(self) -> str:
         """The failure for a dialog: who, doing what, what was raised and where.
 
-        The one-line ``str()`` form stays what logs and the status bar show;
-        this is the same facts set out to be read, with the two a one-liner has
+        The one-line ``str()`` form stays what logs and the status bar show (a
+        refused cell edit, whose stage goes without saying, drops the bracket
+        and keeps ``plugin`` and ``message``); this is the same facts set out
+        to be read, with the two a one-liner has
         no room for - the exception's type and the line that raised it
         (:func:`fault_origin`).
         """

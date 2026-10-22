@@ -18,6 +18,7 @@ from celpix.plugins.registry import default_registry
 from celpix.project.documents import file_palette_config, load_document
 from celpix.project.projectfile import (
     PROJECT_VERSION,
+    EntryDictMemo,
     ProjectError,
     load_project,
     project_dict,
@@ -28,6 +29,7 @@ from celpix.project.workspace import (
     EntryKind,
     EntrySession,
     FileStages,
+    PaletteMode,
     PaletteSource,
     TileMode,
     TileSource,
@@ -1494,7 +1496,7 @@ def test_every_kinds_optional_keys_survive_a_save_and_a_load(tmp_path) -> None:
     vanishes on the next save instead. One entry of every kind with every
     optional key set, compared as the documents they save to."""
     from celpix.project.inputs import RegionBinding
-    from celpix.project.workspace import CompositePiece, PaletteMode
+    from celpix.project.workspace import CompositePiece
 
     for name in ("rom.bin", "rom2.bin", "map.bin", "c.pal"):
         (tmp_path / name).write_bytes(bytes(0x400))
@@ -1586,3 +1588,53 @@ def test_every_kinds_optional_keys_survive_a_save_and_a_load(tmp_path) -> None:
     back.hidden_pixel_presets = loaded.hidden_pixel_presets
     back.pixel_aspect = loaded.pixel_aspect
     assert project_dict(back, path) == project_dict(ws, path)
+
+
+def test_the_memo_rebuilds_only_changed_entries_and_matches_a_full_write(
+    tmp_path,
+) -> None:
+    """The window's unsaved check reuses an unchanged entry's record, rebuilds one
+    whose fields, session or pending view moved (in place included), and rebuilds
+    everything when positions do — every answer equal to a full serialization."""
+    path = str(tmp_path / "p.celpix")
+    rom = Entry(name="rom", kind=EntryKind.FILE, path=str(tmp_path / "rom.bin"))
+    outer = Entry(
+        name="outer",
+        kind=EntryKind.SLICE,
+        path=rom.path,
+        parent_entry=rom,
+        slice_length=64,
+        session=_session(),
+        pending_view=ViewOptions(columns=4),
+    )
+    inner = Entry(
+        name="inner",
+        kind=EntryKind.SLICE,
+        path=rom.path,
+        parent_kind=EntryKind.SLICE,
+        parent_entry=outer,
+        slice_length=32,
+        session=_session(),
+    )
+    ws = Workspace()
+    ws.replace([rom, outer, inner], rom)
+    memo = EntryDictMemo()
+
+    def ask() -> list[dict]:
+        entries = project_dict(ws, path, memo=memo)["entries"]
+        assert entries == project_dict(ws, path)["entries"]
+        return entries
+
+    first = ask()
+    assert all(a is b for a, b in zip(ask(), first, strict=True))
+
+    inner.name = "renamed"
+    outer.session.palette_mode = PaletteMode.OFFSET  # mutated in place
+    outer.pending_view.columns = 8
+    second = ask()
+    assert second[0] is first[0]
+    assert second[1]["session"]["palette_mode"] == PaletteMode.OFFSET.value
+    assert second[1]["view"]["columns"] == 8 and second[2]["name"] == "renamed"
+
+    ws.replace([outer, inner, rom], rom)  # inner's parent_index follows
+    assert ask()[1]["parent_index"] == 0

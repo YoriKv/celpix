@@ -1969,6 +1969,39 @@ def test_editing_a_file_palette_updates_every_graphic_using_it(qtbot, tmp_path) 
     assert not first.pixel_dirty and not second.pixel_dirty
 
 
+def test_a_file_palette_edit_undoes_on_the_graphic_it_was_made_on(
+    qtbot, tmp_path
+) -> None:
+    """A step returns to the view it was made from, not to the entry owning the
+    data: the colour belongs to the PALETTE entry, but it was chosen on the second
+    graphic, so an undo from the first goes back there and says so."""
+    pal = tmp_path / "shared.pal"
+    pal.write_bytes(bytes(32))
+    second_path = tmp_path / "second.4bpp.sfc"
+    second_path.write_bytes(bytes(32 * 8))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    window._add_palette_file(str(pal))
+    owner = next(e for e in window._workspace.entries if e.kind is EntryKind.PALETTE)
+    window._use_palette_entry(owner)
+    first = window._workspace.current
+    window._load_pixel(str(second_path))
+    window._use_palette_entry(owner)
+    second = window._workspace.current
+    window._palette_panel._select(0)
+    window._on_color_changed(0xFFFFFFFF)
+
+    window._activate_entry(first)
+    window._undo_action.trigger()
+
+    assert window._workspace.current is second
+    assert owner.doc.palette.color(0) != 0xFFFFFFFF
+    assert window.statusBar().currentMessage() == (
+        f"Undid edit color 0 in {second.name}"
+    )
+
+
 def test_removing_a_used_file_palette_converts_graphics_to_custom(
     qtbot, tmp_path, monkeypatch
 ) -> None:

@@ -281,7 +281,14 @@ class CellPropsMixin(_Host):
         the shape it draws, and is absent where the preset fixes the size.
         Drawn is a slot format's alone: elsewhere a record that is present is
         drawn, and removing one is Clear's.
+
+        A ``fixed`` layout grows none of them: the drawing routine places and
+        sizes every piece, and its records hold no field X, Y, Size or Drawn
+        could write. The row keeps the cell fields — tile and flips — and the
+        sync and handlers below walk an empty record set.
         """
+        if limits.structure == "fixed":
+            return
         widgets, labels = self._record_props_widgets, self._record_props_labels
         for field, bounds in (("x", limits.x_range), ("y", limits.y_range)):
             spin = value_spin(

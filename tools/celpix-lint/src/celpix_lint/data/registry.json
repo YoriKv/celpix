@@ -156,6 +156,24 @@
           "stride": 1
         }
       ],
+      "codec.tilemap.sprite-record": [
+        {
+          "key": "tables",
+          "kind": "region",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "required": true,
+          "stride": 1
+        },
+        {
+          "key": "address",
+          "kind": "integer",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "required": true,
+          "stride": 1
+        }
+      ],
       "codec.tilemap.sprite-table": [
         {
           "key": "frames",

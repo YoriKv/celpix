@@ -474,6 +474,24 @@ parallel arrays. Pixels edit through the bound bank; records do not
 | `size_pair` | [int, int] | entry's, `[1, 2]` | `[small, large]` squares in tiles: a lone `s` bit 0 picks small, 1 large. Needs `"stated"` |
 | `palette_row_base` | int | `0` | Palette row a part's row 0 means |
 
+Animation tables stored beside the run, read from two inputs offered only with
+`animation` ([Plugin Inputs](Plugin-Inputs)): **Animation tables**, a region of
+tables back to back, and **Run address**, the entry's first byte in the game's
+address space. One sequence per table, played in **View ▸ Animation**:
+
+| Parameter | Type | Default | Meaning |
+|---|---|---|---|
+| `animation` | table | none | `{ pointer, duration, hold, loop }`: steps of a frame pointer then a duration, in `endian`; a table ends at a `hold` or `loop` duration. Every frame keeps its part count: an add, a remove or a move between frames is refused |
+| `animation.pointer` | string | required | `u8` `u16` `u32`. A frame's address, low bits only: it replaces those bits of Run address |
+| `animation.duration` | string | `"u8"` | `u8` `u16` `u32`, in console frames |
+| `animation.hold` | int | none | Ends a table; the sequence stays on that step's frame |
+| `animation.loop` | int | none | Ends a table; back to the first step, that step's frame not drawn |
+
+| Rule | |
+|---|---|
+| Unknown frame | A step naming no frame of the run is kept |
+| Other run | A table naming no frame of the run is skipped |
+
 | Letter | Field |
 |---|---|
 | `i` `p` `o` | tile index, palette row, priority |
@@ -517,7 +535,10 @@ Errors: an unknown type; a record above 64 bytes; a letter placed by two fields;
 `sizes`; `sizes` without `s`, under two pairs or without `"stated"`; `size_pair`
 without `"stated"` or a lone `s`; `"stated"` on a lone `s` without `size_pair`; a
 count outside `frame_header`'s bytes; bad `arrays`; a frame count of 0, or past
-the data.
+the data; an `animation` that is not a table, with a key it does not read, without
+`pointer`, with a type other
+than `u8` `u16` `u32`, a `hold` or `loop` its duration cannot hold, or `hold`
+equal to `loop`.
 
 ### 4.4 Mega Drive sprite
 

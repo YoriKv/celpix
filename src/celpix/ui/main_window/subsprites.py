@@ -136,10 +136,15 @@ class SubspritesMixin(_Host):
                 f"{counted(total, 'record')} - {squares}"
             )
         frames = len({at for at, _index in sheet.records})
-        return (
-            f"{counted(len(sheet.records), 'subsprite')} over "
-            f"{counted(frames, 'frame')} - {squares}"
+        # Out of the frames the file holds: an empty frame has no square, and
+        # "over 116 frames" of an object with 128 reads as frames gone missing.
+        total = max(len(doc.sprite_frames or ()), len(doc.shown_frames))
+        over = (
+            f"{frames} of {counted(total, 'frame')}"
+            if frames < total
+            else counted(frames, "frame")
         )
+        return f"{counted(len(sheet.records), 'subsprite')} over {over} - {squares}"
 
     def _subsprites_badge(self, sheet) -> Badge | None:  # noqa: ANN001 — SubspriteSheet
         """Said in words where the sheet's own layout is hiding something.
@@ -281,19 +286,20 @@ class SubspritesMixin(_Host):
                 and other.record != record
                 and pipeline.subsprite_key(other) == key
             ]
-            self._set_picked_records([*same, record])
+            self._set_picked_records([*same, record], frame=frame)
             return
+        # The square's frame is the pick's, as a canvas press's is: a record
+        # drawn in several frames is described where it was clicked.
         if modifiers & Qt.KeyboardModifier.ControlModifier:
-            picked = [r for r in self._picked_records if r != record]
-            if len(picked) == len(self._picked_records):
-                picked.append(record)
-            self._set_picked_records(picked, anchor=record)
+            self._toggle_picked_record(record, frame=frame)
         elif modifiers & Qt.KeyboardModifier.ShiftModifier:
             self._set_picked_records(
-                self._spanned_records((frame, sub)), anchor=self._pick_anchor
+                self._spanned_records((frame, sub)),
+                anchor=self._pick_anchor,
+                frame=frame,
             )
         else:
-            self._set_picked_records([record])
+            self._set_picked_records([record], frame=frame)
         # Neither cycles a stack: the next canvas press starts at the front.
         self._pick_tile, self._pick_depth = None, 0
 

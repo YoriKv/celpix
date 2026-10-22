@@ -387,10 +387,10 @@ class TextMixin(_Host):
         cells have landed so the position is an offset into the string that is
         now there rather than into the one being replaced.
 
-        Only where the step is visible: a cell edit is reverted in place, so an
-        undo of typing done in another entry lands on that entry's cells while
-        the window on screen is showing something else entirely — and the caret
-        of a string nobody is looking at is not a position in this field.
+        Only where the step is visible: the cell command switches back to its
+        map before landing, and should that switch fail the window is showing
+        something else entirely — the caret of a string nobody is looking at is
+        not a position in this field.
 
         The canvas selection follows it, exactly as it follows a caret the user
         moved: the two views show the same cells, and a step that put the caret

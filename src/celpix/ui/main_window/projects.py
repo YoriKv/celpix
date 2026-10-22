@@ -121,6 +121,7 @@ class ProjectsMixin(_Host):
         self._undo_stack.clear()
         self._project_path = None
         self._saved_project = None
+        self._entry_dicts.clear()  # holds the closed project's entries
         self._refresh_window_title()
         self.statusBar().showMessage("New project - nothing open.")
 
