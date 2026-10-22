@@ -65,7 +65,7 @@ neither is this widget's.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 
 from PySide6.QtCore import QRect, Qt, Signal
 from PySide6.QtGui import QImage, QPainter
@@ -131,7 +131,10 @@ class TileSourcePanel(ShortcutIsland, SheetSurface):
         # rather than instead of it because the two answer different questions:
         # what is outlined, and which tile a stamp places and the arrows step from.
         self._picked: frozenset[int] = frozenset()
-        self._marked: int | None = None
+        # What the canvas is pointing at, in the structural blue: the tile a
+        # selected cell names, or every tile a sprite piece spends — a 2x2
+        # SNES piece is four squares, a Mega Drive strip four in a row.
+        self._marked: frozenset[int] = frozenset()
         # A right drag in flight: the anchor slot its press landed on, and the
         # far slot it last swept over. Slots rather than IDs, because the
         # rectangle is a shape on the lattice and the run may step over the
@@ -180,8 +183,7 @@ class TileSourcePanel(ShortcutIsland, SheetSurface):
         if self._selected is not None and self._selected not in on_sheet:
             self._selected = None
         self._picked &= on_sheet
-        if self._marked is not None and self._marked not in ids:
-            self._marked = None
+        self._marked &= on_sheet
         # A sweep in flight is anchored to a slot of the *old* run; the new one
         # may not reach it, so the drag is dropped with the selection.
         self._area_anchor = self._area_far = None
@@ -225,10 +227,14 @@ class TileSourcePanel(ShortcutIsland, SheetSurface):
 
     def set_marked_id(self, tile_id: int | None) -> None:
         """Ring the tile the canvas's selected cell names, or clear the ring."""
-        if tile_id is not None and tile_id not in self._ids:
-            tile_id = None
-        if tile_id != self._marked:
-            self._marked = tile_id
+        self.set_marked_ids(() if tile_id is None else (tile_id,))
+
+    def set_marked_ids(self, ids: Iterable[int]) -> None:
+        """Ring every tile in ``ids`` that is on show — a sprite piece's whole
+        footprint — or clear the rings with none."""
+        marked = frozenset(ids) & set(self._ids)
+        if marked != self._marked:
+            self._marked = marked
             self.update()
 
     def clear(self) -> None:
@@ -464,10 +470,8 @@ class TileSourcePanel(ShortcutIsland, SheetSurface):
         # squares' real edges, where the lattice is.
         with self._device_pixels(painter):
             ring = self._device_width(1)
-            if self._marked is not None:
-                paint_mark_ring(
-                    painter, self._device_cell_rect(self._slot_of(self._marked)), ring
-                )
+            for rect in self._run_rects(self._marked, event.rect()):
+                paint_mark_ring(painter, rect, ring)
             self._paint_selection(painter, event.rect(), ring)
         painter.end()
 
@@ -503,12 +507,17 @@ class TileSourcePanel(ShortcutIsland, SheetSurface):
             )
             paint_pick_ring(painter, rect, ring)
             return
-        if not self._picked:
-            return
+        for rect in self._run_rects(self._picked, exposed):
+            paint_pick_ring(painter, rect, ring)
+
+    def _run_rects(self, ids: frozenset[int], exposed: QRect) -> list[QRect]:
+        """One rectangle per contiguous run of ``ids`` in a row, in physical
+        pixels — the rule both rings draw by, so a marked footprint and a
+        picked stretch read the same way. Exposed rows only."""
+        if not ids:
+            return []
         slots = [
-            slot
-            for slot in self._exposed_slots(exposed)
-            if self._ids[slot] in self._picked
+            slot for slot in self._exposed_slots(exposed) if self._ids[slot] in ids
         ]
         runs: list[tuple[int, int]] = []
         for slot in slots:  # ascending, the band being a range
@@ -519,12 +528,10 @@ class TileSourcePanel(ShortcutIsland, SheetSurface):
                 runs[-1] = (runs[-1][0], slot)
             else:
                 runs.append((slot, slot))
-        for first, last in runs:
-            paint_pick_ring(
-                painter,
-                self._device_cell_rect(first).united(self._device_cell_rect(last)),
-                ring,
-            )
+        return [
+            self._device_cell_rect(first).united(self._device_cell_rect(last))
+            for first, last in runs
+        ]
 
     def _paint_grid(self, painter: QPainter, exposed: QRect) -> None:
         """Rule the sheet every :data:`GRID_STEP_TILES` cells, both ways.

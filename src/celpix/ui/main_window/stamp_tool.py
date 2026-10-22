@@ -255,6 +255,9 @@ class StampToolMixin(_Host):
         # The property row retargets with the mode — held stamp or selection —
         # and neither the selection pass nor the refresh runs on an arm alone.
         self._sync_cell_props()
+        # So does a sprite map's tile source ring, which marks the held
+        # stamp's footprint only while the tool is up.
+        self._sync_tile_source_marker()
         # So does the transform bar; its sync inside the row's covers only the
         # armed side, and a disarm has to hand the groups back to the (empty)
         # selection rather than leave them armed for a stamp no longer in play.

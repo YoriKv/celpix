@@ -375,6 +375,10 @@ class TileSourceDockMixin(_Host):
             self._displace_held_record()
             self._source_cell = None
             self._stamp_brush = None
+            self._source_tile_id = tile_id
+            # A tile taken for placing is what the row now describes, so a
+            # sprite map's pick goes (the echoes above are no such gesture).
+            self._drop_pick_for_held()
         self._source_tile_id = tile_id
         self._after_pick_change()
 
@@ -392,6 +396,8 @@ class TileSourceDockMixin(_Host):
         self._sync_set_base_tile()
         self._sync_stamp_preview()
         self._sync_cell_props()
+        # On a sprite map the ring follows the held stamp's footprint too.
+        self._sync_tile_source_marker()
 
     def _set_source_tile(
         self, tile_id: int, cell: Cell | None = None, *, area: CellGrid | None = None
@@ -472,6 +478,10 @@ class TileSourceDockMixin(_Host):
         self._source_tile_id = rows[0][0]
         self._source_cell = None
         self._stamp_brush = grid
+        # The holes too, for a sprite map's split into pieces: the grid holds
+        # a blank for them, and a blank is also tile 0.
+        self._swept_rows = [list(row) for row in rows]
+        self._drop_pick_for_held()  # a sprite map's: the brush is the target
         self._after_pick_change()
         self.statusBar().showMessage(
             f"Picked {grid.width}x{grid.height} tiles. Click to stamp "
@@ -749,12 +759,21 @@ class TileSourceDockMixin(_Host):
             self._refresh_tile_source()  # re-marks and re-reads on the way out
             return
         if doc is not None and doc.is_sprite:
+            # Every tile the piece spends, not the corner the record names: a
+            # 2x2 SNES piece is four squares of the sheet, and a Mega Drive
+            # piece a strip of consecutive ones — the walk is the piece's own
+            # (:meth:`~celpix.core.sprite.Subsprite.tile_indices`). The pick's
+            # piece while there is one; else, inside Edit Subsprites, what the
+            # held stamp would spend — the piece a click lays, or every piece
+            # of a swept brush — so the ring says what the sheet pick resolved
+            # to before anything is laid (``docs/design/sprite-map.md`` §6).
             sub = self._picked_subsprite_record()
-            # The corner tile of a large subsprite, which is the number the
-            # record holds and the only one of its four that is on the sheet:
-            # the sheet is laid out in tiles, both subsprite sizes being made of
-            # them (:func:`~celpix.pipeline.pipeline.tile_source_ids`).
-            self._tile_source_panel.set_marked_id(None if sub is None else sub.index)
+            if sub is not None:
+                self._tile_source_panel.set_marked_ids(sub.tile_indices())
+            elif self._sprite_tool_live():
+                self._tile_source_panel.set_marked_ids(self._held_footprint())
+            else:
+                self._tile_source_panel.set_marked_ids(())
             return
         cells = self._selected_cells() if doc is not None else []
         if doc is None or doc.cells is None or not cells:

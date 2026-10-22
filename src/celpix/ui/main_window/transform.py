@@ -603,8 +603,18 @@ class TransformMixin(_Host):
         record's bit. A fixed layout disarms the Block half: mirroring the pick
         as one picture moves its pieces, and the drawing routine owns where
         they sit.
+
+        Armed with nothing picked, the groups arm for the **held piece**
+        instead, as they do over a grid's held stamp — the property row's
+        retargeting, on the same gate (:meth:`~...cell_props_bar.
+        CellPropsMixin._cell_props_target`): a tile taken for placing dropped
+        the pick, and the flips the row offers it the Tile group's keys offer
+        too, so H and the box agree about what the next click lays.
         """
         has = bool(self._selected_cells())
+        if self._stamping and not has:
+            self._sync_stamp_transform_actions()
+            return
         allows = self._transform_allowed
         self._arm_transform_group(self._tile_group, has, self._square_tiles(), allows)
         block = has and not self._fixed_layout()
@@ -718,10 +728,11 @@ class TransformMixin(_Host):
         if self._doc is None:
             return
         sprite = self._doc.is_sprite
-        if self._stamping and not sprite:
+        if self._stamping and (not sprite or not self._selected_cells()):
             # No selection to act on while Edit Tiles is armed: each unit of
             # the held stamp is transformed in place instead. A sprite map's
-            # pick *is* its selection, armed or not, so it goes on through.
+            # pick *is* its selection, armed or not, so it goes on through
+            # while there is one; with none, the held piece is the target.
             self._stamp_transform_tiles(op)
             return
         if self._selected_tile is None and not sprite:
@@ -748,10 +759,10 @@ class TransformMixin(_Host):
         """
         if self._doc is None:
             return
-        if self._stamping and not self._doc.is_sprite:
+        if self._stamping and (not self._doc.is_sprite or not self._selected_cells()):
             # The block over a held stamp is the swept brush, mirrored whole —
             # positions permuted and each record transformed. A sprite map's
-            # Block mirrors its pick instead, armed or not.
+            # Block mirrors its pick instead while there is one.
             self._stamp_transform_block(op)
             return
         if (transform_block := self._kind_handler(Gesture.TRANSFORM_BLOCK)) is not None:

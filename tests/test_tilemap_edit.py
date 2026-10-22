@@ -80,7 +80,7 @@ def test_clicking_a_sprite_picks_the_subsprite_and_rings_the_tile_it_names(
     )
     assert window._picked_subsprite == (0, 1)
     assert canvas._pick_outline == [QRect(24, 5, 8, 8)]
-    assert panel._marked == 2  # the tile that record draws
+    assert panel._marked == {2}  # the tile that record draws
     assert "subsprite 1" in window.statusBar().currentMessage()
     # ...and the palette grid rings the row it draws in, which a record states
     # for itself: row 3 of the sprite half, so row 11 of the palette.
@@ -90,7 +90,7 @@ def test_clicking_a_sprite_picks_the_subsprite_and_rings_the_tile_it_names(
     qtbot.mouseClick(
         canvas, Qt.MouseButton.LeftButton, pos=QPoint(int(2 * zoom), int(2 * zoom))
     )
-    assert window._picked_subsprite == (0, 0) and panel._marked == 1
+    assert window._picked_subsprite == (0, 0) and panel._marked == {1}
     assert window._palette_panel._marked_row == window._doc.palette_row_base
 
     # Empty space in the frame picks nothing rather than the nearest record.
@@ -98,7 +98,7 @@ def test_clicking_a_sprite_picks_the_subsprite_and_rings_the_tile_it_names(
         canvas, Qt.MouseButton.LeftButton, pos=QPoint(int(14 * zoom), int(14 * zoom))
     )
     assert window._picked_subsprite is None
-    assert canvas._pick_outline is None and panel._marked is None
+    assert canvas._pick_outline is None and not panel._marked
     # With no record to answer, the sheet reads in the Palette Row taken back
     # through the base — the named row an assignment would store. A sprite's base
     # opens on 8, so the raw spin value would compose the bank half a palette
@@ -1439,11 +1439,11 @@ def test_selecting_a_cell_rings_the_tile_it_names(qtbot, tmp_path) -> None:
     panel = window._tile_source_panel
 
     window._select_tiles(0, 0)
-    assert panel._marked == 1
+    assert panel._marked == {1}
     window._select_tiles(2, 2)
-    assert panel._marked == 6
+    assert panel._marked == {6}
     window._clear_selection()
-    assert panel._marked is None
+    assert not panel._marked
 
 
 def test_the_sheet_is_ruled_every_sixteen_tiles(qtbot) -> None:
@@ -4024,11 +4024,13 @@ def test_the_spin_sentinel_is_display_only(qtbot, tmp_path) -> None:
 
     window._select_tiles(0, 0)  # uniform selection: the sentinel is fenced off
     assert (spin.minimum(), spin.value()) == (0, 0)
+    assert spin.text() == "0"  # a 0 at the floor is a value, not the dash
     spin.setValue(1)
     assert window._doc.cells[0].flags == 1
 
     window._select_all()  # both cells - mixed: parked on the dash to show it
     assert (spin.minimum(), spin.value()) == (-1, -1)
+    assert spin.text() == "—"
 
     window._stamp_action.setChecked(True)
     window._on_stamp_pressed(0, Qt.MouseButton.RightButton)  # eyedrop: a record

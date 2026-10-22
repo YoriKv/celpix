@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 from celpix.core.document import Document
 from celpix.core.errors import Pathway, PipelineError
 from celpix.pipeline import pipeline
+from celpix.plugins.base import NO_COMPRESSION
 from celpix.project.workspace import Entry, EntryKind, reorders_bytes, unavailable
 from celpix.ui.widgets import confirm_destructive, counted
 
@@ -371,7 +372,9 @@ class WritingMixin(_Host):
         when a slice is written back under its parent's feet, which is re-read
         immediately so the view shows the freshly written bytes. Those it keeps,
         because they hold unsaved edits, take in a palette written inside their
-        bytes (:meth:`_absorb_palette_write`).
+        bytes (:meth:`_absorb_palette_write`). The written entry itself keeps
+        its buffer — unless its bytes went out through a compressor, when it is
+        read back so it shows what the file holds (:meth:`_reread_packed_writes`).
 
         Pixels still floating over the current entry are set down first: a float
         is on screen but not in the document, and a file that doesn't match what
@@ -457,9 +460,99 @@ class WritingMixin(_Host):
             )
             self._absorb_palette_write(record.palette_window, [entry] if moved else [])
         self._note_written(touched)
+        if wrote_pixel:
+            self._reread_packed_writes(entry, touched)
         self._refresh_stale_current()
         self._reload_mirrored_palettes(held)
         return wrote_pixel, record.palette
+
+    def _reread_packed_writes(self, entry: Entry, touched: list[str]) -> list[Entry]:
+        """Read back every entry whose bytes just went to disk through a
+        compressor; the ones re-read.
+
+        A raw pathway round-trips: the file now holds the buffer that was
+        written, byte for byte, so the document is kept and nothing is read — a
+        re-read of a big ROM is a file read, and would buy nothing. A
+        **compressed** one need not round-trip. A compressor is free to drop
+        what its format cannot carry (a sprite-piece codec keeps only the pixels
+        its pieces cover), and :func:`~celpix.pipeline.pipeline.save` keeps the
+        buffer it was handed, which then shows pixels the file does not hold
+        until something else happens to re-read the entry. So the written entry
+        is read back from what the write left — the file, or the parent buffer
+        its fold landed in — when any link from it up to the file packs its
+        bytes: a raw slice nested in a packed stream went through the packer
+        too. With it goes every other entry on the written files still holding
+        a document over clean pixels, which is a sibling folded into the same
+        write and kept for its unsaved colours; a clean sibling was already
+        dropped (:meth:`~celpix.project.workspace.Workspace.invalidate_path`),
+        and a dirty one holds an edit the write refused.
+
+        What a disk reload does with an entry, for the same reasons
+        (``docs/design/disk-changes.md`` §3): the view and the palette source
+        go across through the entry's pending fields, unsaved colours are
+        carried over the fresh ones, and the revision tokens are left alone —
+        the write just recorded the saved one, and the re-read changes what the
+        buffer holds, not whether it is saved. The **undo history is kept**: a
+        pixel command's before-bytes describe the range it edited, so undoing
+        after the re-read puts that range back and reads unsaved against the
+        file, exactly as undoing past any write does, while a byte the
+        compressor changed outside that range stays as the file has it.
+        Clearing the history instead would cost every step before the write on
+        a pathway that is nearly always lossless. Everything decoded out of a
+        re-read entry reads it again (:meth:`~...disk_watch.DiskWatchMixin.
+        _bytes_moved`), and the one on screen is repainted in place.
+
+        A re-read that fails keeps the old document and says so: the file was
+        written, but what it holds is no longer what is shown.
+        """
+        ws = self._workspace
+        keys = {ws.path_key(p) for p in touched}
+        reread: list[Entry] = []
+        failed: list[str] = []
+        for e in list(ws.entries):
+            if e.doc is None or e.pixel_dirty or not e.kind.has_document:
+                continue
+            if e is not entry and not any(ws.path_key(p) in keys for p in e.paths):
+                continue
+            if not self._packs_bytes(e):
+                continue
+            previous = e.doc
+            if not self._reread_entry(e, live=None, quiet=True):
+                failed.append(e.name)
+                continue
+            if e.palette_dirty:
+                self._carry_palette(previous, e.doc)
+            self._files_panel.refresh_entry(e)
+            reread.append(e)
+        if reread:
+            self._bytes_moved(reread)
+            current = ws.current
+            if current is not None and any(e is current for e in reread):
+                self._doc = current.doc
+                self._refresh_view()
+        if failed:
+            self._alert(
+                f"{entry.name} was written, but {_and_list(failed)} could not be "
+                "read back and may not show what the file holds.",
+                title="celPix - write",
+            )
+        return reread
+
+    def _packs_bytes(self, entry: Entry) -> bool:
+        """Whether ``entry``'s bytes pass through a compressor on their way to
+        the file — its own data pathway's, or one of its ancestors'.
+
+        The entry's from its document, since a map's own data is its cells and
+        not the bank it borrows; an ancestor's from the entry itself, since the
+        write has dropped the documents of the chain above.
+        """
+        assert entry.doc is not None
+        if entry.doc.data_config.compression_id != NO_COMPRESSION:
+            return True
+        return any(
+            link.compression_id != NO_COMPRESSION
+            for link in self._workspace.ancestors_of(entry)
+        )
 
     def _absorb_palette_write(
         self, window: pipeline.WrittenBytes, moved: list[Entry]

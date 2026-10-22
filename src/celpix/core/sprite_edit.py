@@ -41,7 +41,8 @@ Qt-free, like the rest of ``core``.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
+from dataclasses import dataclass
 
 from celpix.core.sprite import (
     Frame,
@@ -50,7 +51,7 @@ from celpix.core.sprite import (
     SubspriteLimits,
     range_text,
 )
-from celpix.core.tilemap import Cell
+from celpix.core.tilemap import VRAM_ROW_STRIDE, Cell, tile_run
 
 # The host's binding of ``TilemapCodecPlugin.place_subsprite``:
 # ``place(cell, *, x=None, y=None, size=None, drawn=None) -> Cell``, raising
@@ -483,6 +484,194 @@ def reflect_group(
     if horizontal:
         return [(at, sub.y) for at, sub in zip(mirrored, pieces, strict=True)]
     return [(sub.x, at) for at, sub in zip(mirrored, pieces, strict=True)]
+
+
+# --- the tile source: what a piece spends, and what a sweep lays ------------
+
+
+def fit_footprint(piece: Subsprite, reach: Collection[int]) -> None:
+    """Refuse ``piece`` where a tile it spends is not in ``reach``.
+
+    A record names one tile and the piece draws ``across x down`` of them
+    along the console's own walk (:meth:`Subsprite.tile_indices`), so a piece
+    whose first tile is in the bank can still spend tiles past its end — a
+    2x2 at the last tile of a row, a tall Mega Drive strip at the bank's last
+    four. ``reach`` is every ID the bound source resolves, in the record's own
+    numbers (``pipeline.tile_source_span``); the first tile outside it is
+    named, with the bank's last where ``reach`` has one, so the status line
+    says what to retile to.
+    """
+    missing = [tile for tile in piece.tile_indices() if tile not in reach]
+    if not missing:
+        return
+    across, down = piece.size()
+    last = max(reach, default=None)
+    where = (
+        "which the tile source does not reach"
+        if last is None or missing[0] <= last
+        else f"past the tile source's last (${last:X})"
+    )
+    raise SpriteEditError(
+        f"a {across}x{down} piece at tile ${piece.index:X} spends tile "
+        f"${missing[0]:X}, {where}"
+    )
+
+
+@dataclass(frozen=True)
+class SweepPiece:
+    """One piece a sweep of the tile source lays (:func:`split_sweep`).
+
+    ``first`` is the tile the record names; ``size`` what to state to the
+    codec, ``None`` where the sweep fell back to a square and the record's
+    own size stands; ``shape`` the piece's tiles across and down; ``dx`` and
+    ``dy`` where it sits in the sweep, in tiles from the top-left square.
+    """
+
+    first: int
+    size: SizeChoice | None
+    shape: tuple[int, int]
+    dx: int
+    dy: int
+
+
+def split_sweep(
+    rows: Sequence[Sequence[int | None]],
+    choices: Sequence[tuple[SizeChoice, tuple[int, int]]],
+    *,
+    column_major: bool,
+    stride: int = VRAM_ROW_STRIDE,
+) -> list[SweepPiece]:
+    """The pieces a swept rectangle of the tile source lays, largest first.
+
+    ``rows`` is the sweep as the panel reports it, IDs top to bottom and
+    ``None`` where it overhung the run's end. ``choices`` is every size the
+    record can state, each with the shape it spells — the host resolves a size
+    bit against the pair in force, since a shape is not a thing this module
+    can know (design §8.3). Empty, every square is one piece of the record's
+    own size, which is all a format with no size field can lay.
+
+    Two readings, because the sheet shows a bank's tiles in rows of ``stride``
+    and a piece spends them along the console's walk
+    (:func:`~celpix.core.tilemap.tile_run`), so the footprint on the sheet
+    matches the piece's shape only for the walk that steps a row at a time:
+
+    - **Row-major**: the rectangle is read as a picture. From the top-left,
+      each unclaimed square starts the largest choice whose squares are all
+      inside the sweep, unclaimed, and ``first + i + j * stride`` — the tiles
+      a piece of that shape at that tile actually draws. Where no choice fits
+      (the area is not a multiple, or the sheet is not laid out at ``stride``)
+      the square lays the smallest choice on its own, which is one small
+      piece per square, the reading the sweep had before it could split.
+    - **Column-major**: a piece is a run of consecutive tiles, so the sweep
+      is read as runs, one per row of it, each cut into the largest choices
+      whose tile count still fits — squarest first, then taller — and laid
+      side by side along a strip, strips stacked. A 2x2 Mega Drive piece is
+      four tiles in a row on the sheet, not a square.
+
+    Pieces come back in sweep order, which is the order they are laid and so
+    the order they draw in.
+    """
+    by_area = sorted(
+        choices,
+        key=lambda item: (
+            -item[1][0] * item[1][1],
+            abs(item[1][0] - item[1][1]),
+            -item[1][1],
+        ),
+    )
+    smallest = by_area[-1] if by_area else None
+    if column_major:
+        return _split_runs(rows, by_area, smallest)
+    height = len(rows)
+    width = max((len(row) for row in rows), default=0)
+    claimed: set[tuple[int, int]] = set()
+    out: list[SweepPiece] = []
+    for y in range(height):
+        for x in range(width):
+            first = rows[y][x] if x < len(rows[y]) else None
+            if first is None or (x, y) in claimed:
+                continue
+            for choice, (across, down) in by_area:
+                squares = [(x + i, y + j) for j in range(down) for i in range(across)]
+                if all(
+                    sx < width
+                    and sy < height
+                    and (sx, sy) not in claimed
+                    and sx < len(rows[sy])
+                    and rows[sy][sx] == first + (sx - x) + (sy - y) * stride
+                    for sx, sy in squares
+                ):
+                    claimed.update(squares)
+                    out.append(SweepPiece(first, choice, (across, down), x, y))
+                    break
+            else:
+                claimed.add((x, y))
+                out.append(_fallback(first, smallest, x, y))
+    return out
+
+
+def _split_runs(
+    rows: Sequence[Sequence[int | None]],
+    by_area: Sequence[tuple[SizeChoice, tuple[int, int]]],
+    smallest: tuple[SizeChoice, tuple[int, int]] | None,
+) -> list[SweepPiece]:
+    """:func:`split_sweep`'s column-major reading: strips of consecutive tiles."""
+    out: list[SweepPiece] = []
+    dy = 0
+    for row in rows:
+        ids = [tile for tile in row if tile is not None]
+        dx, tallest, at = 0, 0, 0
+        while at < len(ids):
+            # The run of consecutive IDs from here: the tiles a piece can spend.
+            end = at + 1
+            while end < len(ids) and ids[end] == ids[end - 1] + 1:
+                end += 1
+            while at < end:
+                left = end - at
+                fit = next(
+                    (item for item in by_area if item[1][0] * item[1][1] <= left),
+                    None,
+                )
+                if fit is None:
+                    piece = _fallback(ids[at], smallest, dx, dy)
+                    at += 1
+                else:
+                    choice, shape = fit
+                    piece = SweepPiece(ids[at], choice, shape, dx, dy)
+                    at += shape[0] * shape[1]
+                out.append(piece)
+                dx += piece.shape[0]
+                tallest = max(tallest, piece.shape[1])
+        dy += max(tallest, 1)
+    return out
+
+
+def _fallback(
+    first: int, smallest: tuple[SizeChoice, tuple[int, int]] | None, dx: int, dy: int
+) -> SweepPiece:
+    """A square laid on its own: the smallest choice, or the record's own size."""
+    if smallest is None:
+        return SweepPiece(first, None, (1, 1), dx, dy)
+    return SweepPiece(first, smallest[0], smallest[1], dx, dy)
+
+
+def sweep_footprint(
+    pieces: Sequence[SweepPiece], *, column_major: bool
+) -> frozenset[int]:
+    """Every tile the sweep's pieces spend, for the panel to ring."""
+    tiles: set[int] = set()
+    for piece in pieces:
+        across, down = piece.shape
+        tiles.update(
+            tile_run(
+                piece.first,
+                across,
+                down,
+                1 if column_major else VRAM_ROW_STRIDE,
+                column_stride=down if column_major else 1,
+            )
+        )
+    return frozenset(tiles)
 
 
 # --- helpers -----------------------------------------------------------------

@@ -53,10 +53,12 @@ from PySide6.QtGui import QImage, QKeySequence, QUndoCommand
 from PySide6.QtWidgets import QApplication
 
 from celpix.core.errors import PipelineError
-from celpix.core.sprite import Subsprite, range_text
+from celpix.core.sprite import SizeChoice, Subsprite, range_text
 from celpix.core.sprite_edit import (
     SpriteEditError,
+    SweepPiece,
     add_subsprite,
+    fit_footprint,
     fit_group_delta,
     fixed_refusal,
     move_subsprite,
@@ -64,6 +66,8 @@ from celpix.core.sprite_edit import (
     reflect_group,
     remove_subsprites,
     reorder_subsprite,
+    split_sweep,
+    sweep_footprint,
 )
 from celpix.core.tilemap import BLANK, Cell, CellGrid, CellOp
 from celpix.pipeline import pipeline
@@ -220,6 +224,21 @@ class SpriteEditMixin(_Host):
         self._subsprite_ghost: tuple[
             tuple, object, object, tuple[QImage, tuple[int, int]] | None
         ] = ((), None, None, None)
+        # The piece a template lands as, probed the same way and cached on
+        # the same terms (:meth:`_probe_piece`): the template and the pair it
+        # was read under, beside the document and its cell list.
+        self._piece_probe: tuple[tuple, object, object, Subsprite | None] = (
+            (),
+            None,
+            None,
+            None,
+        )
+        # The rows of IDs the held brush was swept over in the tile source
+        # panel, ``None`` where the sweep overhung the run — what the split
+        # into pieces reads (:meth:`_sweep_pieces`), since the brush itself
+        # holds a blank for a hole and a blank is also tile 0. Validated
+        # against the brush rather than cleared wherever it is replaced.
+        self._swept_rows: list[list[int | None]] | None = None
         self._subsprite_actions: tuple = ()
 
     def _connect_sprite_edit_canvas(self) -> None:
@@ -412,15 +431,19 @@ class SpriteEditMixin(_Host):
         return pipeline.sprite_frames_of(cells, preset, self._registry, trial)
 
     def _add_pieces(
-        self, specs: Sequence[tuple[int, Cell, int, int]]
-    ) -> tuple[list[Cell], list[int]]:
+        self, specs: Sequence[tuple[int, Cell, int, int]], *, check: bool = True
+    ) -> tuple[list[Cell], list[int], list]:
         """``specs`` — ``(frame, template, x, y)`` each — added in order.
 
-        Returns the cells and every new piece's record. Raises what the op or
-        the codec refuses. Each add after the first re-frames the cells, since
-        the next free slot and the run each frame owns are read off the frames;
-        and under the inserting kinds an insert shifts every record at or after
-        it, the pieces already added included.
+        Returns the cells, every new piece's record, and the frames the cells
+        build. Raises what the op or the codec refuses, and what the **bank**
+        refuses: a piece spending a tile the tile source does not reach
+        (:func:`~celpix.core.sprite_edit.fit_footprint`), read off the built
+        frames because only they say which tiles a template's size bits spend.
+        Each add after the first re-frames the cells, since the next free slot
+        and the run each frame owns are read off the frames; and under the
+        inserting kinds an insert shifts every record at or after it, the
+        pieces already added included.
         """
         ops = self._sprite_ops()
         if ops is None:
@@ -448,7 +471,21 @@ class SpriteEditMixin(_Host):
             if limits.structure != "slots":
                 added = [r + 1 if r >= at else r for r in added]
             added.append(at)
-        return cells, added
+        built = self._frame_cells(cells)
+        if check:
+            positions = record_positions(built)
+            reach = self._tile_reach()
+            for record in added:
+                place = positions.get(record)
+                if place is not None:
+                    fit_footprint(built[place[0]][place[1]], reach)
+        return cells, added, built
+
+    def _tile_reach(self) -> Sequence[int]:
+        """Every tile ID the bound source resolves, in the record's numbers."""
+        return pipeline.tile_source_span(
+            self._doc, self._cell_index_limit(), self._cell_index_runs()
+        )
 
     # -- geometry ------------------------------------------------------------
     @staticmethod
@@ -856,15 +893,15 @@ class SpriteEditMixin(_Host):
             self.statusBar().showMessage("No subsprite here to pick.")
             return
         cell = doc.cells[record]
-        span = pipeline.tile_source_span(
-            doc, self._cell_index_limit(), self._cell_index_runs()
-        )
-        if cell.index not in span:
+        if cell.index not in self._tile_reach():
             self._clear_source_tile()
             self.statusBar().showMessage(
                 f"Tile ${cell.index:X} is not in the tile source - nothing picked."
             )
             return
+        # The held piece is now what the next click lays, so it is what the
+        # row and the Tile group describe: the pick goes (:meth:`_drop_pick_for_held`).
+        self._drop_pick_for_held()
         row = None
         if doc.cells_carry_palette_rows:
             row = self._drawn_palette_row(cell.palette_row)
@@ -979,34 +1016,214 @@ class SpriteEditMixin(_Host):
             ox, oy = ox - ox % tile_w, oy - oy % tile_h
         return frame, ox, oy
 
+    def _drop_pick_for_held(self) -> None:
+        """A tile taken for placing drops the pick.
+
+        A sheet click or sweep in the tile source panel and the eyedropper all
+        end with a piece *held*, and the property row and the Tile group
+        follow the pick while there is one (:meth:`~...cell_props_bar.
+        CellPropsMixin._cell_props_target`) — so without this the controls
+        would go on describing the pieces last pointed at while the user is
+        setting up the one the next click lays. The grid's own exclusivity,
+        where arming the tool clears the selection, read on a tool that both
+        picks and places: whichever was pointed at last is the target. Only
+        while the tool is live — outside it nothing places, and the held tile
+        is a reading beside the pick rather than a rival to it.
+        """
+        if self._sprite_tool_live() and self._picked_records:
+            self._set_picked_records([])
+
+    def _held_lays_brush(self) -> bool:
+        """Whether a click lays a sheet-swept brush — the pieces
+        :meth:`_sweep_pieces` splits it into — rather than the one held piece.
+        A brush taken off a grid map's canvas carries a record and lays that
+        record alone, as :meth:`_held_specs` reads it."""
+        brush = self._stamp_brush
+        return brush is not None and len(brush) > 1 and self._source_cell is None
+
+    def _held_template(self) -> Cell | None:
+        """The cell a click lays as one piece, or None with nothing held.
+
+        The cell the stamp itself would lay
+        (:meth:`~...stamp_tool.StampToolMixin._stamp_cell` over a blank): an
+        eyedropped record whole, size bits and all, or a sheet pick's index
+        with the property row's settings — its flips through the stamp's own
+        path, and its **size** through the codec, since the size lives in
+        ``flags`` on the format's own terms and only the codec can write it
+        there. A held record keeps its own size as it keeps its own flips: the
+        setting is the sheet pick's, and a Size edit on a held record rewrites
+        the record instead (:meth:`~...cell_props_bar.CellPropsMixin.
+        _set_held_size`).
+        """
+        held = self._held_tile_id()
+        if held is None:
+            return None
+        cell = self._stamp_cell(held, BLANK)
+        size = self._stamp_attrs.get("size")
+        limits = self._subsprite_limits()
+        if (
+            size is not None
+            and self._source_cell is None
+            and limits is not None
+            and size in (limits.size or ())
+        ):
+            try:
+                cell = self._place_subsprite(cell, size=size)
+            except ValueError:
+                pass  # a size the format cannot spell; the row's sync prunes it
+        return cell
+
     def _held_specs(
         self, frame: int, x: int, y: int
     ) -> list[tuple[int, Cell, int, int]] | None:
         """What a click lays at ``(x, y)`` in ``frame``, as add specs.
 
-        The template is the cell the stamp itself would lay
-        (:meth:`~...stamp_tool.StampToolMixin._stamp_cell` over a blank): an
-        eyedropped record whole, or a sheet pick's index with the property
-        row's settings. A brush swept off the tile source sheet lays **one
-        small piece per square**, stepped by the tile size.
+        The template is :meth:`_held_template`. A brush swept off the tile
+        source sheet lays the pieces :meth:`_sweep_pieces` splits it into —
+        each the row's flips over its first tile, at the size the split
+        states, stepped by the tile size to where it sat in the sweep.
         """
         held = self._held_tile_id()
         if held is None:
             return None
-        brush = self._stamp_brush
-        if brush is not None and len(brush) > 1 and self._source_cell is None:
+        if self._held_lays_brush():
             tile_w, tile_h = self._sprite_tile_size()
-            return [
-                (
-                    frame,
-                    self._stamp_cell(brush.get(bx, by).index, BLANK),
-                    x + bx * tile_w,
-                    y + by * tile_h,
+            specs = []
+            for piece in self._sweep_pieces():
+                cell = self._stamp_cell(piece.first, BLANK)
+                if piece.size is not None:
+                    cell = self._place_subsprite(cell, size=piece.size)
+                specs.append(
+                    (frame, cell, x + piece.dx * tile_w, y + piece.dy * tile_h)
                 )
-                for by in range(brush.height)
-                for bx in range(brush.width)
-            ]
-        return [(frame, self._stamp_cell(held, BLANK), x, y)]
+            return specs or None
+        return [(frame, self._held_template(), x, y)]
+
+    def _sweep_rows(self) -> list[list[int | None]]:
+        """The held brush as rows of tile IDs, ``None`` for a swept hole.
+
+        The panel's rows where they still describe the brush — the same shape,
+        the same ID in every square that has one — else the brush's own
+        indices, which is a sweep with no holes.
+        """
+        brush = self._stamp_brush
+        rows = self._swept_rows
+        if (
+            rows is not None
+            and len(rows) == brush.height
+            and all(len(row) == brush.width for row in rows)
+            and all(
+                tile is None or tile == brush.get(x, y).index
+                for y, row in enumerate(rows)
+                for x, tile in enumerate(row)
+            )
+        ):
+            return rows
+        return [
+            [brush.get(x, y).index for x in range(brush.width)]
+            for y in range(brush.height)
+        ]
+
+    def _sweep_pieces(self) -> list[SweepPiece]:
+        """The pieces the held brush lays, split by
+        :func:`~celpix.core.sprite_edit.split_sweep`.
+
+        The size choices are the codec's, each resolved to the shape it spells
+        at the pair in force; which walk the format spends tiles along is read
+        off a probe of the first swept tile, since only the codec's frames say
+        it. With no probe — the sheet reaches nothing — the sweep is read
+        row-major, the reading a square-per-piece fallback does not depend on.
+        """
+        rows = self._sweep_rows()
+        first = next((tile for row in rows for tile in row if tile is not None), None)
+        if first is None:
+            return []
+        limits = self._subsprite_limits()
+        choices: list[tuple[SizeChoice, tuple[int, int]]] = []
+        if limits is not None and limits.size:
+            small, large = self._subsprite_pair()
+            for choice in limits.size:
+                if choice == "small":
+                    choices.append((choice, (small, small)))
+                elif choice == "large":
+                    choices.append((choice, (large, large)))
+                else:
+                    choices.append((choice, (int(choice[0]), int(choice[1]))))
+        probe = self._probe_piece(self._stamp_cell(first, BLANK))
+        column_major = probe is not None and probe.column_major
+        return split_sweep(rows, choices, column_major=column_major)
+
+    def _held_footprint(self) -> frozenset[int]:
+        """Every tile the held stamp would spend — what the tile source panel
+        rings for it — or nothing with nothing held or nothing to lay."""
+        if self._held_tile_id() is None or self._fixed_layout():
+            return frozenset()
+        if self._held_lays_brush():
+            pieces = self._sweep_pieces()
+            first = next((piece.first for piece in pieces), None)
+            if first is None:
+                return frozenset()
+            probe = self._probe_piece(self._stamp_cell(first, BLANK))
+            return sweep_footprint(
+                pieces, column_major=probe is not None and probe.column_major
+            )
+        piece = self._held_piece()
+        return frozenset(piece.tile_indices()) if piece is not None else frozenset()
+
+    def _probe_piece(self, template: Cell) -> Subsprite | None:
+        """The piece ``template`` lands as, as the add resolves it.
+
+        Asked the way the ghost is — the add run on a copy of the cells and
+        the new piece read back off the frames it builds — because the size
+        is in ``flags`` on the format's own terms, a size bit resolves against
+        the pair in force (``docs/design/sprite-map.md`` §8.3) and the walk
+        the tiles are spent along is the codec's: only the frames say what a
+        template spells. Probed at the origin of the first frame that takes
+        it, the bank check left out, since a probe asks what the piece *is*
+        and the refusal is the landing's; None where no frame takes it or
+        under a fixed layout, where a click adds nothing. Cached beside the
+        template, the pair and the cell list it was read over, held as the
+        ghost's cache holds them, since a sync runs it often.
+        """
+        doc = self._doc
+        if doc is None or self._subsprite_limits() is None or self._fixed_layout():
+            return None
+        key = (template, self._subsprite_pair())
+        cached_key, cached_doc, cached_cells, piece = self._piece_probe
+        if cached_key == key and cached_doc is doc and cached_cells is doc.cells:
+            return piece
+        piece = None
+        for frame in range(len(doc.shown_frames)):
+            try:
+                _cells, (record,), built = self._add_pieces(
+                    [(frame, template, 0, 0)], check=False
+                )
+            except _REFUSALS:
+                continue
+            place = record_positions(built).get(record)
+            if place is not None:
+                piece = built[place[0]][place[1]]
+            break
+        self._piece_probe = (key, doc, doc.cells, piece)
+        return piece
+
+    def _held_piece(self) -> Subsprite | None:
+        """The piece the held stamp lands as (:meth:`_probe_piece`), or None
+        with nothing held, under a swept brush — several pieces, none of them
+        this — or where no frame takes it."""
+        if self._held_lays_brush():
+            return None
+        template = self._held_template()
+        return None if template is None else self._probe_piece(template)
+
+    def _held_size_choice(self) -> SizeChoice | None:
+        """The size the held piece lands at, in the record's terms; None
+        where the format fixes it or :meth:`_held_piece` has no piece."""
+        limits = self._subsprite_limits()
+        if limits is None or not limits.size:
+            return None
+        piece = self._held_piece()
+        return None if piece is None else self._size_choice_of(piece)
 
     def _add_held_subsprites(self, x: int, y: int, pixel: bool) -> None:
         landing = self._subsprite_landing(x, y, pixel)
@@ -1020,7 +1237,7 @@ class SpriteEditMixin(_Host):
             return
         before = list(self._picked_records)
         try:
-            cells, added = self._add_pieces(specs)
+            cells, added, _built = self._add_pieces(specs)
         except _REFUSALS as exc:
             self.statusBar().showMessage(self._refusal_text(exc))
             return
@@ -1081,8 +1298,7 @@ class SpriteEditMixin(_Host):
         self, specs: Sequence[tuple[int, Cell, int, int]]
     ) -> tuple[QImage, tuple[int, int]] | None:
         try:
-            cells, added = self._add_pieces(specs)
-            frames = self._frame_cells(cells)
+            cells, added, frames = self._add_pieces(specs)
         except _REFUSALS:
             return None
         positions = record_positions(frames)
@@ -1300,7 +1516,7 @@ class SpriteEditMixin(_Host):
         ]
         before = list(self._picked_records)
         try:
-            cells, added = self._add_pieces(specs)
+            cells, added, _built = self._add_pieces(specs)
         except _REFUSALS as exc:
             self.statusBar().showMessage(self._refusal_text(exc))
             return
@@ -1348,7 +1564,7 @@ class SpriteEditMixin(_Host):
         ]
         before = list(self._picked_records)
         try:
-            cells, added = self._add_pieces(specs)
+            cells, added, _built = self._add_pieces(specs)
         except _REFUSALS as exc:
             self.statusBar().showMessage(self._refusal_text(exc))
             return

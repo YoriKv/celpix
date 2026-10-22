@@ -1,6 +1,9 @@
 /CLAUDE.md
 /docs/
 /tmp/
+# Agent tooling: registers the PyCharm MCP relay (D:/Tools/mcp_relay.py) for
+# this checkout; machine-specific like CLAUDE.md above.
+/.mcp.json
 
 # Sample project files
 /sample-projects/

@@ -1,0 +1,15 @@
+# RGBA5551, big-endian — the Nintendo 64 RDP's 16-bit colour, as a TLUT entry:
+# RRRRRGGG GGBBBBBA (masks F800 / 07C0 / 003E / 0001). The same word the pixel
+# preset dc-rgba5551-be reads as direct colour. Bit 0 is a one-bit alpha, so a
+# TLUT's entry 0 is usually 0x0000 and decodes transparent; an edit that clears
+# a colour's alpha writes 0 there, which the RDP draws as fully transparent.
+# See docs/graphics-formats-reference/mame-formats.md §4.3.
+id = "preset.palette.rgba5551-be"
+name = "RGBA5551 (big-endian) — N64 TLUT"
+engine_id = "codec.palette.mask"
+category = "Generic"
+
+[params]
+bytes_per_entry = 2
+byte_order = "big"
+fields = "rrrr rggg ggbb bbba"

@@ -529,3 +529,101 @@ def test_a_parent_write_leaves_a_view_only_slice_out(
     assert cut.pixel_dirty
     assert rom.read_bytes()[0x40] == 0
     assert "cut" in captured_alerts[-1][1] and "view-only" in captured_alerts[-1][1]
+
+
+# -- what a write leaves on screen (docs/design/slices-and-parents.md §4) -----
+
+
+def _lossy_registry():
+    """A registry with a compression scheme whose write does not round-trip:
+    read is the identity, and a write puts the first byte to zero."""
+    from celpix.core.errors import Stage
+    from celpix.plugins.base import PluginInfo
+    from celpix.plugins.registry import default_registry
+
+    class _Lossy:
+        info = PluginInfo(id="compression.lossy", name="Lossy", stage=Stage.COMPRESSION)
+
+        def decompress(self, data, ctx):  # noqa: ANN001
+            return bytes(data)
+
+        def compress(self, data, ctx):  # noqa: ANN001
+            return bytes(1) + bytes(data[1:])
+
+    registry = default_registry()
+    registry.register(_Lossy())
+    return registry
+
+
+def _lossy_slice(qtbot, tmp_path, registry=None):
+    """A window over a ROM of 0xFF with a 0x80-byte slice at 0x100 on screen,
+    carved through ``compression.lossy`` when ``registry`` has it, raw
+    otherwise. Returns (window, rom path, file, slice)."""
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(b"\xff" * 0x800)
+    window = MainWindow(registry=registry) if registry else MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(rom))
+    file = window._workspace.current
+    scheme = "compression.lossy" if registry else NO_COMPRESSION
+    cut = window._workspace.add_slice(file.path, "cut", 0x100, 0x80, scheme)
+    window._activate_entry(cut)
+    return window, rom, file, cut
+
+
+def test_a_write_through_a_lossy_compressor_shows_what_the_file_holds(
+    qtbot, tmp_path
+) -> None:
+    """The written slice is read back, so its document and the canvas show the
+    byte the compressor dropped rather than the buffer that was handed to it;
+    the entry reads clean, keeps its view, and its undo history still works —
+    undoing takes the paint back and reads unsaved against the file, while the
+    dropped byte stays as the file has it. Write All lands the same way."""
+    window, rom, file, cut = _lossy_slice(qtbot, tmp_path, _lossy_registry())
+    window._palette_row.setValue(1)
+    _paint(window, 1, color=0)
+    painted = bytes(cut.doc.pixel_data)
+    assert painted[0] == 0xFF and painted != b"\xff" * 0x80
+    shown = window._canvas._image.copy()
+
+    assert window._write_entry(cut)
+
+    landed = bytes(1) + painted[1:]
+    assert rom.read_bytes()[0x100:0x180] == landed
+    assert bytes(cut.doc.pixel_data) == landed
+    assert window._doc is cut.doc and window._canvas._image != shown
+    assert not cut.pixel_dirty and not file.pixel_dirty
+    assert window._palette_row.value() == 1 and cut.doc.view.palette_row == 1
+
+    window._undo_stack.undo()
+    assert cut.pixel_dirty
+    assert bytes(cut.doc.pixel_data) == bytes(1) + b"\xff" * 0x7F
+
+    _paint(window, 2, color=0)
+    painted = bytes(cut.doc.pixel_data)
+    window._write_all()
+    assert not cut.pixel_dirty and not file.pixel_dirty
+    assert bytes(cut.doc.pixel_data) == painted == rom.read_bytes()[0x100:0x180]
+
+
+def test_a_write_through_a_raw_pathway_keeps_the_document_it_wrote(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """Raw bytes round-trip, so a write of a raw slice of a raw file costs no
+    read: the written entry keeps the very document that was written."""
+    window, rom, file, cut = _lossy_slice(qtbot, tmp_path)
+    _paint(window, 1, color=0)
+    doc = cut.doc
+    rereads = []
+    reread = window._reread_entry
+    monkeypatch.setattr(
+        window,
+        "_reread_entry",
+        lambda entry, **kwargs: rereads.append(entry) or reread(entry, **kwargs),
+    )
+
+    assert window._write_entry(cut)
+
+    assert cut.doc is doc and window._doc is doc
+    assert not cut.pixel_dirty and rereads == []
+    assert rom.read_bytes()[0x100:0x180] == bytes(doc.pixel_data)

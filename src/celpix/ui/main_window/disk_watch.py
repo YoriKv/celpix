@@ -414,7 +414,7 @@ class DiskWatchMixin(_Host):
                 if child.kind is EntryKind.SLICE:
                     self._reload_region(child, tally, root=False)
             if root:
-                self._bytes_moved([file, *loaded], tally)
+                tally.reloaded.extend(self._bytes_moved([file, *loaded]))
                 # A rewrite may have resized the file: the slices matching its
                 # size are re-measured, the ones nobody has open included.
                 self._refit_to_parents(ws.descendants_of(file))
@@ -426,7 +426,7 @@ class DiskWatchMixin(_Host):
         tally.add(merge)
         self._drop_reloaded_slices(file, tally)
         if root:
-            self._bytes_moved([file, *loaded], tally)
+            tally.reloaded.extend(self._bytes_moved([file, *loaded]))
             self._refit_to_parents(ws.descendants_of(file))
 
     def _drop_reloaded_slices(self, entry: Entry, tally: _Reload) -> None:
@@ -445,22 +445,26 @@ class DiskWatchMixin(_Host):
                     self._workspace.drop_document(child)
             self._drop_reloaded_slices(child, tally)
 
-    def _bytes_moved(self, owners: list[Entry], tally: _Reload) -> None:
-        """Everything that holds a *decode* of ``owners``' bytes reads them again.
+    def _bytes_moved(self, owners: list[Entry]) -> list[Entry]:
+        """Everything that holds a *decode* of ``owners``' bytes reads them again;
+        the composites rebuilt on the way.
 
         The tail of the landing sequence an edit takes
         (``tile_bytes._land_byte_edit``), minus the splice-patching a reload has
         no splices for: maps bound to any owner re-read their art (a dropped
         slice's is read back through the merged file), composites over them are
         reassembled and the maps over those re-read, and palettes decoded out of
-        any of them are decoded again.
+        any of them are decoded again. A write's read-back of a packed entry
+        (:meth:`~...writing.WritingMixin._reread_packed_writes`) is the same
+        event — bytes replaced under everything derived from them — and ends
+        here too.
         """
         self._reresolve_bound_art(self._maps_drawing_from(owners))
         rebuilt = self._reassemble_composites(owners)
         self._reread_input_dependents(owners)
         self._reresolve_bound_art(self._maps_drawing_from(rebuilt))
         self._redecode_entry_palettes([*owners, *rebuilt])
-        tally.reloaded.extend(rebuilt)
+        return rebuilt
 
     def _reload_document(self, entry: Entry, tally: _Reload) -> Merge | None:
         """Re-read ``entry`` from disk and put its unsaved edits back over the

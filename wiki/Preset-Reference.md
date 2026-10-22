@@ -304,6 +304,8 @@ byte_order = "little"
 |---|---|
 | `bgr555`, `bgr555-snes`, `bgr555-psx`, `bgr555-be` | `.bbb bbgg gggr rrrr`. SNES, GBC, GBA, PlayStation; the last big-endian |
 | `rgb555-split-be` | `rrrr gggg bbbb rgb.`, big-endian: each channel in two runs |
+| `rgba5551-be` | `rrrr rggg ggbb bbba`, big-endian: an N64 TLUT entry (RGBA16), alpha in bit 0 |
+| `ia16-be` | `vvvv vvvv aaaa aaaa`, big-endian: an N64 TLUT entry in IA16 mode, a byte of grey then a byte of alpha |
 | `rgb565`, `rgb565-be`; `grb333`, `grb333-be` | `rrrr rggg gggb bbbb`; `.... .ggg .rrr .bbb` |
 | `genesis-9bpp`, `bgr333`; `genesis-9bpp-le`, `bgr333-le` | `.... bbb. ggg. rrr.`, big-endian (Mega Drive CRAM); little-endian |
 | `pce-grb333` | `.... ...g ggrr rbbb`. PC Engine VCE |

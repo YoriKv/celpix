@@ -1,0 +1,14 @@
+# IA16, big-endian — the Nintendo 64 RDP's intensity + alpha 16-bit colour as a
+# TLUT entry (the G_TT_IA16 lookup mode): a byte of grey, then a byte of alpha.
+# The same word the pixel preset dc-ia16-be reads as direct colour. One field
+# drives R, G and B (`v`), so a non-grey edit is stored as its luma, which is
+# the closest the format holds. See docs/graphics-formats-reference/mame-formats.md §4.3.
+id = "preset.palette.ia16-be"
+name = "IA16 (intensity+alpha, big-endian) — N64 TLUT"
+engine_id = "codec.palette.mask"
+category = "Generic"
+
+[params]
+bytes_per_entry = 2
+byte_order = "big"
+fields = "vvvv vvvv aaaa aaaa"

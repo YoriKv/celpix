@@ -2,6 +2,8 @@
 
 ## v1.2.15 - unreleased
 
+- Added the N64 TLUT palette presets: RGBA16 (RGBA5551 big-endian) and IA16 (intensity+alpha, big-endian)
+- Don't show edits that a compression refused
 - Navigate -> Auto Focus View to be able to toggle auto focus
 - Sprite editing functionality
 - Edits and undo on large projects sped up

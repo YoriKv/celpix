@@ -17,7 +17,9 @@ from celpix.core.sprite import Frame, Subsprite, SubspriteLimits
 from celpix.core.sprite_edit import (
     FIXED_REFUSAL,
     SpriteEditError,
+    SweepPiece,
     add_subsprite,
+    fit_footprint,
     fit_group_delta,
     frame_count,
     membership,
@@ -27,6 +29,8 @@ from celpix.core.sprite_edit import (
     reflect_group,
     remove_subsprites,
     reorder_subsprite,
+    split_sweep,
+    sweep_footprint,
 )
 from celpix.core.tilemap import Cell
 
@@ -433,3 +437,91 @@ def test_reflect_mixed_sizes_keeps_the_box_and_swaps_sides():
         (-16, 4),
         (-24, 4),
     ]
+
+
+# --- the tile source: the sweep and the footprint ----------------------------
+
+_BIT = [("small", (1, 1)), ("large", (2, 2))]
+_RECTS = [((a, d), (a, d)) for a in range(1, 5) for d in range(1, 5)]
+
+
+def test_a_row_major_sweep_is_read_as_the_picture_on_the_sheet() -> None:
+    """On a 16-wide sheet a 2x2 is the four tiles a piece at its corner draws;
+    a square no choice fits lays the smallest choice on its own, and a hole, a
+    sheet not laid out at the stride, or a pair whose small is itself 2x2 each
+    fall back the same way."""
+    assert split_sweep([[0, 1, 2], [16, 17, 18]], _BIT, column_major=False) == [
+        SweepPiece(0, "large", (2, 2), 0, 0),
+        SweepPiece(2, "small", (1, 1), 2, 0),
+        SweepPiece(18, "small", (1, 1), 2, 1),
+    ]
+    assert split_sweep([[0, 1], [16, None]], _BIT, column_major=False) == [
+        SweepPiece(0, "small", (1, 1), 0, 0),
+        SweepPiece(1, "small", (1, 1), 1, 0),
+        SweepPiece(16, "small", (1, 1), 0, 1),
+    ]
+    assert split_sweep([[0, 1], [8, 9]], _BIT, column_major=False) == [
+        SweepPiece(tile, "small", (1, 1), tile % 8, tile // 8) for tile in (0, 1, 8, 9)
+    ]
+    wide = [("small", (2, 2)), ("large", (4, 4))]
+    assert split_sweep([[0, 1], [16, 17]], wide, column_major=False) == [
+        SweepPiece(0, "small", (2, 2), 0, 0)
+    ]
+    assert split_sweep([[5]], wide, column_major=False) == [
+        SweepPiece(5, "small", (2, 2), 0, 0)
+    ]
+    # No size field: every square is a piece of the record's own size.
+    assert split_sweep([[3, 4]], [], column_major=False) == [
+        SweepPiece(3, None, (1, 1), 0, 0),
+        SweepPiece(4, None, (1, 1), 1, 0),
+    ]
+
+
+def test_a_column_major_sweep_is_runs_of_consecutive_tiles() -> None:
+    """A Mega Drive piece spends consecutive tiles, so a strip of four is one
+    2x2 - the squarest of the three shapes that spend four - eight is a 2x4
+    (taller before wider) and ten a 3x3 with a 1x1 beside it; a gap in the IDs
+    ends the run, and a second row of the sweep is a second strip under the
+    first."""
+    assert split_sweep([[0, 1, 2, 3]], _RECTS, column_major=True) == [
+        SweepPiece(0, (2, 2), (2, 2), 0, 0)
+    ]
+    assert split_sweep([list(range(8))], _RECTS, column_major=True) == [
+        SweepPiece(0, (2, 4), (2, 4), 0, 0)
+    ]
+    assert split_sweep([list(range(10))], _RECTS, column_major=True) == [
+        SweepPiece(0, (3, 3), (3, 3), 0, 0),
+        SweepPiece(9, (1, 1), (1, 1), 3, 0),
+    ]
+    assert split_sweep([[0, 1, 5, 6]], _RECTS, column_major=True) == [
+        SweepPiece(0, (1, 2), (1, 2), 0, 0),
+        SweepPiece(5, (1, 2), (1, 2), 1, 0),
+    ]
+    two = split_sweep([[0, 1, 2, 3], [16, 17, 18, 19]], _RECTS, column_major=True)
+    assert two == [
+        SweepPiece(0, (2, 2), (2, 2), 0, 0),
+        SweepPiece(16, (2, 2), (2, 2), 0, 2),
+    ]
+    assert sweep_footprint(two, column_major=True) == frozenset(range(4)) | frozenset(
+        range(16, 20)
+    )
+    assert sweep_footprint(
+        [SweepPiece(1, "large", (2, 2), 0, 0)], column_major=False
+    ) == frozenset({1, 2, 17, 18})
+
+
+def test_a_footprint_past_the_bank_is_refused_by_name() -> None:
+    """The first tile a piece spends outside the reach is named, with the
+    bank's last where it is past it - along the piece's own walk."""
+    fit_footprint(Subsprite(index=14, across=2, down=2), range(32))
+    past = (
+        r"2x2 piece at tile \$F spends tile \$20, past the tile source's last \(\$1F\)"
+    )
+    with pytest.raises(SpriteEditError, match=past):
+        fit_footprint(Subsprite(index=15, across=2, down=2), range(32))
+    with pytest.raises(SpriteEditError, match=r"tile \$20"):
+        fit_footprint(
+            Subsprite(index=30, across=2, down=2, column_major=True), range(32)
+        )
+    with pytest.raises(SpriteEditError, match="does not reach"):
+        fit_footprint(Subsprite(index=14, across=2, down=2), [14, 15, 31])

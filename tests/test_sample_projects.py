@@ -526,6 +526,44 @@ def test_the_alex_kidd_sample_project_reads_its_strings_and_stamps_its_maps(
     assert max(cell.index for cell in cells) < table.slice_length
 
 
+def test_the_alex_kidd_cels_place_a_piece_and_refuse_the_list_terminator() -> None:
+    """The Master System cel's inverse, through the project's own plugin.
+
+    A cel is a bare run of three-byte records, so its pieces are editable the
+    way the Mega Drive run is: a move writes the two offset bytes and nothing
+    else, the tile byte rides through, and the frames rebuilt from the edited
+    cells show the piece where it was put. The one refusal worth a test is the
+    game's: a y of $D0 ends the sprite list, so the inverse refuses it rather
+    than nudging the piece a pixel the way the game's own writer does.
+    """
+    workspace, registry = _open("alex-kidd/alex-kidd.celpix")
+    ws = _workspace(workspace)
+    entry = next(e for e in ws.entries if e.name.startswith("cel $98E9"))
+    cfg = tilemap_config_for(entry, entry.tilemap_preset_id, registry, ws)
+    loaded = pipeline.load_tilemap_data(cfg, registry)
+    assert loaded.limits is not None and loaded.limits.structure == "run"
+    assert loaded.limits.size is None and loaded.limits.frames == 1
+
+    preset = registry.preset(entry.tilemap_preset_id)
+    codec = registry.plugin(Stage.INTERPRET_TILEMAP, preset.engine_id)
+    params, ctx = preset.params, PipelineContext()
+    cells = list(loaded.cells)
+    raw = codec.encode(cells, params, ctx)
+    moved = codec.place_subsprite(cells[0], params, ctx, x=-5, y=100)
+    out = codec.encode([moved, *cells[1:]], params, ctx)
+    assert out[:3] == bytes((100, 0xFB, raw[2])) and out[3:] == raw[3:]
+    (frame,) = codec.frames([moved, *cells[1:]], params, ctx)
+    assert (frame[0].record, frame[0].x, frame[0].y) == (0, -5, 100)
+    assert frame[0].size() == (1, 2)
+
+    with pytest.raises(ValueError, match="ends the sprite list"):
+        codec.place_subsprite(cells[0], params, ctx, y=-48)
+    with pytest.raises(ValueError, match="-128..127"):
+        codec.place_subsprite(cells[0], params, ctx, x=128)
+    with pytest.raises(ValueError, match="no size"):
+        codec.place_subsprite(cells[0], params, ctx, size="large")
+
+
 @pytest.mark.parametrize(
     ("project", "prefix", "raw", "index", "corner", "row"),
     [

@@ -56,8 +56,18 @@ Drawn — generated from the codec's
 from the field table, because a :class:`Cell` has no attribute for any of them
 and only the codec knows where they live
 (:meth:`~...tilemap_edit.TilemapEditMixin._place_subsprites`). There the
-selection target is the picked pieces, and the record fields are the
-selection's alone: a held stamp's offsets are wherever the click lands it.
+selection target is the picked pieces, and the tool both picks and places,
+so the two targets are told apart by **what was pointed at last**: a piece
+picked on the canvas or in the Subsprites window is the target, and a tile
+taken for placing — a sheet click or sweep, the eyedropper — drops the pick
+and makes the held piece the target
+(:meth:`~...sprite_edit.SpriteEditMixin._drop_pick_for_held`). Under the
+held piece X and Y stay disabled — its offsets are wherever the click lands
+it — Drawn is hidden, and **Size** is the one record field it has: a sheet
+pick's setting (``_stamp_attrs["size"]``, written into the template through
+the codec), or the held record's own bits rewritten in place
+(:meth:`_set_held_size`); either way the Size shown is what the add would
+resolve (:meth:`~...sprite_edit.SpriteEditMixin._held_size_choice`).
 
 Gated in place rather than by the blanket pass, exactly as the Cell spin is
 and for its reason: the pass runs later and its all-or-nothing visibility
@@ -84,7 +94,7 @@ from PySide6.QtWidgets import (
 )
 
 from celpix.core.capabilities import Capability
-from celpix.core.sprite import SubspriteLimits
+from celpix.core.sprite import SizeChoice, SubspriteLimits
 from celpix.core.tilemap import BLANK, Cell
 from celpix.ui.main_window.tilemap_edit import fit_cell
 from celpix.ui.widgets import add_labelled, hex_spin, signals_blocked, value_spin
@@ -164,7 +174,8 @@ _RECORD_TIPS = {
     "y": "The picked subsprites' offset below the object's origin\n"
     "In pixels; negative is above it",
     "size": "The picked subsprites' size, in tiles\n"
-    "A size bit picks one of the entry's two sizes",
+    "A size bit picks one of the entry's two sizes\n"
+    "In Edit Subsprites mode: the size the next piece lands at",
     "drawn": "Whether the picked slots are drawn\n"
     "Off clears the slot, as Clear does; on puts it back",
 }
@@ -236,11 +247,10 @@ class CellPropsMixin(_Host):
             if limit is None:
                 continue
             # Both spins' -1 floor is the ``—`` sentinel — display only, shown
-            # while a mixed target parks on it. The sync owns the minimum
-            # (:meth:`_show_cell_prop_spin`); the build leaves it 0.
+            # while a mixed target parks on it. The sync owns the minimum and
+            # the dash (:meth:`_show_cell_prop_spin`); the build leaves it 0.
             if spec.field == "flags":
                 spin = hex_spin(0, limit, spec.tip)
-                spin.setSpecialValueText("—")
                 spin.valueChanged.connect(partial(self._on_cell_prop_spun, spec.field))
                 self._cell_props_labels[spec.field] = add_labelled(
                     layout, f"{spec.caption} ", spin, spec.tip
@@ -253,7 +263,6 @@ class CellPropsMixin(_Host):
                 spin = value_spin(
                     0, limit, 0, partial(self._on_cell_prop_spun, spec.field)
                 )
-                spin.setSpecialValueText("—")
                 self._cell_props_labels[spec.field] = add_labelled(
                     layout, f"{spec.caption} ", spin, spec.tip
                 )
@@ -297,7 +306,6 @@ class CellPropsMixin(_Host):
                 0,
                 partial(self._on_record_prop_spun, field),
             )
-            spin.setSpecialValueText("—")
             labels[field] = add_labelled(
                 layout, f"{field.upper()} ", spin, _RECORD_TIPS[field]
             )
@@ -335,14 +343,21 @@ class CellPropsMixin(_Host):
         well as outside it — arming clears the tile selection, not the pick —
         and it wins over the held stamp while there is one: it is what the
         tool's drags and keys are acting on, and a click-to-add leaves the
-        added pieces picked, so the row follows the pieces the user is working
-        on and falls back to the held stamp only with nothing picked.
+        added pieces picked. What keeps that from pinning the row on the pick
+        is that taking a tile for placing drops it
+        (:meth:`~...sprite_edit.SpriteEditMixin._drop_pick_for_held`), so the
+        row follows whichever the user pointed at last. Under a ``fixed``
+        layout a click lays nothing, so the held piece is no target there:
+        with nothing picked the row has nothing to edit.
         """
         if not self._stamping:
             return "selection"
         doc = self._doc
-        if doc is not None and doc.is_sprite and self._selected_cells():
-            return "selection"
+        if doc is not None and doc.is_sprite:
+            if self._selected_cells():
+                return "selection"
+            if self._fixed_layout():
+                return None
         brush = self._stamp_brush
         if brush is not None and len(brush):
             return "brush" if self._source_cell is not None else "attrs"
@@ -414,6 +429,14 @@ class CellPropsMixin(_Host):
                 self._stamp_attrs[field] = (
                     value if isinstance(value, bool) else min(value, limit)
                 )
+        # A sprite map's record carries its size in ``flags``, so the size
+        # travels too — read through the probe while the record is still the
+        # one held, since only the frames say what shape its bits spell.
+        limits = self._subsprite_limits()
+        if limits is not None and limits.size and record is self._source_cell:
+            choice = self._held_size_choice()
+            if choice is not None:
+                self._stamp_attrs["size"] = choice
 
     # -- sync ----------------------------------------------------------------
     def _sync_cell_props(self) -> None:
@@ -446,6 +469,15 @@ class CellPropsMixin(_Host):
         if signature != self._cell_props_signature:
             self._rebuild_cell_props(signature)
         for field in [name for name in self._stamp_attrs if name not in shown]:
+            # The size setting is a sprite map's, kept while its codec still
+            # spells that choice; a pair of sides no other format offers, or a
+            # bit on a format with a nibble, would land a size nobody picked.
+            if (
+                field == "size"
+                and limits is not None
+                and self._stamp_attrs[field] in (limits.size or ())
+            ):
+                continue
             del self._stamp_attrs[field]
         if fields and fields != self._held_fields:
             self._fit_held_stamp(fields)
@@ -473,44 +505,60 @@ class CellPropsMixin(_Host):
                 else:
                     self._show_cell_prop_spin(widget, values)
         if limits is not None:
-            self._sync_record_props(limits, target == "selection" and armed)
+            self._sync_record_props(limits, target, armed)
 
-    def _sync_record_props(self, limits: SubspriteLimits, armed: bool) -> None:
-        """Show the picked pieces' record fields, or park them disabled.
+    def _sync_record_props(
+        self, limits: SubspriteLimits, target: str | None, armed: bool
+    ) -> None:
+        """Show the record fields for ``target``, or park them disabled.
 
-        The **selection's** alone: the held stamp's offsets are wherever the
-        click lands it, so X and Y say nothing about it, and its size is the
-        held record's own bits — the stamp's business, not the row's. So under
-        a held stamp the record controls stay on the row disabled, and Drawn,
-        which on the held record would be the eraser it already is, is hidden.
+        X and Y are the **selection's** alone: the held piece's offsets are
+        wherever the click lands it, so under it they stay on the row
+        disabled, and Drawn, which on the held piece would be the eraser it
+        already is, is hidden. **Size** has a reading under both: the picked
+        pieces' shapes, or the size the held piece lands at
+        (:meth:`~...sprite_edit.SpriteEditMixin._held_size_choice`) — except
+        under a swept brush, whose pieces take the sizes the split gives them,
+        so it is disabled there rather than showing a setting the landing
+        ignores.
 
-        Values come from the drawn pieces (:meth:`~...sprite_select.
+        Selection values come from the drawn pieces (:meth:`~...sprite_select.
         SpriteSelectMixin._picked_subsprites`): a picked record that is not
         drawn has no offset or size to show, and is the one thing Drawn reads
         as off.
         """
-        pieces = self._picked_subsprites() if armed else []
+        on_pick = armed and target == "selection"
+        on_held = (
+            armed
+            and target in ("attrs", "record", "brush")
+            and not self._held_lays_brush()
+        )
+        pieces = self._picked_subsprites() if on_pick else []
         for field, widget in self._record_props_widgets.items():
-            widget.setEnabled(armed)
+            enabled = on_pick or (field == "size" and on_held)
+            widget.setEnabled(enabled)
             label = self._record_props_labels.get(field)
             if label is not None:
-                label.setEnabled(armed)
+                label.setEnabled(enabled)
             with signals_blocked(widget):
                 if field == "drawn":
-                    widget.setVisible(self._cell_props_target() == "selection")
+                    widget.setVisible(target == "selection")
                     drawn = {record for record, _sub in pieces}
                     values = (
                         {at in drawn for at in self._selected_cells()}
-                        if armed
+                        if on_pick
                         else set()
                     )
                     self._show_cell_prop_check(widget, values)
                 elif field == "size":
-                    self._show_record_size(
-                        widget,
-                        limits,
-                        {self._size_choice_of(sub) for _r, sub in pieces},
-                    )
+                    if on_pick:
+                        values = {self._size_choice_of(sub) for _r, sub in pieces}
+                    elif on_held:
+                        choice = self._held_size_choice()
+                        values = set() if choice is None else {choice}
+                    else:
+                        values = set()
+                    self._show_record_size(widget, limits, values)
                 else:
                     bounds = limits.x_range if field == "x" else limits.y_range
                     self._show_record_spin(
@@ -526,7 +574,7 @@ class CellPropsMixin(_Host):
         enter is one the write ignores.
         """
         uniform = len(values) == 1
-        spin.setMinimum(bounds.start if uniform else bounds.start - 1)
+        _park_spin(spin, bounds.start, uniform)
         spin.setValue(int(next(iter(values))) if uniform else bounds.start - 1)
 
     @staticmethod
@@ -588,8 +636,7 @@ class CellPropsMixin(_Host):
         as a broken field.
         """
         uniform = len(values) == 1
-        # Minimum before value: raising it clamps a parked -1 up first.
-        spin.setMinimum(0 if uniform else -1)
+        _park_spin(spin, 0, uniform)
         spin.setValue(int(next(iter(values))) if uniform else -1)
 
     # -- the writes ----------------------------------------------------------
@@ -690,18 +737,51 @@ class CellPropsMixin(_Host):
             self._sync_cell_props()
 
     def _on_record_size_activated(self, index: int) -> None:
-        """A Size pick, written into every picked piece — one step."""
+        """A Size pick: into every picked piece in one step, or into the held
+        piece as the size the next click lays (:meth:`_set_held_size`)."""
         limits = self._subsprite_limits()
         if self._applying_undo or limits is None or not limits.size:
             return
-        if self._cell_props_target() != "selection":
+        target = self._cell_props_target()
+        if target is None or not 0 <= index < len(limits.size):
             return
-        if not 0 <= index < len(limits.size):
-            return
-        if not self._place_subsprites(
-            {"size": limits.size[index]}, "resize subsprites"
-        ):
-            self._sync_cell_props()
+        choice = limits.size[index]
+        if target == "selection":
+            if not self._place_subsprites({"size": choice}, "resize subsprites"):
+                self._sync_cell_props()
+        elif not self._held_lays_brush():  # the box is disabled over a brush
+            self._set_held_size(choice)
+
+    def _set_held_size(self, choice: SizeChoice) -> None:
+        """Size against the held piece, by the row's rule for its holdings.
+
+        A **sheet pick** has no record behind it, so the row's setting is the
+        size — laid into the template through the codec on every landing
+        (:meth:`~...sprite_edit.SpriteEditMixin._held_template`). An
+        **eyedropped record** is a whole record and lays down whole, so its
+        own size bits are rewritten in place, through the codec as a picked
+        piece's are. Session state either way: no step is pushed, the add that
+        lands it is the step. A refusal puts the box back on what the piece
+        holds, since nothing moved to re-sync it.
+        """
+        caption = self._size_caption(choice)
+        if self._source_cell is None:
+            self._stamp_attrs["size"] = choice
+            message = f"Next subsprite lands {caption}."
+        else:
+            try:
+                self._source_cell = self._place_subsprite(
+                    self._source_cell, size=choice
+                )
+            except ValueError as exc:
+                reason = str(exc)
+                self.statusBar().showMessage(
+                    f"{reason[:1].upper()}{reason[1:]} - nothing changed."
+                )
+                self._sync_cell_props()
+                return
+            message = f"Held subsprite's size set to {caption}."
+        self._after_stamp_prop_edit(message)
 
     def _on_record_drawn_clicked(self, _checked: bool = False) -> None:
         """The Drawn box: off clears the picked slots, on puts them back.
@@ -744,4 +824,21 @@ class CellPropsMixin(_Host):
         the status line all describe it and all have to move together."""
         self._sync_cell_props()
         self._sync_stamp_preview()
+        # A sprite map's tile source ring marks the held piece's footprint,
+        # which its size setting moves.
+        self._sync_tile_source_marker()
         self.statusBar().showMessage(message)
+
+
+def _park_spin(spin: QSpinBox, floor: int, uniform: bool) -> None:
+    """Fence the ``—`` sentinel off or open it: the minimum and the dash together.
+
+    Qt shows the special value text whenever the value *is* the minimum, for
+    any reason, so the dash cannot stay set while the minimum is the field's
+    real floor — a piece at offset 0 on an unsigned format, or at -128 on a
+    signed one, would read as a mixed pick. The text is set only while the
+    display is parked one below the floor. Minimum before value: raising it
+    clamps a parked sentinel up first.
+    """
+    spin.setSpecialValueText("" if uniform else "—")
+    spin.setMinimum(floor if uniform else floor - 1)

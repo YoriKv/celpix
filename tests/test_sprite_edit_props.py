@@ -12,12 +12,16 @@ from celpix.ui.main_window import MainWindow
 from uihelpers import _make_snes_file, _obj_file
 
 
-def _sprite(qtbot, tmp_path, parts):
-    """A window showing a sprite object bound to a bank, frame 0 holding ``parts``
-    — records 0, 1, ... in that order, the first drawn in front."""
+def _sprite(qtbot, tmp_path, parts, *, tiles: int = 8):
+    """A window showing a sprite object bound to a bank of ``tiles`` tiles,
+    frame 0 holding ``parts`` — records 0, 1, ... in that order, the first
+    drawn in front."""
     window = MainWindow()
     qtbot.addWidget(window)
-    window._load_pixel(str(_make_snes_file(tmp_path)))
+    bank = _make_snes_file(tmp_path)
+    if tiles != 8:
+        bank.write_bytes(bytes((i * 13 + 1) & 0xFF for i in range(32 * tiles)))
+    window._load_pixel(str(bank))
     window._load_pixel(str(_obj_file(tmp_path, parts)))
     entry = window._workspace.current
     entry.tile_source = TileSource(
@@ -58,6 +62,9 @@ def test_the_row_writes_offsets_and_size_into_the_picked_records(
     window._undo_stack.undo()
     assert [sub.x for sub in _frame(window)] == [0, 8]
     assert window._picked_records == [0, 1]
+    x.setValue(-128)  # a value at the floor is a value, not the dash
+    assert _frame(window)[0].x == -128 and x.text() == "-128"
+    window._undo_stack.undo()
 
     window._set_picked_records([1])
     assert size.currentText() == "Small (1x1)"
@@ -181,3 +188,147 @@ def test_the_record_verbs_wait_for_the_tool_and_a_pick(qtbot, tmp_path) -> None:
     assert not window._cut_action.isEnabled()
     assert not window._copy_action.isEnabled()
     assert not window._paste_action.isEnabled()  # nothing copied yet
+
+
+def test_a_tile_taken_for_placing_retargets_the_row_to_the_held_piece(
+    qtbot, tmp_path
+) -> None:
+    """The tool both picks and places, so the row follows whichever was pointed
+    at last: a sheet pick drops the pick, and Flip H, the Tile group's H and
+    Size then say how the next piece lands. The add lays it so and picks it,
+    handing the row back to the piece; another sheet pick takes it again."""
+    # 64 tiles: a 2x2 at tile 3 spends tiles 3, 4, 19 and 20.
+    window = _sprite(qtbot, tmp_path, [(0, 0, 1), (8, 0, 2)], tiles=64)
+    window._set_stamping(True)
+    window._set_picked_records([1])
+    flip_h = window._cell_props_widgets["flip_h"]
+    widgets = window._record_props_widgets
+    x, size, drawn = widgets["x"], widgets["size"], widgets["drawn"]
+    assert x.isEnabled() and not drawn.isHidden()
+
+    window._tile_source_panel.tile_selected.emit(3)  # a sheet pick, for placing
+    assert window._picked_records == [] and window._cell_props_target() == "attrs"
+    assert size.isEnabled() and size.currentText() == "Small (1x1)"
+    assert not x.isEnabled() and drawn.isHidden()
+    flip_h.click()
+    assert window._stamp_attrs["flip_h"] is True
+    size.activated.emit(1)
+    assert (
+        window._stamp_attrs["size"] == "large" and size.currentText() == "Large (2x2)"
+    )
+    assert window.statusBar().currentMessage() == "Next subsprite lands Large (2x2)."
+    # The Tile group targets the held piece too, so H and the box agree.
+    assert window._tile_group.flip_h.isEnabled()
+    window._tile_group.flip_h.trigger()
+    assert window._stamp_attrs["flip_h"] is False and not flip_h.isChecked()
+    window._tile_group.flip_h.trigger()
+    assert flip_h.isChecked()
+
+    ox, oy = window._slot_origin(window._sprite_sheet(), 0)
+    window._add_held_subsprites(ox, oy, False)
+    added = next(sub for sub in _frame(window) if sub.record == 2)
+    assert (added.index, added.size(), added.flip_h) == (3, (2, 2), True)
+    assert window._picked_records == [2]
+    assert window._cell_props_target() == "selection"
+    assert x.isEnabled() and x.value() == 0 and size.currentText() == "Large (2x2)"
+
+    window._tile_source_panel.tile_selected.emit(3)
+    assert window._picked_records == [] and window._cell_props_target() == "attrs"
+    assert size.currentText() == "Large (2x2)"  # the setting outlives the add
+
+
+def test_an_eyedropped_piece_takes_the_row_and_its_size_is_rewritten_in_place(
+    qtbot, tmp_path
+) -> None:
+    """A right click drops the pick and holds the record: the row shows the
+    size its bits spell, and a Size pick rewrites the held record - session
+    state, nothing on the stack - so the add lays it at that size. A sheet pick
+    displacing it carries the size over with the flips."""
+    window = _sprite(qtbot, tmp_path, [(0, 0, 1), (8, 0, 2)], tiles=64)
+    window._set_stamping(True)
+    window._set_picked_records([0])
+    size = window._record_props_widgets["size"]
+    cells = list(window._doc.cells)
+    ox, oy = window._slot_origin(window._sprite_sheet(), 0)
+    window._canvas.stamp_pixel_pressed.emit(ox + 10, oy + 2, Qt.MouseButton.RightButton)
+    steps = window._undo_stack.count()  # after the eyedrop's own Palette Row step
+    assert window._source_cell == cells[1]
+    assert window._picked_records == [] and window._cell_props_target() == "record"
+    assert size.isEnabled() and size.currentText() == "Small (1x1)"
+
+    size.activated.emit(1)
+    assert window._doc.cells == cells and window._undo_stack.count() == steps
+    assert size.currentText() == "Large (2x2)"
+    assert window.statusBar().currentMessage() == (
+        "Held subsprite's size set to Large (2x2)."
+    )
+    window._add_held_subsprites(ox, oy, False)
+    added = next(sub for sub in _frame(window) if sub.record == 2)
+    assert (added.index, added.size()) == (2, (2, 2))
+
+    window._tile_source_panel.tile_selected.emit(3)
+    assert window._cell_props_target() == "attrs"
+    assert (
+        window._stamp_attrs["size"] == "large" and size.currentText() == "Large (2x2)"
+    )
+
+
+def _with_sheet(window):
+    """The tile source tab up, so its ring converges (hidden, it is skipped)."""
+    window.show()
+    window._tile_source_dock.setVisible(True)
+    window._tile_source_dock.raise_()
+    window._refresh_tile_source()
+    return window._tile_source_panel
+
+
+def test_the_tile_source_rings_every_tile_a_piece_spends(qtbot, tmp_path) -> None:
+    """The ring is the footprint, not the corner: a picked 2x2 rings four
+    squares; a tile held for placing rings what the next click would spend,
+    following the Size setting; a sweep rings the pieces it splits into, and
+    the add lays exactly those - one large and two small - and picks them."""
+    window = _sprite(qtbot, tmp_path, [(0, 0, 1), (16, 0, 5, 0, True)], tiles=64)
+    panel = _with_sheet(window)
+    window._set_picked_records([1])
+    assert panel._marked == {5, 6, 21, 22}
+    window._set_picked_records([0])
+    assert panel._marked == {1}
+
+    window._set_stamping(True)
+    panel.tile_selected.emit(3)
+    assert panel._marked == {3}
+    window._record_props_widgets["size"].activated.emit(1)
+    assert panel._marked == {3, 4, 19, 20}
+
+    panel.area_selected.emit([[8, 9, 10], [24, 25, 26]])
+    assert panel._marked == {8, 9, 24, 25, 10, 26}
+    assert not window._record_props_widgets["size"].isEnabled()
+    ox, oy = window._slot_origin(window._sprite_sheet(), 0)
+    window._add_held_subsprites(ox, oy, False)
+    added = sorted((s for s in _frame(window) if s.record >= 2), key=lambda s: s.record)
+    assert [(s.index, s.size(), s.x, s.y) for s in added] == [
+        (8, (2, 2), 0, 0),
+        (10, (1, 1), 16, 0),
+        (26, (1, 1), 16, 8),
+    ]
+    assert window._picked_records == [2, 3, 4]
+    window._set_stamping(False)
+    assert panel._marked == {26}  # the primary's own footprint, tool or no tool
+
+
+def test_a_piece_whose_footprint_leaves_the_bank_is_refused(qtbot, tmp_path) -> None:
+    """A 2x2 at the last tile of a row spends a tile past a 32-tile bank: the
+    click lays nothing and the status line names the tile and the bank's last."""
+    window = _sprite(qtbot, tmp_path, [(0, 0, 1)], tiles=32)
+    window._set_stamping(True)
+    window._tile_source_panel.tile_selected.emit(15)
+    window._record_props_widgets["size"].activated.emit(1)
+    cells = list(window._doc.cells)
+    ox, oy = window._slot_origin(window._sprite_sheet(), 0)
+    window._add_held_subsprites(ox, oy, False)
+    assert window._doc.cells == cells
+    message = window.statusBar().currentMessage()
+    assert (
+        "2x2 piece at tile $F spends tile $20, past the tile source's last ($1F)"
+        in message
+    )
