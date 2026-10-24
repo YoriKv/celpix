@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.2.16 - unreleased
+## v1.2.16 - 2026-10-24
 
 - Lots of improvements to compression, scan, and smart scan
 - Added the To Slice button back in
