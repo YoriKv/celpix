@@ -21,7 +21,10 @@ and drawing what they produce is :mod:`celpix.pipeline.render`'s.
 
 from __future__ import annotations
 
-from celpix.core import ceil_div
+from collections.abc import Callable
+from typing import Any
+
+from celpix.core import ceil_div, fit_length
 from celpix.core.context import PipelineContext
 from celpix.core.errors import Pathway, Stage
 from celpix.core.palette import Palette
@@ -215,6 +218,54 @@ def tilemap_cell_bytes(preset_id: str, reg: Registry) -> int:
         lambda: engine.bytes_per_cell(preset.params),
         plugin=preset.id,
     )
+
+
+def _own_resize(engine: object) -> Callable[[bytes, int, dict[str, Any]], bytes] | None:
+    """The codec's ``resize_run``, or None for one whose cells are back to back.
+
+    Duck-typed rather than declared on
+    :class:`~celpix.plugins.base.TilemapCodecPlugin`, the way ``frames`` is: a
+    third-party codec that subclasses the Protocol must not inherit a stub that
+    answers None and so claim a word it does not have. The one probe, so that
+    the measure (:func:`tilemap_resizes_itself`) and the resize
+    (:func:`resized_cells`) cannot disagree on which codecs have it.
+    """
+    return getattr(engine, "resize_run", None)
+
+
+def tilemap_resizes_itself(preset_id: str, reg: Registry) -> bool:
+    """Whether ``preset_id``'s codec has its own word on what a run of so many
+    cells is (:func:`resized_cells`) — a counted sprite format, whose byte
+    length is not a multiple of :func:`tilemap_cell_bytes` and whose cell count
+    has to be read from the bytes rather than divided out of their length.
+    """
+    engine, _preset = reg.engine_for(preset_id, TilemapCodecPlugin)
+    return _own_resize(engine) is not None
+
+
+def resized_cells(data: bytes, units: int, preset_id: str, reg: Registry) -> bytes:
+    """``data``, a run of cells under ``preset_id``, grown or cut at its tail
+    to hold ``units`` cells — a blank run of that many when ``data`` is empty.
+
+    The payload a new map or a resized one is written with
+    (``docs/design/new-file.md`` §3, §6): ``units`` times
+    :func:`tilemap_cell_bytes` of zero bytes, unless the codec has its own
+    word. A counted sprite format's run is frames that each open with a header
+    stating their piece count, and *N* zero bytes there are not *N* cells of
+    anything, so such a codec answers ``resize_run`` instead
+    (``docs/design/plugin-system.md``, "the sprite half") and this hands back
+    what it says. One place for both so that creating a file and resizing it
+    cannot disagree on what a run of so many cells is.
+    """
+    engine, preset = reg.engine_for(preset_id, TilemapCodecPlugin)
+
+    def run() -> bytes:
+        ask = _own_resize(engine)
+        if ask is not None:
+            return bytes(ask(data, units, preset.params))
+        return fit_length(data, units * engine.bytes_per_cell(preset.params))
+
+    return run_stage(Stage.INTERPRET_TILEMAP, Pathway.TILEMAP, run, plugin=preset.id)
 
 
 def pixel_bpp(preset_id: str, reg: Registry) -> int:

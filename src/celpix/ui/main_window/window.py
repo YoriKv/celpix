@@ -65,6 +65,7 @@ from PySide6.QtWidgets import (
 from celpix.core.document import Document
 from celpix.core.errors import PipelineError, Stage, fault_origin, fault_report
 from celpix.core.palette import Palette
+from celpix.core.sprite import FrameLayout
 from celpix.plugins.compress_reshape import write_preset
 from celpix.plugins.discovery import PROJECT_PLUGIN_DIRNAME, PluginLoadIssue
 from celpix.plugins.registry import Registry, default_registry
@@ -104,6 +105,7 @@ from celpix.ui.main_window.disk_watch import DiskWatchMixin
 from celpix.ui.main_window.entries import EntriesMixin
 from celpix.ui.main_window.entry_clipboard import EntryClipboardMixin
 from celpix.ui.main_window.font_alphabet import FontAlphabetMixin
+from celpix.ui.main_window.frame_bar import FrameBarMixin
 from celpix.ui.main_window.history import HistoryMixin
 from celpix.ui.main_window.index_addressing import IndexAddressingMixin
 from celpix.ui.main_window.inputs import InputsMixin
@@ -202,6 +204,7 @@ class MainWindow(
     SessionMixin,
     BindingsMixin,
     TilemapBarMixin,
+    FrameBarMixin,
     IndexAddressingMixin,
     TilemapEditMixin,
     CellPropsMixin,
@@ -408,6 +411,10 @@ class MainWindow(
         # the binding bar that owns the box, because _refresh_view's view capture
         # reads it and the bar is built after this point.
         self._show_all_frames = False
+        # And how its frames are boxed, and whether the origin is drawn: the
+        # Frame bar's answers, here for the same reason (``frame_bar.py``).
+        self._frame = FrameLayout()
+        self._show_origin = False
         # Whether a tilemap draws palette index 0 as the backdrop. Here for the
         # same reason, and read by the same capture.
         self._transparent_zero = False
@@ -575,9 +582,13 @@ class MainWindow(
         self._build_view_settings_actions()
         self._build_menus()
         self._build_toolbar()
-        # Both after _build_toolbar: the spins exist only then. setValue clamps to
-        # the spin's range and re-renders through _on_view_change.
+        # Both after _build_toolbar: the spins exist only then. A row the panel
+        # passes through (scrub, arrows, right-click, select_index) lands on the
+        # spin, whose setValue clamps to its range and re-renders through
+        # _on_view_change; a row left-clicked lands there too, and on a sprite
+        # map's picked pieces inside Edit Subsprites (_on_palette_row_clicked).
         self._palette_panel.palette_row_selected.connect(self._palette_row.setValue)
+        self._palette_panel.palette_row_clicked.connect(self._on_palette_row_clicked)
         self._sync_entire_file()  # apply the restored View > Entire File to Rows
         self._build_nav_keys()
         self._sync_nav()

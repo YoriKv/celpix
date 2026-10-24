@@ -3,12 +3,16 @@
 Lives in a dock under the Files list. It shows every color the palette pathway decoded
 (not just the slice the current bit depth can index) so embedded palettes can be
 inspected at a glance, and outlines the active palette row range. Selecting a
-swatch — by click or arrow keys — selects that color *and* the palette row
-containing it — the panel
-emits the *row* and the main window feeds it to the existing palette row spin, so
-the panel never owns view state. The color selection itself (which swatch is
-being inspected) is the panel's own, announced via :attr:`color_selected` for
-the details readout below the grid.
+swatch — by click, drag or arrow keys — selects that color *and* the palette
+row containing it — the panel emits the *row* and the main window feeds it to the
+existing palette row spin, so the panel never owns view state. The left click
+reports its row on a signal of its own (:attr:`palette_row_clicked`), because it
+is the one gesture that *chooses* a row rather than passing through one: the
+window reads it as a choice where that means more than moving the spin (a sprite
+map's picked pieces, ``docs/design/sprite-map.md``), and a drag that crosses
+three rows on the way must not choose all three. The color selection itself
+(which swatch is being inspected) is the panel's own, announced via
+:attr:`color_selected` for the details readout below the grid.
 
 **Editing.** Double-clicking a swatch opens the shared color editor on it
 (:mod:`celpix.ui.color_editor`); the grid is also one of the eyedropper's
@@ -81,7 +85,15 @@ def swatch_grid_size(count: int) -> QSize:
 
 
 class PalettePanel(ShortcutIsland, QWidget):
-    palette_row_selected = Signal(int)  # clicked entry index // palette row size
+    # The row of the entry just selected (entry index // palette row size), by
+    # every gesture but the left click: the drag scrub, the arrow keys, the
+    # right-click that moves the selection under the menu, and select_index.
+    palette_row_selected = Signal(int)
+    # The row a left click lands on - the same number, but on a signal of its own
+    # because a click is a row *chosen*, where the others pass through rows on the
+    # way somewhere. Emitted instead of palette_row_selected, never beside it, so
+    # one click is one row change for whoever listens to both.
+    palette_row_clicked = Signal(int)
     color_selected = Signal(int)  # entry index of the newly selected color
     edit_requested = Signal(int)  # double-clicked entry index — open the editor
     # ARGB sampled while the eyedropper is armed. ``object``, not ``int``: Qt's
@@ -194,9 +206,11 @@ class PalettePanel(ShortcutIsland, QWidget):
         """Select entry ``index`` and move the active palette row to it.
 
         The programmatic equivalent of clicking a swatch — used by the pixel
-        eyedropper to make the picked color the active drawing color. Emits the
-        same ``color_selected`` / ``palette_row_selected`` signals a click does, so
-        the readout and the view follow. Ignored for an out-of-range index.
+        eyedropper to make the picked color the active drawing color. Emits
+        ``color_selected`` and ``palette_row_selected``, so the readout and the
+        view follow, but not ``palette_row_clicked``: the eyedropper read a
+        color off the canvas, which is not a row chosen in the grid. Ignored for
+        an out-of-range index.
         """
         if 0 <= index < len(self._colors):
             self._select(index)
@@ -233,7 +247,7 @@ class PalettePanel(ShortcutIsland, QWidget):
                     event.accept()
                     return
                 self._select(index)
-                self.palette_row_selected.emit(index // self._count)
+                self.palette_row_clicked.emit(index // self._count)
         elif event.button() == Qt.MouseButton.RightButton and not self._eyedropper:
             # Move the selection (and the active palette row with it) onto the
             # right-clicked swatch, so the menu that follows acts on it — the
@@ -247,7 +261,9 @@ class PalettePanel(ShortcutIsland, QWidget):
     def mouseMoveEvent(self, event) -> None:  # noqa: ANN001 — Qt override
         """Drag to scrub the selection: while the left button is held the color
         under (or nearest) the pointer becomes selected, edges included — the
-        same move a press or an arrow key makes.
+        same move an arrow key makes. Its rows go out on ``palette_row_selected``,
+        not the press's ``palette_row_clicked``: a scrub passes through the rows
+        it crosses rather than choosing each.
 
         The eyedropper is left to discrete clicks: a drag over the grid must not
         spray the editor with every color it crosses.
@@ -278,8 +294,8 @@ class PalettePanel(ShortcutIsland, QWidget):
         """Copy/paste the selected color, and arrows move the color selection
         through the grid — Left/Right by one entry (crossing display rows),
         Up/Down by one display row — with the active palette row *following the
-        selection* (the same signal a swatch click emits), rather than the
-        selection riding a palette row step. All movement clamps to the loaded
+        selection* (``palette_row_selected``, as the drag scrub does), rather than
+        the selection riding a palette row step. All movement clamps to the loaded
         colors."""
         # Copy/Paste reach here as key presses because the island claimed their
         # shortcut override; the window does the actual clipboard + write-back.

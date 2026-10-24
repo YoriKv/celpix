@@ -633,10 +633,10 @@ class ContainersMixin(_Host):
         assert edit.units is not None
         cfg = self._resize_config(entry, edit, codec_id)
         try:
-            current, ctx = pipeline.read_region(cfg, self._registry)
-            before = len(current)
-            after = pipeline.blank_size(
-                file_kind(entry), codec_id, edit.units, self._registry
+            # The resize's own answer, not a blank run's length: a counted
+            # sprite file keeps every surviving frame's header.
+            before, after, ctx = pipeline.resize_lengths(
+                cfg, file_kind(entry), codec_id, edit.units, self._registry
             )
         except PipelineError as exc:
             self._report(exc)

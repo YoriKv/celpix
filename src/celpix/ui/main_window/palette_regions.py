@@ -688,6 +688,55 @@ class PaletteRegionsMixin(_Host):
         wrap = self._doc.palette_row_wrap(self._index_space())
         return row % wrap if wrap else row
 
+    def _on_palette_row_clicked(self, row: int) -> None:
+        """A row left-clicked in the palette grid
+        (:attr:`~celpix.ui.palette_panel.PalettePanel.palette_row_clicked`):
+        Palette Row moves there — and, inside Edit Subsprites with pieces picked,
+        so do the pieces.
+
+        Only the left click reaches here. The drag scrub, the arrow keys, the
+        right-click that moves the selection under the menu and a programmatic
+        ``select_index`` (the pixel eyedropper) come on ``palette_row_selected``,
+        which moves the spin alone: they pass through rows rather than choose
+        one, and a scrub across three rows writing the pieces three times, or a
+        right-click rewriting them to open a menu, would be edits nobody asked
+        for.
+
+        The click is a row chosen by looking, and inside the tool the picked
+        pieces are what every control acts on, so pointing them at it is what
+        the click means — the tile source click's rule, read on the row
+        (:meth:`~...tile_source_dock.TileSourceDockMixin._on_tile_source_selected`),
+        and Set Selection's Palette Row without the second gesture
+        (:meth:`~...tilemap_edit.TilemapEditMixin._assign_cell_palette_row`).
+        With nothing picked the spin alone moves, and the held piece lands in it
+        as every stamp does (:meth:`~...stamp_tool.StampToolMixin.
+        _settle_stamp_row`); outside the tool, and on every other map, the click
+        only moves the pointer, as the gestures above do.
+
+        The spin's move is a step of its own (a save records it), so the two
+        ride one macro, as the eyedrop's do (:class:`~...sprite_edit.
+        _HeldPickCommand`): one Ctrl+Z puts the pointer back with the row. A
+        click on the row already pointed at skips the macro — the cell edit is
+        then the whole step, or nothing where the pieces are in it already.
+        """
+        spin = self._palette_row
+        writes = (
+            self._sprite_tool_live()
+            and bool(self._picked_records)
+            and self._cell_palette_row_limit() is not None
+        )
+        if not writes or max(spin.minimum(), min(row, spin.maximum())) == spin.value():
+            spin.setValue(row)
+            if writes:
+                self._assign_cell_palette_row()
+            return
+        self._undo_stack.beginMacro("set subsprite palette row")
+        try:
+            spin.setValue(row)
+            self._assign_cell_palette_row()
+        finally:
+            self._undo_stack.endMacro()
+
     def _pin_selection(self) -> None:
         """Give the selection a palette row of its own — the Palette Row spin's.
 

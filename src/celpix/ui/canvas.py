@@ -420,8 +420,9 @@ class Canvas(PanZoomSurface, QWidget):
         # outlines is not on the slot grid the tile selection is made of.
         self._pick_outline: list[QRect] | None = None
         # Image pixels where a sprite frame's object origin falls, one per frame
-        # slot (:meth:`set_origin_marks`); painted only while the grid is.
+        # slot (:meth:`set_origin_marks`), and the frame box around each.
         self._origin_marks: tuple[tuple[int, int], ...] = ()
+        self._origin_extent: tuple[int, int, int, int] | None = None
         # Rearrange tool: like the eyedropper and the pan it is a modal flag the
         # mouse handlers check before the mode split (it is armed over tile mode,
         # never together with pixel mode). ``_rearrange_slot`` is the last slot
@@ -944,19 +945,27 @@ class Canvas(PanZoomSurface, QWidget):
         self._pick_outline = list(rects) if rects else None
         self.update()
 
-    def set_origin_marks(self, points: Sequence[tuple[int, int]] | None) -> None:
-        """Mark object origins: a small crosshair at each image pixel.
+    def set_origin_marks(
+        self,
+        points: Sequence[tuple[int, int]] | None,
+        extent: tuple[int, int, int, int] | None = None,
+    ) -> None:
+        """Mark object origins: the two axis lines through each image pixel,
+        drawn across its frame — ``extent`` is the frame box relative to the
+        origin, ``(left, top, width, height)``, the same for every mark.
 
-        A sprite frame's offsets are measured from an origin the trimmed sheet
-        does not show, and where it sits is the game's convention — centre,
-        top-left, bottom-centre — so nothing else on screen can say it. Painted
-        only while the grid is shown, because it is the same kind of thing: a
-        reading aid about structure, in the grid's structural colour. ``None``
-        clears them.
+        A sprite frame's offsets are measured from an origin the sheet does not
+        otherwise show, and where it sits is the game's convention — centre,
+        top-left, bottom-centre — so nothing else on screen can say it. A
+        reading aid about structure, in the grid's structural colour, but on its
+        own switch rather than the grid's (the Frame bar's Origin box), since it
+        is wanted while offsets are being edited and is clutter otherwise.
+        ``None`` clears them.
         """
         marks = tuple(points or ())
-        if marks != self._origin_marks:
+        if marks != self._origin_marks or extent != self._origin_extent:
             self._origin_marks = marks
+            self._origin_extent = extent
             self.update()
 
     def set_float(self, image: QImage | None, x: int = 0, y: int = 0) -> None:
@@ -1618,9 +1627,9 @@ class Canvas(PanZoomSurface, QWidget):
         ):
             self._draw_grid(painter, zx, zy, exposed)
         # On the lattice and under every outline: an origin is structure, read
-        # beside the grid lines, and a pick ring over it must stay whole.
-        if self._show_grid and self._grid_style is not GridStyle.NONE:
-            self._paint_origin_marks(painter, exposed)
+        # beside the grid lines, and a pick ring over it must stay whole. On its
+        # own switch, not the grid's (:meth:`set_origin_marks`).
+        self._paint_origin_marks(painter, exposed)
         # Over the lattice and under the labels: it is read as structure, and a
         # cell that carries both a number and a line end must not hide either.
         self._paint_line_ends(painter, exposed)
@@ -1705,28 +1714,36 @@ class Canvas(PanZoomSurface, QWidget):
         paint_selection_outline(painter, rect, width=ring)
 
     def _paint_origin_marks(self, painter: QPainter, exposed: QRect) -> None:
-        """A crosshair at each object origin (:meth:`set_origin_marks`).
+        """The two axis lines through each object origin, across its frame
+        (:meth:`set_origin_marks`).
 
-        Centred on the origin pixel's top-left **corner**, which is the point an
-        offset of (0, 0) puts a piece's corner on, and sized in screen pixels so
-        it reads the same at every zoom. Filled rects rather than lines: a
+        Through the origin pixel's top-left **corner**, which is the point an
+        offset of (0, 0) puts a piece's corner on, one screen pixel thick so
+        they read the same at every zoom. Filled rects rather than lines: a
         one-pixel aliased line lands on either side of its path by rounding,
-        and the arms have to cross exactly on the corner.
+        and the two have to cross exactly on the corner. Each line is drawn
+        only where its axis actually crosses the frame: under a fitted box an
+        object drawn wholly to one side of its origin leaves the origin outside
+        the frame, and a line through it there would cut across a neighbour.
         """
-        if not self._origin_marks:
+        if not self._origin_marks or self._origin_extent is None:
             return
+        left, top, width, height = self._origin_extent
         with self._device_pixels(painter):
             area = self._device_area(exposed)
-            arm = self._device_width(4)
-            width = self._device_width(1)
+            thick = self._device_width(1)
             for x, y in self._origin_marks:
                 corner = self._device_rect(x, y, 0, 0)
+                span = self._device_rect(x + left, y + top, width, height)
                 cx, cy = corner.x(), corner.y()
-                horizontal = QRect(cx - arm, cy, 2 * arm + width, width)
-                vertical = QRect(cx, cy - arm, width, 2 * arm + width)
-                if horizontal.intersects(area) or vertical.intersects(area):
-                    painter.fillRect(horizontal, GRID_STRUCTURE_COLOR)
-                    painter.fillRect(vertical, GRID_STRUCTURE_COLOR)
+                if span.top() <= cy < span.top() + span.height():
+                    horizontal = QRect(span.x(), cy, span.width(), thick)
+                    if horizontal.intersects(area):
+                        painter.fillRect(horizontal, GRID_STRUCTURE_COLOR)
+                if span.left() <= cx < span.left() + span.width():
+                    vertical = QRect(cx, span.y(), thick, span.height())
+                    if vertical.intersects(area):
+                        painter.fillRect(vertical, GRID_STRUCTURE_COLOR)
 
     def _paint_drop_rects(self, painter: QPainter, area: QRect) -> None:
         """Outline the pixel-space drop boxes (:meth:`set_drop_rects`), in the

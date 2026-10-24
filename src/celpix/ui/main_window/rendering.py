@@ -249,7 +249,7 @@ class RenderingMixin(_Host):
     def _apply_view_toggle(self, attr: str, on: bool) -> None:
         """Land one of the entry's view switches (commands only - gestures push).
 
-        Show Rearranged Tiles, All Frames and Zero Clear are one shape: a bool
+        Show Rearranged Tiles, All Frames, Origin and Zero Clear are one shape: a bool
         the window holds and the refresh writes into ``doc.view``. Setting the
         field is the whole of applying one - every box that shows a toggle is
         filled from the render cycle, so the refresh below is also what re-ticks
@@ -266,7 +266,7 @@ class RenderingMixin(_Host):
         """Push one of the entry's view switches, or land it if there is no entry.
 
         The gesture half of :meth:`_apply_view_toggle`, shared by every switch
-        it lands (Show Rearranged Tiles, All Frames, Transparent 0), which
+        it lands (Show Rearranged Tiles, All Frames, Origin, Transparent 0), which
         differ only in which field they drive and what the step is called. One
         undo step each, because the project file keeps the setting. The guard
         is the ordinary one: a box re-ticked to what it already shows is not a
@@ -1184,6 +1184,9 @@ class RenderingMixin(_Host):
             # window keeps one answer per entry and the box that sets it is
             # hidden where it does not apply, so there is nothing here to gate.
             show_all_frames=self._show_all_frames,
+            # The frame box and the origin mark beside it, on the same rule.
+            frame=self._frame,
+            show_origin=self._show_origin,
             # Only the tilemap render reads it (:meth:`_tilemap_grid_image`), and the
             # box that sets it is hidden everywhere else — stored for every entry
             # all the same, on the same rule as the frame count above: the window
@@ -1290,6 +1293,9 @@ class RenderingMixin(_Host):
         # After _sync_nav: the two bars are pages of one stack, and this is what
         # decides which of them the entry has controls for at all.
         self._sync_tilemap_bar()
+        # And the Frame bar, which stands in the Arrangement row's slot on a
+        # sprite map and is refilled from the view captured above.
+        self._sync_frame_toolbar()
         # The pen's colour can move under the preview without the pen itself
         # changing (a palette edit, another palette row, a new format).
         self._sync_paint_preview()

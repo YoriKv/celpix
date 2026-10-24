@@ -376,9 +376,17 @@ class TileSourceDockMixin(_Host):
             self._source_cell = None
             self._stamp_brush = None
             self._source_tile_id = tile_id
-            # A tile taken for placing is what the row now describes, so a
-            # sprite map's pick goes (the echoes above are no such gesture).
-            self._drop_pick_for_held()
+            if self._sprite_tool_live() and self._picked_records:
+                # Inside Edit Subsprites with pieces picked, the click points
+                # *them* at the tile — the Cell spin's edit, chosen by looking
+                # — and the pick stays the target. The held tile follows the
+                # panel's selection all the same, since the refresh re-selects
+                # it there; it is what a click lays once the pick is cleared.
+                self._set_cell_index(tile_id, fit_bank=True)
+            else:
+                # A tile taken for placing is what the row now describes, so a
+                # sprite map's pick goes (the echoes above are no such gesture).
+                self._drop_pick_for_held()
         self._source_tile_id = tile_id
         self._after_pick_change()
 

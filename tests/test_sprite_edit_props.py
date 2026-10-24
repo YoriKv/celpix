@@ -194,9 +194,10 @@ def test_a_tile_taken_for_placing_retargets_the_row_to_the_held_piece(
     qtbot, tmp_path
 ) -> None:
     """The tool both picks and places, so the row follows whichever was pointed
-    at last: a sheet pick drops the pick, and Flip H, the Tile group's H and
-    Size then say how the next piece lands. The add lays it so and picks it,
-    handing the row back to the piece; another sheet pick takes it again."""
+    at last: a sheet pick with nothing picked holds the tile, and Flip H, the
+    Tile group's H and Size then say how the next piece lands. The add lays it
+    so and picks it, handing the row back to the piece; clearing the pick and
+    picking the sheet again takes it back."""
     # 64 tiles: a 2x2 at tile 3 spends tiles 3, 4, 19 and 20.
     window = _sprite(qtbot, tmp_path, [(0, 0, 1), (8, 0, 2)], tiles=64)
     window._set_stamping(True)
@@ -206,8 +207,9 @@ def test_a_tile_taken_for_placing_retargets_the_row_to_the_held_piece(
     x, size, drawn = widgets["x"], widgets["size"], widgets["drawn"]
     assert x.isEnabled() and not drawn.isHidden()
 
+    window._set_picked_records([])
     window._tile_source_panel.tile_selected.emit(3)  # a sheet pick, for placing
-    assert window._picked_records == [] and window._cell_props_target() == "attrs"
+    assert window._cell_props_target() == "attrs"
     assert size.isEnabled() and size.currentText() == "Small (1x1)"
     assert not x.isEnabled() and drawn.isHidden()
     flip_h.click()
@@ -232,9 +234,99 @@ def test_a_tile_taken_for_placing_retargets_the_row_to_the_held_piece(
     assert window._cell_props_target() == "selection"
     assert x.isEnabled() and x.value() == 0 and size.currentText() == "Large (2x2)"
 
+    window._set_picked_records([])
     window._tile_source_panel.tile_selected.emit(3)
-    assert window._picked_records == [] and window._cell_props_target() == "attrs"
+    assert window._cell_props_target() == "attrs"
     assert size.currentText() == "Large (2x2)"  # the setting outlives the add
+
+
+def test_a_sheet_click_with_a_pick_retiles_the_picked_pieces(qtbot, tmp_path) -> None:
+    """Inside the tool a tile clicked in the panel points the picked pieces at
+    it - one step, the pick kept and still the row's target, the held tile
+    following the click; a 2x2 pointed at a corner whose footprint leaves the
+    bank is refused whole (the spin is not gated so, its range being the
+    format's); with nothing picked, or outside the tool, the click only holds
+    the tile."""
+    window = _sprite(qtbot, tmp_path, [(0, 0, 1), (16, 0, 5, 0, True)], tiles=32)
+    window._set_stamping(True)
+    window._set_picked_records([0])
+    steps = window._undo_stack.count()
+    window._tile_source_panel.tile_selected.emit(3)
+    assert [sub.index for sub in _frame(window)] == [3, 5]
+    assert window._picked_records == [0] and window._cell_props_target() == "selection"
+    assert window._source_tile_id == 3 and window._undo_stack.count() == steps + 1
+    assert window.statusBar().currentMessage() == "Pointed 1 subsprite at tile $3."
+    window._undo_stack.undo()
+    assert [sub.index for sub in _frame(window)] == [1, 5]
+    assert window._picked_records == [0]
+
+    window._set_picked_records([1])
+    window._tile_source_panel.tile_selected.emit(15)
+    assert [sub.index for sub in _frame(window)] == [1, 5]
+    refusal = "2x2 piece at tile $F spends tile $20, past the tile source's last ($1F)"
+    assert refusal in window.statusBar().currentMessage()
+    assert window._picked_records == [1]
+
+    window._set_picked_records([])
+    window._tile_source_panel.tile_selected.emit(4)
+    assert window._cell_props_target() == "attrs" and window._source_tile_id == 4
+
+    window._set_stamping(False)
+    window._set_picked_records([0])
+    window._tile_source_panel.tile_selected.emit(6)
+    assert [sub.index for sub in _frame(window)] == [1, 5]
+    assert window._picked_records == [0] and window._source_tile_id == 6
+
+
+def test_a_palette_row_click_with_a_pick_writes_the_pieces_row(qtbot, tmp_path) -> None:
+    """Inside the tool a row clicked in the palette grid writes the picked
+    pieces' row and moves Palette Row with it - one step, undone together, the
+    pick kept; a row the grid only passes through (a scrub, the arrows) moves
+    the spin alone even with a pick; with nothing picked a click moves the spin
+    alone and the held piece lands in that row; outside the tool it only moves
+    the spin. The grid shows drawn rows, so a click names the row back through
+    the base (8 here)."""
+    window = _sprite(qtbot, tmp_path, [(0, 0, 1), (8, 0, 2)])
+    drawn = window._drawn_palette_row
+    window._set_stamping(True)
+    window._set_picked_records([0])
+    before, steps = window._palette_row.value(), window._undo_stack.count()
+    assert before != drawn(3)
+    window._palette_panel.palette_row_clicked.emit(drawn(3))
+    assert [sub.palette_row for sub in _frame(window)] == [3, 0]
+    assert window._palette_row.value() == drawn(3)
+    assert window._undo_stack.count() == steps + 1 and window._picked_records == [0]
+    assert window.statusBar().currentMessage() == (
+        f"Set 1 subsprite to palette row {drawn(3)}."
+    )
+    window._undo_stack.undo()
+    assert [sub.palette_row for sub in _frame(window)] == [0, 0]
+    assert window._palette_row.value() == before
+    window._undo_stack.redo()
+    assert [sub.palette_row for sub in _frame(window)] == [3, 0]
+
+    steps = window._undo_stack.count()
+    window._palette_panel.palette_row_selected.emit(drawn(6))
+    assert window._palette_row.value() == drawn(6)
+    assert [sub.palette_row for sub in _frame(window)] == [3, 0]
+    assert window._undo_stack.count() == steps + 1  # the spin's step alone
+    assert window._picked_records == [0]
+
+    window._set_picked_records([])
+    window._palette_panel.palette_row_clicked.emit(drawn(5))
+    assert window._palette_row.value() == drawn(5)
+    assert [sub.palette_row for sub in _frame(window)] == [3, 0]
+    window._tile_source_panel.tile_selected.emit(4)
+    ox, oy = window._slot_origin(window._sprite_sheet(), 0)
+    window._add_held_subsprites(ox, oy, False)
+    added = next(sub for sub in _frame(window) if sub.record == 2)
+    assert (added.index, added.palette_row) == (4, 5)
+
+    window._set_stamping(False)
+    window._set_picked_records([0])
+    window._palette_panel.palette_row_clicked.emit(drawn(2))
+    assert window._palette_row.value() == drawn(2)
+    assert _frame(window)[0].palette_row == 3
 
 
 def test_an_eyedropped_piece_takes_the_row_and_its_size_is_rewritten_in_place(
@@ -266,6 +358,7 @@ def test_an_eyedropped_piece_takes_the_row_and_its_size_is_rewritten_in_place(
     added = next(sub for sub in _frame(window) if sub.record == 2)
     assert (added.index, added.size()) == (2, (2, 2))
 
+    window._set_picked_records([])
     window._tile_source_panel.tile_selected.emit(3)
     assert window._cell_props_target() == "attrs"
     assert (

@@ -1,7 +1,8 @@
 """Edit ▸ Copy View Settings / Paste View Settings (Ctrl+Shift+C / Ctrl+Shift+V).
 
 Copies how the entry on screen is read and coloured — its pixel format and
-arrangement or its cell format, the compression preview, and the palette — and
+arrangement or its cell format and frame layout, the compression preview, and
+the palette — and
 lands that answer on whichever entry is on screen at the paste: a file, a slice,
 a composite view. What the halves are, and which of them lands where, is
 :mod:`celpix.project.view_settings`.
@@ -77,7 +78,8 @@ class ViewSettingsMixin(_Host):
                 "Copy &View Settings",
                 "Ctrl+Shift+C",
                 "Copy this entry's pixel format and arrangement\n"
-                "(or cell format), compression preview and palette",
+                "(or cell format and frame box), compression preview\n"
+                "and palette",
                 self._copy_view_settings,
             ),
             (
@@ -148,6 +150,7 @@ class ViewSettingsMixin(_Host):
                 # The format in force, not the entry's own answer, which is
                 # empty while the map reads under its default.
                 tilemap_preset_id=self._tilemap_preset_id(entry),
+                frame=view.frame,
             )
         return ViewSettings(
             tilemap=False,
@@ -333,6 +336,10 @@ class ViewSettingsMixin(_Host):
                 "two_dimensional": arrangement.two_dimensional,
                 "bitmap_width": arrangement.bitmap_width,
             }
+        if reads and tilemap:
+            # The Frame bar's answer, in the Arrangement row's slot: it lands
+            # through the view the re-read restores, as the arrangement does.
+            view_changes["frame"] = settings.frame
         cells = settings.tilemap_preset_id if reads and tilemap else None
         current_palette = palette_source_for(entry)
         pending_palette = (

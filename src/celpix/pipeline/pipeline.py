@@ -106,7 +106,9 @@ from celpix.pipeline.newfile import (
     blank_units,
     create_file,
     frames_new_file,
+    region_units,
     resize_file,
+    resize_lengths,
     resized_slot_bytes,
 )
 from celpix.pipeline.pathway import PathwayConfig
@@ -234,9 +236,11 @@ __all__ = [
     "shared_palette_entries",
     "quantize_palette",
     "read_region",
+    "region_units",
     "replace_file",
     "reinterpret_pixel_data",
     "resize_file",
+    "resize_lengths",
     "resized_slot_bytes",
     "save",
     "spliced_palette_bytes",

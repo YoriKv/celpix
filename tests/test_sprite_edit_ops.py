@@ -13,7 +13,13 @@ from dataclasses import replace
 
 import pytest
 
-from celpix.core.sprite import Frame, Subsprite, SubspriteLimits
+from celpix.core.sprite import (
+    Frame,
+    FrameLayout,
+    Subsprite,
+    SubspriteLimits,
+    frame_bounds,
+)
 from celpix.core.sprite_edit import (
     FIXED_REFUSAL,
     SpriteEditError,
@@ -525,3 +531,23 @@ def test_a_footprint_past_the_bank_is_refused_by_name() -> None:
         )
     with pytest.raises(SpriteEditError, match="does not reach"):
         fit_footprint(Subsprite(index=14, across=2, down=2), [14, 15, 31])
+
+
+def test_the_frame_box_keeps_its_anchor_and_grows_for_the_pieces() -> None:
+    """Fit is the pieces' bounds rounded to tiles; an anchored axis pins the
+    origin and takes the size from that side, a centred one mirrors the longer
+    half; every reading still holds every piece, and an empty object gets one
+    tile either way."""
+    frames = [[Subsprite(x=-8, y=-4, index=1), Subsprite(x=8, y=0, index=2)]]
+    assert frame_bounds(frames) == (-8, -8, 24, 16)
+    assert frame_bounds(frames, layout=FrameLayout()) == (-8, -8, 24, 16)
+    centred = FrameLayout(align_x="center", align_y="center")
+    assert frame_bounds(frames, layout=centred) == (-16, -8, 32, 16)
+    corner = FrameLayout(width=64, height=32, align_x="left", align_y="top")
+    assert frame_bounds(frames, layout=corner) == (-8, -8, 72, 40)
+    far = FrameLayout(width=32, height=32, align_x="right", align_y="bottom")
+    assert frame_bounds(frames, layout=far) == (-32, -32, 48, 40)
+    assert frame_bounds(frames, layout=FrameLayout(40, 40)) == (-8, -8, 40, 48)
+    assert frame_bounds([], layout=centred) == (-8, -8, 16, 16)
+    # On 8x16 tiles the vertical axis rounds to 16.
+    assert frame_bounds(frames, 8, 16, centred) == (-16, -16, 32, 32)

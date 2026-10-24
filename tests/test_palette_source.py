@@ -482,7 +482,7 @@ def test_palette_panel_click_maps_to_palette_row(qtbot, tmp_path, monkeypatch) -
     panel.set_colors(list(range(256)))
     panel.set_active_range(8, 4)  # 2bpp: 4-entry palette rows, a quarter-row range
     got: list[int] = []
-    panel.palette_row_selected.connect(got.append)
+    panel.palette_row_clicked.connect(got.append)
     # Swatch 40 = display row 2, col 8; with 4-entry palette rows that's
     # palette row 10 — the index space sizes the mapping, not the 16-wide display.
     qtbot.mouseClick(
@@ -492,13 +492,16 @@ def test_palette_panel_click_maps_to_palette_row(qtbot, tmp_path, monkeypatch) -
     )
     assert got == [10]
 
-    # Window-level wiring: the panel's signal drives the palette row spin. Needs
-    # a palette that actually has row 5 (the view clamps rows to the palette).
+    # Window-level wiring: both of the panel's row signals drive the palette row
+    # spin. Needs a palette that actually has row 5 (the view clamps rows to the
+    # palette).
     window = _open_with_palette_at_tile1(qtbot, tmp_path, monkeypatch)
     window._on_slots_selected(0, 0)
     window._load_palette_from_selection()  # 128 colors = rows 0..7
     window._palette_panel.palette_row_selected.emit(5)
     assert window._palette_row.value() == 5
+    window._palette_panel.palette_row_clicked.emit(3)
+    assert window._palette_row.value() == 3
 
 
 def test_palette_mode_starts_default_and_default_restores_fallback(
@@ -1095,6 +1098,8 @@ def test_palette_panel_drag_scrubs_selection_and_clamps(qtbot) -> None:
     panel.color_selected.connect(picked.append)
     rows: list[int] = []
     panel.palette_row_selected.connect(rows.append)
+    clicks: list[int] = []
+    panel.palette_row_clicked.connect(clicks.append)
     panel.set_active_range(0, 4)  # 4-wide palette rows, so a drag crosses several
 
     device = QPointingDevice.primaryPointingDevice()
@@ -1123,7 +1128,9 @@ def test_palette_panel_drag_scrubs_selection_and_clamps(qtbot) -> None:
     drag_to(9 * SWATCH_SIZE + 1, 1)  # → swatch 9
     assert panel.selected_index() == 9
     assert picked == [2, 5, 9]
-    assert rows == [0, 1, 2]  # palette row (index // 4) follows the drag
+    # The palette row (index // 4) follows the drag; only the press is a click,
+    # so a scrub never reads as choosing each row it crosses.
+    assert (clicks, rows) == ([0], [1, 2])
 
     # Off the right/bottom edge clamps to the nearest real swatch, never None:
     # past the last (short) row lands on the final color.

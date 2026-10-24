@@ -133,6 +133,7 @@ from itertools import pairwise
 from typing import Any, Literal
 
 from celpix.core import animation as anim
+from celpix.core import fit_length
 from celpix.core.address import format_hex
 from celpix.core.context import KEY_INPUTS, KEY_TILEMAP_ANIMATIONS, PipelineContext
 from celpix.core.errors import Stage
@@ -858,7 +859,7 @@ class SpriteRecordCodec:
         self, data: bytes, params: dict[str, Any], ctx: PipelineContext
     ) -> list[Cell]:
         layout = RecordLayout(params)
-        cells = self._cells(data, layout)
+        cells, _end = self._walk(data, layout)
         if AnimationLayout.of(params) is not None:
             inputs = ctx.get(KEY_INPUTS) or {}
             tables, address = inputs.get("tables"), inputs.get("address")
@@ -872,13 +873,17 @@ class SpriteRecordCodec:
         return cells
 
     @staticmethod
-    def _cells(data: bytes, layout: RecordLayout) -> list[Cell]:
+    def _walk(data: bytes, layout: RecordLayout) -> tuple[list[Cell], int]:
+        """The run's cells, and the byte the walk stopped at — past which lie
+        bytes too short to be another record or frame header, which a resize
+        has to carry over rather than drop."""
         cells: list[Cell] = []
         at, size = 0, layout.size
         if layout.header is None:
-            for at in range(0, len(data) - size + 1, size):
+            whole = len(data) - len(data) % size
+            for at in range(0, whole, size):
                 cells.append(_cell(layout, data[at : at + size], None))
-            return cells
+            return cells, whole
         length, count_at, count_width = layout.header
         while at + length <= len(data):
             header = data[at : at + length]
@@ -906,7 +911,7 @@ class SpriteRecordCodec:
                     "which a run cannot carry"
                 )
             at = end
-        return cells
+        return cells, at
 
     def encode(
         self, cells: list[Cell], params: dict[str, Any], ctx: PipelineContext
@@ -932,6 +937,52 @@ class SpriteRecordCodec:
 
     def bytes_per_cell(self, params: dict[str, Any]) -> int:
         return RecordLayout(params).size
+
+    def resize_run(self, data: bytes, units: int, params: dict[str, Any]) -> bytes:
+        layout = RecordLayout(params)
+        if layout.header is None:
+            return fit_length(data, units * layout.size)
+        length, count_at, count_width = layout.header
+        most = (1 << 8 * count_width) - 1
+        if not data:
+            # A blank run is one frame: every header byte zero but the count,
+            # which has to say how many zero pieces follow — a header of zeroes
+            # would be a frame of no pieces, and the decode refuses that. A
+            # count of 0 is no frame at all, so the run is empty.
+            if units > most:
+                raise ValueError(
+                    f"a frame here holds at most {most:,} pieces, and a new file "
+                    f"is one frame - ask for {most:,} or fewer"
+                )
+            if not units:
+                return b""
+            header = bytearray(length)
+            header[count_at : count_at + count_width] = units.to_bytes(
+                count_width, layout.order
+            )
+            return bytes(header) + bytes(units * layout.size)
+        # Growth joins the last frame — a piece with no header of its own is
+        # grouped under the one before it — and a cut takes pieces off the
+        # back, so a frame it empties is dropped whole rather than left with a
+        # count of 0. Re-encoded rather than spliced because parallel arrays
+        # interleave a frame's fields, and each frame's count is re-derived.
+        # Bytes past the last whole frame — too few for a header, padding carved
+        # in with the run — are no frame of anything and stay at the end, so a
+        # resize to the same count is the same bytes.
+        cells, end = self._walk(data, layout)
+        if units < len(cells):
+            cells = cells[:units]
+        else:
+            cells = cells + [_cell(layout, bytes(layout.size), None)] * (
+                units - len(cells)
+            )
+        frames = _group(cells, True)
+        if frames and len(frames[-1]) > most:
+            raise ValueError(
+                f"a frame here holds at most {most:,} pieces, and the last frame "
+                f"would hold {len(frames[-1]):,}"
+            )
+        return self.encode(cells, params, PipelineContext()) + data[end:]
 
     def cell_tiles(self, params: dict[str, Any]) -> tuple[int, int]:
         # A piece may be any rectangle, so there is no one answer; the frame

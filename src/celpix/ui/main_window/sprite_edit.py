@@ -487,6 +487,39 @@ class SpriteEditMixin(_Host):
             self._doc, self._cell_index_limit(), self._cell_index_runs()
         )
 
+    def _footprint_refusal(
+        self, cells: list[Cell], records: Sequence[int]
+    ) -> str | None:
+        """Why ``records``, as ``cells`` now point them, spend a tile the bank
+        does not reach — or None where every piece fits.
+
+        The add's check (:meth:`_add_pieces`) asked about pieces already there,
+        for the **retile** a tile source click makes: a record pointed at a new
+        tile keeps its size, so a 2x2 pointed at the last tile of a row spends
+        three the bank has not got (:meth:`~...tilemap_edit.TilemapEditMixin.
+        _set_cell_index`). Read off the frames the cells would build, as the
+        add reads it, because only they say which tiles a record's size bits
+        spend. The codec's own refusals are left to ``_apply_cells``, which
+        states them.
+        """
+        if self._doc is None or self._doc.tilemap_config is None:
+            return None
+        try:
+            built = self._frame_cells(cells)
+        except PipelineError:
+            return None
+        positions = record_positions(built)
+        reach = self._tile_reach()
+        for record in records:
+            place = positions.get(record)
+            if place is None:
+                continue
+            try:
+                fit_footprint(built[place[0]][place[1]], reach)
+            except SpriteEditError as exc:
+                return self._refusal_text(exc)
+        return None
+
     # -- geometry ------------------------------------------------------------
     @staticmethod
     def _frame_slot_at(sheet: SpriteSheet, x: int, y: int) -> int | None:
@@ -1019,16 +1052,20 @@ class SpriteEditMixin(_Host):
     def _drop_pick_for_held(self) -> None:
         """A tile taken for placing drops the pick.
 
-        A sheet click or sweep in the tile source panel and the eyedropper all
-        end with a piece *held*, and the property row and the Tile group
-        follow the pick while there is one (:meth:`~...cell_props_bar.
+        A sheet sweep in the tile source panel and the eyedropper both end
+        with a piece *held*, and the property row and the Tile group follow
+        the pick while there is one (:meth:`~...cell_props_bar.
         CellPropsMixin._cell_props_target`) — so without this the controls
         would go on describing the pieces last pointed at while the user is
         setting up the one the next click lays. The grid's own exclusivity,
         where arming the tool clears the selection, read on a tool that both
         picks and places: whichever was pointed at last is the target. Only
         while the tool is live — outside it nothing places, and the held tile
-        is a reading beside the pick rather than a rival to it.
+        is a reading beside the pick rather than a rival to it. A single sheet
+        **click** is the exception: with a pick it retiles the picked pieces
+        and leaves them picked (:meth:`~...tile_source_dock.
+        TileSourceDockMixin._on_tile_source_selected`), so it reaches here only
+        with nothing to drop.
         """
         if self._sprite_tool_live() and self._picked_records:
             self._set_picked_records([])

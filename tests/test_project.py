@@ -10,6 +10,7 @@ from celpix.core.document import Document, ViewOptions
 from celpix.core.font import HOLE, Glyph, GlyphRole, sequential
 from celpix.core.palette import Palette
 from celpix.core.paletteregions import PaletteRegions
+from celpix.core.sprite import FRAME_SIZE_MAX, FrameLayout
 from celpix.core.tilemap import IndexAddressing
 from celpix.pipeline.pathway import DEFAULT_SLOT_FILL, PathwayConfig, SlotFill
 from celpix.pipeline.pipeline import load_palette
@@ -1324,6 +1325,49 @@ def test_a_page_assembly_round_trips_and_an_unpaged_entry_omits_it(tmp_path) -> 
     raw = json.loads(project.read_text(encoding="utf-8"))
     assert raw["entries"][0]["view"]["pages_across"] == 4
     assert load_project(str(project)).entries[0].pending_view.pages_across == 4
+
+
+def test_the_frame_box_and_origin_are_written_only_when_set(tmp_path) -> None:
+    """Five keys, each left out at its default, so a project that never touched
+    the Frame bar is byte-identical; read back on the tolerance rule - an
+    alignment the bar does not offer is fit, a size out of range is clamped."""
+    rom = tmp_path / "sprite.obj"
+    rom.write_bytes(b"\x00" * 256)
+    ws = Workspace()
+    entry = ws.open_file(str(rom))
+    entry.session = _session()
+    entry.doc = _doc(FileRef(str(rom)), ViewOptions())
+    project = tmp_path / "p.celpix"
+    frame_keys = {
+        "frame_width",
+        "frame_height",
+        "frame_align_x",
+        "frame_align_y",
+        "show_origin",
+    }
+
+    save_project(ws, str(project))
+    view = json.loads(project.read_text(encoding="utf-8"))["entries"][0]["view"]
+    assert not frame_keys & view.keys()
+
+    entry.doc.view.frame = FrameLayout(width=64, align_y="bottom")
+    entry.doc.view.show_origin = True
+    save_project(ws, str(project))
+    data = json.loads(project.read_text(encoding="utf-8"))
+    view = data["entries"][0]["view"]
+    assert {key: view[key] for key in frame_keys & view.keys()} == {
+        "frame_width": 64,
+        "frame_align_y": "bottom",
+        "show_origin": True,
+    }
+    loaded = load_project(str(project)).entries[0].pending_view
+    assert loaded.frame == FrameLayout(width=64, align_y="bottom")
+    assert loaded.show_origin
+
+    view.update({"frame_align_y": "middle", "frame_width": 99999, "frame_height": -5})
+    project.write_text(json.dumps(data), encoding="utf-8")
+    loaded = load_project(str(project)).entries[0].pending_view
+    assert loaded.frame == FrameLayout(width=FRAME_SIZE_MAX)
 
 
 def test_malformed_palette_regions_are_skipped_not_raised(tmp_path) -> None:

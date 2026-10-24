@@ -1153,7 +1153,7 @@ def sprite_sheet(doc: Document, columns: int) -> SpriteSheet:
     object; everything the sheet reports back is in tiles.
     """
     frames = doc.shown_frames
-    box = frame_bounds(frames, doc.tile_width, doc.tile_height)
+    box = frame_bounds(frames, doc.tile_width, doc.tile_height, doc.view.frame)
     across = max(1, columns)
     return SpriteSheet(
         frames=len(frames),

@@ -1383,6 +1383,33 @@ class TilemapCodecPlugin(Plugin, Protocol):
         """
         ...
 
+    # -- a run with its own length: ``resize_run`` ------------------------------
+    #
+    # ``resize_run(data, units, params) -> bytes`` is ``data``, a run this codec
+    # reads, grown or cut at its tail to hold ``units`` cells — or, handed
+    # ``b""``, a blank run of that many.
+    #
+    # Optional, and for the one kind of format where a run of *N* cells is not
+    # *N* times ``bytes_per_cell`` of zero bytes: a counted sprite format, whose
+    # frames each open with a header holding their piece count. Zero bytes there
+    # are a frame of no pieces, which the decode refuses, and a tail cut at a
+    # record boundary leaves a count running past the data — so the host asks
+    # the format instead when it creates a file of so many cells or resizes one
+    # (``docs/design/new-file.md`` §3, §6), and counts an existing run's cells
+    # by decoding it rather than dividing its length. A blank run is a frame of
+    # ``units`` zero pieces under a header that states that count; growth adds
+    # zero pieces to the last frame and a cut takes them off it, dropping a
+    # frame it empties whole; bytes past the last whole frame are kept where
+    # they are. A count the header cannot hold is a ``ValueError``, which the
+    # host reports as the reason the size is refused.
+    #
+    # Not declared as a method, as ``frames`` below is not: the host detects it
+    # by presence (``celpix.pipeline.metrics.tilemap_resizes_itself``), and a
+    # codec that subclasses this Protocol would inherit a stub answering None
+    # for every run. A plugin that omits it stores its cells back to back,
+    # which is every format whose cells are words: the host grows with zeroes
+    # and cuts at the tail itself.
+
     # -- the sprite half: a codec whose cells are subsprites --------------------
     #
     # ``frames(cells, params, ctx)`` is the optional method that makes a codec a

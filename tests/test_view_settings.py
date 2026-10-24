@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+from celpix.core.sprite import FRAME_SIZE_MAX, FrameLayout
 from celpix.core.tilemap import Cell
 from celpix.project.view_settings import view_settings_from_payload
-from celpix.project.workspace import PaletteMode
+from celpix.project.workspace import PaletteMode, TileMode, TileSource
 from celpix.ui.main_window import MainWindow
 from uihelpers import (
     _bound_tilemap,
     _cgx_file,
     _make_snes_file,
+    _obj_file,
     _pattern_name,
     _tilemap_file,
 )
@@ -108,6 +110,47 @@ def test_a_tilemap_takes_the_copied_cell_format(qtbot, tmp_path) -> None:
     assert window._tilemap_preset_id(entry) == "preset.tilemap.snes-bg-16x16"
 
 
+def test_a_sprite_map_takes_the_copied_frame_box(qtbot, tmp_path) -> None:
+    """The Frame bar's alignment and size travel with the cell format, in the
+    Arrangement row's slot; the Origin mark, a display toggle, does not, and a
+    pixel entry has no box to take."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(_make_snes_file(tmp_path)))
+    bank = window._workspace.entries[0]
+    sprites = []
+    for name, parts in (("a.OBJ", [(-8, -4, 1), (8, 0, 2)]), ("b.OBJ", [(0, 0, 3)])):
+        window._load_pixel(str(_obj_file(tmp_path, parts, name)))
+        entry = window._workspace.current
+        entry.tile_source = TileSource(mode=TileMode.ENTRY, entry=bank)
+        entry.doc = None  # re-read through the new binding
+        sprites.append(entry)
+    first, second = sprites
+    window._activate_entry(first)
+    window._frame_width.setValue(64)
+    _pick(window._frame_align_y, "bottom")
+    window._show_origin_box.setChecked(True)
+    window._copy_view_settings_action.trigger()
+
+    window._activate_entry(second)
+    assert window._doc.is_sprite and window._doc.view.frame == FrameLayout()
+    steps = window._undo_stack.count()
+    window._paste_view_settings_action.trigger()
+    assert window._undo_stack.count() == steps + 1
+    assert window._doc.view.frame == FrameLayout(width=64, align_y="bottom")
+    assert window._frame_width.value() == 64
+    assert window._frame_align_y.currentData() == "bottom"
+    assert not window._show_origin_box.isChecked()
+    window._undo_stack.undo()
+    assert window._doc.view.frame == FrameLayout()
+    assert window._frame_width.value() == 0
+    assert window._frame_align_y.currentData() == "fit"
+
+    window._activate_entry(bank)
+    window._paste_view_settings_action.trigger()
+    assert window._doc.view.frame == FrameLayout()
+
+
 def test_an_opened_file_reads_like_the_entry_on_screen(qtbot, tmp_path) -> None:
     from celpix.plugins.builtins.scgcad import CGX_BANKS
 
@@ -168,3 +211,17 @@ def test_a_malformed_payload_pastes_nothing() -> None:
     assert settings.arrangement.block_columns == 1
     assert settings.arrangement.block_order == "row"
     assert settings.palette.mode is PaletteMode.DEFAULT
+    # A frame box that does not parse reads as the default reading, not a refusal.
+    settings = view_settings_from_payload(
+        {
+            "version": 1,
+            "kind": "tilemap",
+            "compression_id": "compression.none",
+            "frame_width": 99999,
+            "frame_height": "tall",
+            "frame_align_x": "diagonal",
+            "frame_align_y": "bottom",
+        }
+    )
+    assert settings is not None
+    assert settings.frame == FrameLayout(width=FRAME_SIZE_MAX, align_y="bottom")

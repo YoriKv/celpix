@@ -734,7 +734,7 @@ class SlicesMixin(_Host):
         """
         try:
             data, _ = pipeline.read_region(config(), self._registry)
-            return pipeline.blank_units(kind, codec_id, len(data), self._registry)
+            return pipeline.region_units(kind, codec_id, data, self._registry)
         except (PipelineError, OSError):
             return None
 

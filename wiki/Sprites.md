@@ -98,6 +98,12 @@ The reshape joins four equal tables byte by byte. The result is 16 records of
 **Cols** is the number of frames on one row. **Transparent 0** draws colour 0
 as nothing.
 
+The **Frame** row, above the view settings, says how each frame is boxed.
+**Align** puts the object's origin (0, 0) at a side or the centre of the box,
+or **Fit** lets the pieces decide. **Size** makes the box at least that many
+pixels. **Origin** draws the axes through (0, 0). The box always grows to hold
+every piece.
+
 ## 4. Pick a record
 
 Click the object. The record under the pointer is outlined. The **Tile Source**

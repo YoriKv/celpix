@@ -2,7 +2,8 @@
 
 Owns everything that answers "how big, in tiles, cells or colors" for a region
 the user is sizing rather than reading — the arithmetic between those units and
-bytes (:func:`blank_size`, :func:`blank_units`), a new file's bytes with its
+bytes (:func:`blank_size`, :func:`blank_units`, :func:`region_units`), a new
+file's bytes with its
 stages' framing on (:func:`blank_file_bytes`, :func:`create_file`), and a
 resize of an existing region, written in place (:func:`resize_file`) or packed
 back into a compressed slice's slot (:func:`resized_slot_bytes`)
@@ -28,22 +29,25 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from celpix.core import fit_length
 from celpix.core.capabilities import ContentKind
 from celpix.core.context import (
     KEY_PALETTE_PRESET,
     KEY_PIXEL_PRESET,
     PipelineContext,
 )
-from celpix.core.errors import Pathway, Stage
+from celpix.core.errors import Pathway, PipelineError, Stage
 from celpix.pipeline._stage import run_stage
 from celpix.pipeline.metrics import (
     palette_entry_capacity,
     palette_read_bytes,
     pixel_tile_bytes,
+    resized_cells,
     tilemap_cell_bytes,
+    tilemap_resizes_itself,
 )
 from celpix.pipeline.pathway import PathwayConfig
-from celpix.plugins.base import ContainerPlugin, WriteTarget
+from celpix.plugins.base import ContainerPlugin, TilemapCodecPlugin, WriteTarget
 from celpix.plugins.registry import Registry
 
 
@@ -65,13 +69,38 @@ def blank_size(kind: ContentKind, codec_id: str, units: int, reg: Registry) -> i
 
     A palette rounds up to a whole read unit rather than multiplying, since a
     packed format holds several colors in one
-    (:func:`~celpix.pipeline.metrics.palette_read_bytes`).
+    (:func:`~celpix.pipeline.metrics.palette_read_bytes`). A tilemap is cells
+    back to back for nearly every format, so a multiplication; a codec with its
+    own word on its runs (:func:`~celpix.pipeline.metrics.resized_cells`) — a
+    counted sprite format, a frame header around the pieces — is asked for the
+    blank run instead and measured, since only it knows what that costs.
     """
     if kind is ContentKind.PALETTE:
         return palette_read_bytes(units, codec_id, reg)
     if kind is ContentKind.TILEMAP:
+        if tilemap_resizes_itself(codec_id, reg):
+            return len(resized_cells(b"", units, codec_id, reg))
         return units * tilemap_cell_bytes(codec_id, reg)
     return units * pixel_tile_bytes(codec_id, reg)
+
+
+def _resized_payload(
+    kind: ContentKind, codec_id: str, current: bytes, units: int, reg: Registry
+) -> bytes:
+    """``current`` grown with zeroes or cut at the tail to hold ``units``, the
+    way the codec stores them.
+
+    **Growth is zero bytes** and a shrink is a plain truncation of the tail:
+    zero is what an empty region reads as for every codec celPix carries, and
+    the end of the region is the only place units can be added or removed
+    without moving the ones already there. A tilemap codec may have its own
+    word on both (:func:`~celpix.pipeline.metrics.resized_cells`) — a counted
+    sprite format's run is frames under headers, where a zero byte is a frame
+    of no pieces rather than an empty cell.
+    """
+    if kind is ContentKind.TILEMAP:
+        return resized_cells(current, units, codec_id, reg)
+    return fit_length(current, blank_size(kind, codec_id, units, reg))
 
 
 def blank_file_bytes(
@@ -90,7 +119,10 @@ def blank_file_bytes(
     transparent entry by convention), cell 0 in a map, black in a palette. So it
     is produced by arithmetic rather than by encoding a list of blank tiles,
     which would need a decoded shape for a codec whose geometry the preset alone
-    does not fix.
+    does not fix. The one exception is a tilemap codec with its own word on
+    what a run of so many cells is (:func:`_resized_payload`): a counted sprite
+    format's blank run is a frame header stating the count and the zero pieces
+    under it, because zero bytes there would be a frame of no pieces.
 
     It then goes out through the save's write half — compressed and un-reshaped
     by the config's stages (:func:`_repack`), then framed by its container —
@@ -120,20 +152,31 @@ def blank_file_bytes(
     ``blank_size`` bytes of payload (:func:`_check_payload_held`). ``cfg``'s
     source is never opened: the read-back is of the bytes just built.
     """
+    return _blank_file(cfg, kind, codec_id, units, reg)[0]
+
+
+def _blank_file(
+    cfg: PathwayConfig, kind: ContentKind, codec_id: str, units: int, reg: Registry
+) -> tuple[bytes, bytes, bytes]:
+    """:func:`blank_file_bytes`, with the payload it holds and that payload as
+    the stages packed it — ``(file, payload, packed)`` — for the callers that
+    need to measure what was built rather than build it again to find out.
+    """
     pathway = _new_file_pathway(kind)
-    size = blank_size(kind, codec_id, units, reg)
+    payload = _resized_payload(kind, codec_id, b"", units, reg)
     ctx = PipelineContext()
     _seed_codec(ctx, kind, codec_id)
-    shaped = _repack(_from_nothing(cfg), b"", size, ctx, reg, pathway)
+    shaped = _repack(_from_nothing(cfg), payload, ctx, reg, pathway)
     container = reg.plugin(Stage.CONTAINER, cfg.container_id, ContainerPlugin)
 
     def build() -> bytes:
         data = container.write(shaped, WriteTarget(b""), ctx)
         held = _payload_held(cfg, data, reg, pathway)
-        _check_payload_held(container, kind, codec_id, held, size, reg, "would hold")
+        _check_payload_held(container, kind, codec_id, held, payload, reg, "would hold")
         return data
 
-    return run_stage(Stage.CONTAINER, pathway, build, "write", plugin=cfg.container_id)
+    data = run_stage(Stage.CONTAINER, pathway, build, "write", plugin=cfg.container_id)
+    return data, payload, shaped
 
 
 def _from_nothing(cfg: PathwayConfig) -> PathwayConfig:
@@ -150,9 +193,9 @@ def _from_nothing(cfg: PathwayConfig) -> PathwayConfig:
 
 def _payload_held(
     cfg: PathwayConfig, data: bytes, reg: Registry, pathway: Pathway
-) -> int:
-    """How many payload bytes ``data`` — a file as a container just wrote it —
-    holds once read back through every stage ``cfg`` reads through.
+) -> bytes:
+    """The payload ``data`` — a file as a container just wrote it — holds once
+    read back through every stage ``cfg`` reads through.
 
     The one check a new file and a resize both make before trusting a write:
     the bytes are read as the entry will read them, while they are still only
@@ -164,7 +207,7 @@ def _payload_held(
     )
 
     preview = replace(cfg, source=replace(cfg.source, data=data, data_base=0))
-    return len(_read_reshape_decompress(preview, PipelineContext(), reg, pathway))
+    return _read_reshape_decompress(preview, PipelineContext(), reg, pathway)
 
 
 # The unit each kind is counted in, for a refusal that has to say how many of
@@ -197,16 +240,16 @@ def _check_payload_held(
     container: ContainerPlugin | None,
     kind: ContentKind,
     codec_id: str,
-    held: int,
-    size: int,
+    held: bytes,
+    wanted: bytes,
     reg: Registry,
     verb: str,
     *,
     subject: str | None = None,
     why: str = "; a file of this format cannot be that size",
 ) -> None:
-    """Refuse a write whose result reads back as ``held`` payload bytes, not
-    ``size``.
+    """Refuse a write whose result reads back as the payload ``held``, not one
+    the length of ``wanted``.
 
     A container's write is a byte transform that keeps the file well-formed for
     its format, and for a format with fixed lengths that means a payload of the
@@ -220,19 +263,33 @@ def _check_payload_held(
     ``subject`` names what fell short when it is not the container itself — a
     re-packed slot, whose length the codec decides rather than a format — and
     ``why`` is the clause that says why that matters for it.
+
+    Handed the bytes rather than their lengths so the unit counts in the
+    message are counted from them (:func:`region_units`): a counted sprite
+    run's length is headers as well as pieces, and dividing it would name a
+    count the user never typed.
     """
-    if held == size:
+    if len(held) == len(wanted):
         return
-    noun = _UNIT_NOUNS[kind]
     if subject is None:
         assert container is not None
         subject = container.info.short_name or container.info.name
     raise ValueError(
-        f"{subject} {verb} {held:,} bytes of payload "
-        f"({blank_units(kind, codec_id, held, reg):,} {noun}) where {size:,} "
-        f"bytes ({blank_units(kind, codec_id, size, reg):,} {noun}) were asked "
-        f"for{why}"
+        f"{subject} {verb} {len(held):,} bytes of payload"
+        f"{_units_note(kind, codec_id, held, reg)} where {len(wanted):,} bytes"
+        f"{_units_note(kind, codec_id, wanted, reg)} were asked for{why}"
     )
+
+
+def _units_note(kind: ContentKind, codec_id: str, data: bytes, reg: Registry) -> str:
+    """`` (N tiles)`` for a refusal's byte count, or nothing where ``data`` does
+    not read as units at all — a counted run its container cut mid-frame, whose
+    byte counts still say what went wrong."""
+    try:
+        units = region_units(kind, codec_id, data, reg)
+    except PipelineError:
+        return ""
+    return f" ({units:,} {_UNIT_NOUNS[kind]})"
 
 
 def frames_new_file(
@@ -257,13 +314,8 @@ def frames_new_file(
     else through. Measured against the payload as the stages pack it, so a
     compressed file is not mistaken for a framed one.
     """
-    size = blank_size(kind, codec_id, units, reg)
-    packed = _repack(
-        _from_nothing(cfg), b"", size, PipelineContext(), reg, _new_file_pathway(kind)
-    )
-    return len(
-        blank_file_bytes(cfg, kind=kind, codec_id=codec_id, units=units, reg=reg)
-    ) != len(packed)
+    data, _payload, packed = _blank_file(cfg, kind, codec_id, units, reg)
+    return len(data) != len(packed)
 
 
 def create_file(
@@ -288,14 +340,14 @@ def create_file(
     )
 
     _check_resizable(cfg)
-    data = blank_file_bytes(cfg, kind=kind, codec_id=codec_id, units=units, reg=reg)
+    data, payload, _packed = _blank_file(cfg, kind, codec_id, units, reg)
     # Outside :func:`~celpix.pipeline._stage.run_stage`, unlike the framing
     # above: a path that cannot be written is the operating system's answer
     # about a filename, not a stage failing, and the caller has a better message
     # for it than a pipeline report. Replaced whole, so a failure part way
     # leaves the file the overwrite prompt was about rather than half of one.
     replace_file(cfg.write_target().path, data)
-    return blank_size(kind, codec_id, units, reg)
+    return len(payload)
 
 
 def _check_resizable(cfg: PathwayConfig) -> None:
@@ -337,6 +389,10 @@ def blank_units(kind: ContentKind, codec_id: str, nbytes: int, reg: Registry) ->
     the same rounding :func:`~celpix.pipeline.metrics.palette_entry_capacity`
     already applies for a packed format, which is why that is what answers for
     a palette rather than a division here.
+
+    A length alone cannot answer for a codec with its own word on its runs — a
+    counted sprite format's length is frame headers as well as pieces — so a
+    caller that has the region's bytes asks :func:`region_units` instead.
     """
     if kind is ContentKind.PALETTE:
         return palette_entry_capacity(nbytes, codec_id, reg)
@@ -346,6 +402,29 @@ def blank_units(kind: ContentKind, codec_id: str, nbytes: int, reg: Registry) ->
         else pixel_tile_bytes(codec_id, reg)
     )
     return max(0, nbytes) // per_unit if per_unit > 0 else 0
+
+
+def region_units(kind: ContentKind, codec_id: str, data: bytes, reg: Registry) -> int:
+    """How many tiles, cells or colors the payload ``data`` holds.
+
+    :func:`blank_units` of its length for every format but a tilemap codec with
+    its own word on its runs (:func:`~celpix.pipeline.metrics.resized_cells`):
+    a counted sprite format's frames each open with a header, so its length
+    divided by a piece's size over-counts, and a resize dialog seeded with that
+    would append a piece on an OK meant to keep the size. That codec's cells are
+    counted by decoding them, exactly as a load would — with an empty context,
+    which the decode tolerates, there being no document to borrow one from.
+    """
+    if kind is ContentKind.TILEMAP and tilemap_resizes_itself(codec_id, reg):
+        engine, preset = reg.engine_for(codec_id, TilemapCodecPlugin)
+        return run_stage(
+            Stage.INTERPRET_TILEMAP,
+            Pathway.TILEMAP,
+            lambda: len(engine.decode(data, preset.params, PipelineContext())),
+            "decode",
+            plugin=preset.id,
+        )
+    return blank_units(kind, codec_id, len(data), reg)
 
 
 def resize_file(
@@ -370,14 +449,16 @@ def resize_file(
     that order, so a resize goes through exactly the stages the entry does and
     cannot disagree with them about what the region's bytes are.
 
-    **Growth is zero bytes** and shrinking is a plain truncation of the tail, for
-    the reason :func:`blank_file_bytes` gives: zero is what an empty region reads
-    as for every codec celPix carries, and the end of the region is the only
-    place a caller can add or remove units without moving the ones already there.
-    That is the *payload's* tail. A whole file whose scheme marks its own end is
-    read as a stream at the front of a longer region, and the region keeps its
-    length: the re-packed stream is filled back out with the bytes that followed
-    it (:func:`~celpix.pipeline.pipeline._fill_region`), so a trailer — padding,
+    **Growth is zero bytes** and shrinking is a plain truncation of the tail
+    (:func:`_resized_payload`), for the reason :func:`blank_file_bytes` gives:
+    zero is what an empty region reads as for every codec celPix carries, and
+    the end of the region is the only place a caller can add or remove units
+    without moving the ones already there — unless the codec says otherwise,
+    as a counted sprite format does. That is the *payload's* tail. A whole file
+    whose scheme marks its own end is read as a stream at the front of a longer
+    region, and the region keeps its length: the re-packed stream is filled
+    back out with the bytes that followed it
+    (:func:`~celpix.pipeline.pipeline._fill_region`), so a trailer — padding,
     or data carved in with the blob — stays where it was. Only a stream that
     outgrows the region makes the file longer.
 
@@ -400,10 +481,13 @@ def resize_file(
 
     _check_resizable(cfg)
     target = cfg.write_target()
-    current, size, ctx, pathway = _resize_read(cfg, kind, codec_id, units, reg)
-    if size == len(current):
-        return size
-    shaped = _repack(cfg, current, size, ctx, reg, pathway)
+    current, resized, ctx, pathway = _resize_read(cfg, kind, codec_id, units, reg)
+    # Already that many units: a run of cells resized to its own count is the
+    # same bytes, so there is nothing to write.
+    if resized == current:
+        return len(current)
+    size = len(resized)
+    shaped = _repack(cfg, resized, ctx, reg, pathway)
     container = reg.plugin(Stage.CONTAINER, cfg.container_id, ContainerPlugin)
 
     def produce(dest: WriteTarget) -> bytes:
@@ -412,7 +496,7 @@ def resize_file(
         # that length whatever it was handed, and the only honest answers are
         # the size that was asked for or nothing written.
         held = _payload_held(cfg, result, reg, pathway)
-        _check_payload_held(container, kind, codec_id, held, size, reg, "keeps")
+        _check_payload_held(container, kind, codec_id, held, resized, reg, "keeps")
         return result
 
     run_stage(
@@ -457,8 +541,8 @@ def resized_slot_bytes(
         _read_reshape_decompress,  # noqa: PLC0415 — circular by nature
     )
 
-    current, size, ctx, pathway = _resize_read(cfg, kind, codec_id, units, reg)
-    shaped = _repack(cfg, current, size, ctx, reg, pathway)
+    _current, resized, ctx, pathway = _resize_read(cfg, kind, codec_id, units, reg)
+    shaped = _repack(cfg, resized, ctx, reg, pathway)
     # A slot of these bytes and no others, where the slice's own offset still
     # names its first byte — so what is read back is this stream, not the one
     # still standing in the file past a short result.
@@ -467,13 +551,13 @@ def resized_slot_bytes(
         cfg,
         source=replace(cfg.source, length=len(shaped), data=shaped, data_base=start),
     )
-    held = len(_read_reshape_decompress(preview, PipelineContext(), reg, pathway))
+    held = _read_reshape_decompress(preview, PipelineContext(), reg, pathway)
     _check_payload_held(
         None,
         kind,
         codec_id,
         held,
-        size,
+        resized,
         reg,
         "unpacks to",
         subject="the re-packed slot",
@@ -482,14 +566,34 @@ def resized_slot_bytes(
     return shaped
 
 
+def resize_lengths(
+    cfg: PathwayConfig, kind: ContentKind, codec_id: str, units: int, reg: Registry
+) -> tuple[int, int, PipelineContext]:
+    """The payload's length now and once resized to ``units``, with the context
+    the region was read under — ``(before, after, ctx)``.
+
+    What a resize dialog has to know before it writes: whether this is a shrink
+    worth asking about, how many bytes it drops, and where the region will end.
+    Measured by the very resize :func:`resize_file` runs (:func:`_resize_read`)
+    rather than by :func:`blank_size`, which is the length of a *new* run of so
+    many units: a counted sprite run that keeps several frames keeps each one's
+    header, and a byte tail a region carried past its last frame stays too. The
+    context is returned because only the container knows where the region
+    starts, and it says so as ``KEY_SOURCE_OFFSET``.
+    """
+    current, resized, ctx, _pathway = _resize_read(cfg, kind, codec_id, units, reg)
+    return len(current), len(resized), ctx
+
+
 def _resize_read(
     cfg: PathwayConfig, kind: ContentKind, codec_id: str, units: int, reg: Registry
-) -> tuple[bytes, int, PipelineContext, Pathway]:
-    """The region's payload as it stands, and the size ``units`` asks of it.
+) -> tuple[bytes, bytes, PipelineContext, Pathway]:
+    """The region's payload as it stands, and as ``units`` asks it to be.
 
-    The read half both resizes share, returned with the context it was read
-    under — the re-pack has to run against the same one, since the stages that
-    read the payload are what published how to write it back.
+    The read half both resizes and :func:`resize_lengths` share, returned with
+    the context it was read under — the re-pack has to run against the same
+    one, since the stages that read the payload are what published how to
+    write it back.
     """
     from celpix.pipeline.pipeline import (
         _read_reshape_decompress,  # noqa: PLC0415 — circular by nature
@@ -498,29 +602,26 @@ def _resize_read(
     pathway = _new_file_pathway(kind)
     ctx = PipelineContext()
     current = _read_reshape_decompress(cfg, ctx, reg, pathway)
-    return current, blank_size(kind, codec_id, units, reg), ctx, pathway
+    resized = _resized_payload(kind, codec_id, current, units, reg)
+    return current, resized, ctx, pathway
 
 
 def _repack(
     cfg: PathwayConfig,
-    current: bytes,
-    size: int,
+    resized: bytes,
     ctx: PipelineContext,
     reg: Registry,
     pathway: Pathway,
 ) -> bytes:
-    """``current`` grown with zeroes or cut at the tail to ``size``, then
-    compressed and un-reshaped — the payload a resize hands the container, or
-    splices into a slot (:func:`resize_file` says why zeroes, and why the tail).
-    Handed nothing, it is a new file's whole payload (:func:`blank_file_bytes`).
+    """``resized`` — a payload already at its new size
+    (:func:`_resized_payload`) — compressed and un-reshaped: what a resize hands
+    the container, or splices into a slot, and what a new file is made of
+    (:func:`blank_file_bytes`).
     """
     from celpix.pipeline.pipeline import (
         _compress_unshape,  # noqa: PLC0415 — circular by nature
     )
 
-    resized = (
-        current[:size] if size < len(current) else current + bytes(size - len(current))
-    )
     # The payload is what changes size, not the region: the read recorded the
     # region's length on ``ctx``, and the re-pack fills back up to it exactly as
     # a save does, so a whole compressed file keeps whatever followed its stream

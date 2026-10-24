@@ -909,6 +909,10 @@ class SessionMixin(_Host):
         # box itself is filled from the binding bar's own refresh, which runs at
         # the tail of the render this leads into.
         self._show_all_frames = view.show_all_frames
+        # The frame box and the origin mark are the entry's on the same terms:
+        # where (0, 0) sits is the object's own convention.
+        self._frame = view.frame
+        self._show_origin = view.show_origin
         # And the backdrop toggle with it: which cells read as empty is a fact
         # about the map being looked at, so it must not follow the user from the
         # last entry onto this one.
@@ -1057,6 +1061,7 @@ class SessionMixin(_Host):
         for bar in (
             self._codecs_toolbar,
             self._arrange_toolbar,
+            self._frame_toolbar,
             self._view_toolbar,
         ):
             bar.setEnabled(enabled)
@@ -1082,6 +1087,9 @@ class SessionMixin(_Host):
         self._refresh_tile_source()
         self._refresh_window_title()
         self._sync_nav()
+        # The Frame bar is the sprite map's and nothing is open, so it goes; the
+        # Arrangement row it stood in for comes back through the gating pass.
+        self._sync_frame_toolbar()
         # Nothing open reads as pixels, so this is what hands the shape picker
         # back after a tilemap was closed.
         self._sync_selection_shape()

@@ -47,7 +47,12 @@ from celpix.core.context import (
 from celpix.core.font import FontAlphabet, Text
 from celpix.core.palette import Palette, palette_row_count
 from celpix.core.paletteregions import PaletteRegions
-from celpix.core.sprite import DEFAULT_SUBSPRITE_TILES, SubspriteLimits, drawn_frames
+from celpix.core.sprite import (
+    DEFAULT_SUBSPRITE_TILES,
+    FrameLayout,
+    SubspriteLimits,
+    drawn_frames,
+)
 from celpix.core.textfit import TextFit, fit_text
 from celpix.core.tilemap import (
     NO_CELL,
@@ -248,6 +253,19 @@ class ViewOptions:
     # point. Display-only in the same sense as the rest of these — the records
     # are untouched either way, and neither reading moves a byte.
     show_all_frames: bool = False
+    # And its frame box: where the object's origin sits in the box every frame
+    # is drawn in, and how big that box is at least (:class:`FrameLayout`; the
+    # Frame bar). The default is the pieces' own bounds, which is what every
+    # sheet drew in before there was a choice. Display-only on the same terms —
+    # it moves no record, only where each frame's picture is cut — and, like the
+    # frame count, the entry's own: the game's convention for where (0, 0) is
+    # differs per object, so it must not follow the user between entries.
+    frame: FrameLayout = FrameLayout()
+    # Whether the two axis lines through object (0, 0) are drawn across every
+    # frame slot. A reading aid in the grid's colour, but the entry's rather than
+    # the grid's project-wide switch: the origin is worth marking on a sheet
+    # whose offsets are being edited and is clutter on one being looked at.
+    show_origin: bool = False
     # Draw palette index 0 as nothing rather than as the colour sitting there.
     # On the console index 0 of a BG palette row is **transparent** — the backdrop
     # shows through — so a tile whose pixels are all 0 occupies space and paints

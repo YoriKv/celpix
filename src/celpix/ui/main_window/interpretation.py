@@ -282,13 +282,19 @@ class InterpretationMixin(_Host):
         self._codecs_toolbar = codecs  # greyed out wholesale for a missing entry
         arrange = QToolBar("Arrangement")
         self._arrange_toolbar = arrange  # frozen wholesale during a scan
+        # The Arrangement row's stand-in on a sprite map, whose picture is cut by
+        # frame rather than by a byte walk: one of the two is shown at a time, so
+        # the stack keeps its three-row shape either way
+        # (:mod:`~celpix.ui.main_window.frame_bar`).
+        frame = QToolBar("Frame")
         view = QToolBar("View")
         self._view_toolbar = view  # frozen wholesale during a scan
-        for index, bar in enumerate((codecs, arrange, view)):
+        for index, bar in enumerate((codecs, arrange, frame, view)):
             bar.setMovable(False)
             bar.layout().setSpacing(10)
             ToolBarOverflow(bar)  # the » that shows what a narrow window cuts off
             self._canvas_column.insertWidget(index, bar)
+        self._build_frame_toolbar(frame)
 
         # Which pixel presets the dropdown lists lives on the workspace, so the
         # project file persists it (self._workspace.hidden_pixel_presets); empty

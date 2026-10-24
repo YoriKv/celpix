@@ -4,6 +4,9 @@
 
 - Lots of improvements to compression, scan, and smart scan
 - Added the To Slice button back in
+- Edit spritemap improvements
+- New file fix for spritemaps
+- Copy/Paste View Settings carries a sprite map's frame box
 
 ## v1.2.15 - 2026-10-22
 

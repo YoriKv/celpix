@@ -47,6 +47,7 @@ from celpix.core.document import ViewOptions
 from celpix.core.font import HOLE, TEMPLATES, Glyph, glyphs_from_spec
 from celpix.core.palette import format_argb
 from celpix.core.paletteregions import PaletteRegion, PaletteRegions
+from celpix.core.sprite import FRAME_ALIGN_X, FRAME_ALIGN_Y, FRAME_SIZE_MAX, FrameLayout
 from celpix.core.tilemap import IndexAddressing
 from celpix.core.tilerearrangement import TileRearrangement
 from celpix.pipeline.pathway import DEFAULT_SLOT_FILL, SlotFill
@@ -509,6 +510,21 @@ def _entry_dict(
         # entry that never saw the box leaves the key out entirely.
         if view.show_all_frames:
             data["view"]["show_all_frames"] = True
+        # The frame box and the origin mark on the same terms, field by field:
+        # only a sprite map's Frame bar sets any of them, each defaults to the
+        # reading every sheet had before the bar, and a project that never
+        # touched it stays byte-identical.
+        frame = view.frame
+        if frame.width:
+            data["view"]["frame_width"] = frame.width
+        if frame.height:
+            data["view"]["frame_height"] = frame.height
+        if frame.align_x != "fit":
+            data["view"]["frame_align_x"] = frame.align_x
+        if frame.align_y != "fit":
+            data["view"]["frame_align_y"] = frame.align_y
+        if view.show_origin:
+            data["view"]["show_origin"] = True
         # Same rule again: off by default and only a tilemap offers the box, so a
         # project that never asked for it is byte-identical.
         if view.transparent_zero:
@@ -920,10 +936,32 @@ def _view_from(raw: object) -> ViewOptions | None:
         # (:attr:`~celpix.core.document.Document.pages_across`).
         pages_across=_int(raw.get("pages_across"), defaults.pages_across),
         show_all_frames=bool(raw.get("show_all_frames", defaults.show_all_frames)),
+        frame=_frame_layout(raw),
+        show_origin=bool(raw.get("show_origin", defaults.show_origin)),
         transparent_zero=bool(raw.get("transparent_zero", defaults.transparent_zero)),
         tile_rearrangement=_tile_rearrangement(raw),
         show_rearranged=bool(raw.get("show_rearranged", defaults.show_rearranged)),
         palette_regions=_palette_regions(raw),
+    )
+
+
+def _frame_layout(raw: dict) -> FrameLayout:
+    """A sprite map's frame box, on the tolerance rule: a size outside the
+    spin's range is clamped into it and an alignment the bar does not offer
+    reads as ``fit`` — the default reading, never a refused open."""
+
+    def align(key: str, choices: tuple[str, ...]) -> str:
+        value = raw.get(key)
+        return value if isinstance(value, str) and value in choices else "fit"
+
+    def size(key: str) -> int:
+        return max(0, min(FRAME_SIZE_MAX, _int(raw.get(key), 0) or 0))
+
+    return FrameLayout(
+        width=size("frame_width"),
+        height=size("frame_height"),
+        align_x=align("frame_align_x", FRAME_ALIGN_X),
+        align_y=align("frame_align_y", FRAME_ALIGN_Y),
     )
 
 

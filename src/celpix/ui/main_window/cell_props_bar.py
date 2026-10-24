@@ -59,13 +59,15 @@ and only the codec knows where they live
 selection target is the picked pieces, and the tool both picks and places,
 so the two targets are told apart by **what was pointed at last**: a piece
 picked on the canvas or in the Subsprites window is the target, and a tile
-taken for placing — a sheet click or sweep, the eyedropper — drops the pick
-and makes the held piece the target
-(:meth:`~...sprite_edit.SpriteEditMixin._drop_pick_for_held`). Under the
-held piece X and Y stay disabled — its offsets are wherever the click lands
-it — Drawn is hidden, and **Size** is the one record field it has: a sheet
-pick's setting (``_stamp_attrs["size"]``, written into the template through
-the codec), or the held record's own bits rewritten in place
+taken for placing — a sheet sweep, the eyedropper — drops the pick and makes
+the held piece the target
+(:meth:`~...sprite_edit.SpriteEditMixin._drop_pick_for_held`); a single sheet
+click with a pick retiles the picked pieces instead and keeps them the target
+(:meth:`~...tile_source_dock.TileSourceDockMixin._on_tile_source_selected`).
+Under the held piece X and Y stay disabled — its offsets are wherever the
+click lands it — Drawn is hidden, and **Size** is the one record field it
+has: a sheet pick's setting (``_stamp_attrs["size"]``, written into the
+template through the codec), or the held record's own bits rewritten in place
 (:meth:`_set_held_size`); either way the Size shown is what the add would
 resolve (:meth:`~...sprite_edit.SpriteEditMixin._held_size_choice`).
 

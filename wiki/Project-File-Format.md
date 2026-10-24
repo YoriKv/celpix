@@ -405,6 +405,11 @@ Written on every entry except a `palette` entry never opened as a sheet.
 | `bitmap_width` | int ≥ 0 | `0` | always | Bitmap width in pixels. `0` = the codec's tile width |
 | `pages_across` | int ≥ 0 | `0` | omitted at 0 | Pages of a paged tilemap laid side by side. `0` = default arrangement. Ignored where the format states its own |
 | `show_all_frames` | bool | `false` | only when `true` | Sprite map: show every frame slot |
+| `frame_width` | int 0–1024 | `0` | omitted at 0 | Sprite map: each frame's box is at least this wide, in pixels, from the aligned side. Out of range clamps |
+| `frame_height` | int 0–1024 | `0` | omitted at 0 | Sprite map: as `frame_width`, down |
+| `frame_align_x` | string | `"fit"` | omitted when `"fit"` | Sprite map: where the origin sits across the frame box. `"fit"` \| `"left"` \| `"center"` \| `"right"`. Unknown reads as `"fit"` |
+| `frame_align_y` | string | `"fit"` | omitted when `"fit"` | Sprite map: where the origin sits down the frame box. `"fit"` \| `"top"` \| `"center"` \| `"bottom"`. Unknown reads as `"fit"` |
+| `show_origin` | bool | `false` | only when `true` | Sprite map: draw the axis lines through the origin in every frame |
 | `transparent_zero` | bool | `false` | only when `true` | Tilemap: draw color index 0 as transparent |
 | `tile_rearrangement` | array of `[virtual, actual]` | `[]` | omitted when empty | Tile permutation. Non-negative ints; identity pairs dropped |
 | `tile_orientations` | array of `[tile, flags]` | `[]` | omitted when empty | Per-tile orientation. `flags` 1–7: bit 0 mirror H, bit 1 mirror V, bit 2 transpose (applied after the mirrors) |

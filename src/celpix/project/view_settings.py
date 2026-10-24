@@ -7,12 +7,19 @@ Two halves, because a pixel entry and a tilemap are read by different controls:
 
 - **how the entry is read** — a pixel entry's format, swatch color format and
   arrangement (Pattern, Block, Order, 2D, bitmap width), or a tilemap's cell
-  format. This half lands only on an entry of the same content kind: a cell
-  format says nothing about tiles, and a pixel format nothing about cells.
+  format and, on a sprite map, its frame layout (the Frame bar's alignment and
+  size, which stands in the Arrangement row's slot there). This half lands only
+  on an entry of the same content kind: a cell format says nothing about tiles,
+  and a pixel format nothing about cells. The Origin mark does not travel: it is
+  a display toggle, as Show All Frames and the backdrop toggle are.
 - **what it previews and is coloured through** — the compression preview, the
   palette (format, mode and source) and the Palette Row. Every kind has these,
   so this half lands on any entry. A palette *file* has none to give or take:
   its colours are its own bytes (``docs/design/palette-editing.md`` §2).
+
+The frame layout is written under the project file's own ``frame_*`` keys and
+read back by its parser (:func:`~celpix.project.projectfile._frame_layout`), so
+a bad value reads as the default box on the same tolerance rule.
 
 The palette source is written the way the project file writes one
 (:func:`~celpix.project.projectfile._palette_dict`, absolute-pathed, as the
@@ -27,6 +34,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from celpix.core.arrangement import BLOCK_ORDERS
+from celpix.core.sprite import FrameLayout
 from celpix.project.workspace import PaletteMode, PaletteSource
 
 #: Bumped only on an incompatible change to the payload below; a copy taken by
@@ -65,7 +73,9 @@ class ViewSettings:
 
     ``tilemap`` says which of the two reading halves is filled: ``pixel_preset_id``,
     ``palette_view_preset_id`` and ``arrangement`` for a pixel entry, and
-    ``tilemap_preset_id`` for a map. ``palette`` is ``None`` off a palette file.
+    ``tilemap_preset_id`` and ``frame`` for a map — the default box on a map
+    that is not a sprite map, which is what its view holds. ``palette`` is
+    ``None`` off a palette file.
     """
 
     tilemap: bool
@@ -75,6 +85,7 @@ class ViewSettings:
     palette_view_preset_id: str = ""
     arrangement: Arrangement | None = None
     tilemap_preset_id: str = ""
+    frame: FrameLayout = FrameLayout()
 
     def reads_onto(self, tilemap: bool) -> bool:
         """Whether the reading half applies to an entry of that kind."""
@@ -96,6 +107,12 @@ def view_settings_payload(settings: ViewSettings, session: str) -> dict:
     }
     if settings.tilemap:
         data["tilemap_preset_id"] = settings.tilemap_preset_id
+        # All four, even at the default: a paste replaces the box outright, so
+        # "nothing said" must arrive as such rather than as a missing key.
+        data["frame_width"] = settings.frame.width
+        data["frame_height"] = settings.frame.height
+        data["frame_align_x"] = settings.frame.align_x
+        data["frame_align_y"] = settings.frame.align_y
     else:
         data["pixel_preset_id"] = settings.pixel_preset_id
         data["palette_view_preset_id"] = settings.palette_view_preset_id
@@ -136,6 +153,7 @@ def view_settings_from_payload(raw: object) -> ViewSettings | None:
     one means, the way a hand-edited project file is read.
     """
     from celpix.project.projectfile import (  # noqa: PLC0415 — circular by nature
+        _frame_layout,
         _int,
         _palette_from,
         _plugin_id,
@@ -166,6 +184,7 @@ def view_settings_from_payload(raw: object) -> ViewSettings | None:
             compression_id=compression,
             palette=palette,
             tilemap_preset_id=_plugin_id(raw.get("tilemap_preset_id"), ""),
+            frame=_frame_layout(raw),
         )
     arr = raw.get("arrangement")
     arr = arr if isinstance(arr, dict) else {}

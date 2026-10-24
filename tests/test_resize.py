@@ -79,6 +79,67 @@ def test_resize_grows_with_zeroes_and_keeps_what_was_there(tmp_path) -> None:
     assert path.read_bytes() == b"\xab" * (8 * 32) + bytes(4 * 32)
 
 
+def test_resizing_a_counted_sprite_run_keeps_its_frames_counted(tmp_path) -> None:
+    """Growth adds zero pieces to the last frame and restates its count; a cut
+    takes pieces off the back and drops a frame it empties whole, so the file
+    never holds a count of 0 or one running past the data."""
+    from test_new_file import _COUNTED, _counted_registry
+
+    reg = _counted_registry()
+    path = tmp_path / "sprite.bin"
+    first = b"\x02" + bytes(range(1, 9))
+    path.write_bytes(first + b"\x01" + bytes(range(9, 13)))
+    cfg = PathwayConfig(source=FileRef((str(path),)), interpret_preset_id=_COUNTED)
+    resize = lambda units: pipeline.resize_file(  # noqa: E731
+        cfg, kind=ContentKind.TILEMAP, codec_id=_COUNTED, units=units, reg=reg
+    )
+    assert resize(5) == 1 + 8 + 1 + 12
+    assert path.read_bytes() == first + b"\x03" + bytes(range(9, 13)) + bytes(8)
+    assert resize(2) == 9
+    assert path.read_bytes() == first
+    assert resize(2) == 9  # the same count asks for nothing
+    assert path.read_bytes() == first
+
+
+def test_a_counted_resize_keeps_a_tail_too_short_for_a_frame(
+    tmp_path, monkeypatch
+) -> None:
+    """A byte past the last frame, fewer than a header needs, is no frame of
+    anything: it stays at the end through growth, and a resize to the count
+    already there writes nothing; the dialog measures the resize it will run."""
+    from test_new_file import _COUNTED, _counted_registry
+
+    reg = _counted_registry(header=2)
+    path = tmp_path / "sprite.bin"
+    frame = b"\x01\x00" + bytes(range(1, 5))
+    path.write_bytes(frame + b"\xee")
+    cfg = PathwayConfig(source=FileRef((str(path),)), interpret_preset_id=_COUNTED)
+    resize = lambda units: pipeline.resize_file(  # noqa: E731
+        cfg, kind=ContentKind.TILEMAP, codec_id=_COUNTED, units=units, reg=reg
+    )
+    before, after, _ctx = pipeline.resize_lengths(
+        cfg, ContentKind.TILEMAP, _COUNTED, 2, reg
+    )
+    assert (before, after) == (7, 11)
+    assert resize(2) == 11
+    assert path.read_bytes() == b"\x02\x00" + bytes(range(1, 5)) + bytes(4) + b"\xee"
+    monkeypatch.setattr(
+        "celpix.pipeline.pipeline._deposit",
+        lambda *_: pytest.fail("a same-count resize wrote the file"),
+    )
+    assert resize(2) == 11
+
+
+def test_region_units_counts_a_counted_run_from_its_bytes() -> None:
+    """Two frames of three pieces under 2-byte headers are 28 bytes, which a
+    4-byte piece divides into 7; the spin is seeded with the 6 there are."""
+    from test_new_file import _COUNTED, _counted_registry
+
+    reg = _counted_registry(header=2)
+    run = (b"\x03\x00" + bytes(12)) * 2
+    assert pipeline.region_units(ContentKind.TILEMAP, _COUNTED, run, reg) == 6
+
+
 def test_resize_shrinks_off_the_tail(tmp_path) -> None:
     reg = default_registry()
     path = _blank(tmp_path, 8)

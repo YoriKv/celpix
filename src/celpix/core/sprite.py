@@ -226,12 +226,48 @@ def drawn_frames(frames: list[Frame]) -> list[Frame]:
     return frames[: last + 1] or [()]
 
 
+# Where the origin sits in the frame box along each axis (:class:`FrameLayout`).
+# ``fit`` is no anchor at all: the box is the pieces' own bounds, and the origin
+# falls wherever that leaves it — outside the box, for an object drawn entirely
+# to one side of it.
+FRAME_ALIGN_X: tuple[str, ...] = ("fit", "left", "center", "right")
+FRAME_ALIGN_Y: tuple[str, ...] = ("fit", "top", "center", "bottom")
+# The largest frame a spin can ask for, in pixels. Well past any console's
+# sprite (a 4x4 Mega Drive piece is 32 px; an S-CG-CAD object's offsets are a
+# signed byte), and small enough that a sheet of them cannot approach the
+# allocation limit the read already enforces.
+FRAME_SIZE_MAX = 1024
+
+
+@dataclass(frozen=True)
+class FrameLayout:
+    """How the box every frame is drawn in is placed around the object's origin.
+
+    The pieces alone say what the box must *contain*; this says what it is
+    anchored to and how big it is at least — the Frame bar's answer, kept on the
+    view (``docs/design/sprite-map.md`` §2, "The frame box"). ``width`` and
+    ``height`` are a minimum in pixels, measured from the anchored side (from
+    the origin under ``left``/``top``, to it under ``right``/``bottom``, either
+    side of it under ``center``, from the pieces' own edge under ``fit``); 0
+    asks for nothing beyond the pieces. The box always grows to hold every
+    piece, so no setting can clip the art: the alignment is kept where it can be
+    and the spill is added on the side it falls.
+    """
+
+    width: int = 0
+    height: int = 0
+    align_x: str = "fit"
+    align_y: str = "fit"
+
+
 def frame_bounds(
     frames: list[Frame],
     tile_w: int = 8,
     tile_h: int | None = None,
+    layout: FrameLayout | None = None,
 ) -> tuple[int, int, int, int]:
-    """``(x, y, width, height)`` enclosing every subsprite of every frame, in pixels.
+    """``(x, y, width, height)`` of the box every frame is drawn in, in pixels:
+    every subsprite of every frame, placed and sized as ``layout`` asks.
 
     A subsprite states its size in tiles and its offset in pixels, so the tile
     size is what reconciles them — and it is the same measure the box is rounded
@@ -249,9 +285,13 @@ def frame_bounds(
 
     Rounded out to whole tiles so the grid overlay keeps landing on tile edges,
     and never empty: an object with no subsprites at all still needs somewhere to
-    draw nothing.
+    draw nothing. With no ``layout`` (or the default one) the box is the pieces'
+    own bounds; an anchored axis keeps the origin on a tile edge too, so a
+    centred box is rounded out on both sides alike rather than drifting a
+    half-tile off centre.
     """
     tile_h = tile_w if tile_h is None else tile_h
+    layout = layout or FrameLayout()
     left = top = 0
     right, bottom = tile_w, tile_h
     seen = False
@@ -267,13 +307,33 @@ def frame_bounds(
             top = min(top, sub.y)
             right = max(right, sub.x + wide)
             bottom = max(bottom, sub.y + tall)
-    left, top = _floor_to(left, tile_w), _floor_to(top, tile_h)
-    return (
-        left,
-        top,
-        max(tile_w, _ceil_to(right, tile_w) - left),
-        max(tile_h, _ceil_to(bottom, tile_h) - top),
-    )
+    x, width = _frame_axis(left, right, layout.width, layout.align_x, tile_w)
+    y, height = _frame_axis(top, bottom, layout.height, layout.align_y, tile_h)
+    return x, y, width, height
+
+
+def _frame_axis(lo: int, hi: int, size: int, align: str, step: int) -> tuple[int, int]:
+    """One axis of the frame box, ``(start, length)``, from the pieces' span
+    ``lo..hi``, the minimum ``size`` and the ``align`` the origin keeps.
+
+    ``center`` is the one anchor that cannot take the span as it comes: the two
+    halves have to match, so the longer side — or half the asked size — sets
+    both, rounded up to a whole tile *before* it is mirrored. The side anchors
+    pin the origin at an edge and let the span push the far edge out; ``fit``
+    starts at the span and only lengthens it.
+    """
+    size = max(0, size)
+    if align == "center":
+        half = _ceil_to(max(step, -lo, hi, -(-size // 2)), step)
+        return -half, 2 * half
+    if align in ("left", "top"):
+        start, end = min(0, lo), max(hi, size)
+    elif align in ("right", "bottom"):
+        start, end = min(lo, -size), max(0, hi)
+    else:
+        start, end = lo, max(hi, lo + size)
+    start, end = _floor_to(start, step), _ceil_to(end, step)
+    return start, max(step, end - start)
 
 
 def _floor_to(value: int, step: int) -> int:

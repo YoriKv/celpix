@@ -218,6 +218,68 @@ def test_new_tpl_palette_names_its_codec_in_the_header(tmp_path) -> None:
         )
 
 
+# A counted sprite format: a 1-byte piece count heads each frame's 4-byte
+# records, so a run of zero bytes is a frame of no pieces, not empty cells.
+_COUNTED_RECORD = {
+    "layout": "sprite",
+    "subsprite_size": "stated",
+    "subsprite_tiles": [1, 1],
+    "record": [
+        {"name": "x", "type": "s8"},
+        {"name": "y", "type": "s8"},
+        {"name": "tile", "type": "u8", "bits": "iiii iiii"},
+        {"name": "attr", "type": "u8", "bits": "vh.. pp.."},
+    ],
+    "frame_header": {"bytes": 1, "count_at": 0, "count_type": "u8"},
+}
+_COUNTED = "preset.tilemap.test-counted-record"
+
+
+def _counted_registry(header: int = 1):
+    """A registry holding ``_COUNTED``, its frame header ``header`` bytes long
+    with the count in the first."""
+    from celpix.plugins.base import Preset
+
+    reg = default_registry()
+    frame_header = {**_COUNTED_RECORD["frame_header"], "bytes": header}
+    reg.register_preset(
+        Preset(
+            id=_COUNTED,
+            name="test",
+            stage=Stage.INTERPRET_TILEMAP,
+            engine_id="codec.tilemap.sprite-record",
+            params={**_COUNTED_RECORD, "frame_header": frame_header},
+        )
+    )
+    return reg
+
+
+def test_a_new_counted_sprite_run_is_one_frame_stating_its_count(tmp_path) -> None:
+    """A run of zero bytes would be a frame of no pieces, which the decode
+    refuses; the codec writes the header its format needs, and the file opens
+    with the pieces that were asked for."""
+    reg = _counted_registry()
+    path = tmp_path / "sprite.bin"
+    cfg = _cfg(path, codec_id=_COUNTED)
+    assert pipeline.blank_size(ContentKind.TILEMAP, _COUNTED, 3, reg) == 1 + 3 * 4
+    size = pipeline.create_file(
+        cfg, kind=ContentKind.TILEMAP, codec_id=_COUNTED, units=3, reg=reg
+    )
+    assert size == 13
+    assert path.read_bytes() == b"\x03" + bytes(12)
+    loaded = pipeline.load_tilemap_data(cfg, reg)
+    assert len(loaded.cells) == 3
+    assert len(loaded.frames) == 1
+
+
+def test_a_new_counted_sprite_run_refuses_more_than_its_header_counts() -> None:
+    """A byte counts to 255, and a new file is one frame: the dialog is told
+    why before anything is written."""
+    reg = _counted_registry()
+    with pytest.raises(PipelineError, match="at most 255 pieces"):
+        pipeline.blank_size(ContentKind.TILEMAP, _COUNTED, 256, reg)
+
+
 def test_blank_size_reports_an_unusable_codec_as_a_pipeline_error() -> None:
     reg = default_registry()
     with pytest.raises((PipelineError, KeyError)):

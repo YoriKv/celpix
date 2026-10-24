@@ -69,6 +69,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from celpix.core.document import ViewOptions
+    from celpix.core.sprite import FrameLayout
     from celpix.project.workspace import EntrySession
     from celpix.ui.main_window import MainWindow
 
@@ -79,6 +80,7 @@ COLOR_EDIT_ID = 2
 TILEMAP_CELLS_ID = 3
 VIEW_AXIS_ID = 4
 ARRANGEMENT_ID = 5
+FRAME_ID = 6
 
 
 @dataclass(frozen=True)
@@ -382,6 +384,39 @@ class ViewAxisCommand(_MergingStateCommand):
         self._window._apply_view_axes(state)
 
 
+class FrameCommand(_MergingStateCommand):
+    """One move of a sprite map's Frame bar — a size spin or an alignment pick.
+
+    :class:`ViewAxisCommand`'s sibling for the frame box: display state the
+    project file keeps per entry, moving where each frame's picture is cut and
+    never a record, so it **stamps no revision**. Merging is per **control**, as
+    the axes merge per axis: a spin stepped up in ones is one step, and a width
+    followed by an alignment is two answers. The whole layout travels in each
+    state so either direction lands the box whole.
+    """
+
+    def __init__(
+        self,
+        window: MainWindow,
+        entry: Entry,
+        control: str,
+        *,
+        before: FrameLayout,
+        after: FrameLayout,
+    ) -> None:
+        super().__init__(window, entry, f"set frame {control}", before, after)
+        self._control = control
+
+    def id(self) -> int:
+        return FRAME_ID
+
+    def _merge_key(self) -> object:
+        return self._control
+
+    def _apply(self, state: FrameLayout) -> None:
+        self._window._apply_frame(state)
+
+
 @dataclass(frozen=True)
 class ArrangementState:
     """The whole arrangement, as one value: where the tiles are read from.
@@ -524,9 +559,10 @@ class PaletteViewFormatCommand(_CurrentEntryCommand):
 
 
 class ViewToggleCommand(_CurrentEntryCommand):
-    """One of the entry's view switches — Show Rearranged, All Frames, Zero Clear.
+    """One of the entry's view switches — Show Rearranged, All Frames, Origin,
+    Zero Clear.
 
-    Three boxes with one shape: a bool on ``ViewOptions`` that the project file
+    Four boxes with one shape: a bool on ``ViewOptions`` that the project file
     keeps per entry, changing what is laid out or how an index is coloured
     without re-reading anything. ``attr`` is the window field each drives, which
     is the whole of applying one; the refresh that follows re-syncs the box

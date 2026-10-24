@@ -17,3 +17,17 @@ def ceil_div(numerator: int, denominator: int) -> int:
     reach zero geometry guard it themselves.
     """
     return -(-numerator // denominator)
+
+
+def fit_length(data: bytes, size: int) -> bytes:
+    """``data`` cut at its tail, or grown there with zero bytes, to ``size``.
+
+    How a run of fixed-size units is resized (``docs/design/new-file.md`` §6):
+    the tail is the only place units can be added or removed without moving the
+    ones already there, and zero is what an empty unit reads as for every codec
+    celPix carries. Named once because a new file, a resize and a codec with its
+    own say over its runs all need exactly this and must not drift apart.
+    """
+    if size < len(data):
+        return data[: max(0, size)]
+    return data + bytes(size - len(data))

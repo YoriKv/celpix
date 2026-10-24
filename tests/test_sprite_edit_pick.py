@@ -10,6 +10,7 @@ from PySide6.QtCore import QEvent, QPointF, QRect, Qt
 from PySide6.QtGui import QImage, QMouseEvent
 from PySide6.QtWidgets import QApplication
 
+from celpix.core.sprite import FrameLayout
 from celpix.project.workspace import TileMode, TileSource
 from celpix.ui.canvas import Canvas
 from celpix.ui.main_window import MainWindow
@@ -107,19 +108,69 @@ def test_the_pick_follows_its_records_through_edits_and_undo(qtbot, tmp_path) ->
     assert canvas._pick_outline == [QRect(8, 0, 8, 8)]
 
 
-def test_origin_marks_sit_on_a_sprite_and_leave_with_it(qtbot, tmp_path) -> None:
-    """One crosshair per frame slot at object (0, 0) — pixel (-left, -top) of the
-    slot — and none on a document that has no frames."""
+def test_origin_marks_follow_the_origin_box_and_leave_with_the_sprite(
+    qtbot, tmp_path
+) -> None:
+    """With Origin ticked, one mark per frame slot at object (0, 0) — pixel
+    (-left, -top) of the slot — with the frame box as the span its axes are
+    drawn over; none with the box off, and none on a document with no frames."""
     window, _ = _sprite(qtbot, tmp_path, [(-8, -4, 1), (8, 0, 2)])
     canvas = window._canvas
-    canvas.set_grid(True)
+    assert canvas._origin_marks == ()
+    steps = window._undo_stack.count()
+    window._show_origin_box.setChecked(True)
+    assert window._undo_stack.count() == steps + 1 and window._doc.view.show_origin
     # The box is the pieces' bounds rounded out to whole tiles - (-8, -4) comes
     # out (-8, -8) - so the origin is 8 pixels into the slot each way.
-    assert window._sprite_sheet().box[:2] == (-8, -8)
+    assert window._sprite_sheet().box == (-8, -8, 24, 16)
     assert canvas._origin_marks == ((8, 8),)
+    assert canvas._origin_extent == (-8, -8, 24, 16)
 
     window._activate_entry(window._workspace.entries[0])  # the plain bank
     assert canvas._origin_marks == ()
+    window._undo_stack.undo()  # reaches back to the sprite and unticks the box
+    assert not window._show_origin_box.isChecked() and canvas._origin_marks == ()
+
+
+def test_the_frame_bar_stands_in_for_the_arrangement_row_and_boxes_the_frames(
+    qtbot, tmp_path
+) -> None:
+    """On a sprite map the Frame bar shows where the Arrangement row is hidden,
+    and back on a bank the two swap again. A size is a minimum from the aligned
+    side and an alignment pins the origin, each one merging step per control,
+    the sheet re-cut on each; the pieces always fit; an entry switch restores
+    the entry's own layout."""
+    window, entry = _sprite(qtbot, tmp_path, [(-8, -4, 1), (8, 0, 2)])
+    assert not window._frame_toolbar.isHidden() and window._arrange_toolbar.isHidden()
+    steps = window._undo_stack.count()
+
+    window._frame_width.setValue(64)
+    assert window._doc.view.frame.width == 64
+    assert window._sprite_sheet().box == (-8, -8, 64, 16)
+    assert window._undo_stack.count() == steps + 1
+    window._frame_width.setValue(72)  # a run on one spin is one step
+    assert window._undo_stack.count() == steps + 1
+    assert window._sprite_sheet().box == (-8, -8, 72, 16)
+
+    window._frame_align_x.setCurrentIndex(window._frame_align_x.findData("center"))
+    assert window._undo_stack.count() == steps + 2
+    # Centred: half the width asked, or the longer side - 36 rounded to 40.
+    assert window._sprite_sheet().box == (-40, -8, 80, 16)
+    window._undo_stack.undo()
+    assert window._sprite_sheet().box == (-8, -8, 72, 16)
+    assert window._frame_align_x.currentData() == "fit"
+    window._undo_stack.undo()
+    assert window._sprite_sheet().box == (-8, -8, 24, 16)
+    assert window._frame_width.value() == 0
+
+    window._frame_align_y.setCurrentIndex(window._frame_align_y.findData("bottom"))
+    assert window._sprite_sheet().box == (-8, -8, 24, 16)  # a piece reaches y = 8
+    window._activate_entry(window._workspace.entries[0])
+    assert window._frame_toolbar.isHidden() and not window._arrange_toolbar.isHidden()
+    window._activate_entry(entry)
+    assert not window._frame_toolbar.isHidden()
+    assert window._frame_align_y.currentData() == "bottom"
+    assert window._doc.view.frame == FrameLayout(align_y="bottom")
 
 
 def test_the_stamp_reports_pixels_when_told_to(qtbot) -> None:

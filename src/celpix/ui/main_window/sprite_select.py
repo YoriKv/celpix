@@ -462,14 +462,16 @@ class SpriteSelectMixin(_Host):
         self._canvas.set_pick_outline(self._subsprite_rects())
 
     def _sync_origin_marks(self) -> None:
-        """Mark each frame slot's object origin (``Canvas.set_origin_marks``).
+        """Mark each frame slot's object origin (``Canvas.set_origin_marks``),
+        while the Frame bar's Origin box asks for it.
 
-        Pixel ``(-left, -top)`` of the slot, the shared box being placed so: the
-        strip is trimmed to the pieces' bounds, so without it nothing says where
-        the offsets are measured from (``sprite-map.md`` §10.1).
+        Pixel ``(-left, -top)`` of the slot, the shared box being placed so, and
+        the box itself goes along as the span each axis line is drawn over:
+        nothing else on the sheet says where the offsets are measured from
+        (``sprite-map.md`` §10.1).
         """
         sheet = self._sprite_sheet()
-        if sheet is None:
+        if sheet is None or not self._show_origin:
             self._canvas.set_origin_marks(None)
             return
         left, top, width, height = sheet.box
@@ -480,7 +482,8 @@ class SpriteSelectMixin(_Host):
                     (at // sheet.across) * height - top,
                 )
                 for at in range(sheet.frames)
-            ]
+            ],
+            sheet.box,
         )
 
     def _announce_subsprite(self) -> None:

@@ -838,7 +838,7 @@ class TilemapEditMixin(_Host):
                 f"Set {counted(len(spread), noun)} to palette row {shown}.{note}"
             )
 
-    def _set_cell_index(self, value: int) -> None:
+    def _set_cell_index(self, value: int, *, fit_bank: bool = False) -> None:
         """Point every selected cell at reference ``value`` — one undoable step.
 
         What the number *means* follows the document, and both readings are the
@@ -852,6 +852,13 @@ class TilemapEditMixin(_Host):
         mask down later, so the cell that lands is the one that was asked for.
         A value inside that range no stored cell can name is refused on the way
         in (:meth:`_unnameable_reference`); the spin does not offer one.
+
+        ``fit_bank`` is the tile source click's, on a sprite map: a tile chosen
+        by looking is one the bank shows, and a piece that keeps its size when
+        retiled may still spend tiles past it — refused as the add refuses them
+        (:meth:`~...sprite_edit.SpriteEditMixin._footprint_refusal`). The spin
+        is not gated so: its range is the format's, and a tile the bank lacks
+        today is one a longer binding shows.
         """
         doc = self._doc
         indices = self._selected_cells()
@@ -868,6 +875,12 @@ class TilemapEditMixin(_Host):
         cells = list(doc.cells)
         for at in indices:
             cells[at] = replace(cells[at], index=value)
+        if fit_bank and doc.is_sprite:
+            refused = self._footprint_refusal(cells, indices)
+            if refused is not None:
+                self.statusBar().showMessage(refused)
+                self._sync_cell_index()
+                return
         if not self._apply_cells(
             cells, "set cell reference", pick=self._pick_carried()
         ):
