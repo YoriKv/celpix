@@ -6,6 +6,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from celpix.plugins.base import RAW_CONTAINER
 from celpix.project.workspace import FileStages, PaletteMode
 from celpix.ui.main_window import MainWindow
@@ -1307,8 +1309,11 @@ def test_smart_scan_skips_structures_that_do_not_look_like_graphics(
     assert window._scan_button.isEnabled() and window._compression.isEnabled()
 
 
-def test_scan_ui_thaw_does_not_arm_structure_actions(qtbot, tmp_path) -> None:
+def test_structure_actions_follow_the_overlay_and_to_slice_promotes(
+    qtbot, tmp_path
+) -> None:
     from celpix.plugins.builtins import lz_command
+    from celpix.project.workspace import EntryKind
 
     # Same layout as the jump/scan test: a structure, a junk region no scheme
     # accepts, another structure, padding. Jumping past the first structure
@@ -1330,20 +1335,274 @@ def test_scan_ui_thaw_does_not_arm_structure_actions(qtbot, tmp_path) -> None:
     window._set_byte_position(len(packed_a))  # into the junk: no structure here
     assert not window._overlay.isVisible()
     assert not window._jump_next.isEnabled()
+    assert not window._promote_button.isEnabled()
 
     # A scan freezes the whole UI then thaws it. The blanket re-enable on thaw
-    # must restore Jump from the overlay's structure state, not switch it on
-    # just because a scan ended (regression: a scan landing back on this same
-    # offset never re-refreshed, so it was left wrongly enabled). The scan
-    # buttons themselves come back, the one that ran with its own label.
+    # must restore Jump / To Slice from the overlay's structure state, not switch
+    # them on just because a scan ended (regression: a scan landing back on this
+    # same offset never re-refreshed, so they were left wrongly enabled). The
+    # scan buttons themselves come back, the one that ran with its own label.
     window._set_scan_ui(True, window._smart_scan_button)
     assert window._smart_scan_button.text() == "Stop"
     assert not window._scan_button.isEnabled()
     window._set_scan_ui(False, window._smart_scan_button)
 
     assert not window._jump_next.isEnabled()
+    assert not window._promote_button.isEnabled()
     assert window._smart_scan_button.text() == "Smart Scan"
+
+    # Back on structure A, To Slice carves exactly its extent under the preview
+    # codec, with no dialog between, as one undoable step.
+    window._set_byte_position(0)
+    assert window._promote_button.isEnabled()
+    before = len(window._workspace.entries)
+    window._promote_button.click()
+    entry = window._workspace.entries[-1]
+    assert entry.kind is EntryKind.SLICE
+    assert (entry.slice_offset, entry.slice_length) == (0, len(packed_a))
+    assert entry.compression_id == "compression.lz2"
+    window._undo_stack.undo()
+    assert len(window._workspace.entries) == before
     assert window._scan_button.isEnabled()
+
+
+def test_slicing_a_structure_whose_end_is_past_the_view_measures_it(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """A scheme with an end marker whose end lies outside the view window: both
+    slice gestures measure the structure to that end. The window's end would cut
+    it short, and a strict decode of that fails, though the lenient preview
+    drew it."""
+    from celpix.plugins.builtins import lz_command
+    from celpix.ui.slice_dialog import SliceDialog, SliceParams
+
+    tiles = bytes((i * 29 + 5) & 0xFF for i in range(32 * 4))
+    packed = lz_command.compress(tiles, big_endian_offsets=True)
+    px = tmp_path / "long.bin"
+    px.write_bytes(packed + bytes(512))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    window._columns.setValue(1)
+    window._rows.setValue(1)  # a 32-byte window over the longer stream
+    assert len(packed) > 32
+    window._compression.setCurrentIndex(window._compression.findData("compression.lz2"))
+    # The preview chases the end past the window: the whole structure is the
+    # extent, and Jump to Next lands after it.
+    assert window._structure_extent == (0, len(packed))
+    assert window._jump_next.isEnabled()
+    assert window._promote_button.isEnabled()
+
+    prefill = {}
+
+    def get_slice(*_a, **kw) -> SliceParams:
+        prefill.update(kw)
+        return SliceParams("cut", kw["offset"], kw["length"], kw["compression_id"])
+
+    monkeypatch.setattr(SliceDialog, "get_slice", staticmethod(get_slice))
+    file_entry = window._workspace.current
+    for gesture in (window._new_slice_from_view, window._promote_button.click):
+        window._activate_entry(file_entry)
+        window._set_byte_position(0)
+        before = list(window._workspace.entries)
+        gesture()
+        (entry,) = [e for e in window._workspace.entries if e not in before]
+        assert entry.slice_length == len(packed)  # the structure, not the window
+        window._activate_entry(entry)
+        assert window._doc is not None  # it opens: no strict decode of 32 bytes
+    assert prefill["length"] == len(packed)  # what the dialog was handed
+
+
+def test_the_slice_dialog_measures_checks_and_grows_its_length(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """New Slice's Length, through the window's probe: measured under a codec
+    with an end, warned about when too short to decompress, never accepted
+    blank, and grown by Next Valid under a codec with no end - to where the
+    stream decodes whole, every byte used and whole tiles out."""
+    from PySide6.QtWidgets import QDialog
+
+    from celpix.core.address import parse_hex
+    from celpix.plugins.builtins import lz_command
+    from celpix.ui.slice_dialog import SliceDialog
+
+    tiles = bytes((i * 29 + 5) & 0xFF for i in range(32 * 4))
+    packed = lz_command.compress(tiles, big_endian_offsets=True)
+    # PackBits: one 2-byte packet per 32-byte tile, a run of its value.
+    runs = b"".join(bytes((0x100 - 31, value)) for value in (1, 2, 3, 4))
+    px = tmp_path / "mixed.bin"
+    px.write_bytes(packed + runs + bytes(256))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    seen = {}
+
+    def drive(dialog: SliceDialog) -> QDialog.DialogCode:
+        def codec(compression_id: str) -> None:
+            at = dialog._decompress.findData(compression_id)
+            dialog._decompress.setCurrentIndex(at)
+
+        dialog._offset.setText("0")
+        codec("compression.lz2")
+        dialog._run_checks()
+        seen["measured"] = parse_hex(dialog._length.text())
+        seen["offered"] = dialog._next_valid.isVisibleTo(dialog)
+        dialog._length.setText("10")
+        dialog._run_checks()
+        seen["warned"] = dialog._warning.isVisibleTo(dialog)
+        dialog._length.setText("")
+        dialog._validate_and_accept()
+        seen["refused"] = (dialog._params, dialog._error.text())
+
+        dialog._offset.setText(f"{len(packed):X}")
+        codec("compression.packbits")
+        seen["no_end"] = dialog._next_valid.isVisibleTo(dialog)
+        dialog._length.setText("1")  # cuts the first packet
+        dialog._next_valid.click()
+        seen["grown"] = parse_hex(dialog._length.text())
+        return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(SliceDialog, "exec", drive)
+    window._new_slice_current()
+    assert seen == {
+        "measured": len(packed),
+        "offered": False,
+        "warned": True,
+        "refused": (None, "A slice needs a length."),
+        "no_end": True,
+        "grown": 2,
+    }
+
+
+def test_edit_slice_checks_and_measures_its_length_too(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    # The same probe behind Edit Slice: a Length cut short of the structure is
+    # warned about, and moving the offset measures the length afresh.
+    from PySide6.QtWidgets import QDialog
+
+    from celpix.core.address import parse_hex
+    from celpix.plugins.builtins import lz_command
+    from celpix.ui.slice_dialog import SliceDialog
+
+    tiles = bytes((i * 29 + 5) & 0xFF for i in range(32 * 4))
+    packed = lz_command.compress(tiles, big_endian_offsets=True)
+    px = tmp_path / "one.bin"
+    px.write_bytes(bytes(4) + packed + bytes(256))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    window._compression.setCurrentIndex(window._compression.findData("compression.lz2"))
+    window._set_byte_position(4)
+    window._promote_button.click()
+    entry = window._workspace.entries[-1]
+    seen = {}
+
+    def drive(dialog: SliceDialog) -> QDialog.DialogCode:
+        dialog._length.setText("10")
+        dialog._run_checks()
+        seen["warned"] = dialog._warning.isVisibleTo(dialog)
+        dialog._offset.setText("4")  # typed again: measured again
+        dialog._run_checks()
+        seen["measured"] = parse_hex(dialog._length.text())
+        seen["warned_after"] = dialog._warning.isVisibleTo(dialog)
+        return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(SliceDialog, "exec", drive)
+    window._edit_slice(entry)
+    assert seen == {"warned": True, "measured": len(packed), "warned_after": False}
+
+
+@pytest.mark.parametrize("loaded", [True, False])
+def test_edit_slice_cuts_a_lengthless_slice_where_it_reads_now(
+    qtbot, tmp_path, monkeypatch, loaded
+) -> None:
+    """A slice saved with no length, under a codec with no end marker, opens in
+    Edit Slice with Length at what its decode consumes - from its load when it
+    has one, else read afresh - so a rename is accepted and its bytes stay put.
+    """
+    from PySide6.QtWidgets import QDialog
+
+    from celpix.ui.slice_dialog import SliceDialog
+
+    # PackBits: one 2-byte packet per 32-byte tile, a run of its value.
+    runs = b"".join(bytes((0x100 - 31, value)) for value in (1, 2, 3, 4))
+    px = tmp_path / "runs.bin"
+    px.write_bytes(bytes(0x10) + runs)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(px))
+    entry = window._workspace.add_slice(
+        str(px), "gfx", 0x10, None, compression_id="compression.packbits"
+    )
+    if loaded:
+        window._activate_entry(entry)
+    seen = {}
+
+    def drive(dialog: SliceDialog) -> QDialog.DialogCode:
+        seen["length"] = dialog._length.text()
+        dialog._name.setText("renamed")
+        dialog._validate_and_accept()
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(SliceDialog, "exec", drive)
+    window._edit_slice(entry)
+    assert seen["length"]
+    assert (entry.name, entry.slice_length) == ("renamed", len(runs))
+    window._activate_entry(entry)
+    assert entry.doc.pixel_data == b"".join(bytes([v]) * 32 for v in (1, 2, 3, 4))
+
+
+def test_the_slice_dialog_says_why_a_measure_fails_and_remeasures_on_untick(
+    qtbot, tmp_path
+) -> None:
+    """A measure that finds no structure says why on the warning line instead of
+    leaving Length silently blank; unticking Match parent size back onto that
+    blank box measures again, with the measure's own read standing in for the
+    check's."""
+    from celpix.core.address import parse_hex
+    from celpix.plugins.registry import default_registry
+    from celpix.ui.slice_dialog import SliceDialog, SliceProbe
+
+    rom = tmp_path / "rom.bin"
+    rom.write_bytes(bytes(0x100))
+    reads = []
+
+    def probe(offset: int, length: int | None, _codec: str, _reshape: str):
+        reads.append((offset, length))
+        if offset == 0x10:
+            return SliceProbe(error="bad command byte")
+        return SliceProbe(consumed=0x20, complete=True)
+
+    dialog = SliceDialog(
+        default_registry(),
+        paths=(str(rom),),
+        offset=0x10,
+        compression_id="compression.lz2",
+        probe=probe,
+        has_end=lambda codec: codec == "compression.lz2",
+    )
+    qtbot.addWidget(dialog)
+    dialog._run_checks()
+    assert dialog._length.text() == ""
+    assert dialog._warning.isVisibleTo(dialog)
+    assert "bad command byte" in dialog._warning.text()
+
+    dialog._offset.setText("40")
+    dialog._match_parent.setChecked(True)  # ticked over the blank Length
+    assert not dialog._next_valid.isEnabled()
+    dialog._run_checks()
+    dialog._match_parent.setChecked(False)
+    assert dialog._next_valid.isEnabled()
+    reads.clear()
+    dialog._run_checks()
+    assert parse_hex(dialog._length.text()) == 0x20
+    assert not dialog._warning.isVisibleTo(dialog)
+    assert reads == [(0x40, None)]  # measured once, not checked again
 
 
 def test_new_slice_from_view_prefills_viewport_extent(

@@ -13,7 +13,7 @@ Banzai Bill draws from `GFX20`.
 
 1. Select the ROM in **Files**.
 2. **File ▸ New Slice…**. Name `GFX20`, offset `$576A1`, **Compression**
-   **LZ2 improved**. Leave **Length** blank.
+   **LZ2 improved**. **Length** fills in by itself.
 3. Set the palette to the save state. Set **Palette Row** to 9.
 
 Sprite palettes are CGRAM rows 8 to 15. Banzai Bill uses sprite palette 1.

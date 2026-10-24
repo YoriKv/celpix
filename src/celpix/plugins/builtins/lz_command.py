@@ -108,13 +108,30 @@ def decompress(
     64 KB cap — raises either way, which is what lets a window preview tell "a
     structure continues past the window" from "this is not a structure at all".
     """
+    out, consumed, _ = _decompress(
+        data, big_endian_offsets=big_endian_offsets, allow_partial=allow_partial
+    )
+    return out, consumed
+
+
+def _decompress(
+    data: bytes, *, big_endian_offsets: bool, allow_partial: bool
+) -> tuple[bytes, int, bool]:
+    """:func:`decompress`, plus whether the terminator was reached.
+
+    One pass whichever the mode: the two differ only in what running out of
+    source does, so the flag alone says whether the structure's true end is
+    known, and a structure scan — which decodes leniently at every offset it
+    probes — pays for one decode per offset rather than a strict one and a
+    lenient retry.
+    """
     out = bytearray()
     n = len(data)
     i = 0
 
-    def truncated(reason: str) -> tuple[bytes, int]:
+    def truncated(reason: str) -> tuple[bytes, int, bool]:
         if allow_partial:
-            return bytes(out), n
+            return bytes(out), n, False
         raise _fail(reason)
 
     while True:
@@ -123,7 +140,7 @@ def decompress(
         cmd = data[i]
         i += 1
         if cmd == _TERMINATOR:
-            return bytes(out), i
+            return bytes(out), i, True
         if (cmd & 0xE0) == 0xE0:  # long form
             if i >= n:
                 return truncated("source exhausted inside a long-form header")
@@ -485,19 +502,11 @@ class _LzBase(PartialDecompression):
     _improved = False
 
     def _decode(self, data: bytes, *, partial: bool) -> tuple[bytes, int, bool]:
-        # Strict first: reaching the terminator means the structure's true end is
-        # known. Fall back to a best-effort partial decode only when the caller
-        # said the buffer may cut the structure short.
-        try:
-            out, consumed = decompress(data, big_endian_offsets=self._big_endian)
-            return out, consumed, True
-        except ValueError:
-            if not partial:
-                raise
-        out, consumed = decompress(
-            data, big_endian_offsets=self._big_endian, allow_partial=True
+        # Complete exactly when the terminator was reached: only then is the
+        # structure's true end known.
+        return _decompress(
+            data, big_endian_offsets=self._big_endian, allow_partial=partial
         )
-        return out, consumed, False
 
     def _encode(self, data: bytes) -> bytes:
         pack = compress_improved if self._improved else compress

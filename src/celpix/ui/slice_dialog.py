@@ -50,16 +50,35 @@ resized (:attr:`~celpix.project.workspace.Entry.match_parent`). Length is greyed
 while it is ticked and shows what the parent measures now, tracking the offset,
 so the box always says what the slice will read; unticking gives back whatever
 was typed there before.
+
+**Length is never blank**, because a slice without one has no slot to write back
+into. The dialog measures it instead wherever the codec can: when the Offset,
+the Compression or that codec's inputs change under a codec that marks its own
+end — or Match parent size is unticked onto a blank Length — the structure at
+the offset is decoded to that end and Length takes its size. A codec with
+**no** end marker cannot say where its stream stops, so its Length is the
+user's, and **Next Valid** beside it grows the Length to the next point where
+the stream decodes whole — every byte used and whole tiles out — since nearly
+any length of such a stream decodes to *something*. And whatever the Length, a
+line under the form warns when the slice as described would not decompress —
+or, where the measure found no structure at the offset, says why, rather than
+leaving a blank Length for OK to refuse as merely missing. All three ask
+the window through ``probe`` (:class:`SliceProbe`), which reads the would-be
+slice exactly as opening it would; a dialog built without one (a test) offers
+none of them.
 """
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from os.path import basename, getsize
 from typing import Any
 
-from PySide6.QtCore import QEvent
+from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -67,6 +86,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPushButton,
     QToolButton,
     QWidget,
 )
@@ -82,6 +102,7 @@ from celpix.ui.icon_font import icon_qicon
 from celpix.ui.icons import Icon
 from celpix.ui.searchable_combo import SearchableComboBox, fill_stage_combo
 from celpix.ui.size_row import GROWTH_TIPS, UnitCountRow
+from celpix.ui.theme import WARNING_INK, set_ink
 from celpix.ui.widgets import (
     PRESET_COMBO_WIDTH,
     SHORT_COMBO_WIDTH,
@@ -94,7 +115,33 @@ from celpix.ui.widgets import (
     run_modal,
 )
 
-__all__ = ["SliceDialog", "SliceParams", "validate_slice_region"]
+__all__ = ["SliceDialog", "SliceParams", "SliceProbe", "validate_slice_region"]
+
+# How long Next Valid keeps growing the Length before it reports what it reached.
+# Every step is a whole read of the would-be slice, so the walk is bounded by
+# time rather than by bytes, which would be seconds on one codec and minutes on
+# another.
+NEXT_VALID_BUDGET_S = 2.0
+# How long the fields have to sit still before the slice is read again: each
+# read decodes the whole structure, which should not happen per keystroke.
+CHECK_DELAY_MS = 250
+
+
+@dataclass(frozen=True)
+class SliceProbe:
+    """What reading a would-be slice gives — the window's answer to ``probe``.
+
+    ``error`` is why the read fails, in the plugin's own words, and ``""`` when it
+    reads. ``consumed`` is how many compressed bytes the decode used and
+    ``complete`` whether the codec reported reaching its own end; ``whole_tiles``
+    whether the output is a non-empty whole number of the parent's pixel tiles.
+    """
+
+    error: str = ""
+    consumed: int | None = None
+    complete: bool = False
+    whole_tiles: bool = False
+
 
 # What the Size row counts, per kind a slice can unpack to. The last line is
 # the slice's own: unlike a file, a compressed slice sits in a slot.
@@ -112,8 +159,6 @@ def validate_slice_region(
     region_size: int,
     matched: bool,
     length_typed: bool,
-    compression_id: str,
-    reshape_id: str,
     noun: str,
 ) -> tuple[int, int | None] | str:
     """``(offset, length)`` a slice may be cut at, or why it may not.
@@ -132,21 +177,13 @@ def validate_slice_region(
         # measured again here so a file that changed while the dialog was open
         # cannot hand back a length it no longer has.
         length = region_size - offset if offset < region_size else None
-    elif length_typed:
-        if length is None or length <= 0:
-            return "Length is not a valid byte count."
-    elif reshape_id != NO_RESHAPE:
-        # A reshape's boundaries are fractions of the region's length, so a
-        # decompressor-discovered extent (measured in reshaped space) would
-        # re-bound the window and change the permutation itself.
-        return (
-            "A reshaped slice needs a length — its extent defines "
-            "the reshape, so nothing can discover it."
-        )
-    elif compression_id == NO_COMPRESSION:
-        # A raw slice without an extent is just the file from that offset —
-        # require the bound that makes it a slice (and its writes slot-safe).
-        return "A raw slice needs a length (compressed ones can discover it)."
+    elif not length_typed:
+        # Every slice is bounded: the bound is the slot its writes go back
+        # into. A codec that marks its own end has it measured into the box
+        # (see the module docstring), so blank means it has not been found.
+        return "A slice needs a length."
+    elif length is None or length <= 0:
+        return "Length is not a valid byte count."
     if offset >= region_size or (length is not None and offset + length > region_size):
         return f"Region runs past {noun} end ({format_hex(region_size, None)} bytes)."
     return offset, length
@@ -195,9 +232,28 @@ class SliceDialog(QDialog):
         codec_id: str = "",
         extent: int | None = None,
         source: str = "",
+        probe: Callable[[int, int | None, str, str], SliceProbe] | None = None,
+        has_end: Callable[[str], bool] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        # ``probe(offset, length, compression_id, reshape_id)`` reads the slice
+        # these fields describe as opening it would (``length`` None: to the end
+        # of the parent), and ``has_end(compression_id)`` says whether a codec
+        # marks its own end under the parent's bindings. Both from the window;
+        # without them Length is neither measured nor checked.
+        self._probe = probe
+        self._has_end = has_end
+        # Set when Offset or Compression moved: the next check measures Length
+        # afresh before checking it. Set at the start too when nothing is
+        # prefilled, so a codec with an end fills it in on open.
+        self._measure_due = length is None
+        self._filling = False
+        # What the codec reads with — its inputs line and whether it marks an
+        # end — as last seen, so a return from the inputs editor can tell an
+        # edit (which owes a fresh measure) from mere refocusing (which must not
+        # overwrite a Length the user typed).
+        self._reading_seen: tuple[str, str, bool] | None = None
         # One line per codec about what it needs from outside the slice, or
         # ``""`` for one that needs nothing — the row below shows or hides on it.
         self._inputs_hint = inputs_hint
@@ -254,10 +310,26 @@ class SliceDialog(QDialog):
         )
         self._length = hex_field(
             "Byte length\n"
-            "Blank lets a compressed slice's decompressor find the end;\n"
-            "a raw or reshaped slice needs one",
+            "Under a codec that marks its own end, measured from the\n"
+            "structure at Offset whenever Offset, Compression\n"
+            "or the codec's inputs change",
             length,
         )
+        self._next_valid = QPushButton("Next Valid")
+        self._next_valid.setToolTip(
+            "Grow Length to the next point where the stream decodes\n"
+            "whole: every byte used, and whole tiles out\n"
+            "For a codec with no end marker, whose stream cannot\n"
+            "say where it stops"
+        )
+        self._next_valid.setAutoDefault(False)
+        self._next_valid.clicked.connect(self._on_next_valid)
+        # Length keeps the form's full width and the button sits at its right.
+        self._length_row = QWidget()
+        length_row = QHBoxLayout(self._length_row)
+        length_row.setContentsMargins(0, 0, 0, 0)
+        length_row.addWidget(self._length, 1)
+        length_row.addWidget(self._next_valid)
         self._match_parent = QCheckBox("Match parent size")
         self._match_parent.setToolTip(
             "Run to the end of the parent and follow its resizes\n"
@@ -349,6 +421,16 @@ class SliceDialog(QDialog):
         )
 
         self._error = ErrorLabel()
+        # Not an error: OK still creates the slice, which then opens with a
+        # mark on its row. The line is what saves the round trip.
+        self._warning = QLabel()
+        self._warning.setWordWrap(True)
+        set_ink(self._warning, WARNING_INK)
+        self._warning.hide()
+        self._check_timer = QTimer(self)
+        self._check_timer.setSingleShot(True)
+        self._check_timer.setInterval(CHECK_DELAY_MS)
+        self._check_timer.timeout.connect(self._run_checks)
 
         # The name placeholder previews the generated default and tracks the
         # coordinate fields, so leaving the name blank never surprises.
@@ -374,7 +456,7 @@ class SliceDialog(QDialog):
             add_form_row(form, "Content:", content_row, buddy=self._content)
         add_form_row(form, "Name:", self._name)
         add_form_row(form, "Offset:", self._offset)
-        add_form_row(form, "Length:", self._length)
+        add_form_row(form, "Length:", self._length_row, buddy=self._length)
         form.addRow("", self._match_parent)
         add_form_row(form, "Reshape:", reshape_row, buddy=self._reshape)
         add_form_row(form, "Compression:", codec_row, buddy=self._decompress)
@@ -386,6 +468,7 @@ class SliceDialog(QDialog):
             self._size_row,
             buddy=self._size.spin if self._size is not None else None,
         )
+        form.addRow(self._warning)
         form.addRow(self._error)
         # Connected here rather than beside the other combo signals above,
         # because the row can only be shown or hidden once it is in a layout.
@@ -406,7 +489,196 @@ class SliceDialog(QDialog):
         self._match_parent.toggled.connect(self._error.dismiss)
         for combo in (self._reshape, self._decompress):
             combo.currentIndexChanged.connect(self._error.dismiss)
+        self._offset.textChanged.connect(self._schedule_measure)
+        self._decompress.currentIndexChanged.connect(self._schedule_measure)
+        self._length.textChanged.connect(self._schedule_check)
+        self._reshape.currentIndexChanged.connect(self._schedule_check)
+        self._match_parent.toggled.connect(self._schedule_check)
+        self._decompress.currentIndexChanged.connect(self._sync_next_valid)
+        self._decompress.currentIndexChanged.connect(self._note_reading)
+        self._sync_next_valid()
+        self._note_reading()
         dialog_buttons(self, form, self._validate_and_accept)
+        if self._probe is not None:
+            self._check_timer.start()
+
+    def _codec_has_end(self, compression_id: str) -> bool:
+        return self._has_end is not None and self._has_end(compression_id)
+
+    def _sync_next_valid(self, *_args: object) -> None:
+        """Offer Next Valid only for a compressed slice whose codec has no end:
+        under one that marks its end the Length is measured instead, and a raw
+        slice's every length is valid."""
+        compression_id = self._decompress.currentData()
+        self._next_valid.setVisible(
+            self._probe is not None
+            and compression_id != NO_COMPRESSION
+            and not self._codec_has_end(compression_id)
+        )
+
+    def _reading_now(self) -> tuple[str, str, bool]:
+        """The selected codec, its inputs line and whether it marks its end."""
+        compression_id = self._decompress.currentData()
+        hint = (
+            self._inputs_hint(compression_id) if self._inputs_hint is not None else ""
+        )
+        return compression_id, hint, self._codec_has_end(compression_id)
+
+    def _note_reading(self, *_args: object) -> None:
+        # A codec change schedules its own measure; this only keeps the record
+        # current so refresh_inputs compares against the codec now selected.
+        self._reading_seen = self._reading_now()
+
+    def _schedule_measure(self, *_args: object) -> None:
+        self._measure_due = True
+        self._schedule_check()
+
+    def _schedule_check(self, *_args: object) -> None:
+        # Length set by the measure itself is checked there, not again here.
+        if self._probe is not None and not self._filling:
+            self._check_timer.start()
+
+    def _set_length(self, length: int) -> None:
+        self._filling = True
+        try:
+            self._length.setText(format_hex(length, prefix=False))
+        finally:
+            self._filling = False
+
+    def _region_or_none(self) -> tuple[int, int | None] | None:
+        """The fields' region when OK would accept it, else ``None`` — OK says
+        why, and a read of a region it would refuse proves nothing."""
+        try:
+            size = self._region_size()
+        except OSError:
+            return None
+        region = validate_slice_region(
+            hex_value(self._offset),
+            hex_value(self._length),
+            region_size=size,
+            matched=self._match_parent.isChecked(),
+            length_typed=bool(self._length.text().strip()),
+            noun="",
+        )
+        return None if isinstance(region, str) else region
+
+    def _run_checks(self) -> None:
+        """Measure Length where it is due, then warn if the slice won't read."""
+        if self._probe is None:
+            return
+        offset = hex_value(self._offset)
+        compression_id = self._decompress.currentData()
+        reshape_id = self._reshape.currentData()
+        measured: SliceProbe | None = None
+        if self._measure_due and offset is not None:
+            self._measure_due = False
+            # A reshape is laid over the whole region, so its Length defines the
+            # bytes being decoded: there is no end to measure under one.
+            if (
+                not self._match_parent.isChecked()
+                and compression_id != NO_COMPRESSION
+                and reshape_id == NO_RESHAPE
+                and self._codec_has_end(compression_id)
+            ):
+                QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+                try:
+                    found = self._probe(offset, None, compression_id, reshape_id)
+                finally:
+                    QApplication.restoreOverrideCursor()
+                if not (found.complete and found.consumed):
+                    # Said here, or Length stays blank with nothing to say why
+                    # until OK refuses it as merely missing.
+                    reason = found.error or "it never reaches its end marker"
+                    self._warning.setText(
+                        f"No structure decodes at this offset: {reason}"
+                    )
+                    self._warning.show()
+                    return
+                self._set_length(found.consumed)
+                measured = found
+        region = self._region_or_none()
+        if (
+            region is None
+            or region[1] is None
+            or (compression_id == NO_COMPRESSION and reshape_id == NO_RESHAPE)
+        ):
+            self._warning.hide()
+            return
+        if measured is not None and region == (offset, measured.consumed):
+            # The measure decoded exactly these bytes to the codec's own end,
+            # so reading them again bounded by that length can only agree.
+            result = measured
+        else:
+            result = self._probe(region[0], region[1], compression_id, reshape_id)
+        if result.error:
+            self._warning.setText(f"This slice will not decompress: {result.error}")
+            self._warning.show()
+        else:
+            self._warning.hide()
+
+    def _on_next_valid(self) -> None:
+        """Grow Length a byte at a time until the stream decodes whole.
+
+        Whole is every byte of the Length used — the decode ended on a packet
+        boundary rather than stopping short of a cut one — and, for pixels, a
+        whole number of tiles out. The walk is time-boxed
+        (:data:`NEXT_VALID_BUDGET_S`); one that runs out leaves Length as it
+        was and says how far it looked.
+        """
+        if self._probe is None:
+            return
+        offset = hex_value(self._offset)
+        if offset is None:
+            self._error.fail("Offset is not a valid address.")
+            return
+        try:
+            size = self._region_size()
+        except OSError as exc:
+            self._error.fail(f"Cannot stat the file: {exc}")
+            return
+        compression_id = self._decompress.currentData()
+        reshape_id = self._reshape.currentData()
+        pixels = self._chosen_kind() is ContentKind.PIXELS
+        length = hex_value(self._length) or 0
+        deadline = time.monotonic() + NEXT_VALID_BUDGET_S
+        n = length
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            while offset + n < size and time.monotonic() < deadline:
+                n += 1
+                result = self._probe(offset, n, compression_id, reshape_id)
+                if (
+                    not result.error
+                    and result.consumed == n
+                    and (result.whole_tiles or not pixels)
+                ):
+                    # The walk just read this length whole, so it is neither
+                    # checked again nor left under an earlier warning. Match
+                    # parent size cannot be ticked here: it disables the button.
+                    self._set_length(n)
+                    self._warning.hide()
+                    if not self._measure_due:
+                        self._check_timer.stop()
+                    return
+        finally:
+            QApplication.restoreOverrideCursor()
+        where = "the end of the parent" if offset + n >= size else format_hex(n)
+        self._warning.setText(
+            f"No length from {format_hex(length + 1)} to {where} decodes whole."
+        )
+        self._warning.show()
+
+    def _chosen_kind(self) -> ContentKind:
+        """The Content the slice will have: the row's choice, or the carried
+        kind where the row is not offered.
+
+        Back through the enum: ``ContentKind`` is str-valued, and a round trip
+        through a QVariant hands the bare string back — which compares equal to
+        the member but fails every ``is`` test the window gates on.
+        """
+        if self._content is None:
+            return self._content_kind
+        return ContentKind(self._content.currentData())
 
     def _region_size(self) -> int:
         """How many bytes the slice's offsets count in: the parent slice's
@@ -424,8 +696,15 @@ class SliceDialog(QDialog):
         """
         matched = self._match_parent.isChecked()
         self._length.setEnabled(not matched)
+        # Next Valid grows the Length the parent now owns, from a start already
+        # at the parent's end: it could only report that nothing decodes.
+        self._next_valid.setEnabled(not matched)
         if not matched:
             if self._typed_length is not None:
+                if not self._typed_length.strip():
+                    # Back to a blank box, which a codec with an end fills in;
+                    # one the user typed is theirs and is not re-measured.
+                    self._measure_due = True
                 self._length.setText(self._typed_length)
                 self._typed_length = None
             return
@@ -457,8 +736,18 @@ class SliceDialog(QDialog):
         self._inputs_badge.setVisible(bool(hint) and self._edit_inputs is not None)
 
     def refresh_inputs(self) -> None:
-        """Re-read the inputs line — what it describes was edited elsewhere."""
+        """Re-read the inputs line — what it describes was edited elsewhere.
+
+        Whether the codec marks its end can turn on those inputs (LZW's end
+        code), so Next Valid is re-offered and, where the reading did change,
+        Length measured afresh as for a change of codec.
+        """
         self._sync_inputs_row()
+        self._sync_next_valid()
+        reading = self._reading_now()
+        if reading != self._reading_seen:
+            self._reading_seen = reading
+            self._schedule_measure()
 
     def changeEvent(self, event: QEvent) -> None:  # Qt override
         super().changeEvent(event)
@@ -529,6 +818,11 @@ class SliceDialog(QDialog):
         )
 
     def _validate_and_accept(self) -> None:
+        # A measure still waiting out its delay is owed before OK reads Length:
+        # an OK straight after choosing the codec would otherwise find it blank.
+        if self._check_timer.isActive():
+            self._check_timer.stop()
+            self._run_checks()
         if self._extent is not None:
             noun = f"{self._source or 'parent slice'}'s"
         else:
@@ -547,8 +841,6 @@ class SliceDialog(QDialog):
             region_size=size,
             matched=matched,
             length_typed=bool(self._length.text().strip()),
-            compression_id=compression_id,
-            reshape_id=reshape_id,
             noun=noun,
         )
         if isinstance(region, str):
@@ -559,15 +851,7 @@ class SliceDialog(QDialog):
         name = self._name.text().strip() or default_slice_name(
             offset, length, compression_id, reshape_id
         )
-        # Back through the enum on the way out: ``ContentKind`` is str-valued, and
-        # a round trip through a QVariant hands the bare string back — which
-        # compares equal to the member but fails every ``is`` test the window
-        # gates on.
-        kind = (
-            self._content_kind
-            if self._content is None
-            else ContentKind(self._content.currentData())
-        )
+        kind = self._chosen_kind()
         self._params = SliceParams(
             name,
             offset,

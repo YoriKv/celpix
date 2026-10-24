@@ -34,13 +34,17 @@ from typing import TYPE_CHECKING
 
 from celpix.core.address import format_hex
 from celpix.core.capabilities import Capability, ContentKind
+from celpix.core.context import KEY_COMPRESSED_SIZE, KEY_DECOMPRESS_COMPLETE
 from celpix.core.document import Document, ViewOptions
 from celpix.core.errors import PipelineError, Stage
 from celpix.pipeline import pipeline
 from celpix.pipeline.pathway import PathwayConfig
 from celpix.plugins.base import (
     NO_COMPRESSION,
+    NO_RESHAPE,
     InputKind,
+    PixelCodecPlugin,
+    self_delimiting,
 )
 from celpix.project.inputs import (
     IntegerFromBytes,
@@ -66,7 +70,7 @@ from celpix.project.workspace import (
     tilemap_config_for,
 )
 from celpix.ui.composite_dialog import CompositeDialog, CompositeParams
-from celpix.ui.slice_dialog import SliceDialog
+from celpix.ui.slice_dialog import SliceDialog, SliceProbe
 from celpix.ui.undo_commands import (
     AddEntryCommand,
     CompositeEditCommand,
@@ -91,6 +95,17 @@ class SlicesMixin(_Host):
     """
 
     # -- slice creation ------------------------------------------------------
+    def _add_slice(self, entry: Entry) -> None:
+        """Add a freshly cut slice as one undoable step, seeded to read its
+        parent the way the parent is read now (:meth:`_seed_slice_from_parent`).
+
+        The one tail every gesture that makes a slice shares - the slice dialog
+        and the compression preview's To Slice - so they cannot drift apart on
+        the seed or the undo text.
+        """
+        self._seed_slice_from_parent(entry)
+        self._push_command(AddEntryCommand(self, entry, f'new slice "{entry.name}"'))
+
     def _seed_slice_from_parent(self, slice_entry: Entry) -> None:
         """Open a new slice reading its parent the way the parent is read *now*.
 
@@ -234,8 +249,9 @@ class SlicesMixin(_Host):
     def _new_slice_from_view(self) -> None:
         """File ▸ New Slice from View: the dialog prefilled to cover the
         current viewport - the structure in view when the compression preview
-        found one (its true extent beats the window's), else the visible
-        window's bytes - plus the compression combo.
+        found one (its own end beats the window's, measured past the window
+        when it lies there), else the visible window's bytes - plus the
+        compression combo.
 
         Refused where there is no viewport to read, as well as on the action:
         the files dock builds its own row for this, so a guard on the gesture is
@@ -250,6 +266,10 @@ class SlicesMixin(_Host):
         if src is None:
             return
         entry, doc = src
+        # The structure in view speaks for its own extent: its end when the
+        # scheme has one, wherever that lies, or where an end-marker-less
+        # scheme's decode ran out. A structure that does not decode to its end
+        # has none, and takes the window - the dialog then warns.
         length = None
         if self._structure_extent is not None:
             start, consumed = self._structure_extent
@@ -570,6 +590,15 @@ class SlicesMixin(_Host):
             extent = self._slice_buffer_length(parent)
             if extent is None:
                 return
+        # A slice saved with no length (older projects; the loader still takes
+        # one) reads to its parent's end, but the dialog refuses a blank Length
+        # and only measures one under a codec that marks its own end - so
+        # without this the slice could not be edited at all, not even renamed.
+        # What it reads today is what it is cut at, so an edit that touches
+        # nothing else leaves its bytes as they are.
+        length = entry.slice_length
+        if length is None and not entry.match_parent:
+            length = self._effective_slice_length(entry, parent)
         params = SliceDialog.get_slice(
             self,
             self._registry,
@@ -577,7 +606,7 @@ class SlicesMixin(_Host):
             source=parent.name if extent is not None and parent is not None else "",
             paths=entry.paths,  # a slice carries its parent's whole file list
             offset=entry.slice_offset,
-            length=entry.slice_length,
+            length=length,
             compression_id=entry.compression_id,
             reshape_id=entry.reshape_id,
             slot_fill=entry.slot_fill,
@@ -594,6 +623,7 @@ class SlicesMixin(_Host):
             ),
             units=units,
             codec_id=codec_id,
+            **self._slice_checks(parent, bindings_of=entry),
         )
         if params is None:
             return
@@ -627,6 +657,39 @@ class SlicesMixin(_Host):
         finally:
             if both:
                 self._undo_stack.endMacro()
+
+    def _effective_slice_length(self, entry: Entry, parent: Entry | None) -> int | None:
+        """How many of its parent's bytes a slice with no stored length reads
+        now, or ``None`` where that cannot be told.
+
+        A compressed slice's extent is what its decode consumed - the number
+        its own load already left on its document's context, where it has
+        one, ahead of decoding it again. An uncompressed one's is its region,
+        which is all the bytes it holds.
+        """
+        compressed = entry.compression_id != NO_COMPRESSION
+        doc = entry.doc
+        if doc is not None:
+            if not compressed:
+                held = own_bytes(entry)
+                return len(held) if held else None
+            ctx = doc.tilemap_ctx if doc.is_tilemap else doc.pixel_ctx
+            consumed = ctx.get(KEY_COMPRESSED_SIZE)
+            if consumed:
+                return consumed
+        if not compressed:
+            return self._slice_buffer_length(entry) or None
+        if parent is None:
+            return None
+        found = self._probe_slice(
+            parent,
+            entry.slice_offset,
+            None,
+            entry.compression_id,
+            entry.reshape_id,
+            bindings_of=entry,
+        )
+        return found.consumed or None
 
     # -- resizing a compressed slice -----------------------------------------
     def _slice_codec_id(self, entry: Entry) -> str:
@@ -884,6 +947,7 @@ class SlicesMixin(_Host):
             edit_inputs=lambda dialog, codec: self._edit_slice_inputs(
                 dialog, parent, codec
             ),
+            **self._slice_checks(parent),
         )
         if params is None:
             return
@@ -900,8 +964,93 @@ class SlicesMixin(_Host):
         entry.content_kind = params.content_kind
         entry.slot_fill = params.slot_fill
         entry.match_parent = params.match_parent
-        self._seed_slice_from_parent(entry)
-        self._push_command(AddEntryCommand(self, entry, f'new slice "{entry.name}"'))
+        self._add_slice(entry)
+
+    def _probe_slice(
+        self,
+        parent: Entry,
+        offset: int,
+        length: int | None,
+        compression_id: str,
+        reshape_id: str = NO_RESHAPE,
+        *,
+        bindings_of: Entry | None = None,
+    ) -> SliceProbe:
+        """Read the slice of ``parent`` these coordinates describe, without
+        making it: what the slice dialog measures and checks Length with.
+
+        A throwaway entry through the very read a load does
+        (:meth:`_pixel_config`, then ``read_region``), so an answer here is the
+        answer opening the slice would give - the parent's bindings for the
+        codec, its unsaved edits, its reshape and all. ``length`` None reads to
+        the end of the parent, which is how a codec with an end marker is asked
+        where that end is.
+
+        ``bindings_of`` is the slice being edited, whose own input bindings
+        are what it reads with; a new slice takes its parent's for the codec
+        (:func:`~celpix.project.workspace.slice_of`).
+        """
+        probe = slice_of(parent, "", offset, length, compression_id, reshape_id)
+        if bindings_of is not None:
+            probe.inputs = {
+                codec: dict(keys) for codec, keys in bindings_of.inputs.items()
+            }
+        preset_id = (
+            self._pixel_preset_id()
+            if parent is self._workspace.current or parent.session is None
+            else parent.session.pixel_preset_id
+        )
+        try:
+            data, ctx = pipeline.read_region(
+                self._pixel_config(probe, preset_id), self._registry
+            )
+            engine, preset = self._registry.engine_for(preset_id, PixelCodecPlugin)
+            per_tile = engine.bytes_per_tile(preset.params)
+        except PipelineError as exc:
+            return SliceProbe(error=exc.message)
+        except (OSError, KeyError, ValueError) as exc:
+            return SliceProbe(error=str(exc))
+        return SliceProbe(
+            consumed=ctx.get(KEY_COMPRESSED_SIZE),
+            complete=bool(ctx.get(KEY_DECOMPRESS_COMPLETE)),
+            whole_tiles=bool(data) and per_tile > 0 and len(data) % per_tile == 0,
+        )
+
+    def _slice_checks(
+        self, parent: Entry | None, *, bindings_of: Entry | None = None
+    ) -> dict[str, Callable]:
+        """The slice dialog's ``probe`` and ``has_end`` for a slice of
+        ``parent`` - none where the parent is not open, which leaves Length
+        unmeasured and unchecked rather than read against the wrong bytes.
+        ``bindings_of`` is the slice being edited (:meth:`_probe_slice`)."""
+        if parent is None:
+            return {}
+        # Bound after the guard: a closure re-reads ``parent`` when it runs, so
+        # the checker cannot carry the narrowing into the lambdas.
+        target: Entry = parent
+        reads = bindings_of or target
+        return {
+            "probe": lambda offset, length, codec, reshape: self._probe_slice(
+                target, offset, length, codec, reshape, bindings_of=bindings_of
+            ),
+            "has_end": lambda codec: self._codec_has_end(reads, codec),
+        }
+
+    def _codec_has_end(self, entry: Entry, compression_id: str) -> bool:
+        """Whether ``compression_id`` marks its own end, asked with ``entry``'s
+        bound inputs where the answer turns on one (LZW's end code) and it is
+        the entry on screen; the codec's static word otherwise."""
+        if compression_id == NO_COMPRESSION:
+            return False
+        try:
+            plugin = self._registry.plugin(Stage.COMPRESSION, compression_id)
+        except KeyError:
+            return False
+        inputs = None
+        if entry is self._workspace.current:
+            resolved = self._preview_config_inputs(compression_id)
+            inputs = resolved.get(Stage.COMPRESSION) if resolved else None
+        return self_delimiting(plugin, inputs)
 
     def _slice_buffer_length(self, entry: Entry) -> int | None:
         """How many bytes an entry's own decoded buffer holds — what a slice

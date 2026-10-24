@@ -41,7 +41,7 @@ holds `GFX30`, which is only 64 tiles. A **blank** piece fills the rest of the
 slot, so the sheets after it stay in the correct place.
 
 1. Carve these four sheets. Select the ROM in **Files**, then **File ▸ New
-   Slice…**. Set **Compression** to **LZ2 improved** and leave **Length** blank.
+   Slice…**. Set **Compression** to **LZ2 improved**; **Length** fills in by itself.
 
 | Name | Offset |
 | --- | --- |

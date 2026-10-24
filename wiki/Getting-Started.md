@@ -97,7 +97,7 @@ Make the other three slices:
 1. Select the ROM in **Files**.
 2. **File ▸ New Slice…**.
 3. Enter the name and offset from the table.
-4. Set **Compression** to **LZ2 improved**. Leave **Length** blank.
+4. Set **Compression** to **LZ2 improved**. **Length** fills in by itself.
 
 | Name | Offset |
 | --- | --- |
@@ -178,7 +178,7 @@ view it directly. The map in the next step draws each stamp correctly.
 ## 8. Carve the map
 
 The map has one byte per stamp. It is compressed with RLE1 at `$65900`. RLE1
-data has an end marker, so leave **Length** blank.
+data has an end marker, so **Length** fills in by itself.
 
 1. Select the ROM in **Files**.
 2. **File ▸ New Slice…**, with these values:

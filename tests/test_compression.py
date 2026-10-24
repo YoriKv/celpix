@@ -346,6 +346,21 @@ def test_lz_plugins_record_compressed_size() -> None:
     assert ctx.get(KEY_DECOMPRESS_COMPLETE) is True  # terminator = known end
 
 
+def test_lz_lenient_decode_is_strict_until_the_input_runs_out() -> None:
+    # The structure scan decodes leniently at every offset, once: a stream that
+    # ends inside the window must still report its true end, and one that breaks
+    # must still raise rather than come back as a prefix.
+    data = bytes(range(64)) * 3
+    packed = Lz2().compress(data, PipelineContext())
+    ctx = PipelineContext()
+    ctx.set(KEY_DECOMPRESS_PARTIAL, True)
+    assert Lz2().decompress(packed + b"\x41" * 8, ctx) == data
+    assert ctx.get(KEY_COMPRESSED_SIZE) == len(packed)
+    assert ctx.get(KEY_DECOMPRESS_COMPLETE) is True
+    with pytest.raises(ValueError, match="unwritten output"):
+        Lz2().decompress(b"\x01\x41\x42\x83\x00\x05" + bytes(8), ctx)
+
+
 # -- LZ16 -------------------------------------------------------------------
 
 
@@ -1371,6 +1386,43 @@ def test_gba_huffman_rejects_bad_headers_trees_and_sizes() -> None:
     # A symbol costs at least a bit, so 16 MiB cannot come from one word.
     with pytest.raises(ValueError, match="cannot fit"):
         gba_huffman.decompress(bytes.fromhex("28ffffff" + _HUFF_8BIT[8:]))
+
+
+@pytest.mark.parametrize(
+    ("plugin", "noise", "real"),
+    [
+        # 600 bytes as five run packets: the first two fit an 8-byte window,
+        # whose 4 bytes of packets could never declare more than 260.
+        (gba_rle.GbaRleCompression(), "30ffffff" + "ff00" * 4, b"Z" * 600),
+        # 512 bytes of 6-bit codes, the window cut 8 bytes into the bitstream.
+        (GbaHuffmanCompression(), "28ffffff" + _HUFF_8BIT[8:], bytes(range(64)) * 8),
+    ],
+    ids=["rle", "huffman"],
+)
+def test_gba_lenient_size_gate_tests_the_buffer_not_the_window(
+    plugin: gba_rle.GbaRleCompression | GbaHuffmanCompression, noise: str, real: bytes
+) -> None:
+    # A lenient window may cut a structure short, so its declared size is
+    # measured against the buffer the window was cut from: a real structure
+    # bigger than the window still previews, a noise header's size that no
+    # window over the buffer could hold is refused before decoding.
+    def lenient(window: bytes, surround: bytes) -> PipelineContext:
+        ctx = PipelineContext()
+        ctx.set(KEY_DECOMPRESS_PARTIAL, True)
+        ctx.set(KEY_SURROUND, surround)
+        ctx.set(KEY_SURROUND_START, 0)
+        return ctx
+
+    raw = bytes.fromhex(noise)
+    with pytest.raises(ValueError, match="cannot fit"):
+        plugin.decompress(raw, lenient(raw, raw + bytes(64)))
+    stream = plugin.compress(real, PipelineContext())
+    window = stream[: 8 if stream[0] == 0x30 else 4 + (stream[4] + 1) * 2 + 8]
+    ctx = lenient(window, stream)
+    out = plugin.decompress(window, ctx)
+    assert out and real.startswith(out)
+    assert ctx.get(KEY_DECOMPRESS_COMPLETE) is False
+    assert ctx.get(KEY_COMPRESSED_SIZE) == len(window)
 
 
 def test_gba_huffman_truncated_bitstream_needs_the_partial_flag() -> None:

@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.2.16 - unreleased
+
+- Lots of improvements to compression, scan, and smart scan
+- Added the To Slice button back in
+
 ## v1.2.15 - 2026-10-22
 
 - Added the N64 TLUT palette presets: RGBA16 (RGBA5551 big-endian) and IA16 (intensity+alpha, big-endian)

@@ -376,9 +376,11 @@ class MainWindow(
         # scan interlock (the Scan button doubles as Stop while one runs).
         self._next_structure: int | None = None
         # The complete structure in view as (start byte position, byte extent)
-        # - what New Slice from View prefills. Kept separately from
-        # _next_structure, which is deliberately None when the structure ends
-        # at end-of-file (nowhere to jump) even though slicing it is still valid.
+        # - what To Slice promotes and New Slice from View prefills; for a
+        # scheme with an end, its end wherever it lies, past the view included.
+        # Kept separately from _next_structure, which is deliberately None when
+        # the structure ends at end-of-file (nowhere to jump) even though
+        # slicing it is still valid.
         self._structure_extent: tuple[int, int] | None = None
         self._scanning = False
         self._scan_stop = False

@@ -70,6 +70,7 @@ class ZlibCompression(PartialDecompression):
         id="compression.zlib",
         name="zlib (DEFLATE, RFC 1950)",
         stage=Stage.COMPRESSION,
+        category="Generic",
     )
 
     _decode = staticmethod(decompress)

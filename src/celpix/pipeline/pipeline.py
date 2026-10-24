@@ -147,7 +147,12 @@ from celpix.pipeline.render import (
     tilemap_tiles,
     tiles_per_stripe,
 )
-from celpix.pipeline.scan import ScanResult, find_next_structure, looks_like_graphics
+from celpix.pipeline.scan import (
+    ScanResult,
+    find_next_structure,
+    looks_like_graphics,
+    structure_at,
+)
 from celpix.pipeline.table_layout import publish_table_layout
 from celpix.plugins._params import flag, one_of
 from celpix.plugins.base import (
@@ -242,6 +247,7 @@ __all__ = [
     "sprite_hoist",
     "sprite_image",
     "sprite_sheet",
+    "structure_at",
     "subsprite_at",
     "subsprite_key",
     "subsprite_sheet",

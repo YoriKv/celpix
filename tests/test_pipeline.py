@@ -687,6 +687,12 @@ def test_find_next_structure_locates_reports_and_aborts() -> None:
     assert hit.found == len(junk)
     assert not hit.stopped
 
+    # A probe far shorter than the structure still finds it: the window cuts
+    # the stream short of its end, so the end is chased past it.
+    short = pipeline.find_next_structure(junk + packed + bytes(64), plugin, 16, 0)
+    assert short.found == len(junk)
+    assert pipeline.structure_at(packed + bytes(64), plugin, 0, 16)[1] == len(packed)
+
     miss = pipeline.find_next_structure(junk, plugin, probe_bytes, 0)
     assert miss.found is None
     assert miss.end == len(junk)
@@ -704,6 +710,53 @@ def test_find_next_structure_locates_reports_and_aborts() -> None:
     assert aborted.found is None
     assert aborted.stopped
     assert ticks  # the callback actually ran
+
+
+def test_structure_chase_stops_at_its_limit_and_on_a_stop(monkeypatch) -> None:
+    """A scheme with an end marker that decodes padding forever - output every
+    time, never an error, never complete - is chased no further than
+    CHASE_LIMIT; and a Stop pressed during a chase stops the scan, rather than
+    reading as no structure at that offset and walking on."""
+    from celpix.pipeline import scan
+    from celpix.plugins.base import PluginInfo
+
+    handed: list[int] = []
+
+    class Endless:
+        info = PluginInfo(
+            id="compression.endless",
+            name="Endless",
+            stage=Stage.COMPRESSION,
+            self_delimiting=True,
+        )
+
+        def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
+            handed.append(len(data))
+            return bytes(len(data))
+
+        def compress(self, data: bytes, ctx: PipelineContext) -> bytes:
+            return data
+
+    plugin = Endless()
+    monkeypatch.setattr(scan, "CHASE_LIMIT", 100)
+    data = bytes(1000)
+    assert scan.structure_at(data, plugin, 0, 16) is None
+    assert handed == [16, 64, 100]  # the last round clamped to the limit
+
+    handed.clear()
+    ticks: list[int] = []
+
+    def stop(pos: int) -> bool:
+        ticks.append(pos)
+        return True
+
+    # progress_every past the data: the only tick is the chase's own.
+    result = scan.find_next_structure(
+        data, plugin, 16, 5, progress_every=4096, on_tick=stop
+    )
+    assert result == scan.ScanResult(None, 5, True)
+    assert ticks == [5]
+    assert handed == [16]  # abandoned before the first wider round
 
 
 def test_find_next_structure_needs_a_reported_end_and_honours_alignment() -> None:

@@ -63,6 +63,14 @@ from __future__ import annotations
 import heapq
 from collections import Counter
 
+from celpix.core.context import (
+    KEY_COMPRESSED_SIZE,
+    KEY_DECOMPRESS_COMPLETE,
+    KEY_DECOMPRESS_PARTIAL,
+    KEY_SURROUND,
+    KEY_SURROUND_START,
+    PipelineContext,
+)
 from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
 from celpix.plugins.builtins._gba_bios import (
@@ -84,13 +92,19 @@ _TYPES = frozenset(HUFFMAN_TYPE | bits for bits in SYMBOL_BITS)
 _fail = corrupt("GBA Huffman")
 
 
-def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]:
+def decompress(
+    data: bytes, *, partial: bool = False, reach: int | None = None
+) -> tuple[bytes, int, bool]:
     """Decode a BIOS Huffman stream (4- or 8-bit symbols, from the header).
 
     Returns ``(output, consumed, complete)``. ``complete`` means the declared
     size was produced. With ``partial`` a buffer that ends inside the bitstream
     yields the bytes decoded so far instead of raising; a truncated tree, a node
     pointing outside the tree, or a bad header still raise.
+
+    ``reach`` is how many bytes exist from the stream's start to the end of the
+    buffer ``data`` was cut from, when that is known; a lenient decode tests the
+    declared size against it (see below). A strict one reads ``data`` alone.
     """
     if len(data) < HEADER_SIZE + 1:
         raise _fail("shorter than the header and tree-size byte")
@@ -108,13 +122,25 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
     mask = (1 << bits) - 1
     per_byte = 8 // bits
     want = target * per_byte  # symbols that make up the declared size
-    if not partial and want > (len(data) - stream_at) * 8:
-        # Every symbol costs at least one bit: the buffer cannot hold the stream.
-        # Checked up front because a bit-at-a-time decode of a noise header's
-        # multi-megabyte size is what makes a scan slow.
+    # Every symbol costs at least one bit, so a declared size needing more bits
+    # than the bytes that could hold the bitstream is no stream. Checked up front
+    # because a bit-at-a-time decode of a noise header's multi-megabyte size is
+    # what makes a scan slow. What could hold it is the mode's: a strict decode
+    # has `data` alone, but a lenient one has been told its window may cut the
+    # structure short — the preview's window, the scan's probe that it then
+    # widens — so the window is no bound there (a real structure longer than its
+    # window would lose its preview), while the buffer the window was cut from
+    # is: no window over it reaches further. With no buffer known, a lenient
+    # decode has nothing to test.
+    if not partial:
+        limit: int | None = len(data)
+    elif reach is not None:
+        limit = max(reach, len(data))
+    else:
+        limit = None
+    if limit is not None and want > (limit - stream_at) * 8:
         raise _fail(
-            f"{target:,} bytes cannot fit in the "
-            f"{len(data) - stream_at:,}-byte bitstream"
+            f"{target:,} bytes cannot fit in the {limit - stream_at:,}-byte bitstream"
         )
     bios_want = -(-target // 4) * 4 * per_byte  # the BIOS decodes whole words
 
@@ -326,5 +352,20 @@ class GbaHuffmanCompression(PartialDecompression):
         category="Nintendo",
     )
 
-    _decode = staticmethod(decompress)
     _encode = staticmethod(compress_smallest)
+
+    def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
+        # Spelled out rather than inherited for the surround, which is what
+        # bounds a lenient decode's declared size (`decompress`'s `reach`).
+        surround = ctx.get(KEY_SURROUND)
+        reach = (
+            None
+            if surround is None
+            else len(surround) - (ctx.get(KEY_SURROUND_START) or 0)
+        )
+        out, consumed, complete = decompress(
+            data, partial=bool(ctx.get(KEY_DECOMPRESS_PARTIAL)), reach=reach
+        )
+        ctx.set(KEY_COMPRESSED_SIZE, consumed)
+        ctx.set(KEY_DECOMPRESS_COMPLETE, complete)
+        return out

@@ -51,6 +51,14 @@ write-up is in ``docs/graphics-formats-reference/implementation-guide.md`` §7.
 
 from __future__ import annotations
 
+from celpix.core.context import (
+    KEY_COMPRESSED_SIZE,
+    KEY_DECOMPRESS_COMPLETE,
+    KEY_DECOMPRESS_PARTIAL,
+    KEY_SURROUND,
+    KEY_SURROUND_START,
+    PipelineContext,
+)
 from celpix.core.errors import Stage
 from celpix.plugins.base import PartialDecompression, PluginInfo
 from celpix.plugins.builtins._gba_bios import (
@@ -73,12 +81,18 @@ MAX_LITERAL = 0x7F + 1  # 128
 _fail = corrupt("GBA RLE")
 
 
-def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]:
+def decompress(
+    data: bytes, *, partial: bool = False, reach: int | None = None
+) -> tuple[bytes, int, bool]:
     """Decode a BIOS RLE stream.
 
     Returns ``(output, consumed, complete)``; ``complete`` means the declared
     size was produced. With ``partial`` a buffer that ends mid-stream yields the
     prefix decoded so far instead of raising.
+
+    ``reach`` is how many bytes exist from the stream's start to the end of the
+    buffer ``data`` was cut from, when that is known; a lenient decode tests the
+    declared size against it (see below). A strict one reads ``data`` alone.
     """
     target = read_header(
         data,
@@ -87,11 +101,25 @@ def decompress(data: bytes, *, partial: bool = False) -> tuple[bytes, int, bool]
         fail=_fail,
     )
 
-    body = len(data) - HEADER_SIZE
-    if not partial and target > body // 2 * MAX_RUN:
-        # A two-byte run packet is the best expansion there is. Checked up front
-        # so a scan rejects a noise header's multi-megabyte size at once.
-        raise _fail(f"{target:,} bytes cannot fit in {body:,} bytes of packets")
+    # A two-byte run packet is the best expansion there is, so a declared size
+    # past 65 times the bytes that could hold the packets is no stream. Checked
+    # up front so a scan rejects a noise header's multi-megabyte size at once.
+    # What could hold them is the mode's: a strict decode has `data` alone, but
+    # a lenient one has been told its window may cut the structure short — the
+    # preview's window, the scan's probe that it then widens — so the window is
+    # no bound there (a real structure past 65 windows would lose its preview),
+    # while the buffer the window was cut from is: no window over it reaches
+    # further. With no buffer known, a lenient decode has nothing to test.
+    if not partial:
+        limit: int | None = len(data)
+    elif reach is not None:
+        limit = max(reach, len(data))
+    else:
+        limit = None
+    if limit is not None:
+        body = limit - HEADER_SIZE
+        if target > body // 2 * MAX_RUN:
+            raise _fail(f"{target:,} bytes cannot fit in {body:,} bytes of packets")
 
     out = bytearray()
     src = HEADER_SIZE
@@ -145,5 +173,20 @@ class GbaRleCompression(PartialDecompression):
         category="Nintendo",
     )
 
-    _decode = staticmethod(decompress)
     _encode = staticmethod(compress)
+
+    def decompress(self, data: bytes, ctx: PipelineContext) -> bytes:
+        # Spelled out rather than inherited for the surround, which is what
+        # bounds a lenient decode's declared size (`decompress`'s `reach`).
+        surround = ctx.get(KEY_SURROUND)
+        reach = (
+            None
+            if surround is None
+            else len(surround) - (ctx.get(KEY_SURROUND_START) or 0)
+        )
+        out, consumed, complete = decompress(
+            data, partial=bool(ctx.get(KEY_DECOMPRESS_PARTIAL)), reach=reach
+        )
+        ctx.set(KEY_COMPRESSED_SIZE, consumed)
+        ctx.set(KEY_DECOMPRESS_COMPLETE, complete)
+        return out

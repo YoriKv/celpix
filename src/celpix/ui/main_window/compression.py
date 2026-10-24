@@ -1,4 +1,5 @@
-"""The compression preview: decode-in-place, structure scan, smart scan.
+"""The compression preview: decode-in-place, structure scan, smart scan,
+promote to slice.
 
 The main view always shows **raw** bytes. The toolbar's compression combo
 instead drives a parallel, view-only pipeline run over the current window, whose
@@ -9,8 +10,9 @@ structures.
 "Fails to decompress" is therefore the *signal*, not an error: these formats can
 only be decoded from a structure's first byte, so a failure means no structure
 starts here and the overlay simply hides. A structure that decodes completely
-can be made a real slice entry (File > New Slice from View), which is how a
-preview becomes editable.
+can be promoted into a real slice entry in one click (To Slice), or through the
+slice dialog (File > New Slice from View), which is how a preview becomes
+editable.
 """
 
 from __future__ import annotations
@@ -40,8 +42,10 @@ from celpix.core.context import (
 )
 from celpix.core.errors import Stage
 from celpix.pipeline import pipeline
+from celpix.pipeline.scan import WINDOW_GROWTH
 from celpix.plugins.base import NO_COMPRESSION, TilemapCodecPlugin, self_delimiting
 from celpix.plugins.builtins.lz16 import KEY_LZ16_ROWS
+from celpix.project.workspace import default_slice_name, slice_of
 from celpix.ui.decompress_overlay import Badge
 from celpix.ui.searchable_combo import fill_stage_combo
 
@@ -55,7 +59,7 @@ else:
 
 
 class CompressionMixin(_Host):
-    """The decompression preview, the structure scan and the smart scan.
+    """The decompression preview, the structure scans and promote-to-slice.
 
     A slice of :class:`~celpix.ui.main_window.window.MainWindow`, not a
     standalone object: it reads and writes the window's own widgets and its
@@ -76,6 +80,32 @@ class CompressionMixin(_Host):
             self._registry.plugins(Stage.COMPRESSION),
             selected or NO_COMPRESSION,
         )
+
+    def _on_promote_structure(self) -> None:
+        """One click: the structure in view becomes a slice entry.
+
+        Its extent is the structure's own end whenever the scheme has one: the
+        terminator or declared size, chased past the view window when it lies
+        there (:meth:`_present_pixel_overlay`). Only a scheme with no end marker
+        is bounded by the view window, where the decode ran out. No dialog: the
+        name is the generated one, and the slice reads its parent the way the
+        parent is read now.
+        """
+        src = self._slice_source()
+        if src is None or self._structure_extent is None:
+            return
+        entry, _doc = src
+        start, consumed = self._structure_extent
+        abs_off = self._slice_prefill_offset(start)
+        compression_id = self._compression_id()
+        slice_entry = slice_of(
+            entry,
+            default_slice_name(abs_off, consumed, compression_id),
+            abs_off,
+            consumed,
+            compression_id,
+        )
+        self._add_slice(slice_entry)
 
     def _refresh_overlay(self) -> None:
         """Feed the floating decompression preview, or hide it.
@@ -110,16 +140,23 @@ class CompressionMixin(_Host):
             self._refresh_structure_actions()
 
     def _refresh_structure_actions(self) -> None:
-        """Arm Jump-to-Next from the overlay's scan state.
+        """Arm Jump-to-Next / promote-to-slice from the overlay's scan state.
 
-        Armed only while a whole structure (known end) is in view. Kept
-        separate from :meth:`_refresh_overlay` because it is the single source
-        of truth for the button: a scan's blanket UI re-enable
-        (:meth:`_set_scan_ui`) must restore its real state through here rather
-        than leave it switched on. (``_structure_extent`` is what File > New
-        Slice from View reads — the same state, no button of its own.)
+        Jump is armed only while a whole structure (known end) is in view.
+        Promote arms on any extent worth recording — that structure, or a
+        stream-based scheme's window end — but also needs the view's positions
+        to be coordinates the new slice can be anchored at
+        (:meth:`_slice_source`).
+
+        Kept separate from :meth:`_refresh_overlay` because it is the single
+        source of truth for these two buttons: a scan's blanket UI re-enable
+        (:meth:`_set_scan_ui`) must restore their real state through here rather
+        than leave them switched on.
         """
         self._jump_next.setEnabled(self._next_structure is not None)
+        self._promote_button.setEnabled(
+            self._structure_extent is not None and self._slice_source() is not None
+        )
 
     def _present_overlay(self, compression_id: str | None) -> None:
         """The overlay body of :meth:`_refresh_overlay` (which owns the button
@@ -263,41 +300,79 @@ class CompressionMixin(_Host):
             f"{format_hex(len(window), None)} B window"
         ]
         consumed = ctx.get(KEY_COMPRESSED_SIZE)
+        complete = bool(consumed and ctx.get(KEY_DECOMPRESS_COMPLETE))
+        has_end = self_delimiting(plugin, inputs.get(Stage.COMPRESSION))
         badge = None
-        if consumed and ctx.get(KEY_DECOMPRESS_COMPLETE):
-            # The structure's own end was inside the window: report its true
-            # extent, and arm Jump-to-Next at the byte right after it.
+        pos = self._byte_position()
+        if not complete and has_end:
+            # The scheme has an end marker and the window cut the structure
+            # short of it. Its end is chased past the view by the scan's own
+            # rule (``structure_at``), so Jump to Next and the slice gestures
+            # take the whole structure rather than the window's piece of it -
+            # a strict decode of that piece fails. The chase starts one growth
+            # step past the window: the window itself was just decoded above.
+            #
+            # This runs on the GUI thread, on every refresh where the window
+            # cut a structure short, and is bounded only by CHASE_LIMIT: on
+            # padding the scheme decodes without erroring it reads the whole
+            # limit before giving up. Hence the wait cursor. A window that
+            # already reaches the end of the data leaves nothing to chase into.
+            data = self._doc.pixel_data
+            found = None
+            if pos + len(window) < len(data):
+                QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+                try:
+                    found = pipeline.structure_at(
+                        data,
+                        plugin,
+                        pos,
+                        len(window) * WINDOW_GROWTH,
+                        inputs=inputs.get(Stage.COMPRESSION),
+                        chase=has_end,
+                    )
+                finally:
+                    QApplication.restoreOverrideCursor()
+            if found is None:
+                badge = Badge(
+                    "end not found",
+                    "The stream breaks, the data ends, or 1 MiB of it\n"
+                    "passes before its end marker: probably not a\n"
+                    "structure, or a damaged one",
+                    warning=True,
+                )
+            else:
+                consumed, complete = found[1], True
+                badge = Badge(
+                    "ends past view",
+                    "The structure runs on past the view window\n"
+                    "The preview shows the part in view\n"
+                    "Jump to Next and To Slice take all of it",
+                )
+        if complete:
+            # The structure's own end was found: report its true extent, and
+            # arm Jump-to-Next at the byte right after it.
             parts.append(f"structure {format_hex(consumed, None)} B")
-            self._structure_extent = (self._byte_position(), consumed)
-            after = self._byte_position() + consumed
+            self._structure_extent = (pos, consumed)
+            after = pos + consumed
             if after < len(self._doc.pixel_data):
                 self._next_structure = after
-        elif self_delimiting(plugin, inputs.get(Stage.COMPRESSION)):
-            # The scheme has an end marker and this decode never reached it, so
-            # the window really did cut a structure short: a warning, with a fix.
-            badge = Badge(
-                "end not in view",
-                "The end marker is outside the view window, so the\n"
-                "preview stops at the window's end\n"
-                "Add rows or columns to decode more",
-                warning=True,
-            )
-        else:
+        elif not has_end:
             # A stream-based scheme has no end to find, in this window or any
             # other - so this is a statement of where the preview ends, not a
             # problem to fix. The window's end is then the only extent on offer,
-            # and it is what New Slice from View takes: `consumed` rather than
-            # the raw window size, so the slice ends on a whole packet the way
-            # the decoder read it. Jump-to-Next stays off - "the byte after this
-            # structure" means nothing when the structure had no end.
+            # and it is what To Slice and New Slice from View take: `consumed`
+            # rather than the raw window size, so the slice ends on a whole
+            # packet the way the decoder read it. Jump-to-Next stays off - "the
+            # byte after this structure" means nothing when the structure had no
+            # end.
             if consumed:
                 parts.append(f"slice {format_hex(consumed, None)} B")
                 self._structure_extent = (self._byte_position(), consumed)
             badge = Badge(
                 "end of view window",
                 "The scheme has no end marker, so decoding stops at\n"
-                "the view window's end. New Slice from View bounds\n"
-                "the slice there; widen the window or set a length",
+                "the view window's end. To Slice bounds the slice\n"
+                "there; widen the window or set a length",
             )
         rows16 = ctx.get(KEY_LZ16_ROWS)
         if rows16 is not None:
@@ -394,8 +469,9 @@ class CompressionMixin(_Host):
             )
             return
         data = self._doc.pixel_data
-        # Probe as many compressed bytes as one screenful decompresses to: a
-        # structure bigger than the view can show is not worth confirming here.
+        # Probe as many compressed bytes as one screenful decompresses to; a
+        # structure that runs past the probe is chased to its end, up to
+        # CHASE_LIMIT compressed bytes (``structure_at``).
         probe_bytes = max(
             1,
             self._columns.value() * self._view_rows() * self._doc.bytes_per_tile,

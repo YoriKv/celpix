@@ -442,14 +442,18 @@ def test_compression_overlay_badge_distinguishes_the_three_decode_states(
     # The preview looks equally finished whether the decompressor reached a
     # structure's end, ran out of window, or was never going to find an end at
     # all - so the status bar's badge is the only thing telling the three apart.
-    # The distinction that matters: a scheme *with* an end marker that missed it
-    # was cut short (amber, fixable by widening); a stream-based one simply
-    # decodes as far as it is fed (plain text, nothing to fix).
+    # The distinction that matters: a scheme *with* an end marker whose end is
+    # past the window has it found there (plain text: the structure is whole),
+    # one whose stream never reaches its end is no structure (amber), and a
+    # stream-based one simply decodes as far as it is fed (plain text).
     from celpix.plugins.builtins import lz_command, packbits
 
     tiles = bytes((i * 29 + 5) & 0xFF for i in range(32 * 4))
+    packed = lz_command.compress(tiles, big_endian_offsets=True)
     ended = tmp_path / "lz2.bin"
-    ended.write_bytes(lz_command.compress(tiles, big_endian_offsets=True) + bytes(64))
+    ended.write_bytes(packed + bytes(64))
+    cut = tmp_path / "cut.bin"
+    cut.write_bytes(packed[:60])
     endless = tmp_path / "packbits.bin"
     endless.write_bytes(packbits.compress(tiles))
 
@@ -460,12 +464,21 @@ def test_compression_overlay_badge_distinguishes_the_three_decode_states(
     assert window._overlay.isVisible()
     assert not window._overlay._badge.isVisible()  # terminator inside the window
 
-    # Same file, a window too small to hold the structure: now it *was* cut
-    # short, which is the warning case.
+    # Same file, a window too small to hold the structure: its end is found
+    # past the window, so the structure is still whole - not a warning.
     window._rows.setValue(1)
     window._columns.setValue(1)
     assert window._overlay._badge.isVisible()
-    assert window._overlay._badge.text() == "end not in view"
+    assert window._overlay._badge.text() == "ends past view"
+    assert window._overlay._badge.palette().color(QPalette.ColorRole.WindowText) != (
+        WARNING_INK
+    )
+
+    # The stream cut off before its end, in the window and in the file: the
+    # warning case.
+    window._load_pixel(str(cut))
+    window._compression.setCurrentIndex(window._compression.findData("compression.lz2"))
+    assert window._overlay._badge.text() == "end not found"
     assert window._overlay._badge.palette().color(QPalette.ColorRole.WindowText) == (
         WARNING_INK
     )
@@ -555,12 +568,12 @@ def test_lzw_scan_gate_and_badge_follow_the_bound_end_code(qtbot, tmp_path) -> N
     assert not window._scan_button.isEnabled()
     assert window._overlay._badge.text() == "end of view window"
 
-    # Bind an end code: now the scheme has an end to find, and a window that
-    # never reaches one was cut short.
+    # Bind an end code: now the scheme has an end to find, and a stream that
+    # runs out without one, here or past the window, is no whole structure.
     window._workspace.current.inputs = {"compression.lzw": {lzw.INPUT_END_CODE: 257}}
     window._refresh_overlay()
     assert window._scan_button.isEnabled()
-    assert window._overlay._badge.text() == "end not in view"
+    assert window._overlay._badge.text() == "end not found"
 
 
 def test_copier_header_is_detected_and_skipped(qtbot, tmp_path) -> None:

@@ -366,8 +366,7 @@ class InterpretationMixin(_Host):
         self._scan_button.setEnabled(False)
         self._scan_button.clicked.connect(self._on_scan)
         # Scan again, but only stop on a structure that plausibly holds tiles
-        # of the current pixel format (pipeline.looks_like_graphics). Making
-        # the structure in view a slice is File > New Slice from View.
+        # of the current pixel format (pipeline.looks_like_graphics).
         self._smart_scan_button = QPushButton("Smart Scan")
         self._smart_scan_button.setToolTip(
             "Scan forward for the next compressed structure that\n"
@@ -376,6 +375,15 @@ class InterpretationMixin(_Host):
         )
         self._smart_scan_button.setEnabled(False)
         self._smart_scan_button.clicked.connect(self._on_smart_scan)
+        # One click promotes the structure in view into a decompressed slice
+        # entry in the files list - the overlay preview made editable, with no
+        # dialog between (File > New Slice from View is the one with a dialog).
+        self._promote_button = QPushButton("To Slice")
+        self._promote_button.setToolTip(
+            "Add the structure in view as a decompressed slice"
+        )
+        self._promote_button.setEnabled(False)
+        self._promote_button.clicked.connect(self._on_promote_structure)
         # The compression badge speaks for the *preview* codec, bound on the
         # file on screen: what the overlay decodes with, what Scan hunts with,
         # and what a slice carved under that codec inherits.
@@ -384,11 +392,17 @@ class InterpretationMixin(_Host):
             "Used by the preview and by slices cut under it"
         )
         self._compression_inputs_badge.clicked.connect(self._inputs_current)
-        # The three buttons read the *view window* — hop past the structure in
-        # it, hunt forward from it — which a tilemap has not got, so they are
-        # gated as a group apart from the picker (``capability_sync._GATES``).
-        self._scan_tools = (self._jump_next, self._scan_button, self._smart_scan_button)
-        # The picker and the three buttons it drives travel together: they are
+        # The four buttons read the *view window* — hop past the structure in
+        # it, hunt forward from it, carve it out — which a tilemap has not got,
+        # so they are gated as a group apart from the picker
+        # (``capability_sync._GATES``).
+        self._scan_tools = (
+            self._jump_next,
+            self._scan_button,
+            self._smart_scan_button,
+            self._promote_button,
+        )
+        # The picker and the four buttons it drives travel together: they are
         # one feature, and the buttons with no codec to run would be furniture.
         self._compression_action = codecs.addWidget(
             _group(
@@ -398,6 +412,7 @@ class InterpretationMixin(_Host):
                 self._jump_next,
                 self._scan_button,
                 self._smart_scan_button,
+                self._promote_button,
                 tooltip="Preview the view decompressed with this codec",
             )
         )
