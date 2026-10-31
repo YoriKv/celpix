@@ -644,3 +644,37 @@ def test_a_chained_sample_map_names_the_corner_cell_it_always_has(
         dense=True,
     )[0]
     assert first == chain.source[corner]
+
+
+def test_the_captain_tsubasa_ii_project_reads_and_draws_its_title() -> None:
+    """The NES map whose backgrounds are block maps, two claims through the app's
+    own paths.
+
+    The opening script reads as Japanese through the dialogue font reached by its
+    binding, and types back to the same bytes: one byte a code, voiced kana as
+    single codes the alphabet names, controls with their operand counts.
+
+    The title is three hops deep — block numbers, a re-reading of the 17-byte
+    block table, the CHR window the picture record names — and each 2x2
+    quadrant takes its palette row from its block's attribute byte. That rule is
+    a project code format, and the row counts are what the console's attribute
+    table holds (768 of 768 against a trace of the title): a wrong shift or a
+    block's rows collapsed onto one would move them.
+    """
+    from collections import Counter
+
+    from celpix.project.documents import load_document
+
+    workspace, registry = _open("captain-tsubasa-ii/captain-tsubasa-ii.celpix")
+    body, exact = _read(
+        workspace, registry, "Dialogue — scripts $00-$0F (bank $03, $03:A020-BFFE)"
+    )
+    assert "はしるっ！[wait60] ブラジルゴールをめざし" in body
+    assert "おおぞら つばさくんが" in body
+    assert exact
+
+    ws = _workspace(workspace)
+    title = next(e for e in ws.entries if e.name.startswith("Picture $17 "))
+    doc = load_document(title, registry, ws).doc
+    assert len(doc.drawn_cells) == 768
+    assert Counter(c.palette_row for c in doc.drawn_cells) == {2: 724, 0: 32, 3: 12}

@@ -1,0 +1,16 @@
+# Game Gear CRAM — 32 entries of 12-bit BGR444, a little-endian word each:
+# the even CRAM byte is GGGGRRRR, the odd one 0000BBBB. The VDP latches the even
+# write and commits the colour on the odd one, so palettes sit in ROM in exactly
+# this byte order. Same codec/params as `bgr444`, a distinct id so the layout is
+# also filed under the machine that uses it — beside the Master System's 6-bit
+# `sms-6bpp`, the format a Game Gear palette is most often mistaken for.
+# See docs/rom-mapping/console-master-system.md §3.
+id = "preset.palette.gg-12bpp"
+name = "BGR444 (12-bit, Game Gear CRAM)"
+engine_id = "codec.palette.mask"
+category = "Sega"
+
+[params]
+bytes_per_entry = 2
+byte_order = "little"
+fields = ".... bbbb gggg rrrr"

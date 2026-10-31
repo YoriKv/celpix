@@ -127,7 +127,7 @@ def test_snes9x_without_ppu_block_raises() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Mesen / MesenCE (NES, SNES, Game Boy Color)
+# Mesen / MesenCE (NES, SNES, Game Boy Color, Master System, Game Gear)
 # ---------------------------------------------------------------------------
 
 _CGRAM_COLORS = [(0xF8, 0x00, 0x00), (0x00, 0xF8, 0x00), (0x00, 0x00, 0xF8)]
@@ -148,6 +148,7 @@ def _mesen_state(
     format_version: int = 4,
     records: bytes,
     compressed: bool = True,
+    rom: bytes = b"game",
 ) -> bytes:
     """A ``.mss`` state: header, a dummy zlib screenshot, ROM name, then the
     serialized record stream (optionally whole-blob zlib-compressed)."""
@@ -159,7 +160,7 @@ def _mesen_state(
     video = (
         _u32(16) + _u32(2) + _u32(2) + _u32(100) + _u32(len(screenshot)) + screenshot
     )
-    name = _u32(4) + b"game"
+    name = _u32(len(rom)) + rom
     if compressed:
         comp = zlib.compress(records)
         blob = b"\x01" + _u32(len(records)) + _u32(len(comp)) + comp
@@ -172,7 +173,7 @@ def test_mesen_snes_reads_cgram_by_label() -> None:
     cgram = _cgram_bytes(_CGRAM_COLORS)
     records = _mesen_records((b"ppu.vramaddress", b"\x00\x00"), (b"ppu.cgram", cgram))
     fmt, region = emustate.locate_palette(_mesen_state(records=records))
-    assert (fmt.id, fmt.console) == ("mesen", "NES / SNES / Game Boy Color")
+    assert fmt.id == "mesen"
     assert (region.count, region.preset_id) == (256, "preset.palette.bgr555")
     assert region.data == cgram
 
@@ -200,6 +201,41 @@ def test_mesen_dmg_state_without_color_records_raises() -> None:
     records = _mesen_records((b"ppu.bgPalette", b"\xe4"))
     with pytest.raises(emustate.StateError, match="Game Boy Color"):
         emustate.locate_palette(_mesen_state(console=1, records=records))
+
+
+# Mesen's VDP serialises 64 bytes of palette RAM whichever machine it emulates;
+# the second half here is the never-written tail a Master System leaves.
+_SMS_PALETTE_RAM = bytes(range(64))
+
+
+def test_mesen_game_gear_reads_all_64_bytes_as_12_bit_words() -> None:
+    records = _mesen_records((b"vdp.paletteRam", _SMS_PALETTE_RAM))
+    _, region = emustate.locate_palette(
+        _mesen_state(console=4, records=records, rom=b"Sonic (World).GG")
+    )
+    assert (region.count, region.preset_id) == (32, "preset.palette.gg-12bpp")
+    assert region.data == _SMS_PALETTE_RAM
+
+
+def test_mesen_master_system_reads_only_the_first_32_bytes() -> None:
+    # The ROM name is what tells the two apart: Mesen picks the machine by the
+    # extension alone, and a Master System CRAM read as words would be 16
+    # colours of garbage rather than an error. The core's RGB-converted copy
+    # comes first and is the same size, so it must not be taken for CRAM.
+    records = _mesen_records(
+        (b"vdp.internalPaletteRam", b"\xff" * 64), (b"vdp.paletteRam", _SMS_PALETTE_RAM)
+    )
+    _, region = emustate.locate_palette(
+        _mesen_state(console=4, records=records, rom=b"Alex Kidd.sms")
+    )
+    assert (region.count, region.preset_id) == (32, "preset.palette.sms-6bpp")
+    assert region.data == _SMS_PALETTE_RAM[:32]
+
+
+def test_mesen_sg1000_state_has_no_palette_ram_to_read() -> None:
+    records = _mesen_records((b"vdp.paletteRam", _SMS_PALETTE_RAM))
+    with pytest.raises(emustate.StateError, match="fixed palette"):
+        emustate.locate_palette(_mesen_state(console=4, records=records, rom=b"x.sg"))
 
 
 def test_mesen_handles_uncompressed_blob_and_legacy_header() -> None:

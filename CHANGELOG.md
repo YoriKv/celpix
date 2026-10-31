@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.2.17 - unreleased
+
+- Game Gear palette preset (BGR444, 12-bit) under Sega
+- Emulator State palettes read Mesen Master System and Game Gear save states
+
 ## v1.2.16 - 2026-10-24
 
 - Lots of improvements to compression, scan, and smart scan

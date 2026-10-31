@@ -27,8 +27,9 @@ through the pipeline. New emulators are added by appending to :data:`STATE_FORMA
 
 Scope note: these read the *console* palette RAM, which only some machines have.
 Game Boy Color states carry a palette (the original monochrome DMG has none, so a
-DMG state is reported as unsupported); Mega Drive states are read, but a Genesis
-Plus GX SMS/Game Gear state has a different layout and is not.
+DMG state is reported as unsupported). Master System and Game Gear states are
+read from Mesen; Mega Drive states are read from Genesis Plus GX, whose SMS/Game
+Gear state has a different layout and is not.
 """
 
 from __future__ import annotations
@@ -47,16 +48,21 @@ _NES_PRESET = "preset.palette.nes-indexed"
 _BGR555_PRESET = "preset.palette.bgr555"
 _BGR555_BE_PRESET = "preset.palette.bgr555-be"
 _GENESIS_PRESET = "preset.palette.genesis-9bpp"
+_SMS_PRESET = "preset.palette.sms-6bpp"
+_GG_PRESET = "preset.palette.gg-12bpp"
 
 # Native palette sizes (in colors). NES PPU palette RAM is 32 one-byte
 # master-palette indices; SNES CGRAM is 256 BGR555 colors; the GBC has 8 BG + 8
 # OBJ palettes of 4 colors (64 total); the GBA has 256 BG + 256 OBJ (512 total);
-# Genesis VDP CRAM is 64 9-bit colors (four 16-color palettes).
+# Genesis VDP CRAM is 64 9-bit colors (four 16-color palettes); Master System
+# and Game Gear CRAM are both 32 colors (background + sprite palette), one byte
+# each on the SMS and a 12-bit word each on the Game Gear.
 _NES_ENTRIES = 32
 _SNES_ENTRIES = 256
 _GBC_ENTRIES = 64
 _GBA_ENTRIES = 512
 _GENESIS_ENTRIES = 64
+_SMS_ENTRIES = 32
 
 
 class StateError(Exception):
@@ -253,6 +259,7 @@ def _snes9x_block(raw: bytes, name: bytes) -> bytes | None:
 
 # ConsoleType enum order in the Mesen source; index by the header's console id.
 _MESEN_CONSOLES = ("SNES", "Game Boy", "NES", "PC Engine", "SMS", "GBA", "WonderSwan")
+_MESEN_SMS = 4
 
 # Each CGB palette record is 8 palettes * 4 colors * 2 bytes.
 _GBC_RECORD_BYTES = 8 * 4 * 2
@@ -305,14 +312,16 @@ def _locate_mesen(data: bytes) -> PaletteRegion | None:
         pos += 4
         pos += 16  # video data: frame size, width, height, scale
         pos += 4 + _u32le(data, pos)  # compressed screenshot (length-prefixed)
-        pos += 4 + _u32le(data, pos)  # ROM name (length-prefixed)
+        name_len = _u32le(data, pos)
+        rom_name = data[pos + 4 : pos + 4 + name_len]
+        pos += 4 + name_len
         blob = _mesen_state_blob(data[pos:])
     except IndexError as exc:
         raise StateError("Mesen state is truncated or unsupported.") from exc
-    return _mesen_palette(blob, console)
+    return _mesen_palette(blob, console, rom_name)
 
 
-def _mesen_palette(blob: bytes, console: int) -> PaletteRegion:
+def _mesen_palette(blob: bytes, console: int, rom_name: bytes) -> PaletteRegion:
     if console == 0:  # SNES: CGRAM, 256 BGR555 colors
         cgram = _mesen_record(blob, b"cgram", _SNES_ENTRIES * 2)
         if cgram is None:
@@ -334,10 +343,36 @@ def _mesen_palette(blob: bytes, console: int) -> PaletteRegion:
                 "Color states do (the original DMG has no palette RAM)."
             )
         return PaletteRegion(_GBC_ENTRIES, _BGR555_PRESET, data=bg + obj)
+    if console == _MESEN_SMS:
+        return _mesen_sms_palette(blob, rom_name)
     name = _MESEN_CONSOLES[console] if console < len(_MESEN_CONSOLES) else "?"
     raise StateError(
-        f"Mesen {name} state: only NES, SNES and Game Boy Color states are supported."
+        f"Mesen {name} state: only NES, SNES, Game Boy Color, Master System and "
+        "Game Gear states are supported."
     )
+
+
+def _mesen_sms_palette(blob: bytes, rom_name: bytes) -> PaletteRegion:
+    """CRAM from Mesen's SMS core, which runs four machines under one console id.
+
+    The core picks the machine by nothing but the ROM's extension (``.gg`` is a
+    Game Gear, ``.sg`` an SG-1000, ``.col`` a ColecoVision, anything else a
+    Master System), and the header names that same file, so the same test says
+    which CRAM the record holds. The VDP serialises a 64-byte ``paletteRam``
+    for every machine: the Game Gear's 32 words fill it, the Master System's 32
+    bytes are its first half and the rest is never written."""
+    ext = rom_name.rpartition(b".")[2].lower() if b"." in rom_name else b""
+    if ext in (b"sg", b"col"):
+        raise StateError(
+            "Mesen SG-1000 / ColecoVision state: those machines draw from a fixed "
+            "palette and have no palette RAM to read."
+        )
+    cram = _mesen_record(blob, b"paletteram", _SMS_ENTRIES * 2)
+    if cram is None:
+        raise StateError("Mesen Master System state: no palette RAM record found.")
+    if ext == b"gg":
+        return PaletteRegion(_SMS_ENTRIES, _GG_PRESET, data=cram)
+    return PaletteRegion(_SMS_ENTRIES, _SMS_PRESET, data=cram[:_SMS_ENTRIES])
 
 
 # --- Genesis Plus GX (Sega Genesis / Mega Drive) ---------------------------
@@ -507,7 +542,12 @@ def _mgba_from_png(data: bytes) -> bytes | None:
 # trailing footer on a Game Boy state, so it is tried before mGBA's looser
 # raw-struct check as a matter of defensiveness, not necessity).
 STATE_FORMATS: tuple[StateFormat, ...] = (
-    StateFormat("mesen", "Mesen", "NES / SNES / Game Boy Color", _locate_mesen),
+    StateFormat(
+        "mesen",
+        "Mesen",
+        "NES / SNES / Game Boy Color / Master System / Game Gear",
+        _locate_mesen,
+    ),
     StateFormat("fceux", "FCEUX", "NES", _locate_fceux),
     StateFormat("snes9x", "Snes9x", "SNES", _locate_snes9x),
     StateFormat("gpgx", "Genesis Plus GX", "Genesis", _locate_gpgx),

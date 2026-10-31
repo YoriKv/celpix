@@ -1,5 +1,6 @@
-# BGR444 — 12-bit: B=bits 8-11, G=4-7, R=0-3, top nibble unused. Common on
-# arcade hardware; note the GBA's own palette is 15-bit BGR555, not this.
+# BGR444 — 12-bit: B=bits 8-11, G=4-7, R=0-3, top nibble unused. The Game Gear
+# (`gg-12bpp` files it under Sega), the Neo Geo Pocket Color and much arcade
+# hardware; note the GBA's own palette is 15-bit BGR555, not this.
 # Tools that list components from the low bits up spell this same layout
 # "R4G4B4", so a name met elsewhere reads backwards against ours, which are
 # MSB-first (docs/design/plugin-system.md §2). The id keeps that low-bits-up

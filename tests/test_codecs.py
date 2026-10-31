@@ -496,6 +496,18 @@ def test_a_low_bit_channel_reaches_full_white() -> None:
         assert engine.decode(data, params, PipelineContext()).color(0) == expect
 
 
+def test_game_gear_cram_puts_red_and_green_in_the_even_byte() -> None:
+    """Even CRAM byte `GGGGRRRR`, odd `0000BBBB` — the order the VDP latches in.
+
+    White and grey survive any nibble order, so only a primary pins it: read the
+    other way round, red decodes as blue, the swap one tile converter's GG writer
+    makes (docs/graphics-formats-reference/tile-converter-formats.md §8.3).
+    """
+    engine, params = _color_engine("preset.palette.gg-12bpp")
+    palette = engine.decode(b"\x0f\x00\xf0\x00\x00\x0f", params, PipelineContext())
+    assert [palette.color(i) for i in range(3)] == [0xFFFF0000, 0xFF00FF00, 0xFF0000FF]
+
+
 def test_the_game_boy_palette_register_is_four_shades_in_one_byte() -> None:
     """`BGP` = 0xE4 is the identity palette: white, light, dark, black.
 

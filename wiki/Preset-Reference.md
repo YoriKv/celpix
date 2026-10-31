@@ -309,7 +309,7 @@ byte_order = "little"
 | `rgb565`, `rgb565-be`; `grb333`, `grb333-be` | `rrrr rggg gggb bbbb`; `.... .ggg .rrr .bbb` |
 | `genesis-9bpp`, `bgr333`; `genesis-9bpp-le`, `bgr333-le` | `.... bbb. ggg. rrr.`, big-endian (Mega Drive CRAM); little-endian |
 | `pce-grb333` | `.... ...g ggrr rbbb`. PC Engine VCE |
-| `bgr444`, `bgr444-be`, `rgb444` | `.... bbbb gggg rrrr`; `rgb444` is `.... rrrr gggg bbbb`, WonderSwan Color |
+| `bgr444`, `bgr444-be`, `gg-12bpp`, `rgb444` | `.... bbbb gggg rrrr`; `gg-12bpp` is Game Gear CRAM; `rgb444` is `.... rrrr gggg bbbb`, WonderSwan Color |
 | `bgr222`, `sms-6bpp` | `..bb ggrr`. Master System CRAM |
 | `rgb888` | 3 bytes big-endian, one byte a channel |
 | `rgba8888`, `abgr8888`, `rgba8888-ps2` | `aaaa aaaa bbbb bbbb gggg gggg rrrr rrrr`: little-endian; big-endian; little-endian with `alpha_max = 128` |
