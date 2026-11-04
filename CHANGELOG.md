@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.2.18 - unreleased
+## v1.2.18 - 2026-11-04
 
 - SMB public sample project and some fixes related to that
 - Slices over the same bytes no longer undo each other's edits when written
