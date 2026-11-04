@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.2.18 - unreleased
+
+- SMB public sample project and some fixes related to that
+- Slices over the same bytes no longer undo each other's edits when written
+- Slices outside an iNES cart's CHR ROM can be written
+
 ## v1.2.17 - 2026-10-30
 
 - Game Gear palette preset (BGR444, 12-bit) under Sega

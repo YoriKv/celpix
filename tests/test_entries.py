@@ -4785,18 +4785,20 @@ def test_auto_focus_view_decides_where_opening_an_entry_leaves_focus(
     assert not other._auto_focus_view_action.isChecked()
 
 
-def test_a_slice_outside_the_parents_window_is_refused_rather_than_skipped(
+def test_a_slice_straddling_the_parents_window_is_refused_rather_than_skipped(
     qtbot, tmp_path, captured_alerts
 ) -> None:
     """The other way a fold fails to land: not the encoder refusing the bytes,
-    but the parent's buffer not reaching the slice at all.
+    but the parent's buffer reaching only part of the slice.
 
-    An iNES parent's window is its CHR ROM, so a slice anchored back in the PRG
-    banks is read from the file rather than cut from that buffer, and the buffer
-    has nowhere to fold its edits into. Skipped in silence it was the same loss
-    a refused encode is: the parent's write marked it saved with not a byte of
-    it written, and the next edit to the parent dropped its document with the
-    edit inside. So it is recorded as a refusal too, and reported as one.
+    An iNES parent's window is its CHR ROM. A slice wholly in the PRG banks is
+    written straight to the file (``slices-and-parents.md`` §4a), but one that
+    starts in the PRG and runs into the CHR is read from the file, and the
+    buffer holds only its tail: folded, half of it would be written twice.
+    Skipped in silence it was the same loss a refused encode is: the parent's
+    write marked it saved with not a byte of it written, and the next edit to
+    the parent dropped its document with the edit inside. So it is recorded as
+    a refusal too, and reported as one.
     """
     from celpix.core.context import KEY_SOURCE_OFFSET
 
@@ -4813,7 +4815,7 @@ def test_a_slice_outside_the_parents_window_is_refused_rather_than_skipped(
     # fall inside for the parent to hold its bytes at all.
     assert window._doc.pixel_ctx.get(KEY_SOURCE_OFFSET) == 16 + 0x4000
 
-    cut = window._workspace.add_slice(parent.path, "gfx", 0x100, 0x100)
+    cut = window._workspace.add_slice(parent.path, "gfx", 16 + 0x4000 - 0x80, 0x100)
     window._workspace.set_current(cut)
     window._apply_pixel_bytes(
         [(0, b"\x5a" * 32)], window._workspace.next_revision(), entry=cut

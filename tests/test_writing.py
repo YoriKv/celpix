@@ -389,6 +389,129 @@ def test_a_slice_edit_folds_at_its_offset_under_a_header_and_a_reshape(
     assert on_disk[0x400:0x600] == (bytes(0x200) + body)[0x400:0x600]
 
 
+# -- only what changed, and past the container's window (slices-and-parents §2a, §4a)
+
+
+def _edit(window, entry, at: int, data: bytes) -> None:
+    """Bytes ``data`` at ``at`` in ``entry``'s own buffer, as one undo step."""
+    window._apply_pixel_bytes(
+        [(at, data)], window._workspace.next_revision(), entry=entry
+    )
+
+
+def test_two_slices_over_the_same_bytes_each_write_their_own_edit(
+    qtbot, tmp_path
+) -> None:
+    """Two raw slices sharing bytes each hold a copy of them. Both edited, one
+    write folds both, and each lays down only what it changed, so the second
+    does not put its copy of the first's byte back."""
+    rom = tmp_path / "rom.bin"
+    image = bytes(range(256)) * 4
+    rom.write_bytes(image)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(rom))
+    ws = window._workspace
+    first = ws.add_slice(rom.as_posix(), "first", 0x100, 0x40, NO_COMPRESSION)
+    second = ws.add_slice(rom.as_posix(), "second", 0x120, 0x40, NO_COMPRESSION)
+    window._activate_entry(first)
+    window._activate_entry(second)
+    _edit(window, first, 0x30, b"\xaa")  # 0x130: inside second's copy too
+    _edit(window, second, 0x00, b"\xbb")  # 0x120: inside first's copy too
+
+    assert window._write_entry(first)
+    written = rom.read_bytes()
+    assert written[0x130] == 0xAA and written[0x120] == 0xBB
+    assert [k for k in range(len(image)) if written[k] != image[k]] == [0x120, 0x130]
+    assert not first.pixel_dirty and not second.pixel_dirty
+
+
+def _cart(qtbot, tmp_path):
+    """An iNES cart (16 KiB PRG, 8 KiB CHR) open in a window: the file entry
+    reads the CHR ROM alone. Returns (window, rom path, file, original bytes)."""
+    rom = tmp_path / "cart.nes"
+    body = bytes((i * 13) & 0xFF for i in range(16384 + 8192))
+    image = bytes([*b"NES\x1a", 1, 1, 0, 0]) + bytes(8) + body
+    rom.write_bytes(image)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_pixel(str(rom))
+    file = window._workspace.current
+    assert file.container_id == "container.ines"
+    return window, rom, file, image
+
+
+def test_a_slice_before_the_containers_window_writes_straight_to_the_file(
+    qtbot, tmp_path
+) -> None:
+    """A program-ROM slice of an iNES cart is outside the CHR window the file's
+    buffer holds, so its write goes straight to its own bytes in the file."""
+    window, rom, file, image = _cart(qtbot, tmp_path)
+    prg = window._workspace.add_slice(file.path, "prg", 0x110, 0x20, NO_COMPRESSION)
+    window._activate_entry(prg)
+    _edit(window, prg, 0x04, b"\x5a\x5b")
+
+    assert window._write_entry(prg)
+    written = rom.read_bytes()
+    assert [k for k in range(len(image)) if written[k] != image[k]] == [0x114, 0x115]
+    assert written[0x114:0x116] == b"\x5a\x5b"
+    assert not prg.pixel_dirty and not file.pixel_dirty
+
+
+def test_the_files_write_carries_its_slices_outside_the_window(qtbot, tmp_path) -> None:
+    """Writing the file writes everything in it: its CHR edit through the
+    container, and two overlapping program slices straight, each its own
+    change. An edit to the CHR buffer leaves those slices' documents alone,
+    since none of their bytes are in it."""
+    window, rom, file, image = _cart(qtbot, tmp_path)
+    ws = window._workspace
+    one = ws.add_slice(file.path, "one", 0x110, 0x20, NO_COMPRESSION)
+    two = ws.add_slice(file.path, "two", 0x118, 0x20, NO_COMPRESSION)
+    window._activate_entry(one)
+    window._activate_entry(two)
+    _edit(window, one, 0x10, b"\x01")  # 0x120, in two's copy as well
+    _edit(window, two, 0x00, b"\x02")  # 0x118, in one's copy as well
+    window._activate_entry(file)
+    _edit(window, file, 0x00, b"\x03")  # CHR byte 0: file offset 0x4010
+    assert one.doc is not None and one.pixel_dirty and two.doc is not None
+
+    assert window._write_entry(file)
+    written = rom.read_bytes()
+    changed = [k for k in range(len(image)) if written[k] != image[k]]
+    assert changed == [0x118, 0x120, 0x4010]
+    assert written[0x118] == 2 and written[0x120] == 1 and written[0x4010] == 3
+    assert not (one.pixel_dirty or two.pixel_dirty or file.pixel_dirty)
+
+
+def test_a_map_outside_the_window_draws_an_edit_to_the_art_it_is_bound_to(
+    qtbot, tmp_path
+) -> None:
+    """A map carved from the program banks keeps its document when the CHR
+    buffer is edited, since none of its bytes moved; but the art it borrows
+    from a CHR slice did move, even with that slice never opened, so its copy
+    is dropped and the map reads the new art."""
+    from celpix.core.capabilities import ContentKind
+    from celpix.project.configs import DEFAULT_TILEMAP_PRESET
+    from celpix.project.workspace import TileMode, TileSource
+
+    window, _rom, file, _image = _cart(qtbot, tmp_path)
+    ws = window._workspace
+    chr_start = 16 + 16384
+    sheet = ws.add_slice(file.path, "sheet", chr_start, 0x1000, NO_COMPRESSION)
+    grid = ws.add_slice(file.path, "map", 0x110, 0x40, NO_COMPRESSION)
+    grid.content_kind = ContentKind.TILEMAP
+    grid.tilemap_preset_id = DEFAULT_TILEMAP_PRESET
+    grid.tile_source = TileSource(mode=TileMode.ENTRY, entry=sheet)
+    window._activate_entry(grid)
+    art = bytes(grid.doc.pixel_data)
+    assert art[:0x1000] == file.doc.pixel_data[:0x1000]
+
+    window._activate_entry(file)
+    _edit(window, file, 0x00, bytes([art[0] ^ 0xFF]))
+    window._activate_entry(grid)
+    assert grid.doc.pixel_data[0] == art[0] ^ 0xFF
+
+
 # -- what a write reports and marks (docs/design/palette-editing.md §2) -------
 
 

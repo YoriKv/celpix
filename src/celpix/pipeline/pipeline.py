@@ -1676,6 +1676,44 @@ def encoded_pixel_bytes(doc: Document, reg: Registry) -> bytes:
     )
 
 
+def deposit_raw(
+    paths: tuple[str, ...],
+    offset: int,
+    length: int,
+    merge: Callable[[bytes], bytes],
+    pathway: Pathway,
+) -> None:
+    """Write ``length`` bytes at ``offset`` of the joined ``paths``, straight —
+    through no container — as ``merge`` makes them from what is there now.
+
+    For a slice lying wholly **outside** the window its file's container reads,
+    as `container.ines` reads only an NES cartridge's CHR ROM and every program
+    slice sits before it: the file's own write never carries those bytes, and a
+    container that only skips (never permutes) leaves them at their file
+    positions, so they are written where the slice read them
+    (``docs/design/slices-and-parents.md`` §4a). ``merge`` is handed the window
+    as the file holds it at the moment of writing, so what it lays down can be
+    the slice's changes alone. The files must already reach past the window;
+    a write that would grow them is refused.
+    """
+
+    def produce(target: WriteTarget) -> bytes:
+        existing = target.existing
+        if offset < 0 or offset + length > len(existing):
+            raise ValueError(
+                f"{format_hex(offset)}+{format_hex(length)} runs past the "
+                f"{format_hex(len(existing))} bytes the file holds"
+            )
+        window = merge(existing[offset : offset + length])
+        assert len(window) == length
+        return existing[:offset] + window + existing[offset + length :]
+
+    try:
+        _deposit(FileRef(paths), produce)
+    except (OSError, ValueError) as exc:
+        raise PipelineError(Stage.CONTAINER, pathway, str(exc), "write") from exc
+
+
 def _save_palette(doc: Document, reg: Registry) -> bytes | None:
     """Encode + write the palette, **splicing** only the entries that changed;
     returns the window as written, or None when nothing was.

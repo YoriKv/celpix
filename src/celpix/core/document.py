@@ -332,6 +332,14 @@ class Document:
     # ``tilemap_data``, so it keeps the same baseline for those instead.
     pixel_base_bytes: bytes = b""
     tilemap_base_bytes: bytes = b""
+    # A slice's own bytes as it last handed them to its owner: by a fold into
+    # the parent's buffer, or written straight to the file past the parent's
+    # window. None until then, meaning the read baseline above. What a fold
+    # lays down is only the bytes that changed since, so two slices over the
+    # same bytes each carry their own edits rather than the later one putting
+    # its stale copy of the other's back (``docs/design/slices-and-parents.md``
+    # §2a).
+    folded_bytes: bytes | None = None
     # The palette row a **named** row 0 means, for every kind of document: a
     # cell's row, a subsprite's, and a pinned region's on a pixel bank
     # (:mod:`celpix.core.paletteregions`). Each of those is a small number

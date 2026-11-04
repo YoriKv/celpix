@@ -1,0 +1,3118 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "kind": "composite",
+      "name": "Palette — ground, Mario",
+      "pieces": [
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 1,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 5,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 9,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 13,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 1,
+          "length": 3,
+          "entry_index": 59
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 21,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 25,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 29,
+          "length": 3,
+          "entry_index": 51
+        }
+      ],
+      "session": {
+        "pixel_preset_id": "preset.pixel.view-as-palette",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "default",
+        "compression_id": "compression.none",
+        "palette_view_preset_id": "preset.palette.nes-screen"
+      },
+      "view": {
+        "columns": 4,
+        "rows": 8,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0
+      }
+    },
+    {
+      "kind": "composite",
+      "name": "Palette — underground, Mario",
+      "pieces": [
+        {
+          "offset": 2,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 1,
+          "length": 3,
+          "entry_index": 52
+        },
+        {
+          "offset": 2,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 5,
+          "length": 3,
+          "entry_index": 52
+        },
+        {
+          "offset": 2,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 9,
+          "length": 3,
+          "entry_index": 52
+        },
+        {
+          "offset": 2,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 13,
+          "length": 3,
+          "entry_index": 52
+        },
+        {
+          "offset": 2,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 1,
+          "length": 3,
+          "entry_index": 59
+        },
+        {
+          "offset": 2,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 21,
+          "length": 3,
+          "entry_index": 52
+        },
+        {
+          "offset": 2,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 25,
+          "length": 3,
+          "entry_index": 52
+        },
+        {
+          "offset": 2,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 29,
+          "length": 3,
+          "entry_index": 52
+        }
+      ],
+      "session": {
+        "pixel_preset_id": "preset.pixel.view-as-palette",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "default",
+        "compression_id": "compression.none",
+        "palette_view_preset_id": "preset.palette.nes-screen"
+      },
+      "view": {
+        "columns": 4,
+        "rows": 8,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0
+      }
+    },
+    {
+      "kind": "composite",
+      "name": "Palette — castle, Mario",
+      "pieces": [
+        {
+          "offset": 3,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 1,
+          "length": 3,
+          "entry_index": 53
+        },
+        {
+          "offset": 3,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 5,
+          "length": 3,
+          "entry_index": 53
+        },
+        {
+          "offset": 3,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 9,
+          "length": 3,
+          "entry_index": 53
+        },
+        {
+          "offset": 3,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 13,
+          "length": 3,
+          "entry_index": 53
+        },
+        {
+          "offset": 3,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 1,
+          "length": 3,
+          "entry_index": 59
+        },
+        {
+          "offset": 3,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 21,
+          "length": 3,
+          "entry_index": 53
+        },
+        {
+          "offset": 3,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 25,
+          "length": 3,
+          "entry_index": 53
+        },
+        {
+          "offset": 3,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 29,
+          "length": 3,
+          "entry_index": 53
+        }
+      ],
+      "session": {
+        "pixel_preset_id": "preset.pixel.view-as-palette",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "default",
+        "compression_id": "compression.none",
+        "palette_view_preset_id": "preset.palette.nes-screen"
+      },
+      "view": {
+        "columns": 4,
+        "rows": 8,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0
+      }
+    },
+    {
+      "kind": "composite",
+      "name": "Palette — water, Mario",
+      "pieces": [
+        {
+          "offset": 0,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 1,
+          "length": 3,
+          "entry_index": 50
+        },
+        {
+          "offset": 0,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 5,
+          "length": 3,
+          "entry_index": 50
+        },
+        {
+          "offset": 0,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 9,
+          "length": 3,
+          "entry_index": 50
+        },
+        {
+          "offset": 0,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 13,
+          "length": 3,
+          "entry_index": 50
+        },
+        {
+          "offset": 0,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 1,
+          "length": 3,
+          "entry_index": 59
+        },
+        {
+          "offset": 0,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 21,
+          "length": 3,
+          "entry_index": 50
+        },
+        {
+          "offset": 0,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 25,
+          "length": 3,
+          "entry_index": 50
+        },
+        {
+          "offset": 0,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 29,
+          "length": 3,
+          "entry_index": 50
+        }
+      ],
+      "session": {
+        "pixel_preset_id": "preset.pixel.view-as-palette",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "default",
+        "compression_id": "compression.none",
+        "palette_view_preset_id": "preset.palette.nes-screen"
+      },
+      "view": {
+        "columns": 4,
+        "rows": 8,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0
+      }
+    },
+    {
+      "kind": "composite",
+      "name": "Palette — ground, Luigi",
+      "pieces": [
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 1,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 5,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 9,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 13,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 5,
+          "length": 3,
+          "entry_index": 59
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 21,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 25,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 29,
+          "length": 3,
+          "entry_index": 51
+        }
+      ],
+      "session": {
+        "pixel_preset_id": "preset.pixel.view-as-palette",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "default",
+        "compression_id": "compression.none",
+        "palette_view_preset_id": "preset.palette.nes-screen"
+      },
+      "view": {
+        "columns": 4,
+        "rows": 8,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0
+      }
+    },
+    {
+      "kind": "composite",
+      "name": "Palette — ground, fiery Mario",
+      "pieces": [
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 1,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 5,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 9,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 13,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 9,
+          "length": 3,
+          "entry_index": 59
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 21,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 25,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 29,
+          "length": 3,
+          "entry_index": 51
+        }
+      ],
+      "session": {
+        "pixel_preset_id": "preset.pixel.view-as-palette",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "default",
+        "compression_id": "compression.none",
+        "palette_view_preset_id": "preset.palette.nes-screen"
+      },
+      "view": {
+        "columns": 4,
+        "rows": 8,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0
+      }
+    },
+    {
+      "kind": "composite",
+      "name": "Palette — ground, day snow",
+      "pieces": [
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 1,
+          "length": 3,
+          "entry_index": 55
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 5,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 9,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 13,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 1,
+          "length": 3,
+          "entry_index": 59
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 21,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 25,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 29,
+          "length": 3,
+          "entry_index": 51
+        }
+      ],
+      "session": {
+        "pixel_preset_id": "preset.pixel.view-as-palette",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "default",
+        "compression_id": "compression.none",
+        "palette_view_preset_id": "preset.palette.nes-screen"
+      },
+      "view": {
+        "columns": 4,
+        "rows": 8,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0
+      }
+    },
+    {
+      "kind": "composite",
+      "name": "Palette — ground, night snow",
+      "pieces": [
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 1,
+          "length": 3,
+          "entry_index": 56
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 5,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 9,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 13,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 1,
+          "length": 3,
+          "entry_index": 59
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 21,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 25,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 29,
+          "length": 3,
+          "entry_index": 51
+        }
+      ],
+      "session": {
+        "pixel_preset_id": "preset.pixel.view-as-palette",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "default",
+        "compression_id": "compression.none",
+        "palette_view_preset_id": "preset.palette.nes-screen"
+      },
+      "view": {
+        "columns": 4,
+        "rows": 8,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0
+      }
+    },
+    {
+      "kind": "composite",
+      "name": "Palette — ground, mushroom treetops",
+      "pieces": [
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 1,
+          "length": 3,
+          "entry_index": 57
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 5,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 9,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 13,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 1,
+          "length": 3,
+          "entry_index": 59
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 21,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 25,
+          "length": 3,
+          "entry_index": 51
+        },
+        {
+          "offset": 1,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 29,
+          "length": 3,
+          "entry_index": 51
+        }
+      ],
+      "session": {
+        "pixel_preset_id": "preset.pixel.view-as-palette",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "default",
+        "compression_id": "compression.none",
+        "palette_view_preset_id": "preset.palette.nes-screen"
+      },
+      "view": {
+        "columns": 4,
+        "rows": 8,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0
+      }
+    },
+    {
+      "kind": "composite",
+      "name": "Palette — castle, Bowser",
+      "pieces": [
+        {
+          "offset": 3,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 1,
+          "length": 3,
+          "entry_index": 53
+        },
+        {
+          "offset": 3,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 5,
+          "length": 3,
+          "entry_index": 53
+        },
+        {
+          "offset": 3,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 9,
+          "length": 3,
+          "entry_index": 53
+        },
+        {
+          "offset": 3,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 13,
+          "length": 3,
+          "entry_index": 53
+        },
+        {
+          "offset": 3,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 1,
+          "length": 3,
+          "entry_index": 59
+        },
+        {
+          "offset": 3,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 1,
+          "length": 3,
+          "entry_index": 54
+        },
+        {
+          "offset": 3,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 25,
+          "length": 3,
+          "entry_index": 53
+        },
+        {
+          "offset": 3,
+          "length": 1,
+          "entry_index": 58
+        },
+        {
+          "offset": 29,
+          "length": 3,
+          "entry_index": 53
+        }
+      ],
+      "session": {
+        "pixel_preset_id": "preset.pixel.view-as-palette",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "default",
+        "compression_id": "compression.none",
+        "palette_view_preset_id": "preset.palette.nes-screen"
+      },
+      "view": {
+        "columns": 4,
+        "rows": 8,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0
+      }
+    },
+    {
+      "kind": "file",
+      "name": "smb.nes",
+      "path": "Super Mario Bros. (World).nes",
+      "container_id": "container.ines",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 16,
+        "rows": 16,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "CHR $0000 — sprite pattern table (256 tiles)",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 32784,
+      "slice_length": 4096,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 16,
+        "rows": 16,
+        "palette_row": 4,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Font — background tiles $00-$2F (0-9 A-Z, - × !, coin)",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 36880,
+      "slice_length": 768,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 16,
+        "rows": 3,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "font": {
+        "use": true,
+        "base": 0,
+        "chars": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ ",
+        "codes": [
+          {
+            "code": 40,
+            "text": "-"
+          },
+          {
+            "code": 41,
+            "text": "×"
+          },
+          {
+            "code": 43,
+            "text": "!"
+          }
+        ]
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Level tiles — background tiles $30-$EB (terrain, scenery, blocks, pipes, the castle, the title logo)",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 37648,
+      "slice_length": 3008,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 16,
+        "rows": 12,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Player — big (PlayerGraphicsTable $EE07): 1 standing; 2 walk (fast); 3 walk; 4 walk (slow); 5 skid; 6 jump; 7 swim (drifting); 8 swim (stroke); 9 climb up; 10 climb down; 11 crouch; 12 throw a fireball",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 28183,
+      "slice_length": 226,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 8,
+        "rows": 2,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-player",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-player": {
+          "set": "big"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Player — small (PlayerGraphicsTable $EE07): 1 standing; 2 walk (fast); 3 walk; 4 walk (slow); 5 skid; 6 jump; 7 swim (drifting); 8 swim (stroke); 9 climb up; 10 climb down; 11 killed",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 28183,
+      "slice_length": 226,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 8,
+        "rows": 2,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-player",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-player": {
+          "set": "small"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Player — growing and shrinking (PlayerGraphicsTable $EE07): 1 grow; 2 shrink",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 28183,
+      "slice_length": 226,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 5,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-player",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-player": {
+          "set": "change"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Enemy — Goomba: 1 walk; 2 stomped; 3 defeated",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 26446,
+      "slice_length": 319,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 4,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-enemy",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-enemy": {
+          "enemy": "goomba"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Enemy — Koopa Troopa, green: 1 walk; 2 in its shell; 3 waking in its shell; 4 upside down; 5 waking upside down",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 26446,
+      "slice_length": 319,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 6,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-enemy",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-enemy": {
+          "enemy": "koopa-green"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Enemy — Koopa Troopa, red: 1 walk; 2 in its shell; 3 waking in its shell; 4 upside down; 5 waking upside down",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 26446,
+      "slice_length": 319,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 6,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-enemy",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-enemy": {
+          "enemy": "koopa-red"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Enemy — Koopa Paratroopa: 1 green, hopping; 2 red, flying; 3 green, flying; 4 green, standing still",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 26446,
+      "slice_length": 319,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 4,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-enemy",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-enemy": {
+          "enemy": "paratroopa"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Enemy — Buzzy Beetle: 1 walk; 2 in its shell; 3 waking in its shell; 4 upside down; 5 waking upside down",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 26446,
+      "slice_length": 319,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 6,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-enemy",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-enemy": {
+          "enemy": "buzzy-beetle"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Enemy — Spiny and its egg: 1 walk; 2 egg; 3 defeated",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 26446,
+      "slice_length": 319,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 5,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-enemy",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-enemy": {
+          "enemy": "spiny"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Enemy — Hammer Bro: 1 walk; 2 throwing; 3 defeated",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 26446,
+      "slice_length": 319,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 5,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-enemy",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-enemy": {
+          "enemy": "hammer-bro"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Enemy — Blooper: 1 drifting; 2 contracted; 3 defeated",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 26446,
+      "slice_length": 319,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 3,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 3,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-enemy",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-enemy": {
+          "enemy": "blooper"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Enemy — Cheep-cheep: 1 grey, swimming; 2 red, swimming; 3 leaping; 4 defeated",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 26446,
+      "slice_length": 319,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 5,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 3,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-enemy",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-enemy": {
+          "enemy": "cheep-cheep"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Enemy — Piranha Plant: 1 biting",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 26446,
+      "slice_length": 319,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 2,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-enemy",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-enemy": {
+          "enemy": "piranha-plant"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Enemy — Podoboo: 1 rising; 2 falling",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 26446,
+      "slice_length": 319,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 2,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 2,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-enemy",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-enemy": {
+          "enemy": "podoboo"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Enemy — Lakitu: 1 flying; 2 throwing; 3 defeated",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 26446,
+      "slice_length": 319,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 3,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-enemy",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-enemy": {
+          "enemy": "lakitu"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Enemy — Bullet Bill: 1 flying; 2 leaving its cannon",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 26446,
+      "slice_length": 319,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 2,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-enemy",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-enemy": {
+          "enemy": "bullet-bill"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Enemy — Bowser: 1 walk; 2 breathing fire; 3 defeated",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 26446,
+      "slice_length": 319,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 4,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 9,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-enemy",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-enemy": {
+          "enemy": "bowser"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Enemy — Toad and the Princess: 1 Toad (worlds 1-7); 2 the Princess (world 8)",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 26446,
+      "slice_length": 319,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 2,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 2,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-enemy",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-enemy": {
+          "enemy": "retainer"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Enemy — Jumpspring: 1 bounce",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 26446,
+      "slice_length": 319,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 3,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-enemy",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-enemy": {
+          "enemy": "jumpspring"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Object — Power-ups ($E6BE): 1 mushroom; 2 fire flower; 3 star; 4 1-up mushroom",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 26318,
+      "slice_length": 20,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 8,
+        "rows": 2,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-object",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-object": {
+          "object": "powerup"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Object — Jumping coin ($E682): 1 spin",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 26258,
+      "slice_length": 4,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 4,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-object",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-object": {
+          "object": "coin"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Object — Floating scores ($849F): 1 100; 2 200; 3 400; 4 500; 5 800; 6 1000; 7 2000; 8 4000; 9 5000; 10 8000; 11 1-UP; 12 unused",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 1199,
+      "slice_length": 24,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 12,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-object",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-object": {
+          "object": "floatey"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Object — Flagpole scores ($E541): 1 5000; 2 2000; 3 800; 4 400; 5 100",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 25937,
+      "slice_length": 10,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 5,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-object",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-object": {
+          "object": "flagpole-score"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Object — Hammer ($E4C0): 1 spinning",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 25808,
+      "slice_length": 28,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 4,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-object",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-object": {
+          "object": "hammer"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Object — Castle flag ($D2CD): 1 castle flag",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 21213,
+      "slice_length": 12,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 1,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-object",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-object": {
+          "object": "star-flag"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Object — Explosion ($ED06): 1 explosion",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 27926,
+      "slice_length": 3,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 3,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-object",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-object": {
+          "object": "explosion"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Object — Bumped block ($EBCD): 1 bumped brick, above ground; 2 bumped brick, other areas",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 27613,
+      "slice_length": 4,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 2,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-object",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-object": {
+          "object": "block"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Code sprite — Fireball (operands in $ECF4-$ED01): 1 spinning",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 27908,
+      "slice_length": 14,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 4,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-code-sprite",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-code-sprite": {
+          "object": "fireball"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Code sprite — Bowser's flame (operands in $D227-$D234): 1 flame",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 21047,
+      "slice_length": 14,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 2,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 2,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-code-sprite",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-code-sprite": {
+          "object": "bowser-flame"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Code sprite — Vine (operands in $E455-$E48C): 1 top segment; 2 segment",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 25701,
+      "slice_length": 56,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 2,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-code-sprite",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-code-sprite": {
+          "object": "vine"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Code sprite — Flagpole flag (operands in $E571-$E589): 1 flag",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 25985,
+      "slice_length": 25,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 1,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-code-sprite",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-code-sprite": {
+          "object": "flag"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Code sprite — Lift (operands in $E5F4-$E604): 1 lift; 2 lift, castle and hard mode; 3 cloud",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 26116,
+      "slice_length": 17,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 3,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-code-sprite",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-code-sprite": {
+          "object": "lift"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Code sprite — Small lift (operands in $ED69-$ED71): 1 lift",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 28025,
+      "slice_length": 9,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 1,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-code-sprite",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-code-sprite": {
+          "object": "small-lift"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Code sprite — Air bubble (operands in $EDFC-$EE02): 1 bubble",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 28172,
+      "slice_length": 7,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 1,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 3,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-code-sprite",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-code-sprite": {
+          "object": "bubble"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Code sprite — Brick chunks (operands in $EC53-$EC64): 1 brick chunk; 2 brick chunk, end of a castle",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 27747,
+      "slice_length": 18,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 8,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "format.tilemap.smb-code-sprite",
+      "palette_row_base": 4,
+      "inputs": {
+        "format.tilemap.smb-code-sprite": {
+          "object": "brick-chunks"
+        }
+      },
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Sprite 0 — status bar split marker (OAM record $8FCB)",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 4059,
+      "slice_length": 4,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.nes-2bpp",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none"
+      },
+      "view": {
+        "columns": 1,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0,
+        "frame_align_x": "left",
+        "frame_align_y": "top",
+        "transparent_zero": true
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      },
+      "content_kind": "tilemap",
+      "tilemap_preset_id": "preset.tilemap.nes-oam",
+      "palette_row_base": 4,
+      "tile_source": {
+        "mode": "entry",
+        "entry_index": 11
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Palette — water (PPU $3F00, 32 colours)",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 3255,
+      "slice_length": 32,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.view-as-palette",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none",
+        "palette_view_preset_id": "preset.palette.nes-indexed"
+      },
+      "view": {
+        "columns": 4,
+        "rows": 8,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Palette — ground (PPU $3F00, 32 colours)",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 3291,
+      "slice_length": 32,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.view-as-palette",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none",
+        "palette_view_preset_id": "preset.palette.nes-indexed"
+      },
+      "view": {
+        "columns": 4,
+        "rows": 8,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Palette — underground (PPU $3F00, 32 colours)",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 3327,
+      "slice_length": 32,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.view-as-palette",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none",
+        "palette_view_preset_id": "preset.palette.nes-indexed"
+      },
+      "view": {
+        "columns": 4,
+        "rows": 8,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Palette — castle (PPU $3F00, 32 colours)",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 3363,
+      "slice_length": 32,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.view-as-palette",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none",
+        "palette_view_preset_id": "preset.palette.nes-indexed"
+      },
+      "view": {
+        "columns": 4,
+        "rows": 8,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Palette — Bowser (sprite row 1) (PPU $3F14, 4 colours)",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 3423,
+      "slice_length": 4,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.view-as-palette",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none",
+        "palette_view_preset_id": "preset.palette.nes-indexed"
+      },
+      "view": {
+        "columns": 4,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Palette — day snow (background row 0) (PPU $3F00, 4 colours)",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 3399,
+      "slice_length": 4,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.view-as-palette",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none",
+        "palette_view_preset_id": "preset.palette.nes-indexed"
+      },
+      "view": {
+        "columns": 4,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Palette — night snow (background row 0) (PPU $3F00, 4 colours)",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 3407,
+      "slice_length": 4,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.view-as-palette",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none",
+        "palette_view_preset_id": "preset.palette.nes-indexed"
+      },
+      "view": {
+        "columns": 4,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Palette — mushroom (background row 0) (PPU $3F00, 4 colours)",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 3415,
+      "slice_length": 4,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.view-as-palette",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none",
+        "palette_view_preset_id": "preset.palette.nes-indexed"
+      },
+      "view": {
+        "columns": 4,
+        "rows": 1,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Palette — backdrop colours by area type (BackgroundColors)",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 1503,
+      "slice_length": 8,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.view-as-palette",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none",
+        "palette_view_preset_id": "preset.palette.nes-indexed"
+      },
+      "view": {
+        "columns": 4,
+        "rows": 2,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      }
+    },
+    {
+      "kind": "slice",
+      "name": "Palette — player colours: Mario, Luigi, fiery (PlayerColors)",
+      "path": "Super Mario Bros. (World).nes",
+      "slice_offset": 1511,
+      "slice_length": 12,
+      "compression_id": "compression.none",
+      "session": {
+        "pixel_preset_id": "preset.pixel.view-as-palette",
+        "palette_preset_id": "preset.palette.nes-screen",
+        "palette_mode": "entry",
+        "compression_id": "compression.none",
+        "palette_view_preset_id": "preset.palette.nes-indexed"
+      },
+      "view": {
+        "columns": 4,
+        "rows": 3,
+        "palette_row": 0,
+        "offset": 0,
+        "byte_nudge": 0,
+        "block_columns": 1,
+        "block_rows": 1,
+        "block_order": "row",
+        "two_dimensional": false,
+        "bitmap_width": 0
+      },
+      "palette": {
+        "entry": 0,
+        "offset": 0
+      }
+    }
+  ],
+  "current": 14
+}

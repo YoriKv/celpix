@@ -34,7 +34,8 @@ from typing import TYPE_CHECKING
 from celpix.core.document import Document
 from celpix.core.errors import Pathway, PipelineError
 from celpix.pipeline import pipeline
-from celpix.plugins.base import NO_COMPRESSION
+from celpix.plugins.base import NO_COMPRESSION, NO_RESHAPE
+from celpix.project.diskchanges import merge_bytes
 from celpix.project.workspace import Entry, EntryKind, reorders_bytes, unavailable
 from celpix.ui.widgets import confirm_destructive, counted
 
@@ -442,6 +443,7 @@ class WritingMixin(_Host):
         if entry.kind is EntryKind.SLICE and wrote_pixel:
             entry.fold_refused = None  # its own write just put the bytes down
         if record.pixel and entry.kind in (EntryKind.FILE, EntryKind.PALETTE):
+            self._write_past_window(entry)
             self._mark_region_saved(entry)
             self._report_refused_folds(entry)
         if not (wrote_pixel or record.palette):
@@ -703,8 +705,8 @@ class WritingMixin(_Host):
         refuse one: a re-encoded stream that no longer fits its slot, a
         **view-only** slice — a stage it reads through has no write half, which
         its own Write refuses, so the parent's must not carry it out — a slice
-        this buffer does not reach — anchored before the window the parent's
-        container opened on the file, or running past the end of it — a parent
+        reaching partly outside this buffer, before the window the parent's
+        container opened on the file or past its end — a parent
         that is a **map**, whose own bytes are its cells and are written from
         them, and a child owed folds of its own that has no document and will
         not open, whose buffer is the only way up for the edits nested in it.
@@ -715,6 +717,14 @@ class WritingMixin(_Host):
         document it has, with everything nested under it, and the write says
         so. Not re-attempted at every read for the reason above; the next write
         of either side tries again.
+
+        A slice lying **wholly** outside a window its container only skips to
+        (:meth:`_lies_past_window`) is neither folded nor refused: its bytes are
+        in the file, not in this buffer, and the parent's write puts them there
+        directly (:meth:`_write_past_window`).
+
+        **Only what a slice changed is laid down** (:meth:`_changes_over`), so
+        two slices over the same bytes do not undo each other's edits.
         """
         if not self._can_fold_into(parent) or id(parent) in self._folding:
             return []
@@ -738,6 +748,124 @@ class WritingMixin(_Host):
         """Whether ``parent`` is a kind with slices, and has a buffer to hold them."""
         kinds = (EntryKind.FILE, EntryKind.PALETTE, EntryKind.SLICE)
         return parent.kind in kinds and parent.doc is not None
+
+    @staticmethod
+    def _folded_base(child: Entry) -> bytes | None:
+        """What ``child``'s owner last got from it, in the bytes a fold lays
+        down — or None where those bytes do not line up with its own.
+
+        Its last fold or straight write (:attr:`~celpix.core.document.Document.
+        folded_bytes`), else what it was read from. Only a slice whose bytes
+        are its file's bytes in place has one: under a compressor or a reshape
+        the bytes laid down are an encoding, where one changed pixel can move
+        every byte after it, so the whole window is the change.
+        """
+        doc = child.doc
+        assert doc is not None
+        cfg = doc.data_config
+        if cfg.compression_id != NO_COMPRESSION or cfg.reshape_id != NO_RESHAPE:
+            return None
+        if doc.folded_bytes is not None:
+            return doc.folded_bytes
+        return doc.tilemap_base_bytes if doc.is_tilemap else doc.pixel_base_bytes
+
+    def _changes_over(self, child: Entry, shaped: bytes, current: bytes) -> bytes:
+        """``current`` — the owner's bytes under ``child``'s window — with only
+        what ``child`` changed since it last handed them over laid on top.
+
+        Two slices can read the same bytes — readings of one table through
+        several formats, one window inside another — and each holds its own
+        copy. Laying a whole copy down puts the other's edits back the way the
+        file had them, so whichever folds second silently undoes the first and
+        both then read saved. A byte both changed takes this one's, the later
+        fold, as a second edit of one byte would. Where the bytes do not line
+        up (:meth:`_folded_base`) the whole window is the change.
+        """
+        base = self._folded_base(child)
+        if base is None or not len(base) == len(shaped) == len(current):
+            return shaped
+        return merge_bytes(base, shaped, current).data
+
+    def _lies_past_window(self, child: Entry, parent: Entry) -> bool:
+        """Whether ``child`` is a slice of ``parent``'s file lying wholly outside
+        the window ``parent``'s container reads, at bytes that stay put.
+
+        `container.ines` reads an NES cartridge's CHR ROM alone, so every slice of
+        its program banks sits before the buffer, with nothing to fold into. A
+        container that only skips leaves those bytes where they are in the file,
+        so they can be written there directly (:meth:`_write_past_window`). One
+        that permutes, a reshape or a decompressor does not: the slice's offset
+        is then a position in the parent's buffer, not in the file. A slice
+        reaching *into* the window still folds, and is refused when it runs
+        past it, since half of it would be written twice.
+        """
+        doc = parent.doc
+        if (
+            child.kind is not EntryKind.SLICE
+            or child.parent_kind is EntryKind.SLICE
+            or parent.kind not in (EntryKind.FILE, EntryKind.PALETTE)
+            or doc is None
+            or doc.is_tilemap
+            or child.slice_length is None
+            or reorders_bytes(parent, self._registry)
+        ):
+            return False
+        start = child.slice_offset - doc.anchor_base
+        return start + child.slice_length <= 0 or start >= len(doc.pixel_data)
+
+    def _write_past_window(self, root: Entry) -> None:
+        """Write each of ``root``'s slices outside its container's window that
+        holds unsaved bytes straight into the file, as part of ``root``'s write.
+
+        A write of a file writes everything in it (``slices-and-parents.md``
+        §4), and these are in the file though not in its buffer. Each writes only
+        what it changed (:meth:`_changes_over`) into the bytes as the file holds
+        them then. Called after ``root``'s own write and before
+        :meth:`_mark_region_saved`, which marks clean what this put down and
+        leaves a slice it could not write dirty, its reason recorded for
+        :meth:`_report_refused_folds`.
+        """
+        if root.doc is None:
+            return
+        for child in self._workspace.children_of(root):
+            if not self._lies_past_window(child, root):
+                continue
+            if not (child.pixel_dirty or child in root.pending_folds):
+                continue
+            if child.doc is None:
+                continue  # its edits went with its document; nothing to write
+            if not child.doc.data_config.write_enabled:
+                child.fold_refused = (
+                    "is view-only: a stage it reads through cannot write back"
+                )
+                continue
+            try:
+                if child.pending_folds:
+                    self._fold_slice_edits_into(child)
+                encode = (
+                    pipeline.encoded_tilemap_bytes
+                    if child.doc.is_tilemap
+                    else pipeline.encoded_pixel_bytes
+                )
+                shaped = encode(child.doc, self._registry)
+                pipeline.deposit_raw(
+                    child.paths,
+                    child.slice_offset,
+                    len(shaped),
+                    lambda current, c=child, s=shaped: self._changes_over(
+                        c, s, current
+                    ),
+                    Pathway.TILEMAP if child.doc.is_tilemap else Pathway.PIXEL,
+                )
+            except PipelineError as exc:
+                child.fold_refused = (
+                    f"could not be written to {Path(child.path).name}: {exc}"
+                )
+                continue
+            child.doc.folded_bytes = shaped
+            child.fold_refused = None
+            root.pending_folds.discard(child)
+            self._note_written(child.paths)
 
     def _fold_children(self, parent: Entry, also: Entry | None) -> list[Entry]:
         """The body of :meth:`_fold_slice_edits_into`, with ``parent`` marked as
@@ -798,6 +926,13 @@ class WritingMixin(_Host):
                     "is view-only: a stage it reads through cannot write back"
                 )
                 continue
+            if self._lies_past_window(child, parent):
+                # Not in this buffer and never will be: the parent's write puts
+                # it straight into the file (:meth:`_write_past_window`), and
+                # until then what it owes stays owed.
+                if child in owed:
+                    still_owed.add(child)
+                continue
             try:
                 # A map carved from the file folds its *cells*: its pixel buffer is
                 # the art it borrows through its binding, which belongs to another
@@ -827,7 +962,9 @@ class WritingMixin(_Host):
                     "in it to fold these bytes into"
                 )
                 continue
-            parent.doc.replace_bytes(start, shaped)
+            current = parent.doc.pixel_data[start : start + len(shaped)]
+            parent.doc.replace_bytes(start, self._changes_over(child, shaped, current))
+            child.doc.folded_bytes = shaped
             child.fold_refused = None
             folded.append(child)
         parent.pending_folds.clear()
@@ -932,8 +1069,16 @@ class WritingMixin(_Host):
                 continue
             if child.fold_refused is not None:
                 continue
+            if self._lies_past_window(child, entry):
+                # Outside this buffer, so an edit to it moved none of their
+                # bytes; and their own edits are in no buffer but their own.
+                continue
+            # Whether or not it has a document: a map bound to it holds a copy
+            # of its art either way, and that copy is what just went stale. A
+            # map outside the window keeps its document, so this is the only
+            # thing that tells it.
+            self._drop_bound_copies(child)
             if child.doc is not None:
-                self._drop_bound_copies(child)
                 previous = child.doc
                 if (
                     child.palette_dirty
@@ -1168,6 +1313,8 @@ class WritingMixin(_Host):
                 return False
         below = entry
         for link in chain:
+            if self._lies_past_window(below, link):
+                break  # not in the file's buffer: its write puts it down, below
             folded = self._fold_slice_edits_into(link, also=below)
             if below not in folded:
                 self._alert(
@@ -1185,7 +1332,15 @@ class WritingMixin(_Host):
             self._alert_view_only(root)
             return False
         self._note_written(root.paths)
+        self._write_past_window(root)
         self._mark_region_saved(root)
+        if below is not root and below.fold_refused is not None:
+            # Its own write, straight to the file, is the one that failed.
+            self._alert(
+                f"{below.name} could not be written: it {below.fold_refused}.",
+                title="celPix - write",
+            )
+            return False
         self._report_refused_folds(root)
         return True
 
