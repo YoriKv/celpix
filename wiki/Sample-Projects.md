@@ -1,8 +1,15 @@
 # Sample Projects
 
+**Contents**
+
+- [Tactics Ogre: The Knight of Lodis (USA)](#tactics-ogre-the-knight-of-lodis-usa)
+- [Super Mario Bros. (World)](#super-mario-bros-world)
+
 ## [Tactics Ogre: The Knight of Lodis (USA)](https://github.com/YoriKv/celpix/tree/main/sample-project-public/gba-tactics-ogre)
 
 [![Tactics Ogre: The Knight of Lodis (USA)](https://raw.githubusercontent.com/YoriKv/celpix/main/sample-project-public/gba-tactics-ogre/screenshot.png)](https://github.com/YoriKv/celpix/tree/main/sample-project-public/gba-tactics-ogre)
+
+**Project folder:** [`sample-project-public/gba-tactics-ogre`](https://github.com/YoriKv/celpix/tree/main/sample-project-public/gba-tactics-ogre)
 
 The 122 character portraits, editable and writable back to the ROM.
 
@@ -20,6 +27,8 @@ and cutscenes show a 48×48 one that's kept in a second archive.
 ## [Super Mario Bros. (World)](https://github.com/YoriKv/celpix/tree/main/sample-project-public/smb)
 
 [![Super Mario Bros. (World)](https://raw.githubusercontent.com/YoriKv/celpix/main/sample-project-public/smb/screenshot.png)](https://github.com/YoriKv/celpix/tree/main/sample-project-public/smb)
+
+**Project folder:** [`sample-project-public/smb`](https://github.com/YoriKv/celpix/tree/main/sample-project-public/smb)
 
 Every sprite the game draws, as 36 [sprite maps](Sprites) with 113 animations.
 Each piece's tile can be changed and written back to the ROM.
