@@ -5,6 +5,7 @@ name: Release
 #   - celpix-win.zip        (portable Windows app folder, zipped)
 #   - celpix-linux.tar.gz   (portable Linux app folder, tarred)
 #   - celpix-x86_64.AppImage (+ .zsync, the delta-update index it points at)
+#   - celpix_<version>_all.deb (native Debian package on the system's Python + Qt)
 #   - celpix-mac-arm64.zip  (macOS .app bundle, Apple Silicon)
 #   - celpix-mac-intel.zip  (macOS .app bundle, Intel)
 # The release body is the matching `## v<version>` section of CHANGELOG.md
@@ -81,7 +82,8 @@ jobs:
 
       # Split by OS to spell the interpreter the way each runner image
       # guarantees it (`python` on Windows, `python3` elsewhere), and because
-      # only Linux also packs an AppImage; only the matching step runs.
+      # only Linux also packs the AppImage and the .deb; only the matching step
+      # runs.
       # build.py needs nothing but the stdlib and uv.
       - name: Build app (Windows)
         if: runner.os == 'Windows'
@@ -93,7 +95,7 @@ jobs:
 
       - name: Build app (Linux)
         if: runner.os == 'Linux'
-        run: python3 packaging/build.py --archive --appimage
+        run: python3 packaging/build.py --archive --appimage --deb
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -104,6 +106,7 @@ jobs:
             dist/celpix-*.tar.gz
             dist/celpix-*.AppImage
             dist/celpix-*.AppImage.zsync
+            dist/celpix_*.deb
           if-no-files-found: error
 
   release:

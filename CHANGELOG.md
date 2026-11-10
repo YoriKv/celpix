@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.2.19 - unreleased
+
+- Native Debian package (`.deb`) for Debian 13 and newer
+
 ## v1.2.18 - 2026-11-04
 
 - SMB public sample project and some fixes related to that

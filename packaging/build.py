@@ -8,6 +8,7 @@ release ships — there is no second copy of the flags to drift out of sync.
     python3 packaging/build.py             # -> dist/celpix (or dist/celpix.app)
     python3 packaging/build.py --archive   # ... plus the release archive
     python3 packaging/build.py --appimage  # ... plus the AppImage (Linux only)
+    python3 packaging/build.py --deb       # ... plus the native Debian package
 
 PyInstaller freezes the interpreter it runs under, so the build always targets
 the OS it runs on and there is no cross-compiling: build the Windows app from
@@ -22,6 +23,8 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import hashlib
+import io
 import os
 import platform
 import plistlib
@@ -56,6 +59,33 @@ APPIMAGETOOL_URL = (
     "https://github.com/AppImage/appimagetool/releases/download/"
     "{version}/appimagetool-{arch}.AppImage"
 )
+
+# The native Debian package runs the plain sources on the system's Python and
+# PySide6, so its dependencies are pyproject's, spelled as Debian packages. Only
+# the three Qt modules the app imports: Debian splits PySide6 per module.
+# python3-pyside6 6.8 is Debian 13 (trixie)'s, which sets the floor; Ubuntu LTS
+# releases up to 24.04 ship no PySide6 at all.
+DEB_MAINTAINER = "Yori Kvitchko <yori.kvitchko@gmail.com>"
+DEB_DEPENDS = ", ".join(
+    [
+        "python3 (>= 3.10)",
+        # tomllib is stdlib from 3.11; tomli is its backport, as in pyproject.
+        "python3 (>= 3.11) | python3-tomli",
+        *(
+            f"python3-pyside6.{mod} (>= 6.8)"
+            for mod in ("qtcore", "qtgui", "qtwidgets")
+        ),
+    ]
+)
+# Without it Qt still runs on a Wayland session, through XWayland.
+DEB_RECOMMENDS = "qt6-wayland"
+DEB_DESCRIPTION = """\
+Graphics viewer and editor for romhacking and research
+ celPix finds, views and edits the graphics inside retro-game ROMs and dumps.
+ It reads a wide range of pixel and palette formats, decompresses the common
+ console compression schemes, and writes edited pixels and palettes back to
+ the original file."""
+DEB_PYTHON_DIR = f"usr/lib/python3/dist-packages/{APP_NAME}"
 
 # PyInstaller stamps LSMinimumSystemVersion from the build Python's own
 # deployment target (11.0 on arm64), but the app's real floor is Qt's: PySide6
@@ -128,6 +158,11 @@ def appimage_path() -> Path:
     """The AppImage asset. No version in the name: the embedded update
     information points at the latest release's asset of this exact name."""
     return DIST / f"{APP_NAME}-{platform.machine()}.AppImage"
+
+
+def deb_path() -> Path:
+    """The Debian package, under Debian's own ``name_version_arch`` scheme."""
+    return DIST / f"{APP_NAME}_{read_version()}_all.deb"
 
 
 def launcher_path() -> Path:
@@ -267,6 +302,21 @@ def release_date(version: str) -> str:
     return match.group(1) if match else datetime.date.today().isoformat()
 
 
+def stamped_appdata() -> str:
+    """The AppStream metadata with this version's ``<releases>`` entry added.
+
+    Stamped at build time rather than kept in the XML, so a release never has
+    to edit the metadata to keep it honest.
+    """
+    version = read_version()
+    appdata = (LINUX_PACKAGING / f"{APP_ID}.appdata.xml").read_text(encoding="utf-8")
+    releases = (
+        f'  <releases>\n    <release version="{version}" '
+        f'date="{release_date(version)}"/>\n  </releases>\n'
+    )
+    return appdata.replace("</component>", releases + "</component>")
+
+
 def assemble_appdir(*, dry_run: bool) -> Path:
     """Lay the frozen app out as an AppDir for appimagetool.
 
@@ -298,20 +348,12 @@ def assemble_appdir(*, dry_run: bool) -> Path:
     ):
         shutil.copy2(APP_ICON, target)
 
-    # The version is stamped here rather than kept in the XML, so a release
-    # never has to edit the metadata to keep it honest. The legacy .appdata.xml
-    # name, not .metainfo.xml: it is the only one appimagetool finds and the
-    # AppImage catalog's lint validates.
-    version = read_version()
-    appdata_name = f"{APP_ID}.appdata.xml"
-    appdata = (LINUX_PACKAGING / appdata_name).read_text(encoding="utf-8")
-    releases = (
-        f'  <releases>\n    <release version="{version}" '
-        f'date="{release_date(version)}"/>\n  </releases>\n'
-    )
-    appdata = appdata.replace("</component>", releases + "</component>")
+    # The legacy .appdata.xml name, not .metainfo.xml: it is the only one
+    # appimagetool finds and the AppImage catalog's lint validates.
     (share / "metainfo").mkdir()
-    (share / "metainfo" / appdata_name).write_text(appdata, encoding="utf-8")
+    (share / "metainfo" / f"{APP_ID}.appdata.xml").write_text(
+        stamped_appdata(), encoding="utf-8"
+    )
 
     apprun = appdir / "AppRun"
     # The AppImage runtime sets APPDIR; the fallback lets an extracted AppDir
@@ -367,6 +409,191 @@ def make_appimage(*, dry_run: bool) -> Path:
     return output
 
 
+def deb_copyright() -> str:
+    """``/usr/share/doc/celpix/copyright`` in Debian's machine-readable format.
+
+    The bundled icon font is Apache-2.0, which Debian keeps in common-licenses;
+    MIT is not there, so its text goes in whole.
+    """
+    license_text = (REPO_ROOT / "LICENSE").read_text(encoding="utf-8")
+    holder = re.search(r"^Copyright \(c\) (.+)$", license_text, re.M)
+    if not holder:
+        die("could not read the copyright line from LICENSE")
+    # The body after the copyright line, as a control-file continuation: every
+    # line indented one space, blank lines spelled " .".
+    body = license_text[holder.end() :].strip("\n").splitlines()
+    mit = "\n".join(f" {line}" if line.strip() else " ." for line in body)
+    return (
+        "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n"
+        "Upstream-Name: celPix\n"
+        "Source: https://github.com/YoriKv/celpix\n"
+        "\n"
+        "Files: *\n"
+        f"Copyright: {holder.group(1)}\n"
+        "License: MIT\n"
+        f"{mit}\n"
+        "\n"
+        f"Files: {DEB_PYTHON_DIR}/resources/fonts/*\n"
+        "Copyright: Google LLC\n"
+        "License: Apache-2.0\n"
+        " On Debian systems, the full text of the Apache License 2.0 is in\n"
+        " /usr/share/common-licenses/Apache-2.0.\n"
+    )
+
+
+def deb_payload() -> dict:
+    """Everything the package installs, as ``{path: (bytes, mode)}``.
+
+    The sources go into the system's dist-packages as an ordinary Python
+    package, run by ``/usr/bin/celpix`` on the system interpreter. Modes are set
+    here rather than read from disk, which on a mounted Windows drive reports
+    every file as 0777.
+    """
+    payload = {}
+    package = REPO_ROOT / "src" / APP_NAME
+    for path in sorted(package.rglob("*")):
+        if path.is_file() and "__pycache__" not in path.parts:
+            arcname = f"{DEB_PYTHON_DIR}/{path.relative_to(package).as_posix()}"
+            payload[arcname] = (path.read_bytes(), 0o644)
+    launcher = (
+        "#!/usr/bin/python3\n"
+        f"from {APP_NAME}.app import main\n"
+        "\n"
+        "raise SystemExit(main())\n"
+    )
+    payload[f"usr/bin/{APP_NAME}"] = (launcher.encode(), 0o755)
+    desktop = LINUX_PACKAGING / f"{APP_ID}.desktop"
+    payload[f"usr/share/applications/{desktop.name}"] = (desktop.read_bytes(), 0o644)
+    payload[f"usr/share/icons/hicolor/256x256/apps/{APP_NAME}.png"] = (
+        APP_ICON.read_bytes(),
+        0o644,
+    )
+    payload[f"usr/share/metainfo/{APP_ID}.metainfo.xml"] = (
+        stamped_appdata().encode(),
+        0o644,
+    )
+    payload[f"usr/share/doc/{APP_NAME}/copyright"] = (deb_copyright().encode(), 0o644)
+    return payload
+
+
+def deb_control_files(payload: dict) -> dict:
+    """The ``DEBIAN/`` side: control, md5sums and the maintainer scripts.
+
+    The scripts do what dh_python3 would generate: byte-compile the package on
+    install, since users cannot write ``__pycache__`` under /usr, and remove
+    those caches before removal, or dpkg leaves the directories behind.
+    """
+    installed_kib = sum(-(-len(data) // 1024) for data, _mode in payload.values())
+    control = (
+        f"Package: {APP_NAME}\n"
+        f"Version: {read_version()}\n"
+        "Architecture: all\n"
+        f"Maintainer: {DEB_MAINTAINER}\n"
+        f"Installed-Size: {installed_kib}\n"
+        f"Depends: {DEB_DEPENDS}\n"
+        f"Recommends: {DEB_RECOMMENDS}\n"
+        "Section: graphics\n"
+        "Priority: optional\n"
+        "Homepage: https://github.com/YoriKv/celpix\n"
+        f"Description: {DEB_DESCRIPTION}\n"
+    )
+    md5sums = "".join(
+        f"{hashlib.md5(data).hexdigest()}  {name}\n"
+        for name, (data, _mode) in sorted(payload.items())
+    )
+    postinst = (
+        "#!/bin/sh\nset -e\n"
+        'if [ "$1" = configure ] && command -v py3compile >/dev/null 2>&1; then\n'
+        f"    py3compile -p {APP_NAME}\n"
+        "fi\n"
+    )
+    prerm = (
+        "#!/bin/sh\nset -e\n"
+        "if command -v py3clean >/dev/null 2>&1; then\n"
+        f"    py3clean -p {APP_NAME}\n"
+        "fi\n"
+    )
+    return {
+        "control": (control.encode(), 0o644),
+        "md5sums": (md5sums.encode(), 0o644),
+        "postinst": (postinst.encode(), 0o755),
+        "prerm": (prerm.encode(), 0o755),
+    }
+
+
+def tar_members(files: dict, mode: str, mtime: int) -> bytes:
+    """A tarball of ``files`` as dpkg expects one: ``./``-relative paths, every
+    parent directory listed before its contents, all owned by root."""
+    dirs = {"."}
+    for name in files:
+        parts = name.split("/")[:-1]
+        dirs.update("/".join(parts[: i + 1]) for i in range(len(parts)))
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode=mode, format=tarfile.GNU_FORMAT) as tar:
+        # Sorting puts a directory ahead of everything under it.
+        for name in sorted(dirs | files.keys()):
+            member = tarfile.TarInfo("./" if name == "." else f"./{name}")
+            member.uid = member.gid = 0
+            member.uname = member.gname = "root"
+            member.mtime = mtime
+            if name in files:
+                data, member.mode = files[name]
+                member.size = len(data)
+                tar.addfile(member, io.BytesIO(data))
+            else:
+                member.type = tarfile.DIRTYPE
+                member.mode = 0o755
+                tar.addfile(member)
+    return buffer.getvalue()
+
+
+def ar_archive(members: list, mtime: int) -> bytes:
+    """The ``ar`` container a .deb is: a magic line, then 60-byte headers each
+    followed by its data, padded to an even length."""
+    out = bytearray(b"!<arch>\n")
+    for name, data in members:
+        header = f"{name:<16}{mtime:<12}{0:<6}{0:<6}{'100644':<8}{len(data):<10}`\n"
+        out += header.encode("ascii") + data
+        if len(data) % 2:
+            out += b"\n"
+    return bytes(out)
+
+
+def make_deb(*, dry_run: bool) -> Path:
+    """Pack the sources into a native, architecture-independent Debian package.
+
+    Written with the stdlib rather than dpkg-deb, so it builds the same on any
+    host and filesystem. Unlike the AppImage it uses nothing PyInstaller made.
+    """
+    output = deb_path()
+    info(f"  src/{APP_NAME} -> {output.relative_to(REPO_ROOT)}")
+    if dry_run:
+        return output
+    # Every timestamp is the release date's, so one version's package does not
+    # differ by when it was built. SOURCE_DATE_EPOCH, the reproducible-builds
+    # convention, wins when set.
+    mtime = int(
+        os.environ.get("SOURCE_DATE_EPOCH")
+        or datetime.datetime.fromisoformat(release_date(read_version()))
+        .replace(tzinfo=datetime.timezone.utc)
+        .timestamp()
+    )
+    payload = deb_payload()
+    control = deb_control_files(payload)
+    DIST.mkdir(parents=True, exist_ok=True)
+    output.write_bytes(
+        ar_archive(
+            [
+                ("debian-binary", b"2.0\n"),
+                ("control.tar.gz", tar_members(control, "w:gz", mtime)),
+                ("data.tar.xz", tar_members(payload, "w:xz", mtime)),
+            ],
+            mtime,
+        )
+    )
+    return output
+
+
 def clean(*, dry_run: bool) -> None:
     for path in (BUILD, DIST, REPO_ROOT / f"{APP_NAME}.spec"):
         if not path.exists():
@@ -390,6 +617,7 @@ def main(argv: list | None = None) -> int:
             "  python3 packaging/build.py            build dist/celpix\n"
             "  python3 packaging/build.py -a         ... and the release archive\n"
             "  python3 packaging/build.py -a -i      ... and the AppImage (Linux)\n"
+            "  python3 packaging/build.py -d         ... and the Debian package\n"
             "  python3 packaging/build.py -c -n      preview a from-scratch build\n"
         ),
     )
@@ -404,6 +632,12 @@ def main(argv: list | None = None) -> int:
         "--appimage",
         action="store_true",
         help="also pack the app into an AppImage in dist/ (Linux only)",
+    )
+    parser.add_argument(
+        "-d",
+        "--deb",
+        action="store_true",
+        help="also pack the sources into a native .deb in dist/ (system Python + Qt)",
     )
     parser.add_argument(
         "-c",
@@ -458,6 +692,11 @@ def main(argv: list | None = None) -> int:
         info("Packing the AppImage ...")
         appimage = make_appimage(dry_run=args.dry_run)
 
+    deb = None
+    if args.deb:
+        info("Packing the Debian package ...")
+        deb = make_deb(dry_run=args.dry_run)
+
     info()
     if args.dry_run:
         info("(dry run) nothing was built.")
@@ -470,6 +709,9 @@ def main(argv: list | None = None) -> int:
     if appimage is not None:
         size_mb = appimage.stat().st_size / 1_000_000
         info(f"  appimage: {appimage.relative_to(REPO_ROOT)} ({size_mb:.1f} MB)")
+    if deb is not None:
+        size_mb = deb.stat().st_size / 1_000_000
+        info(f"  deb: {deb.relative_to(REPO_ROOT)} ({size_mb:.1f} MB)")
     return 0
 
 
