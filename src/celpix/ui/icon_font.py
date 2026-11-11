@@ -8,12 +8,14 @@ single PNG could only be stretched — and one file covers the whole UI.
 **The face is a variable font, and celPix draws it light.** Material Symbols
 carries a ``wght`` axis, so the icons' stroke weight is a number here rather
 than a property of which file was shipped: :data:`_WEIGHT` sets it once for the
-app. A solid-weight icon set reads as heavy furniture next to the art on the
-canvas, which is the thing meant to hold the eye; at the file list's 13x16 the
-difference is legibility rather than taste, since a dense mark at that size
-fills in to a blob. The other axes (``FILL``, ``GRAD``, ``opsz``) are left at
-their defaults — pinning ``opsz`` to its small-size end measurably *worsened*
-the 13 px markers, washing them out where the default holds them crisp.
+app, wherever the Qt binding can set it (not on PySide6 6.8, see
+:func:`_weight_tag`). A solid-weight icon set reads as heavy furniture next to
+the art on the canvas, which is the thing meant to hold the eye; at the file
+list's 13x16 the difference is legibility rather than taste, since a dense
+mark at that size fills in to a blob. The other axes (``FILL``, ``GRAD``,
+``opsz``) are left at their defaults — pinning ``opsz`` to its small-size end
+measurably *worsened* the 13 px markers, washing them out where the default
+holds them crisp.
 
 The file ships **subset to the codepoints celPix actually draws** — 19 KB of a
 10.6 MB upstream face — which is why a new :class:`~celpix.ui.icons.Icon` has
@@ -64,6 +66,23 @@ _FONT_FILE = ("fonts", "material-symbols-subset.ttf")
 # The face's ``wght`` axis, which runs 100-700 with 400 the upstream default.
 # See the module docstring for why celPix sits below it.
 _WEIGHT = 300.0
+
+
+def _weight_tag() -> QFont.Tag | None:
+    """The ``wght`` axis tag, or None where the binding cannot name one.
+
+    PySide6 6.8 — Debian 13's, which the .deb runs on — binds ``QFont.Tag``
+    with no constructor that takes a value and no ``fromString``, so no axis
+    can be set at all there. The icons then draw at the face's default weight,
+    a touch heavier, rather than the app failing on its first icon.
+    """
+    try:
+        return QFont.Tag("wght")
+    except TypeError:
+        return None
+
+
+_WEIGHT_TAG = _weight_tag()
 
 # How much of its box a glyph is allowed to fill. Fitting the ink to the *whole*
 # box puts an antialiased edge on the boundary pixel, which reads as an icon that
@@ -227,7 +246,8 @@ def _icon_font(family: str, pixel_size: int) -> QFont:
     """
     font = QFont(family)
     font.setPixelSize(pixel_size)
-    font.setVariableAxis(QFont.Tag("wght"), _WEIGHT)
+    if _WEIGHT_TAG is not None:
+        font.setVariableAxis(_WEIGHT_TAG, _WEIGHT)
     font.setStyleStrategy(QFont.StyleStrategy.NoFontMerging)
     return font
 

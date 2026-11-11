@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.2.20 - unreleased
+
+- Fixed Debian crash
+
 ## v1.2.19 - 2026-11-10
 
 - Native Debian package (`.deb`) for Debian 13 and newer
