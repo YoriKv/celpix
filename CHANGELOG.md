@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.2.20 - unreleased
+## v1.2.20 - 2026-11-11
 
 - Fixed Debian crash
 
