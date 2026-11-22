@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.2.21 - unreleased
+
+- Drag-selecting tiles past the edge of the view now scrolls
+
 ## v1.2.20 - 2026-11-11
 
 - Fixed Debian crash

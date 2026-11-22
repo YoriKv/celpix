@@ -16,7 +16,7 @@ import math
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (
     QApplication,
@@ -51,6 +51,14 @@ __all__ = [
 # the only reduction nearest-neighbour can do without inventing pixels, and the
 # art these are for is pixel art.
 ZOOM_LEVELS: tuple[float, ...] = (0.5, *range(1, 25))
+
+# Edge auto-scroll during a drag (:meth:`PanZoomSurface._autoscroll_follow`):
+# the band inside the viewport's edge that already scrolls, so a window filling
+# the screen — with nowhere past its edge to put the pointer — still follows;
+# the tick, about one frame; and the fastest a tick may scroll, in logical pixels.
+AUTOSCROLL_MARGIN = 16
+AUTOSCROLL_INTERVAL_MS = 16
+AUTOSCROLL_MAX_STEP = 80
 
 
 def zoom_level_after(zoom: float, steps: int) -> float:
@@ -152,6 +160,12 @@ class PanZoomSurface:
     a different emptiness in each of them. A surface that wants the empty backing
     around it to zoom as well says so once, with
     :meth:`claim_background`.
+
+    One opt-in mechanic beside the gestures: a drag that should **follow the
+    pointer past the viewport's edge** calls :meth:`_autoscroll_press`,
+    :meth:`_autoscroll_follow` and :meth:`_autoscroll_stop` from its own
+    handlers and overrides :meth:`_autoscroll_move`. It needs the claimed
+    backing, which is how it finds the scroll area to move.
     """
 
     # Declared by the concrete widget (a Signal only registers on a QObject
@@ -192,6 +206,13 @@ class PanZoomSurface:
     #: What a high-resolution wheel has turned that is not yet a whole notch
     #: (:meth:`_report_zoom`), in the wheel's 1/8-degree units.
     _wheel_rest: int = 0
+    #: Edge auto-scroll (:meth:`_autoscroll_follow`): the press it is measured
+    #: from, the pointer as last seen, whether the drag has gone far enough to
+    #: be one, and the timer that keeps scrolling while the pointer holds still.
+    _autoscroll_origin: QPointF | None = None
+    _autoscroll_pointer = QPointF()
+    _autoscroll_armed = False
+    _autoscroll_timer: QTimer | None = None
 
     def _ratio(self) -> float:
         """The screen's physical pixels per logical pixel (1.5 at 150%)."""
@@ -511,6 +532,102 @@ class PanZoomSurface:
         self._apply_cursor()  # back to the open hand (space may still be held)
         event.accept()
         return True
+
+    def _autoscroll_press(self, global_pos: QPointF) -> None:
+        """Open a drag that may auto-scroll, measured from ``global_pos``."""
+        self._autoscroll_origin = QPointF(global_pos)
+        self._autoscroll_pointer = QPointF(global_pos)
+        self._autoscroll_armed = False
+
+    def _autoscroll_follow(self, global_pos: QPointF) -> None:
+        """Scroll the view after a drag the pointer has carried to its edge.
+
+        Called from each move of a drag that wants following. While the pointer
+        sits in or past the viewport's edge band a timer keeps scrolling — the
+        pointer holding still out there is exactly the gesture — and each tick
+        hands the surface the pointer's spot on it anew
+        (:meth:`_autoscroll_move`), because the content moved under a pointer
+        that did not. Global positions, for the reason the pan uses them.
+
+        Nothing scrolls until the drag has travelled Qt's drag distance from its
+        press: a click on a cell at the edge of the view jitters into the band,
+        and scrolling then would move the cell out from under the click.
+        """
+        if self._autoscroll_origin is None or self._backing is None:
+            return
+        self._autoscroll_pointer = QPointF(global_pos)
+        if not self._autoscroll_armed:
+            travel = (global_pos - self._autoscroll_origin).manhattanLength()
+            if travel < QApplication.startDragDistance():
+                return
+            self._autoscroll_armed = True
+        if self._autoscroll_step() == (0, 0):
+            return
+        if self._autoscroll_timer is None:
+            self._autoscroll_timer = QTimer(self)
+            self._autoscroll_timer.setInterval(AUTOSCROLL_INTERVAL_MS)
+            self._autoscroll_timer.timeout.connect(self._autoscroll_tick)
+        if not self._autoscroll_timer.isActive():
+            self._autoscroll_timer.start()
+
+    def _autoscroll_stop(self) -> None:
+        """Close the drag; the view stays where the follow left it."""
+        self._autoscroll_origin = None
+        self._autoscroll_armed = False
+        if self._autoscroll_timer is not None:
+            self._autoscroll_timer.stop()
+
+    def _autoscroll_step(self) -> tuple[int, int]:
+        """How far one tick scrolls, per axis, for the pointer as last seen.
+
+        Faster the deeper the pointer is into the band and past it, so a nudge
+        over the edge creeps and a fling races, up to a cap that still lets the
+        eye follow what is being swept.
+        """
+        viewport = self._backing
+        if viewport is None:
+            return 0, 0
+        pos = viewport.mapFromGlobal(self._autoscroll_pointer)
+
+        def axis(at: float, length: int) -> int:
+            if at < AUTOSCROLL_MARGIN:
+                depth = AUTOSCROLL_MARGIN - at
+                return -min(AUTOSCROLL_MAX_STEP, 2 + int(depth) // 2)
+            if at > length - AUTOSCROLL_MARGIN:
+                depth = at - (length - AUTOSCROLL_MARGIN)
+                return min(AUTOSCROLL_MAX_STEP, 2 + int(depth) // 2)
+            return 0
+
+        return axis(pos.x(), viewport.width()), axis(pos.y(), viewport.height())
+
+    def _autoscroll_tick(self) -> None:
+        """One step of the follow, then the drag re-aimed at the moved content.
+
+        Stops itself once the pointer is back inside the band, or the bars are
+        against their ends: the next move restarts it if the pointer goes out
+        again, so an idle drag costs no ticks.
+        """
+        dx, dy = self._autoscroll_step()
+        area = self._backing.parentWidget() if self._backing is not None else None
+        if not (self._autoscroll_armed and isinstance(area, QScrollArea)):
+            self._autoscroll_stop()
+            return
+        hbar, vbar = area.horizontalScrollBar(), area.verticalScrollBar()
+        before = hbar.value(), vbar.value()
+        hbar.setValue(before[0] + dx)
+        vbar.setValue(before[1] + dy)
+        if (hbar.value(), vbar.value()) == before:
+            if self._autoscroll_timer is not None:
+                self._autoscroll_timer.stop()
+            return
+        self._autoscroll_move(self.mapFromGlobal(self._autoscroll_pointer))
+
+    def _autoscroll_move(self, pos: QPointF) -> None:
+        """The drag's pointer, now at ``pos`` on this widget after a scroll.
+
+        Overridden by a surface that follows its drags; it is the move event
+        the scroll did not send.
+        """
 
     def wheelEvent(self, event) -> None:  # noqa: ANN001 — Qt override
         """**Ctrl**+wheel zooms; a plain wheel falls through to the scroll area.

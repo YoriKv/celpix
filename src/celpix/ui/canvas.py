@@ -744,6 +744,7 @@ class Canvas(PanZoomSurface, QWidget):
 
     def _end_stamp_pick(self) -> None:
         self._stamp_picking = False
+        self._autoscroll_stop()
         self._stamp_pick_anchor = self._stamp_pick_slot = None
         self._stamp_pick_from = self._stamp_pick_to = None
 
@@ -1097,6 +1098,7 @@ class Canvas(PanZoomSurface, QWidget):
             slot = self._slot_at(event.position())
             if slot is not None:
                 self._drag_anchor = self._drag_slot = slot
+                self._autoscroll_press(event.globalPosition())
                 self.slots_selected.emit(slot, slot)
                 pixel = self._pixel_at(event.position())
                 if pixel is not None:
@@ -1147,14 +1149,17 @@ class Canvas(PanZoomSurface, QWidget):
             self._drag_anchor is not None
             and event.buttons() & Qt.MouseButton.LeftButton
         ):
-            self._track_slot(event, "_drag_slot", self._report_drag_selection)
+            self._track_slot(
+                event.position(), "_drag_slot", self._report_drag_selection
+            )
+            self._autoscroll_follow(event.globalPosition())
         super().mouseMoveEvent(event)
 
     def _track_slot(
         self,
-        event,
+        pos: QPointF,
         last: str,
-        report: Callable[[int], None],  # noqa: ANN001
+        report: Callable[[int], None],
     ) -> None:
         """Follow a drag to the slot under the pointer, reporting each new one.
 
@@ -1164,13 +1169,27 @@ class Canvas(PanZoomSurface, QWidget):
         cell from re-running its handler per mouse event. ``last`` names the
         attribute that holds the drag's current slot.
         """
-        slot = self._slot_at(event.position(), clamp=True)
+        slot = self._slot_at(pos, clamp=True)
         if slot is not None and slot != getattr(self, last):
             setattr(self, last, slot)
             report(slot)
 
     def _report_drag_selection(self, slot: int) -> None:
         self.slots_selected.emit(self._drag_anchor, slot)
+
+    def _autoscroll_move(self, pos: QPointF) -> None:
+        """A selecting drag, re-aimed after the edge follow scrolled the view.
+
+        Only the drags that *select* follow: a selection can be meant to run
+        past what is on screen, where a carried tile or a stroke of laid cells
+        is aimed at what the user can see.
+        """
+        if self._stamp_picking:
+            self._track_slot(pos, "_stamp_pick_slot", lambda _slot: self.update())
+        elif self._drag_anchor is not None:
+            self._track_slot(pos, "_drag_slot", self._report_drag_selection)
+        else:
+            self._autoscroll_stop()
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: ANN001 — Qt override
         if self._pan_release(event):
@@ -1189,6 +1208,7 @@ class Canvas(PanZoomSurface, QWidget):
             return
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_anchor = self._drag_slot = None
+            self._autoscroll_stop()
         super().mouseReleaseEvent(event)
 
     def _rearrange_press(self, event) -> None:  # noqa: ANN001 — Qt event
@@ -1212,6 +1232,7 @@ class Canvas(PanZoomSurface, QWidget):
             slot = self._slot_at(event.position())
             if slot is not None:
                 self._drag_anchor = self._drag_slot = slot
+                self._autoscroll_press(event.globalPosition())
                 self.slots_selected.emit(slot, slot)
             return
         if event.button() != Qt.MouseButton.LeftButton:
@@ -1228,14 +1249,20 @@ class Canvas(PanZoomSurface, QWidget):
         if self._drag_anchor is not None and buttons & Qt.MouseButton.RightButton:
             # The borrowed selection drag: same growing range as tile mode's, on
             # the button the tool left free.
-            self._track_slot(event, "_drag_slot", self._report_drag_selection)
+            self._track_slot(
+                event.position(), "_drag_slot", self._report_drag_selection
+            )
+            self._autoscroll_follow(event.globalPosition())
             return
         if self._rearrange_drag and buttons & Qt.MouseButton.LeftButton:
-            self._track_slot(event, "_rearrange_slot", self.rearrange_moved.emit)
+            self._track_slot(
+                event.position(), "_rearrange_slot", self.rearrange_moved.emit
+            )
 
     def _rearrange_release(self, event) -> None:  # noqa: ANN001 — Qt event
         if event.button() == Qt.MouseButton.RightButton:
             self._drag_anchor = self._drag_slot = None
+            self._autoscroll_stop()
             return
         if event.button() != Qt.MouseButton.LeftButton or not self._rearrange_drag:
             return
@@ -1269,6 +1296,7 @@ class Canvas(PanZoomSurface, QWidget):
         elif event.button() == Qt.MouseButton.RightButton:
             self._stamp_picking = True
             self._stamp_pick_anchor = self._stamp_pick_slot = slot
+            self._autoscroll_press(event.globalPosition())
             self.update()
 
     def _stamp_move(self, event) -> None:  # noqa: ANN001 — Qt event
@@ -1279,10 +1307,13 @@ class Canvas(PanZoomSurface, QWidget):
         if self._stamp_picking and buttons & Qt.MouseButton.RightButton:
             # The pick drag: nothing is emitted until release, so all a move
             # does is grow the outlined rectangle.
-            self._track_slot(event, "_stamp_pick_slot", lambda _slot: self.update())
+            self._track_slot(
+                event.position(), "_stamp_pick_slot", lambda _slot: self.update()
+            )
+            self._autoscroll_follow(event.globalPosition())
             return
         if self._stamp_drag and buttons & Qt.MouseButton.LeftButton:
-            self._track_slot(event, "_stamp_slot", self.stamp_moved.emit)
+            self._track_slot(event.position(), "_stamp_slot", self.stamp_moved.emit)
 
     def _stamp_release(self, event) -> None:  # noqa: ANN001 — Qt event
         if self._stamp_in_pixels:
@@ -1294,6 +1325,7 @@ class Canvas(PanZoomSurface, QWidget):
             anchor, swept = self._stamp_pick_anchor, self._stamp_pick_slot
             self._stamp_picking = False
             self._stamp_pick_anchor = self._stamp_pick_slot = None
+            self._autoscroll_stop()
             self.update()
             if anchor is None:
                 return

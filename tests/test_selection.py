@@ -253,6 +253,43 @@ def test_select_all_makes_a_rectangle_in_rectangle_shape(
     assert window._selection_tiles() == list(range(32, 64))
 
 
+def test_drag_past_the_viewport_edge_scrolls_and_keeps_selecting(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    from PySide6.QtCore import QPoint, Qt
+
+    window = _open_big(qtbot, tmp_path, monkeypatch, tiles=1024)
+    window._columns.setValue(16)
+    window._rows.setValue(64)  # 2048 px tall at zoom 4: taller than any viewport
+    window.resize(900, 600)
+    window.show()
+    qtbot.waitExposed(window)
+    canvas, viewport = window._canvas, window._scroll.viewport()
+    vbar = window._scroll.verticalScrollBar()
+
+    # A click that jitters into the edge band is still a click: nothing scrolls.
+    edge = QPoint(5, viewport.height() - 2)
+    qtbot.mousePress(canvas, Qt.MouseButton.LeftButton, pos=edge)
+    qtbot.mouseMove(canvas, edge + QPoint(1, 0))
+    canvas._autoscroll_tick()
+    assert vbar.value() == 0
+    qtbot.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=edge)
+
+    # Dragged below the viewport, the view follows while the pointer holds still,
+    # and the selection grows into what the scroll brought on screen.
+    qtbot.mousePress(canvas, Qt.MouseButton.LeftButton, pos=QPoint(5, 5))
+    qtbot.mouseMove(canvas, QPoint(5, viewport.height() + 40))
+    reached = window._selected_last
+    assert canvas._autoscroll_timer.isActive()
+    for _ in range(10):
+        canvas._autoscroll_tick()
+    assert vbar.value() > 0
+    assert window._selected_tile == 0
+    assert window._selected_last > reached
+    qtbot.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=QPoint(5, 5))
+    assert not canvas._autoscroll_timer.isActive()
+
+
 def test_rectangle_collapses_when_the_view_reshuffles_its_tiles(
     qtbot, tmp_path, monkeypatch
 ) -> None:
