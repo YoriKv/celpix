@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.2.21 - unreleased
+## v1.2.21 - 2026-11-21
 
 - Drag-selecting tiles past the edge of the view now scrolls
 
